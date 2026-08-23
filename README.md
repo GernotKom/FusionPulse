@@ -83,3 +83,30 @@ Geräts.
 - Favoriten für Coins und Aktien (☆/★), lokal im Browser gespeichert; Filter „★ Favoriten“.
 - Favoriten werden in den Listen priorisiert.
 - Twelve-Data-Minutenknappheit/429 erzeugt kein wiederkehrendes großes Popup mehr; der gelbe Status bleibt sichtbar. Große Warnung nur noch bei Tageslimit bzw. fast erreichtem Tageslimit.
+
+## v2.5.4 – Opening Momentum / Alpaca
+
+Neu in v2.5.4:
+
+- getrennte Suche für Coins und Aktien
+- sichtbare ★ Favoriten-/Depotliste für Aktien; Favoriten bleiben lokal im Browser gespeichert
+- eigene Aktien-Heatmap mit Qualität × Handelbarkeit
+- praktische Aktien-Ausführbarkeit: Mindest-Netto-Gewinn bis TP2 und Mindest-Kursweg bis TP2 sind in den Einstellungen variabel; zu enge Trades können kein BUY auslösen
+- zusätzlicher Elliott/Fibonacci-Struktur-Zielraum neben dem kurzfristigen TP2
+- klare Marktphasen: geschlossen / Premarket / Opening / regulär / After Hours
+- neuer `🚀 Opening Momentum`-Scanner über Alpaca Market Data
+- Premarket-Gap, kurzfristiges Momentum, relative Volumenbeschleunigung, Premarket-High und grober Elliott/Fibonacci-Strukturraum
+- Premarket ist Vorbereitung: ein grüner Momentum-Kandidat ist nicht automatisch ein BUY; echte BUY-Freigabe wird außerhalb der regulären/Opening-Phase blockiert
+
+### Neue Cloudflare-Secrets für Alpaca
+
+In Cloudflare beim Worker `fusionpulse` unter **Einstellungen → Variablen und Geheimnisse** zwei Secrets anlegen:
+
+- `ALPACA_API_KEY_ID`
+- `ALPACA_API_SECRET_KEY`
+
+Beide Werte stammen aus dem Alpaca-Konto. Sie gehören ausschließlich in Cloudflare und niemals ins GitHub-Repository oder in die PWA-Einstellungen.
+
+v2.5.4 verwendet für den kostenlosen Test ausdrücklich `feed=iex`. IEX ist nur eine einzelne US-Börse. Der kostenlose Livefeed ist daher nicht mit dem vollständigen SIP-Gesamtmarkt gleichzusetzen. Besonders wichtig: IEX hat nur begrenzte Extended-Hours-Zeiten (ca. 08:00–17:00 ET). Der frühe US-Premarket von 04:00–08:00 ET ist damit im Free-Tarif nicht vollständig live abgedeckt. FusionPulse zeigt diese Einschränkung direkt im Opening-Momentum-Fenster an.
+
+Der Worker nutzt für Opening Momentum pro Aktualisierung zwei gebündelte Alpaca-REST-Aufrufe: Multi-Symbol-Snapshots und Multi-Symbol-1-Minuten-Bars. Es werden keine Orders an Alpaca gesendet.

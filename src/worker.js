@@ -664,6 +664,7 @@ let btcRef = null;        // letzte BTC-Kerzen fuer die RS-Berechnung im Einzela
 const apiState = {
   crypto: { state: 'unknown', ts: 0, message: null },
   stocks: { state: 'unknown', ts: 0, message: null },
+  alpaca: { state: 'unknown', ts: 0, message: null },
 };
 function setApiState(which, state, message = null) {
   apiState[which] = { state, ts: Date.now(), message: message ? String(message).slice(0, 220) : null };
@@ -829,6 +830,25 @@ function quotaView() {
 const emaN = (arr, n) => { if (!arr.length) return 0; const k = 2 / (n + 1); let e = arr[0]; for (const x of arr.slice(1)) e = x * k + e * (1 - k); return e; };
 const stockATR = (bars, n = 14) => { if (bars.length < 2) return 0; const tr = []; for (let i = 1; i < bars.length; i++) { const b = bars[i], p = bars[i - 1]; tr.push(Math.max(b.h - b.l, Math.abs(b.h - p.c), Math.abs(b.l - p.c))); } return tr.slice(-n).reduce((a, b) => a + b, 0) / Math.max(1, tr.slice(-n).length); };
 
+function nyParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone:'America/New_York', weekday:'short', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hourCycle:'h23' }).formatToParts(date);
+  return Object.fromEntries(parts.map(p=>[p.type,p.value]));
+}
+function usMarketPhase(date = new Date()) {
+  const p=nyParts(date), weekend=['Sat','Sun'].includes(p.weekday), mins=Number(p.hour)*60+Number(p.minute);
+  let key='closed', label='US-Markt geschlossen', help='Aktienwerte dienen nur der Vorbereitung; keine Live-BUY-Freigabe.';
+  if(!weekend){
+    if(mins>=240&&mins<480){key='premarket-early';label='Premarket 04:00–08:00 ET';help='Voller US-Premarket läuft, aber Alpaca Free/IEX liefert in diesem frühen Abschnitt keine vollständigen Live-Daten.';}
+    else if(mins>=480&&mins<570){key='premarket';label='Premarket · IEX live ab 08:00 ET';help='Kostenloser IEX-Feed kann jetzt Live-Daten liefern, bildet aber nur einen Teil des US-Marktes ab.';}
+    else if(mins>=570&&mins<660){key='opening';label='US-Opening · erste 90 Min.';help='Prioritätsfenster für Opening Momentum, Premarket-High, VWAP und Volumenbeschleunigung.';}
+    else if(mins>=660&&mins<960){key='regular';label='US-Markt LIVE';help='Regulärer US-Handel.';}
+    else if(mins>=960&&mins<1020){key='after';label='After Hours · IEX bis 17:00 ET';help='IEX hat nur begrenzte Extended-Hours-Abdeckung.';}
+    else if(mins>=1020&&mins<1200){key='after-limited';label='After Hours · IEX beendet';help='Voller US-Aftermarket läuft weiter, der kostenlose IEX-Feed aber nicht.';}
+  }
+  return { key,label,help, ny:`${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} ET`, weekday:p.weekday };
+}
+function isoAgo(minutes){ return new Date(Date.now()-minutes*60_000).toISOString(); }
+
 function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
   const on = comp instanceof Set ? comp : new Set(ALL_ON);
   const vals = src?.values;
@@ -867,6 +887,12 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
   const stop = entry - 1.25 * atr;
   const risk = Math.max(0.0001, entry - stop);
   const tp1 = entry + 1.7 * risk, tp2 = entry + 3.35 * risk;
+  const tp2Pct = (tp2 / entry - 1) * 100;
+  // Größerer Struktur-Zielraum: Elliott/Fibonacci-Heuristik, bewusst separat vom kurzfristigen TP2.
+  // Grundlage ist der größere der aktuellen Impuls-/ATR-Spannen; 1,618 ist die klassische Fib-Extension.
+  const impulsePct = Math.max(Math.abs(ret60), atr > 0 ? (atr / last.c) * 100 * 3 : 0);
+  const structurePct = Math.max(0, Math.min(20, impulsePct * 1.618));
+  const swingTarget = entry * (1 + structurePct / 100);
   const grossCRV = (tp2 - entry) / risk;
   const costPct = 0.18;                                   // Broker + Spread, konservativ
   const netCRV = +Math.max(0, grossCRV - (costPct / 100 * entry / risk)).toFixed(1);
@@ -890,13 +916,14 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
     entryUsd: entry, entryEur: e(entry),
     stopUsd: stop, stopEur: e(stop),
     tp1Usd: tp1, tp1Eur: e(tp1),
-    tp2Usd: tp2, tp2Eur: e(tp2),
+    tp2Usd: tp2, tp2Eur: e(tp2), tp2Pct: +tp2Pct.toFixed(2),
+    swingTargetUsd: swingTarget, swingTargetEur: e(swingTarget), structurePct: +structurePct.toFixed(2),
     zoneLowUsd: entry - 0.25 * atr, zoneHighUsd: entry + 0.25 * atr,
     zoneLowEur: e(entry - 0.25 * atr), zoneHighEur: e(entry + 0.25 * atr),
     netCRV, atrPct: +((atr / last.c) * 100).toFixed(2),
     ret5: +ret5.toFixed(2), ret15: +ret15.toFixed(2), ret60: +ret60.toFixed(2),
     relVol: +relVol.toFixed(2), vwapUsd: vwap, aboveVwap: last.c >= vwap,
-    updated: last.dt, feed: 'Twelve Data US', tradegate: false,
+    updated: last.dt, feed: 'Twelve Data US', tradegate: false, marketPhase: usMarketPhase().key,
     fxUsdPerEur: usdPerEur || null, fxKnown: !!usdPerEur,
     components: [...on],
   };
@@ -956,7 +983,7 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3) {
     return { configured: true, state: 'ok', cached: true,
              rows: stockMemo.rows, ts: stockMemo.ts, cycle, universe: STOCK_UNIVERSE.length,
              scanned: stockMemo.rows.length, quota: quotaView(), version: APP_VERSION,
-             note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs' };
+             market: usMarketPhase(), note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs' };
   }
 
   const batch = STOCK_UNIVERSE.filter((_, i) => i % 3 === cycle);
@@ -985,8 +1012,68 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3) {
     configured: true, state: 'ok', cached: false, rows, ts: stockMemo.ts, cycle,
     universe: STOCK_UNIVERSE.length, scanned: rows.length, updatedThisCycle: fresh.length,
     fxUsdPerEur: fx || null, fxApprox: !!fx, quota: quotaView(), version: APP_VERSION,
-    note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs',
+    market: usMarketPhase(), note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs',
   };
+}
+
+
+/* ========================================================================
+   Opening Momentum — Alpaca Market Data (v2.5.4)
+   Free/Test: feed=iex. IEX ist eine einzelne US-Börse und handelt nur ca.
+   08:00–17:00 ET; deshalb ist 04:00–08:00 ET im Free-Tarif NICHT vollständig
+   live abdeckbar. Die UI kennzeichnet das ausdrücklich. Keine Orders.
+   ======================================================================== */
+const OPENING_UNIVERSE = [
+  'MRNA','IONQ','RGTI','PLTR','MSTR','NVDA','AMD','AVGO','SMCI','ARM','TSLA','META','AAPL','MSFT','AMZN','GOOGL','NFLX','COIN','HOOD','SOFI','CRWD','SNOW','UBER','RKLB','AEM','AG','LLY','BA','GE','CAT'
+];
+let openingMemo={ts:0,data:null};
+async function alpacaJSON(path, params, env){
+  const u=new URL('https://data.alpaca.markets'+path); for(const [k,v] of Object.entries(params||{})) if(v!=null)u.searchParams.set(k,v);
+  const r=await fetch(u,{headers:{'APCA-API-KEY-ID':env.ALPACA_API_KEY_ID,'APCA-API-SECRET-KEY':env.ALPACA_API_SECRET_KEY,accept:'application/json'}});
+  if(r.status===429) throw new Error('Alpaca Rate-Limit (429)');
+  if(!r.ok) throw new Error(`Alpaca ${r.status}: ${(await r.text()).slice(0,180)}`);
+  return r.json();
+}
+function barTimeET(ts){
+  const p=nyParts(new Date(ts)); return Number(p.hour)*60+Number(p.minute);
+}
+function momentumFromAlpaca(symbol, snap, bars=[]){
+  if(!snap)return null;
+  const prevClose=Number(snap.prevDailyBar?.c||0), latest=Number(snap.minuteBar?.c||snap.latestTrade?.p||snap.dailyBar?.c||0);
+  if(!(latest>0&&prevClose>0))return null;
+  const bs=(bars||[]).map(b=>({t:b.t,c:+b.c,h:+b.h,l:+b.l,v:+b.v||0})).filter(b=>b.c>0).sort((a,b)=>new Date(a.t)-new Date(b.t));
+  const closeAgo=(n)=>bs.length>n?bs.at(-1-n).c:bs[0]?.c||latest;
+  const ret5=(latest/closeAgo(5)-1)*100, ret15=(latest/closeAgo(15)-1)*100, ret60=(latest/closeAgo(Math.min(60,bs.length-1))-1)*100;
+  const vols=bs.slice(-25).map(b=>b.v); const base=mean(vols.slice(0,-3))||1; const recent=mean(vols.slice(-3)); const relVol=recent/base;
+  const gapPct=(latest/prevClose-1)*100;
+  const pre=bs.filter(b=>{const m=barTimeET(b.t);return m>=480&&m<570;});
+  const preHigh=pre.length?maxOf(pre.map(b=>b.h)):null, preLow=pre.length?minOf(pre.map(b=>b.l)):null;
+  const open=bs.filter(b=>{const m=barTimeET(b.t);return m>=570&&m<585;}); const openingHigh=open.length?maxOf(open.map(b=>b.h)):null;
+  const priceScore=clamp(5+ret15*1.3+ret60*.35,0,10), volScore=clamp(4+(relVol-1)*2.3,0,10);
+  const gapScore=clamp(5+Math.max(-3,Math.min(4,gapPct*.6)),0,10);
+  const levelScore=preHigh?clamp(5+((latest/preHigh)-1)*250,0,10):5;
+  const momentumScore=r1(weighted([[null,priceScore,.35],[null,volScore,.30],[null,gapScore,.20],[null,levelScore,.15]],ALL_ON));
+  const phase=usMarketPhase();
+  const impulsePct=Math.max(Math.abs(gapPct),Math.abs(ret60),bs.length?((maxOf(bs.slice(-60).map(b=>b.h))/minOf(bs.slice(-60).map(b=>b.l))-1)*100):0);
+  const structurePct=r1(Math.min(20,Math.max(0,impulsePct*1.618)));
+  const light=momentumScore>=8?'green':momentumScore>=6.5?'yellow':'red';
+  const actionable=['opening','regular'].includes(phase.key)&&momentumScore>=8;
+  const phaseAction=phase.key==='premarket'?(momentumScore>=7.5?'VORBEREITEN':'beobachten'):actionable?'Opening-Bestätigung prüfen':phase.key==='closed'?'Vorbereitung':'beobachten';
+  return {symbol,priceUsd:latest,gapPct:r1(gapPct),ret5:r1(ret5),ret15:r1(ret15),ret60:r1(ret60),relVol:r1(relVol),momentumScore,preHigh,preLow,openingHigh,breakPremarketHigh:!!(preHigh&&latest>preHigh),structurePct,structureTargetUsd:r2(latest*(1+structurePct/100)),light,phaseAction,marketPhase:phase.key,updated:snap.minuteBar?.t||snap.latestTrade?.t||null};
+}
+async function openingMomentum(env, force=false){
+  const phase=usMarketPhase();
+  if(!env.ALPACA_API_KEY_ID||!env.ALPACA_API_SECRET_KEY){setApiState('alpaca','nokey','Alpaca Secrets fehlen');return {configured:false,state:'nokey',rows:[],feed:'IEX (Free)',phase:phase.key,phaseLabel:phase.label,phaseHelp:phase.help,version:APP_VERSION};}
+  if(!force&&openingMemo.data&&Date.now()-openingMemo.ts<45_000)return {...openingMemo.data,cached:true};
+  // 1 Snapshot-Request + 1 Multi-Symbol-Bars-Request; dadurch bleiben wir weit unter 200 REST-Requests/min.
+  const symbols=OPENING_UNIVERSE.join(',');
+  const [snaps,hist]=await Promise.all([
+    alpacaJSON('/v2/stocks/snapshots',{symbols,feed:'iex'},env),
+    alpacaJSON('/v2/stocks/bars',{symbols,timeframe:'1Min',start:isoAgo(150),limit:'10000',feed:'iex',sort:'asc'},env),
+  ]);
+  const rows=OPENING_UNIVERSE.map(sym=>momentumFromAlpaca(sym,snaps?.[sym],hist?.bars?.[sym]||[])).filter(Boolean).sort((a,b)=>b.momentumScore-a.momentumScore);
+  const data={configured:true,state:'ok',rows,scanned:rows.length,universe:OPENING_UNIVERSE.length,feed:'IEX (Free)',phase:phase.key,phaseLabel:phase.label,phaseHelp:phase.help,limitations:'IEX ist nur eine US-Börse; live ca. 08:00–17:00 ET, nicht der vollständige SIP-Gesamtmarkt.',ts:Date.now(),version:APP_VERSION};
+  openingMemo={ts:Date.now(),data}; setApiState('alpaca','ok',`${rows.length} Momentum-Titel · ${phase.label}`); return data;
 }
 
 function authed(req, url, env) {
@@ -1004,6 +1091,7 @@ export default {
       // Weicht env.APP_VERSION ab, ist die Variable veraltet – das wird gemeldet.
       const cryptoState = !env.FUSION_API_KEY ? 'nokey' : apiState.crypto.state;
       const stocksState = !env.TWELVE_API_KEY ? 'nokey' : apiState.stocks.state;
+      const alpacaState = (!env.ALPACA_API_KEY_ID || !env.ALPACA_API_SECRET_KEY) ? 'nokey' : apiState.alpaca.state;
       return json({
         ok: true,
         version: APP_VERSION,
@@ -1012,12 +1100,14 @@ export default {
         configured: !!env.FUSION_API_KEY,
         protected: !!env.APP_TOKEN,
         stocksConfigured: !!env.TWELVE_API_KEY,
+        alpacaConfigured: !!(env.ALPACA_API_KEY_ID && env.ALPACA_API_SECRET_KEY),
         kv: !!env.SNAP,
         cacheAgeMs: memo.ts ? Date.now() - memo.ts : null,
         components: COMPONENTS,
         status: {
           crypto: { ...apiState.crypto, state: cryptoState },
           stocks: { ...apiState.stocks, state: stocksState },
+          alpaca: { ...apiState.alpaca, state: alpacaState },
         },
         quota: { twelveData: quotaView() },
       }, 200, { 'cache-control': 'no-store' });
@@ -1032,6 +1122,11 @@ export default {
         setApiState('crypto', 'nokey', 'FUSION_API_KEY fehlt');
         return json({ error: 'FUSION_API_KEY fehlt (Secret in Cloudflare setzen).', state: 'nokey' }, 500);
       }
+    }
+
+    if (url.pathname === '/api/opening') {
+      try { return json(await openingMomentum(env, url.searchParams.get('force') === '1'), 200, { 'cache-control':'no-store' }); }
+      catch (e) { const state=classifyError(e); setApiState('alpaca',state,e?.message); return json({configured:!!(env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY),state,error:e.message||String(e),rows:openingMemo.data?.rows||[],feed:'IEX (Free)',phaseLabel:usMarketPhase().label,phaseHelp:usMarketPhase().help,version:APP_VERSION},state==='ratelimit'?429:502,{ 'cache-control':'no-store' }); }
     }
 
     if (url.pathname === '/api/stocks') {

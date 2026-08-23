@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v2.5.3 — Frontend
+   FusionPulse v2.5.4 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -17,7 +17,7 @@ const DEFAULTS = {
   equity: 5000, riskPct: 0.75, interval: 20000, deep: 20,
   sound: true, token: '', watch: 'BTC-EUR,ETH-EUR,SOL-EUR', minQ: 0, onlyZone: false,
   theme: 'dark', taxPct: 27.5, analysisMode: 'composite', coinCount: 12, stockCount: 12,
-  maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0,
+  maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0, minNetProfitStock: 250, minTp2PctStock: 2.0,
   mutedPairs: [], mutedStocks: [], favoritePairs: [], favoriteStocks: [], components: [...ALL_COMPONENTS], stockSound: true,
 };
 const S = { ...DEFAULTS, ...JSON.parse(localStorage.getItem('fp.settings') || '{}') };
@@ -41,6 +41,9 @@ let ac = null;
 let health = {};
 let quotaShownFor = '';     // verhindert Dauer-Popups für dieselbe Lage
 let stockSearchBusy = false;
+let openingRows = [];
+let openingMeta = {};
+let openingTimer = null;
 
 const state = new Map();      // pair   -> { light, since, streak, level, … }
 const stockState = new Map(); // symbol -> { light, since, streak, level }
@@ -105,8 +108,19 @@ function buyReady(r) {
   return r.light === 'green' && r.inZone && Number(r.netCRV || 0) >= Number(S.minCrvCoin || 2);
 }
 const coinLevel = (r) => (buyReady(r) ? 3 : r.light === 'green' ? 2 : r.light === 'yellow' ? 1 : 0);
-const stockLevel = (r) => (r.light === 'green' && r.score >= 8 && r.netCRV >= Number(S.minCrvStock || 3) ? 3
-  : r.light === 'green' ? 2 : r.light === 'yellow' ? 1 : 0);
+function stockTradeability(r) {
+  const sz = stockSizing(r);
+  const tp2Pct = Number(r.tp2Pct ?? (r.entryUsd ? ((r.tp2Usd / r.entryUsd - 1) * 100) : 0));
+  const netProfit = Number(sz?.net2 || 0);
+  const marketOk = !r.marketPhase || ['regular','opening'].includes(r.marketPhase);
+  const ok = marketOk && tp2Pct >= Number(S.minTp2PctStock || 0) && netProfit >= Number(S.minNetProfitStock || 0);
+  return { ok, tp2Pct, netProfit, marketOk };
+}
+const stockLevel = (r) => {
+  const t = stockTradeability(r);
+  return (r.light === 'green' && r.score >= 8 && r.netCRV >= Number(S.minCrvStock || 3) && t.ok) ? 3
+    : r.light === 'green' ? 2 : r.light === 'yellow' ? 1 : 0;
+};
 
 /** Intensität wächst mit der Anzahl BESTÄTIGENDER Scans, gedeckelt durch Qualität. */
 function signalStrength(r) {
@@ -440,79 +454,65 @@ function stockPeek(r) {
   </div>`;
 }
 
+function stockHeatmap(shown) {
+  const svg = $('#stockMap'); if (!svg) return;
+  const g = (x) => 14 + (Math.max(0, Math.min(10, x)) / 10) * 172;
+  const pts = shown.slice(0, 24).map((r) => {
+    const ex = Number(r.executability ?? Math.min(10, 4 + (r.relVol || 0) * 1.2 + Math.min(2, Math.abs(r.ret15 || 0))));
+    return { r, x:g(ex), y:200-g(Number(r.score||0)), rad:5+Math.max(0,(Number(r.score||0)-5)*.7) };
+  });
+  for(let it=0;it<15;it++) for(let i=0;i<pts.length;i++) for(let j=i+1;j<pts.length;j++){
+    const a=pts[i],b=pts[j],dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||.1,m=a.rad+b.rad+3;
+    if(d<m){const q=(m-d)*.16,ux=dx/d,uy=dy/d;a.x-=ux*q;a.y-=uy*q;b.x+=ux*q;b.y+=uy*q;}
+  }
+  svg.innerHTML=`<rect class="quad qa" x="100" y="0" width="100" height="100"/><rect class="quad qb" x="0" y="0" width="100" height="100"/><rect class="quad qc" x="100" y="100" width="100" height="100"/><line class="ax" x1="100" y1="0" x2="100" y2="200"/><line class="ax" x1="0" y1="100" x2="200" y2="100"/>`+
+    pts.map(({r,x,y,rad})=>`<g class="dot light-${r.light} ${stockLevel(r)===3?'buy-ready':''}" transform="translate(${Math.max(10,Math.min(190,x)).toFixed(1)} ${Math.max(10,Math.min(190,y)).toFixed(1)})"><circle class="hit" r="${rad+7}"/><circle class="core" r="${rad}"/><text x="0" y="2.2">${esc(r.symbol.slice(0,5))}</text><title>${esc(r.name)} · Score ${num(r.score,1)} · CRV ${num(r.netCRV,1)}:1 · RVOL ${num(r.relVol||0,1)} · ${stockLevel(r)===3?'BUY':'beobachten/kein Trade'}</title></g>`).join('');
+}
+
+function renderDepotStrip() {
+  const el=$('#depotStrip'); if(!el) return;
+  const favs=S.favoriteStocks||[];
+  if(!favs.length){el.innerHTML='<span><b>★ Favoriten / Depot</b> · noch leer — Stern bei einer Aktie antippen.</span>';return;}
+  el.innerHTML=`<b>★ Favoriten / Depot (${favs.length})</b>`+favs.map(symb=>`<button class="depotchip" data-depot="${esc(symb)}" title="${esc(symb)} im Aktienradar anzeigen">${esc(symb)}</button>`).join('');
+  el.querySelectorAll('[data-depot]').forEach(b=>b.onclick=()=>{const q=$('#stockQ');q.value=b.dataset.depot;renderStocks();});
+}
+
+function renderOpeningPanel() {
+  const el=$('#openingPanel'); if(!el) return;
+  if(openingMeta.configured===false){el.innerHTML='<b>🚀 Opening Momentum</b><span>Alpaca noch nicht verbunden. Benötigt zwei Cloudflare-Secrets: <code>ALPACA_API_KEY_ID</code> und <code>ALPACA_API_SECRET_KEY</code>.</span>';return;}
+  const phase=openingMeta.phaseLabel||'Status wird geladen';
+  const top=openingRows.slice(0,5);
+  el.innerHTML=`<div class="ophead"><b>🚀 Opening Momentum</b><span title="${esc(openingMeta.phaseHelp||'')} ">${esc(phase)}</span><small title="Kostenloser Alpaca-Livefeed = IEX, eine einzelne US-Börse. Vollständiger SIP-Gesamtmarkt ist kostenpflichtig.">Alpaca · ${esc(openingMeta.feed||'IEX')}</small></div>`+
+    (top.length?`<div class="opgrid">${top.map(r=>`<div class="opcard ${r.light}" title="Momentum-Score kombiniert Gap, Volumenbeschleunigung, kurzfristige Kursdynamik und Premarket-/Opening-Level. Kein BUY allein."><b>${esc(r.symbol)}</b><span>${r.gapPct>=0?'+':''}${num(r.gapPct,1)}% Gap</span><span>Mom ${num(r.momentumScore,1)}</span><span>RV ${num(r.relVol,1)}×</span><span title="Elliott/Fibonacci-Strukturprojektion: grober möglicher Bewegungsraum aus aktuellem Impuls und 1,618-Projektion; kein garantiertes Kursziel.">Struktur ${num(r.structurePct,1)}%</span><em>${esc(r.phaseAction)}</em></div>`).join('')}</div>`:'<span class="hint">Noch keine verwertbaren Live-Daten im aktuellen IEX-Zeitfenster.</span>');
+}
+
 function renderStocks() {
-  const box = $('#stockGroups'), st = $('#stockState'), counts = $('#stockCounts');
-  if (!box || !st) return;
-
-  if (stockMeta.configured === false) {
-    box.innerHTML = '';
-    st.textContent = 'TWELVE_API_KEY fehlt';
-    st.className = 'badge err';
-    st.title = 'Cloudflare → Workers & Pages → fusionpulse → Einstellungen → Variablen und Geheimnisse: TWELVE_API_KEY als Geheimnis anlegen.';
-    if (counts) counts.textContent = 'Aktienradar nicht konfiguriert';
-    return;
-  }
-
-  const search = ($('#q')?.value || '').trim().toUpperCase();
-  const favOnly = $('#f')?.value === 'favorites';
-  const stockFiltered = stockRows.filter((r) => (!search || r.symbol.toUpperCase().includes(search) || String(r.name || '').toUpperCase().includes(search)) && (!favOnly || isFavStock(r.symbol)));
-  const shown = [...stockFiltered].sort((a, b) => (Number(isFavStock(b.symbol)) - Number(isFavStock(a.symbol))) || b.score - a.score).slice(0, S.stockCount);
-  const scanned = stockMeta.scanned ?? stockRows.length;
-  const universe = stockMeta.universe || 21;
-
-  const stateKey = stockMeta.state || (stockRows.length ? 'ok' : 'unknown');
-  st.textContent = stateKey === 'ok' ? 'Live-Feed' : STATE_TEXT[stateKey] || 'Status unbekannt';
-  st.className = 'badge ' + (STATE_TONE[stateKey] === 'ok' ? 'ok' : STATE_TONE[stateKey] === 'warn' ? 'warn' : 'err');
-  st.title = `Twelve Data US-Aktienfeed. 7 Titel je 5-Minuten-Zyklus, das gesamte Universum ist nach etwa 15 Minuten einmal erneuert.\nStatus: ${STATE_TEXT[stateKey] || stateKey}`;
-  if (counts) {
-    counts.textContent = `${scanned} von ${universe} gescannt · ${shown.length} angezeigt`;
-    counts.title = 'Gescannt = Titel mit vorliegender Analyse im rotierenden Universum. Angezeigt = Zeilen in dieser Liste (Einstellungen → Aktien anzeigen).';
-  }
-
-  const topBox = $('#stockFocus');
-  const top = shown[0];
-  if (topBox) {
-    if (!top) topBox.innerHTML = search ? `<div class="stockfocus-empty">Keine geladene Aktie passend zu „${esc(search)}“. <b>Enter</b> oder 🔎 lädt den Titel direkt über Twelve Data.</div>` : (favOnly ? `<div class="stockfocus-empty">Noch keine Aktien-Favoriten. Mit ☆ neben einem Titel hinzufügen.</div>` : '');
-    else {
-      const sz = stockSizing(top); const buy = stockLevel(top) === 3;
-      topBox.innerHTML = `<div class="stockfocus-card ${top.light}${buy ? ' buy' : ''}"><div class="sf-title"><div><small>TOP-AKTIE AKTUELL</small><h3>${esc(top.name)} <b>${esc(top.symbol)}</b></h3><span>${esc(top.sector)} · Score ${num(top.score,1)} · CRV ${num(top.netCRV,1)}:1</span></div><strong>${VERDICT_ICON[top.light]} ${esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${stockPx(top.priceUsd, top.priceEur)}</b></span><span>Kaufsumme <b>${sz ? eur(sz.notional,0) : '–'}</b></span><span>Entry <b>${stockPx(top.entryUsd, top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd, top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd, top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd, top.tp2Eur)}</b></span></div><small>EUR = Umrechnung, kein Tradegate-Kurs. BUY nur wenn Score ≥ 8 und dein Mindest-CRV ${num(S.minCrvStock,1)}:1 erfüllt ist.</small></div>`;
-    }
-  }
-
-  const groups = new Map();
-  for (const r of shown) { if (!groups.has(r.sector)) groups.set(r.sector, []); groups.get(r.sector).push(r); }
-
-  box.innerHTML = [...groups.entries()].map(([sector, arr]) => `
-    <section class="stock-sector">
-      <h3>${esc(sector)}</h3>
-      ${arr.map((r) => {
-        const buy = stockLevel(r) === 3;
-        const tone = stockStrength(r);
-        return `<div class="stockrow ${r.light} tone-${tone}${buy ? ' buy' : ''}" data-sym="${esc(r.symbol)}">
-          <div class="sr-head">
-            <b class="sr-tic" title="Ticker-Symbol an der US-Börse ${esc(r.exchange)}">${esc(r.symbol)}</b>
-            <button class="favbtn ${isFavStock(r.symbol) ? 'on' : ''}" data-favstock="${esc(r.symbol)}" title="${isFavStock(r.symbol) ? 'Aus Favoriten entfernen' : 'Zu Favoriten hinzufügen'}">${isFavStock(r.symbol) ? '★' : '☆'}</button>
-            <button class="rowmute" data-mutestock="${esc(r.symbol)}" title="Ton nur für ${esc(r.symbol)} ${isStockMuted(r.symbol) ? 'einschalten' : 'ausschalten'}">${isStockMuted(r.symbol) ? '🔇' : '🔊'}</button>
-          </div>
-          <div class="sr-name" title="${esc(r.name)} · Branche ${esc(r.sector)}">${esc(r.name)}</div>
-          <div class="sr-nums">
-            <span title="CRV = Chance-Risiko-Verhältnis nach geschätzten Kosten.">${num(r.netCRV, 1)} : 1</span>
-            <i>·</i>
-            <span title="Gesamtbewertung 0–10 aus den aktivierten Analyseverfahren.">Score ${num(r.score, 1)}</span>
-          </div>
-          <div class="sr-verdict" title="Einschätzung des Systems: Grün = handelbares Setup, Gelb = beobachten, Rot = kein Trade.">${VERDICT_ICON[r.light]} ${esc(r.verdict)}</div>
-          <div class="sr-px" title="Letzter US-Kurs; EUR ist eine Umrechnung.">${stockPx(r.priceUsd, r.priceEur)}</div>
-          ${stockPeek(r)}
-        </div>`;
-      }).join('')}
-    </section>`).join('');
-
-  box.querySelectorAll('[data-mutestock]').forEach((b) => {
-    b.addEventListener('click', (e) => toggleStockMute(b.dataset.mutestock, e));
-  });
-  box.querySelectorAll('[data-favstock]').forEach((b) => {
-    b.addEventListener('click', (e) => toggleStockFavorite(b.dataset.favstock, e));
-  });
+  const box=$('#stockGroups'),st=$('#stockState'),counts=$('#stockCounts'); if(!box||!st)return;
+  renderDepotStrip(); renderOpeningPanel();
+  if(stockMeta.configured===false){box.innerHTML='';st.textContent='TWELVE_API_KEY fehlt';st.className='badge err';if(counts)counts.textContent='Aktienradar nicht konfiguriert';stockHeatmap([]);return;}
+  const search=($('#stockQ')?.value||'').trim().toUpperCase(); const filter=$('#stockF')?.value||'';
+  let stockFiltered=stockRows.filter(r=>(!search||r.symbol.toUpperCase().includes(search)||String(r.name||'').toUpperCase().includes(search)));
+  if(filter==='favorites') stockFiltered=stockFiltered.filter(r=>isFavStock(r.symbol));
+  if(filter==='green'||filter==='yellow') stockFiltered=stockFiltered.filter(r=>r.light===filter);
+  if(filter==='momentum') { const hot=new Set(openingRows.slice(0,20).map(r=>r.symbol)); stockFiltered=stockFiltered.filter(r=>hot.has(r.symbol)); }
+  const shown=[...stockFiltered].sort((a,b)=>(Number(isFavStock(b.symbol))-Number(isFavStock(a.symbol)))||b.score-a.score).slice(0,S.stockCount);
+  const scanned=stockMeta.scanned??stockRows.length, universe=stockMeta.universe||21, stateKey=stockMeta.state||(stockRows.length?'ok':'unknown');
+  const phase=stockMeta.market?.label||'';
+  st.textContent=(stateKey==='ok'?'Aktienfeed':STATE_TEXT[stateKey]||'Status unbekannt')+(phase?` · ${phase}`:'');
+  st.className='badge '+(STATE_TONE[stateKey]==='ok'?'ok':STATE_TONE[stateKey]==='warn'?'warn':'err');
+  st.title=`Twelve Data US-Aktienfeed. ${phase||''}\nAußerhalb der regulären US-Börsenzeit sind Analysen Vorbereitung und keine Live-BUY-Freigabe.`;
+  if(counts) counts.textContent=`${scanned} von ${universe} gescannt · ${shown.length} angezeigt · ★ ${(S.favoriteStocks||[]).length}`;
+  stockHeatmap(shown);
+  const topBox=$('#stockFocus'), top=shown[0];
+  if(topBox){if(!top)topBox.innerHTML=search?`<div class="stockfocus-empty">Keine geladene Aktie passend zu „${esc(search)}“. Enter oder 🔎 lädt den Titel direkt.</div>`:(filter==='favorites'?'<div class="stockfocus-empty">Noch keine Aktien-Favoriten. Mit ☆ neben einem Titel hinzufügen.</div>':'');else{
+    const sz=stockSizing(top), buy=stockLevel(top)===3, tr=stockTradeability(top); const struct=Number(top.structurePct||0);
+    topBox.innerHTML=`<div class="stockfocus-card ${top.light}${buy?' buy':''}"><div class="sf-title"><div><small>TOP-AKTIE AKTUELL</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button>${esc(top.name)} <b>${esc(top.symbol)}</b></h3><span>${esc(top.sector)} · Score ${num(top.score,1)} · CRV ${num(top.netCRV,1)}:1</span></div><strong>${buy?'🟢 BUY':VERDICT_ICON[top.light]+' '+esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${stockPx(top.priceUsd,top.priceEur)}</b></span><span>Kaufsumme <b>${sz?eur(sz.notional,0):'–'}</b></span><span>Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Netto-Gewinnschätzung bis TP2 bei berechneter Positionsgröße und eingestelltem Steuersatz.">Netto TP2 <b>${sz?eur(sz.net2,0):'–'}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Größerer Elliott/Fibonacci-Zielraum aus der aktuellen Struktur. Ergänzende Projektion, kein unmittelbares Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span></div><small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} BUY: Score ≥8, CRV ≥${num(S.minCrvStock,1)}:1, Netto-TP2 ≥${eur(S.minNetProfitStock,0)}, Kursweg ≥${num(S.minTp2PctStock,1)}%.</small></div>`;
+    topBox.querySelector('[data-favstock]')?.addEventListener('click',e=>toggleStockFavorite(top.symbol,e));
+  }}
+  const groups=new Map(); for(const r of shown){if(!groups.has(r.sector))groups.set(r.sector,[]);groups.get(r.sector).push(r);}
+  box.innerHTML=[...groups.entries()].map(([sector,arr])=>`<section class="stock-sector"><h3>${esc(sector)}</h3>${arr.map(r=>{const buy=stockLevel(r)===3,tone=stockStrength(r),tr=stockTradeability(r),sz=stockSizing(r);return `<div class="stockrow ${r.light} tone-${tone}${buy?' buy':''}" data-sym="${esc(r.symbol)}"><div class="sr-head"><b class="sr-tic">${esc(r.symbol)}</b><button class="favbtn ${isFavStock(r.symbol)?'on':''}" data-favstock="${esc(r.symbol)}" title="${isFavStock(r.symbol)?'Aus Favoriten/Depot entfernen':'Zu Favoriten/Depot hinzufügen'}">${isFavStock(r.symbol)?'★':'☆'}</button><button class="rowmute" data-mutestock="${esc(r.symbol)}">${isStockMuted(r.symbol)?'🔇':'🔊'}</button></div><div class="sr-name">${esc(r.name)}</div><div class="sr-nums"><span title="Netto-CRV nach geschätzten Kosten.">${num(r.netCRV,1)} : 1</span><i>·</i><span>Score ${num(r.score,1)}</span><i>·</i><span title="Kursweg bis TP2">TP2 ${num(tr.tp2Pct,1)}%</span></div><div class="sr-verdict" title="${tr.ok?'Praktisch ausführbar nach deinen Grenzen.':'Noch nicht praktisch ausführbar: Marktphase, Mindestgewinn oder Mindestkursweg nicht erfüllt.'}">${buy?'🟢 BUY':VERDICT_ICON[r.light]+' '+esc(r.verdict)}</div><div class="sr-px">${stockPx(r.priceUsd,r.priceEur)}${sz?`<small> · TP2 netto ${eur(sz.net2,0)}</small>`:''}</div>${stockPeek(r)}</div>`}).join('')}</section>`).join('');
+  box.querySelectorAll('[data-mutestock]').forEach(b=>b.addEventListener('click',e=>toggleStockMute(b.dataset.mutestock,e)));
+  box.querySelectorAll('[data-favstock]').forEach(b=>b.addEventListener('click',e=>toggleStockFavorite(b.dataset.favstock,e)));
 }
 
 /** Aktien-Alarme: nur bei NEUER Signalstufe, nie bei jedem Refresh. */
@@ -560,12 +560,10 @@ async function scanStocks(force = false) {
   }
 }
 async function searchStockNow() {
-  const raw = ($('#q')?.value || '').trim();
+  const raw = ($('#stockQ')?.value || '').trim();
   if (!raw || stockSearchBusy) return;
-  // Geladene Coin-/Aktientreffer brauchen keinen API-Aufruf.
-  const coin = rows.find((r) => r.pair.toUpperCase().includes(raw.toUpperCase()));
+  // Geladene Aktientreffer brauchen keinen API-Aufruf.
   const stock = stockRows.find((r) => r.symbol.toUpperCase() === raw.toUpperCase() || String(r.name || '').toUpperCase() === raw.toUpperCase());
-  if (coin) { select(coin.pair, true); return; }
   if (stock) { renderStocks(); return; }
   stockSearchBusy = true;
   const st = $('#stockState');
@@ -589,9 +587,18 @@ async function searchStockNow() {
   } finally { stockSearchBusy = false; }
 }
 
+async function scanOpeningMomentum(force = false) {
+  try {
+    const q = new URLSearchParams(); if (S.token) q.set('t', S.token); if (force) q.set('force','1');
+    const res = await fetch('/api/opening?' + q, { cache: 'no-store' });
+    const data = await res.json(); openingMeta = data; openingRows = data.rows || []; renderOpeningPanel(); renderStocks();
+  } catch (e) { openingMeta = { state:'error', phaseLabel:'Alpaca nicht erreichbar', phaseHelp:String(e.message||e) }; renderOpeningPanel(); }
+}
 function setStockPoll() {
   clearInterval(stockTimer);
   stockTimer = setInterval(() => { if (document.visibilityState === 'visible') scanStocks(false); }, 5 * 60_000);
+  clearInterval(openingTimer);
+  openingTimer = setInterval(() => { if (document.visibilityState === 'visible') scanOpeningMomentum(false); }, 60_000);
 }
 
 /* ------------------------------------------------- Reifezeit + Alarmierung
@@ -1041,7 +1048,7 @@ setInterval(() => {
 
 /* ------------------------------------------------------------ Einstellungen */
 function openSettings() {
-  $('#sEquity').value = S.equity; $('#sRisk').value = S.riskPct; $('#sMaxTrade').value = S.maxTradeEur; $('#sMinCrvCoin').value = S.minCrvCoin; $('#sMinCrvStock').value = S.minCrvStock;
+  $('#sEquity').value = S.equity; $('#sRisk').value = S.riskPct; $('#sMaxTrade').value = S.maxTradeEur; $('#sMinCrvCoin').value = S.minCrvCoin; $('#sMinCrvStock').value = S.minCrvStock; $('#sMinNetProfit').value = S.minNetProfitStock; $('#sMinTp2Pct').value = S.minTp2PctStock;
   $('#sDeep').value = S.deep; $('#sCoinCount').value = S.coinCount; $('#sStockCount').value = S.stockCount;
   $('#sWatch').value = S.watch; $('#sToken').value = S.token; $('#sMin').value = S.minQ;
   $('#sZone').checked = S.onlyZone; $('#sTheme').value = S.theme;
@@ -1064,6 +1071,8 @@ function applySettings() {
   S.maxTradeEur = Math.max(100, +$('#sMaxTrade').value || DEFAULTS.maxTradeEur);
   S.minCrvCoin = Math.max(1, +$('#sMinCrvCoin').value || DEFAULTS.minCrvCoin);
   S.minCrvStock = Math.max(1, +$('#sMinCrvStock').value || DEFAULTS.minCrvStock);
+  S.minNetProfitStock = Math.max(0, +$('#sMinNetProfit').value || 0);
+  S.minTp2PctStock = Math.max(0, +$('#sMinTp2Pct').value || 0);
   S.deep = Math.min(30, Math.max(4, +$('#sDeep').value || DEFAULTS.deep));
   S.coinCount = Math.min(50, Math.max(3, +$('#sCoinCount').value || DEFAULTS.coinCount));
   S.stockCount = Math.min(50, Math.max(3, +$('#sStockCount').value || DEFAULTS.stockCount));
@@ -1106,6 +1115,7 @@ document.addEventListener('visibilitychange', () => {
     if (wl === null && $('#wake').classList.contains('on')) keepAwake(true);
     scan();
     scanStocks(false);
+    scanOpeningMomentum(false);
     loadHealth();
   }
 });
@@ -1150,7 +1160,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 /* ------------------------------------------------------------------- Events */
-$('#scan').onclick = () => { scan(true); scanStocks(false); loadHealth(); };
+$('#scan').onclick = () => { scan(true); scanStocks(false); scanOpeningMomentum(true); loadHealth(); };
 $('#sound').onclick = () => {
   S.sound = !S.sound; saveSettings();
   $('#sound').textContent = S.sound ? '🔊' : '🔇';
@@ -1165,10 +1175,12 @@ $('#sReset').onclick = hardReload;
 $('#sCompAll').onclick = () => $$('#sComponents input[data-comp]').forEach((c) => { c.checked = true; });
 $('#sCompElliott').onclick = () => $$('#sComponents input[data-comp]').forEach((c) => { c.checked = c.dataset.comp === 'elliott'; });
 $('#sClose').onclick = () => $('#settings').classList.remove('open');
-$('#q').oninput = () => { render(); renderStocks(); };
-$('#q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); searchStockNow(); } });
-$('#searchGo').onclick = searchStockNow;
-$('#f').onchange = () => { render(); renderStocks(); };
+$('#q').oninput = () => render();
+$('#f').onchange = () => render();
+$('#stockQ').oninput = () => renderStocks();
+$('#stockQ').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); searchStockNow(); } });
+$('#stockSearchGo').onclick = searchStockNow;
+$('#stockF').onchange = () => renderStocks();
 $('#iv').onchange = () => setPoll(+$('#iv').value);
 $('#x').onclick = closeDetail;
 $('#qClose').onclick = () => $('#quotaModal').classList.remove('open');
@@ -1212,6 +1224,7 @@ if ('serviceWorker' in navigator) {
 loadHealth();
 scan(true);
 scanStocks(false);
+scanOpeningMomentum(false);
 setPoll(S.interval);
 setStockPoll();
 setHealthPoll();

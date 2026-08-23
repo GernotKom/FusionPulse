@@ -508,3 +508,15 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 .c-sym{display:flex;align-items:center;gap:3px}.c-sym .favbtn{margin-left:-3px}
 .stockrow .sr-head{justify-content:flex-start}.stockrow .sr-head .rowmute{margin-left:auto}
 @media(max-width:680px){nav input#q{max-width:none}.searchgo{min-width:34px}}
+
+/* ===== v2.5.4: getrennte Suche, Depot/Favoriten, Aktien-Heatmap, Opening Momentum ===== */
+.coinbar,.stocktools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.stocktools{margin:10px 0}.stocktools input{flex:1;min-width:220px}
+.depotstrip{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 10px;margin:8px 0;border:1px solid var(--line);border-radius:10px;background:var(--panel2);font-size:11px;color:var(--dim)}
+.depotstrip>b{color:var(--fg)}.depotchip{border:1px solid var(--line2);background:var(--panel);color:var(--fg);border-radius:999px;padding:4px 8px;font:700 10px ui-monospace,monospace;cursor:pointer}.depotchip:hover{border-color:var(--yellow)}
+.openingpanel{margin:8px 0 12px;padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}
+.ophead{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}.ophead>b{font-size:13px}.ophead>span{color:var(--yellow);font-size:11px}.ophead>small{margin-left:auto;color:var(--dim)}
+.opgrid{display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:6px}.opcard{padding:7px;border:1px solid var(--line);border-radius:9px;background:var(--panel);display:grid;gap:2px;font-size:9px}.opcard b{font:800 12px ui-monospace,monospace}.opcard em{font-style:normal;color:var(--dim)}.opcard.green{border-color:color-mix(in srgb,var(--green) 55%,var(--line))}.opcard.yellow{border-color:color-mix(in srgb,var(--yellow) 55%,var(--line))}
+.stockstage{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(260px,.8fr);gap:12px;align-items:stretch}.stockmapwrap{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:8px;min-height:245px}.stockmapwrap svg{display:block;width:100%;height:215px}.stockmapwrap .dot text{font-size:6px;text-anchor:middle;pointer-events:none;fill:var(--fg);font-weight:800}.stockmapwrap .dot .core{stroke:var(--panel);stroke-width:1.8}.stockmapwrap .light-green .core{fill:var(--green)}.stockmapwrap .light-yellow .core{fill:var(--yellow)}.stockmapwrap .light-red .core{fill:var(--red)}
+.sr-px small{display:block;color:var(--dim);font-size:9px;margin-top:2px}
+@media(max-width:900px){.stockstage{grid-template-columns:1fr}.opgrid{grid-template-columns:repeat(2,minmax(120px,1fr))}.stockmapwrap{min-height:220px}.stockmapwrap svg{height:190px}}

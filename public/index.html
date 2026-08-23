@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 2.5.3</title>
+<title>FusionPulse 2.5.4</title>
 </head>
 <body>
 
@@ -67,13 +67,12 @@
   </aside>
 </div>
 
-<!-- ═══════════════════════════════════════════ Dichte Trefferliste ═══ -->
-<nav>
-  <input id="q" placeholder="Coin oder Aktie suchen…  Enter/🔎" autocomplete="off" spellcheck="false" title="Filtert geladene Coins/Aktien sofort. Enter oder 🔎 lädt eine Aktie direkt über Twelve Data.">
-  <button id="searchGo" class="searchgo" title="Aktie direkt suchen (Ticker oder Firmenname)">🔎</button>
-  <select id="f" title="Ampelfilter (1/2/3/0)">
-    <option value="">Alle</option>
-    <option value="favorites">★ Favoriten</option>
+<!-- ═══════════════════════════════════════════ Coin-Trefferliste ═══ -->
+<nav class="coinbar">
+  <input id="q" placeholder="Coin suchen…" autocomplete="off" spellcheck="false" title="Sucht ausschließlich im Coin-Radar, z. B. BTC, ETH oder SOL.">
+  <select id="f" title="Coin-Filter">
+    <option value="">Alle Coins</option>
+    <option value="favorites">★ Coin-Favoriten</option>
     <option value="green">Handeln</option>
     <option value="yellow">Beobachten</option>
     <option value="red">Rest</option>
@@ -109,7 +108,26 @@
         <span id="stockQuota" class="badge" title="API-Kontingent laut den Antwort-Headern von Twelve Data">Kontingent unbekannt</span>
       </div>
     </div>
-    <div id="stockFocus" class="stockfocus"></div>
+    <div class="stocktools">
+      <input id="stockQ" placeholder="Aktie suchen… Ticker oder Firmenname" autocomplete="off" spellcheck="false" title="Sucht ausschließlich Aktien. Enter oder 🔎 lädt auch Titel außerhalb des Standardradars über Twelve Data.">
+      <button id="stockSearchGo" class="searchgo" title="Aktie direkt suchen">🔎</button>
+      <select id="stockF" title="Aktienfilter">
+        <option value="">Alle Aktien</option>
+        <option value="favorites">★ Favoriten / Depot</option>
+        <option value="momentum">🚀 Opening Momentum</option>
+        <option value="green">Handeln</option>
+        <option value="yellow">Beobachten</option>
+      </select>
+    </div>
+    <div id="depotStrip" class="depotstrip" title="Deine mit ★ markierten Aktien. Damit kannst du dein bestehendes Depot bzw. eine persönliche Watchlist abbilden."></div>
+    <div id="openingPanel" class="openingpanel" title="Premarket-/Opening-Momentum über Alpaca. Im kostenlosen IEX-Feed ist die Live-Abdeckung auf IEX beschränkt; vor 08:00 ET gibt es dort keine Live-Daten."></div>
+    <div class="stockstage">
+      <div id="stockFocus" class="stockfocus"></div>
+      <aside class="stockmapwrap">
+        <div class="maphead"><span>Aktien-Qualität ↑</span><span class="mdim">Handelbarkeit →</span></div>
+        <svg id="stockMap" viewBox="0 0 200 200" title="Aktien-Heatmap: Position = Qualität und Handelbarkeit; Größe = Setup-Stärke; Farbe = Status. Mouseover zeigt Details."></svg>
+      </aside>
+    </div>
     <div id="stockGroups" class="stockgroups"></div>
     <p class="stocknote" id="stockNote">
       Datenquelle: <b>Twelve Data, US-Markt</b>. EUR-Beträge sind mit dem aktuellen EUR/USD-Kurs
@@ -141,6 +159,8 @@
   <label title="Harter Deckel: FusionPulse darf eine kleinere Kaufsumme vorschlagen, aber niemals mehr als diesen Betrag.">Max. Kaufsumme pro Trade (€)<input id="sMaxTrade" type="number" min="100" step="100"></label>
   <label>Mindest-Netto-CRV für Krypto-BUY<select id="sMinCrvCoin"><option value="1.5">1 : 1,5</option><option value="2">1 : 2</option><option value="2.5">1 : 2,5</option><option value="3">1 : 3</option><option value="3.5">1 : 3,5</option><option value="4">1 : 4</option></select></label>
   <label>Mindest-Netto-CRV für Aktien-BUY<select id="sMinCrvStock"><option value="2">1 : 2</option><option value="2.5">1 : 2,5</option><option value="3">1 : 3</option><option value="3.5">1 : 3,5</option><option value="4">1 : 4</option></select></label>
+  <label title="Verhindert rechnerisch gute, aber praktisch zu kleine Trades. Ein BUY wird blockiert, wenn TP2 weniger Netto-Gewinn erwarten lässt.">Minimaler Netto-Gewinn bis TP2 (€)<input id="sMinNetProfit" type="number" min="0" step="25"></label>
+  <label title="Mindestabstand vom Einstieg bis TP2. Zu enge Ziele sind bei manueller Flatex-Ausführung schwer handelbar.">Minimaler Kursweg bis TP2 (%)<input id="sMinTp2Pct" type="number" min="0" max="20" step="0.25"></label>
   <label>Steuersatz für Gewinnschätzung (%) · Österreich KESt = 27,5<input id="sTax" type="number" min="0" max="60" step="0.1"></label>
 
   <h3>Anzeigeumfang</h3>
