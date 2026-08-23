@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v2.3 — Frontend
+   FusionPulse v2.5 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -20,6 +20,9 @@ const saveSettings = () => localStorage.setItem('fp.settings', JSON.stringify(S)
 
 let rows = [];
 let meta = {};
+let stockRows = [];
+let stockMeta = {};
+let stockTimer = null;
 let timer = null;
 let scanning = false;
 let selected = null;        // aktuell fokussiertes Paar
@@ -182,6 +185,7 @@ async function scan(force = false) {
     meta = data;
     track();
     render();
+    renderStocks();
 
     $('#status').textContent = `${data.cached ? 'Cache' : 'Live'} · ${data.deepCount}/${data.universe} Coins · ${data.requests ?? '–'} API-Unterabfragen · ${Math.round(performance.now() - t0)} ms`;
     $('#status').title = 'Live/Cache = Datenquelle des letzten Scans · x/y Coins = tief analysierte gegenüber verfügbare Coins · API-Unterabfragen = Bitpanda-Unterabfragen innerhalb dieses Scans, NICHT dein Cloudflare-Tagesverbrauch · ms = Dauer des Scans.';
@@ -195,6 +199,36 @@ async function scan(force = false) {
     scanning = false;
   }
 }
+
+
+/* -------------------------------------------------------------- Aktienradar */
+function stockSizing(r){
+  const riskEur=S.equity*(S.riskPct/100); if(!r.entryEur||!r.stopEur||r.entryEur<=r.stopEur) return null;
+  const qty=riskEur/(r.entryEur-r.stopEur); return {qty,notional:qty*r.entryEur};
+}
+function renderStocks(){
+  const box=$('#stockGroups'), st=$('#stockState'); if(!box||!st) return;
+  if(!stockMeta.configured){ box.innerHTML=''; st.textContent='TWELVE_API_KEY fehlt'; st.className='badge err'; st.title='CF (Cloudflare) → fusionpulse → Einstellungen → Variablen und Geheimnisse: TWELVE_API_KEY als Geheimnis anlegen.'; return; }
+  st.className='badge ok'; st.textContent=`Live-Feed · ${stockRows.length}/${stockMeta.universe||21} gecacht`;
+  st.title='Twelve Data US-Aktienfeed. Im Free-Modus werden 7 Titel je 5-Minuten-Zyklus aktualisiert; der gesamte 21-Titel-Korb ist nach etwa 15 Minuten einmal erneuert.';
+  const shown=[...stockRows].sort((a,b)=>b.score-a.score).slice(0,S.stockCount);
+  const groups=new Map(); for(const r of shown){ if(!groups.has(r.sector)) groups.set(r.sector,[]); groups.get(r.sector).push(r); }
+  box.innerHTML=[...groups.entries()].map(([sector,arr])=>`<section class="stock-sector"><h3>${sector}</h3>${arr.map(r=>{
+    const sz=stockSizing(r); const buy=r.light==='green'&&r.score>=8&&r.netCRV>3;
+    const px=r.priceEur?eur(r.priceEur,2):'$'+num(r.priceUsd,2);
+    const title=`${r.symbol}: ${r.setup}\nScore ${r.score}/10 · Netto-CRV ${r.netCRV}:1\n5m ${r.ret5}% · 15m ${r.ret15}% · 1h ${r.ret60}% · Rel. Volumen ${r.relVol}×\n${sz?'Kaufsumme nach deinem Risikomodell: '+eur(sz.notional,0):''}\nEntry ≈ ${r.entryEur?eur(r.entryEur,2):'$'+num(r.entryUsd,2)} · Stop ≈ ${r.stopEur?eur(r.stopEur,2):'$'+num(r.stopUsd,2)}\nTP1 ≈ ${r.tp1Eur?eur(r.tp1Eur,2):'$'+num(r.tp1Usd,2)} · TP2 ≈ ${r.tp2Eur?eur(r.tp2Eur,2):'$'+num(r.tp2Usd,2)}\nUS-Feed; EUR nur umgerechnet, nicht Tradegate.`;
+    return `<div class="stockrow ${r.light} ${buy?'buy':''} stocktip" title="${title.replace(/"/g,'&quot;')}"><b>${r.symbol}${buy?'<span class="stockbadge">KAUF?</span>':''}</b><small>${r.setup} · ${px}</small><span class="stockcrv">${r.netCRV}:1</span><span class="stockscore">${r.score.toFixed(1)}</span></div>`;
+  }).join('')}</section>`).join('');
+}
+async function scanStocks(force=false){
+  try{
+    const q=new URLSearchParams(); if(S.token) q.set('t',S.token); if(force) q.set('force','1');
+    const res=await fetch('/api/stocks?'+q); const data=await res.json();
+    if(!res.ok){ if(res.status===429) showQuotaWarning('requests','Twelve Data Aktien-API-Limit erreicht. Aktienradar pausiert; Krypto läuft weiter.'); throw new Error(data.error||`HTTP ${res.status}`); }
+    stockMeta=data; stockRows=data.rows||[]; renderStocks();
+  }catch(e){ const st=$('#stockState'); if(st){ st.textContent='Aktienfeed Fehler'; st.className='badge err'; st.title=String(e.message||e); } }
+}
+function setStockPoll(){ clearInterval(stockTimer); stockTimer=setInterval(()=>{ if(document.visibilityState==='visible') scanStocks(false); },5*60_000); }
 
 /* ------------------------------------------------- Reifezeit + Alarmierung
    Ein Setup, das seit drei Stunden hält, ist eine gespannte Feder.
@@ -584,7 +618,7 @@ function applySettings() {
   S.token = $('#sToken').value.trim();
   S.minQ = +$('#sMin').value || 0;
   S.onlyZone = $('#sZone').checked; S.theme = $('#sTheme').value; S.taxPct = Math.min(60, Math.max(0, +$('#sTax').value || 0)); S.analysisMode = $('#sMode').value;
-  saveSettings(); applyTheme(); $('#settings').classList.remove('open'); scan(true);
+  saveSettings(); applyTheme(); renderStocks(); $('#settings').classList.remove('open'); scan(true);
 }
 
 function applyTheme(){
@@ -606,6 +640,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     if (wl === null && $('#wake').classList.contains('on')) keepAwake(true);
     scan();
+    scanStocks(false);
   }
 });
 
@@ -680,4 +715,6 @@ if ('Notification' in window && Notification.permission === 'default') {
 }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 scan(true);
+scanStocks(false);
 setPoll(S.interval);
+setStockPoll();

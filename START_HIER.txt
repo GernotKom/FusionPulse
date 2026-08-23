@@ -1,16 +1,15 @@
-FusionPulse v2.4.0
-FUSIONPULSE v2 - Kurzanleitung
+FusionPulse v2.5.0 – Update
 
-1. Cloudflare-Konto anlegen (Free reicht zum Testen).
-2. Diesen Ordner in ein neues GitHub-Repository laden.
-3. Cloudflare -> Workers & Pages -> Create application -> Import repository -> Deploy.
-4. Settings -> Variables and Secrets -> Add Secret:
-     FUSION_API_KEY = dein Bitpanda-Fusion-Key (NUR Leserechte)
-     APP_TOKEN      = ein selbst gewaehltes Passwort
-5. Redeploy.
-6. Die *.workers.dev-Adresse am Tablet oeffnen.
-7. Zahnrad -> Token eintragen, Equity und Risiko % setzen -> Uebernehmen.
-8. Browsermenue -> "App installieren".
+GH (GitHub):
+- Dateien/Ordner direkt ins Repository-Root hochladen: public/, src/, package.json, wrangler.jsonc, README.md usw.
+- Keine zusätzliche FusionPulse-Unterebene.
 
-Tasten: Leertaste Scan | / Suche | 1/2/3 Ampelfilter | 0 alle | z nur Zone
-        m Ton | c Order-Plan des besten Setups kopieren | Esc schliessen
+CF (Cloudflare):
+- Build-Stammverzeichnis: /
+- Bestehende FUSION_API_KEY und APP_TOKEN nicht verändern.
+- Für Aktienradar zusätzlich TWELVE_API_KEY als Geheimnis anlegen.
+- Nach Secret-Änderung ggf. unter Bereitstellungen die neueste Version auf 100 % befördern.
+
+PWA:
+- neu laden; Version v2.5.0 prüfen.
+- Aktienradar braucht im Free-Modus bis ca. 15 Minuten, bis alle 21 Titel einmal aktualisiert wurden.

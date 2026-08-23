@@ -16,7 +16,7 @@
 <!-- ══════════════════════════════════════════════════════ Kopfzeile ═══ -->
 <header>
   <div class="hstat">
-    <b id="regime">–</b><small id="appver" class="appver">v2.4.0</small>
+    <b id="regime">–</b><small id="appver" class="appver">v2.5.0</small>
     <small id="status" data-state="busy">Verbinde…</small>
   </div>
 
@@ -80,9 +80,9 @@
   <section id="rest" class="hidden"></section>
 
   <section id="stocks" class="stocks">
-    <div class="stocks-head"><div><h2>Aktienradar</h2><small>Interessante US-Aktien nach Branche</small></div><span id="stockState" class="badge">Datenquelle noch nicht verbunden</span></div>
+    <div class="stocks-head"><div><h2>Aktienradar</h2><small>Interessante US-Aktien nach Branche</small></div><span id="stockState" class="badge" title="Aktienradar-Datenquelle und Aktualisierungsstatus">Aktienradar wird geprüft…</span></div>
     <div id="stockGroups" class="stockgroups"></div>
-    <p class="stocknote">Für echte Intraday-Aktien benötigt FusionPulse eine separate Aktien-Marktdaten-API. Es werden keine Beispieldaten als echte Signale ausgegeben.</p>
+    <p class="stocknote" id="stockNote">US-Marktdaten über Twelve Data. EUR-Werte werden aus USD umgerechnet und sind <b>keine Tradegate-Kurse</b>. Grün ist ein Radar-Kandidat; vor Order bitte den tatsächlichen Tradegate-Kurs prüfen.</p>
   </section>
 
   <p class="legend">
@@ -100,12 +100,12 @@
 
 <div id="settings" class="modal"><article class="settings">
   <button id="sClose" aria-label="Schließen">×</button>
-  <h2>Einstellungen · <span id="settingsVer">v2.4.0</span></h2>
+  <h2>Einstellungen · <span id="settingsVer">v2.5.0</span></h2>
   <label>Konto-Equity (€)<input id="sEquity" type="number" min="100" step="100"></label>
   <label>Risiko pro Trade (%)<input id="sRisk" type="number" min="0.1" max="5" step="0.05"></label>
   <label title="Wie viele Coins der Worker vertieft analysiert. Mehr Coins erzeugen mehr externe API-Abfragen pro Scan.">Tiefen-Scan (Coins tief analysieren, 4–30)<input id="sDeep" type="number" min="4" max="30" step="1"></label>
   <label title="Wie viele Coin-Zeilen maximal im Radar sichtbar sind. Das verändert nur die Anzeige, nicht die Anzahl der API-Abfragen.">Maximal angezeigte Coins<input id="sCoinCount" type="number" min="3" max="50" step="1"></label>
-  <label title="Wie viele Aktien später im Aktienradar angezeigt werden. Wird erst wirksam, sobald eine Aktien-Datenquelle verbunden ist.">Maximal angezeigte Aktien<input id="sStockCount" type="number" min="3" max="50" step="1"></label>
+  <label title="Wie viele der am besten bewerteten Aktien im Radar angezeigt werden. Der Free-Modus aktualisiert die Aktien rotierend, um API-Credits zu sparen.">Maximal angezeigte Aktien<input id="sStockCount" type="number" min="3" max="50" step="1"></label>
   <label>Watchlist (immer mitscannen)<input id="sWatch" placeholder="BTC-EUR,ETH-EUR"></label>
   <label>Mindest-Qualität in der Liste<input id="sMin" type="number" min="0" max="10" step="0.5"></label>
   <label class="row"><input id="sZone" type="checkbox"> Nur Coins mit Preis in der Zone</label>
@@ -118,6 +118,7 @@
     <button class="primary" id="sApply">Übernehmen</button>
     <button id="sExport">Journal als CSV</button>
   </div>
+  <details class="methods"><summary>Aktienradar / Twelve Data</summary><p>Optionaler Aktienfeed über das Cloudflare-Secret <code>TWELVE_API_KEY</code>. Im kostenlosen Modus werden 21 liquide US-Aktien in drei Gruppen rotierend aktualisiert (7 Titel je 5-Minuten-Zyklus). Dadurch bleibt der Verbrauch deutlich unter dem 800-Credits-Tageslimit. EUR-Kurse sind nur USD→EUR-Näherungen und nicht Tradegate.</p></details>
   <details class="methods"><summary>Cloudflare Free-Modus</summary><p>FusionPulse kann Cloudflares kontoweiten Verbrauch ohne zusätzlichen Cloudflare-API-Token nicht exakt auslesen. Die App erkennt aber 429-/Ressourcenfehler und zeigt dann einen Warnhinweis. Die Anzeige „req“ im Scanner sind Bitpanda-Unterabfragen innerhalb eines Scans, nicht dein Cloudflare-Tagesverbrauch.</p></details>
   <small>Alle Werte bleiben lokal auf diesem Gerät. Der API-Key liegt ausschließlich im Worker.</small>
 </article></div>

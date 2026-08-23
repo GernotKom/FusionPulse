@@ -305,3 +305,17 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 .metricbox.negative,.c-r.negative{background:color-mix(in srgb,var(--red) 11%,transparent)!important}
 .c-r.positive,.c-r.wait,.c-r.negative{border-radius:5px;padding:3px 5px}
 #cog{margin-left:0}
+
+
+/* ═════════════════════════════════════════════════ Aktienradar v2.5 ═══ */
+.stock-sector h3{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
+.stockrow{display:grid;grid-template-columns:52px 1fr 48px 66px;align-items:center;gap:7px;border-left:3px solid transparent;padding:7px 6px;border-radius:7px;margin:2px 0}
+.stockrow.green{border-left-color:var(--green);background:color-mix(in srgb,var(--green) 10%,transparent)}
+.stockrow.yellow{border-left-color:var(--yellow);background:color-mix(in srgb,var(--yellow) 8%,transparent)}
+.stockrow.red{border-left-color:var(--red);background:color-mix(in srgb,var(--red) 5%,transparent);opacity:.75}
+.stockrow.buy{animation:buyPulse 1.45s ease-in-out infinite}
+.stockrow b{font-size:12px}.stockrow small{font-size:10px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stockscore{text-align:right;font-family:ui-monospace,monospace;font-weight:800}.stockcrv{text-align:right;font-family:ui-monospace,monospace}
+.stockbadge{display:inline-block;font-size:8.5px;border-radius:999px;padding:2px 5px;margin-left:4px;background:var(--panel);border:1px solid var(--line)}
+.badge.ok{color:var(--green);border-color:color-mix(in srgb,var(--green) 55%,var(--line))}.badge.err{color:var(--red)}
+.stocktip{cursor:help}

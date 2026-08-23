@@ -597,6 +597,64 @@ const json = (o, status = 200, extra = {}) => new Response(JSON.stringify(o), {
   },
 });
 
+
+/* ========================================================================
+   US-Aktienradar — Twelve Data (optional)
+   Free-friendly: 21 liquide Titel, pro 5-Minuten-Slot nur 7 Titel. Damit wird
+   jeder Titel etwa alle 15 Minuten aktualisiert; FX wird 30 Min gecacht.
+   US-Feed, nicht Tradegate. EUR-Werte sind Näherungen via EUR/USD.
+   ======================================================================== */
+const STOCK_UNIVERSE = [
+  ['Technologie','NVDA'],['Technologie','MSFT'],['Technologie','AAPL'],
+  ['Kommunikation','META'],['Kommunikation','GOOGL'],['Kommunikation','NFLX'],
+  ['Konsum','AMZN'],['Konsum','TSLA'],['Konsum','COST'],
+  ['Finanzen','JPM'],['Finanzen','BAC'],['Finanzen','GS'],
+  ['Gesundheit','LLY'],['Gesundheit','UNH'],['Gesundheit','ABBV'],
+  ['Energie','XOM'],['Energie','CVX'],['Energie','COP'],
+  ['Industrie','CAT'],['Industrie','BA'],['Industrie','GE'],
+];
+let stockMemo = { ts:0, rows:[], cycle:-1 };
+let fxMemo = { ts:0, usdPerEur:null };
+
+const emaN = (arr,n) => { if(!arr.length) return 0; const k=2/(n+1); let e=arr[0]; for(const x of arr.slice(1)) e=x*k+e*(1-k); return e; };
+const stockATR = (bars,n=14) => { if(bars.length<2) return 0; const tr=[]; for(let i=1;i<bars.length;i++){ const b=bars[i], p=bars[i-1]; tr.push(Math.max(b.h-b.l,Math.abs(b.h-p.c),Math.abs(b.l-p.c))); } return tr.slice(-n).reduce((a,b)=>a+b,0)/Math.max(1,tr.slice(-n).length); };
+function analyseStock(symbol, sector, vals, usdPerEur){
+  const bars=(vals||[]).map(v=>({c:+v.close,h:+v.high,l:+v.low,o:+v.open,v:+v.volume||0,dt:v.datetime})).filter(b=>Number.isFinite(b.c)).reverse();
+  if(bars.length<24) return null;
+  const cs=bars.map(b=>b.c), vs=bars.map(b=>b.v); const last=bars.at(-1), prev=bars.at(-2);
+  const ema9=emaN(cs.slice(-30),9), ema21=emaN(cs.slice(-40),21), atr=stockATR(bars,14);
+  const ret5=(last.c/prev.c-1)*100, ret15=(last.c/bars.at(-4).c-1)*100, ret60=(last.c/bars.at(-13).c-1)*100;
+  const vbase=vs.slice(-21,-1).reduce((a,b)=>a+b,0)/20 || 1; const relVol=last.v/vbase;
+  let q=5;
+  q += Math.max(-1.3,Math.min(1.3,ret15*1.2));
+  q += Math.max(-1.0,Math.min(1.0,ret60*0.45));
+  q += last.c>ema21 ? .7 : -.7; q += ema9>ema21 ? .6 : -.4; q += Math.max(-.4,Math.min(.9,(relVol-1)*.7));
+  q=Math.max(0,Math.min(10,q));
+  const entry=Math.max(ema9, last.c-0.20*atr), stop=entry-1.25*atr, risk=Math.max(.0001,entry-stop);
+  const tp1=entry+1.7*risk, tp2=entry+3.35*risk; const grossCRV=(tp2-entry)/risk;
+  const costPct=.18; const netCRV=Math.max(0,(grossCRV-(costPct/100*entry/risk))).toFixed(1);
+  const eurFx=usdPerEur ? 1/usdPerEur : null; const e=x=>eurFx?x*eurFx:null;
+  const score=+q.toFixed(1); const light=score>=8 && +netCRV>3 ? 'green' : score>=6.5 ? 'yellow' : 'red';
+  const setup = ema9>ema21 && ret15>0 ? 'Trend / Momentum' : last.c>ema21 ? 'Pullback über EMA21' : 'Beobachten';
+  return {symbol,sector,score,light,setup,priceUsd:last.c,priceEur:e(last.c),entryUsd:entry,entryEur:e(entry),stopUsd:stop,stopEur:e(stop),tp1Usd:tp1,tp1Eur:e(tp1),tp2Usd:tp2,tp2Eur:e(tp2),netCRV:+netCRV,ret5:+ret5.toFixed(2),ret15:+ret15.toFixed(2),ret60:+ret60.toFixed(2),relVol:+relVol.toFixed(2),updated:last.dt, feed:'Twelve Data US', tradegate:false};
+}
+async function twelveJSON(path, params, key){ const u=new URL('https://api.twelvedata.com/'+path); for(const [k,v] of Object.entries(params)) if(v!=null) u.searchParams.set(k,v); u.searchParams.set('apikey',key); const r=await fetch(u); const j=await r.json(); if(!r.ok || j?.status==='error') throw new Error(j?.message || `Twelve Data ${r.status}`); return j; }
+async function getFx(key){ if(fxMemo.usdPerEur && Date.now()-fxMemo.ts<30*60_000) return fxMemo.usdPerEur; try{ const j=await twelveJSON('price',{symbol:'EUR/USD'},key); const x=+j.price; if(x>0){ fxMemo={ts:Date.now(),usdPerEur:x}; return x; } }catch{} return fxMemo.usdPerEur; }
+async function stockSnapshot(env, force=false){
+  if(!env.TWELVE_API_KEY) return {configured:false, rows:[], note:'TWELVE_API_KEY fehlt'};
+  const slot=Math.floor(Date.now()/(5*60_000)); const cycle=slot%3;
+  if(!force && stockMemo.rows.length && stockMemo.cycle===cycle && Date.now()-stockMemo.ts<5*60_000) return {configured:true,cached:true,rows:stockMemo.rows,ts:stockMemo.ts,cycle,universe:STOCK_UNIVERSE.length};
+  const batch=STOCK_UNIVERSE.filter((_,i)=>i%3===cycle); const syms=batch.map(x=>x[1]);
+  const fx=await getFx(env.TWELVE_API_KEY);
+  const j=await twelveJSON('time_series',{symbol:syms.join(','),interval:'5min',outputsize:'40',format:'JSON'},env.TWELVE_API_KEY);
+  const fresh=[];
+  for(const [sector,symbol] of batch){ const src=j[symbol] || (syms.length===1?j:null); const r=analyseStock(symbol,sector,src?.values,fx); if(r) fresh.push(r); }
+  const old=new Map(stockMemo.rows.map(r=>[r.symbol,r])); for(const r of fresh) old.set(r.symbol,r);
+  const rows=[...old.values()].sort((a,b)=>b.score-a.score);
+  stockMemo={ts:Date.now(),rows,cycle};
+  return {configured:true,cached:false,rows,ts:stockMemo.ts,cycle,universe:STOCK_UNIVERSE.length,updatedThisCycle:fresh.length,fxApprox:!!fx,note:'US-Marktdaten; EUR nur umgerechnet, nicht Tradegate'};
+}
+
 function authed(req, url, env) {
   if (!env.APP_TOKEN) return true;                      // kein Token gesetzt → offen
   const t = req.headers.get('x-fp-token') || url.searchParams.get('t');
@@ -610,9 +668,10 @@ export default {
     if (url.pathname === '/api/health') {
       return json({
         ok: true,
-        version: env.APP_VERSION || '2.4.0',
+        version: env.APP_VERSION || '2.5.0',
         configured: !!env.FUSION_API_KEY,
         protected: !!env.APP_TOKEN,
+        stocksConfigured: !!env.TWELVE_API_KEY,
         kv: !!env.SNAP,
         cacheAgeMs: memo.ts ? Date.now() - memo.ts : null,
       });
@@ -621,6 +680,11 @@ export default {
     if (url.pathname.startsWith('/api/')) {
       if (!env.FUSION_API_KEY) return json({ error: 'FUSION_API_KEY fehlt (Secret setzen).' }, 500);
       if (!authed(request, url, env)) return json({ error: 'Nicht autorisiert.' }, 401);
+    }
+
+    if (url.pathname === '/api/stocks') {
+      try { return json(await stockSnapshot(env, url.searchParams.get('force') === '1')); }
+      catch (e) { return json({ error: e.message || String(e) }, /credit|limit|rate/i.test(String(e.message||e)) ? 429 : 502); }
     }
 
     if (url.pathname === '/api/scan') {
