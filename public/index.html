@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 2.5.4</title>
+<title>FusionPulse 2.5.5</title>
 </head>
 <body>
 
@@ -105,7 +105,7 @@
       </div>
       <div class="stockbadges">
         <span id="stockState" class="badge" title="Aktienradar-Datenquelle und Aktualisierungsstatus">Aktienradar wird geprüft…</span>
-        <span id="stockQuota" class="badge" title="API-Kontingent laut den Antwort-Headern von Twelve Data">Kontingent unbekannt</span>
+        <span id="stockQuota" class="badge" title="Nur Twelve-Data-Kontingent für den bestehenden Aktien-Fallback. Alpaca/IEX hat einen eigenen Datenzugang und wird hier nicht mitgezählt.">Twelve Data Fallback · Kontingent unbekannt</span>
       </div>
     </div>
     <div class="stocktools">
@@ -125,7 +125,7 @@
       <div id="stockFocus" class="stockfocus"></div>
       <aside class="stockmapwrap">
         <div class="maphead"><span>Aktien-Qualität ↑</span><span class="mdim">Handelbarkeit →</span></div>
-        <svg id="stockMap" viewBox="0 0 200 200" title="Aktien-Heatmap: Position = Qualität und Handelbarkeit; Größe = Setup-Stärke; Farbe = Status. Mouseover zeigt Details."></svg>
+        <svg id="stockMap" viewBox="0 0 200 200" title="Aktien-Heatmap: Qualität nach oben, Handelbarkeit nach rechts. Farbe = Status, Kreisgröße = Setup-Stärke, Schweif = gespeicherte Entwicklung. Mouseover zeigt Details."></svg>
       </aside>
     </div>
     <div id="stockGroups" class="stockgroups"></div>

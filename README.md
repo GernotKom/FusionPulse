@@ -110,3 +110,12 @@ Beide Werte stammen aus dem Alpaca-Konto. Sie gehören ausschließlich in Cloudf
 v2.5.4 verwendet für den kostenlosen Test ausdrücklich `feed=iex`. IEX ist nur eine einzelne US-Börse. Der kostenlose Livefeed ist daher nicht mit dem vollständigen SIP-Gesamtmarkt gleichzusetzen. Besonders wichtig: IEX hat nur begrenzte Extended-Hours-Zeiten (ca. 08:00–17:00 ET). Der frühe US-Premarket von 04:00–08:00 ET ist damit im Free-Tarif nicht vollständig live abgedeckt. FusionPulse zeigt diese Einschränkung direkt im Opening-Momentum-Fenster an.
 
 Der Worker nutzt für Opening Momentum pro Aktualisierung zwei gebündelte Alpaca-REST-Aufrufe: Multi-Symbol-Snapshots und Multi-Symbol-1-Minuten-Bars. Es werden keine Orders an Alpaca gesendet.
+
+
+## v2.5.5
+- Aktien-Heatmap: schwarzer Flächenfehler behoben; eigene SVG-Styles, klarere Achsen/Farben und Verlaufsschweife.
+- Twelve-Data-Credits werden ausdrücklich als **Fallback-Kontingent** gekennzeichnet und nicht Alpaca zugerechnet.
+- Kaufsumme ist nur bei echter BUY-Freigabe eine Handlungsempfehlung; Beobachten zeigt nur potenzielle Größe, rote Setups keinen Einsatz.
+- Aktien-Fokus zeigt TP1-Netto, TP2-Rest-Netto und Gesamtplan-Netto (Standard: 50 % / 50 %).
+- 120-Minuten-Verlauf auf 8 × 15 Minuten umgestellt und lokal über Reloads gespeichert; auch für Aktien ergänzt.
+- Tooltips/Mouseover für neue Kennzahlen und Historien bleiben verbindlich.
