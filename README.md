@@ -76,3 +76,10 @@ Geräts.
 - Heatmap mit klar getrennten, beschrifteten Kreisen, Qualitätsgröße und 120-Minuten-Bewegungsschweif.
 - 120-Minuten-Signalband, Trendpfeil, BUY-Nähe und „Was hat sich geändert?“.
 - Großes Fokusfenster für die aktuell interessanteste Aktie.
+
+
+## v2.5.3
+- Suche erweitert: geladene Coins/Aktien werden sofort gefiltert; Enter oder 🔎 lädt zusätzliche US-Aktien gezielt über Twelve Data (Ticker, plus lokale Namensauflösung für wichtige Watchlist-Titel).
+- Favoriten für Coins und Aktien (☆/★), lokal im Browser gespeichert; Filter „★ Favoriten“.
+- Favoriten werden in den Listen priorisiert.
+- Twelve-Data-Minutenknappheit/429 erzeugt kein wiederkehrendes großes Popup mehr; der gelbe Status bleibt sichtbar. Große Warnung nur noch bei Tageslimit bzw. fast erreichtem Tageslimit.

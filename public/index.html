@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 2.5.2</title>
+<title>FusionPulse 2.5.3</title>
 </head>
 <body>
 
@@ -69,9 +69,11 @@
 
 <!-- ═══════════════════════════════════════════ Dichte Trefferliste ═══ -->
 <nav>
-  <input id="q" placeholder="Coin oder Aktie suchen…  (/)" autocomplete="off" spellcheck="false" title="Durchsucht Coins sowie Aktien nach Ticker oder Firmenname">
+  <input id="q" placeholder="Coin oder Aktie suchen…  Enter/🔎" autocomplete="off" spellcheck="false" title="Filtert geladene Coins/Aktien sofort. Enter oder 🔎 lädt eine Aktie direkt über Twelve Data.">
+  <button id="searchGo" class="searchgo" title="Aktie direkt suchen (Ticker oder Firmenname)">🔎</button>
   <select id="f" title="Ampelfilter (1/2/3/0)">
     <option value="">Alle</option>
+    <option value="favorites">★ Favoriten</option>
     <option value="green">Handeln</option>
     <option value="yellow">Beobachten</option>
     <option value="red">Rest</option>
@@ -193,7 +195,7 @@
   </div>
 
   <details class="methods"><summary>Verwendete Analysemethoden im Detail</summary><p>Multi-Timeframe 5m/15m/1h aus einem Kerzen-Request · Momentum volatilitätsnormiert · Volumen-z-Score gegen disjunktes Basisfenster · Wilder-ATR · VWAP kurz (24 Bars) und lang (78 Bars) · EMA9/21/50-Staffelung · RSI(14) · relative Stärke vs. BTC · Bollinger-Kompression/Squeeze · Orderbuch-Imbalance, Tiefe, Spread, VWAP-Slippage · Marktbreite über alle gescannten Coins · Strukturziele aus Swing-Hochs · Elliott-Wellen-Heuristik (Impulslänge, Struktur höherer Tiefs, Fibonacci-Nähe des Rücksetzers). Der Analysemodus schaltet Methodengruppen um, die Einzelschalter darüber schalten einzelne Verfahren.</p></details>
-  <details class="methods"><summary>Aktienradar / Twelve Data</summary><p>Optionaler Aktienfeed über das Cloudflare-Secret <code>TWELVE_API_KEY</code>. 21 liquide US-Titel werden in drei Gruppen rotierend aktualisiert (7 Titel je 5-Minuten-Zyklus, 1 Credit je Titel). Firmennamen stammen aus einer lokalen Tabelle bzw. aus den Metadaten der ohnehin abgerufenen Zeitreihe — <b>keine zusätzlichen Requests pro Refresh</b>. EUR-Beträge sind gekennzeichnete USD-Umrechnungen, keine Tradegate-Kurse. Das Kontingent stammt aus den Antwort-Headern <code>api-credits-used</code> / <code>api-credits-left</code>; liefert der Anbieter sie nicht, zeigt FusionPulse „unbekannt“ statt einer Schätzung.</p></details>
+  <details class="methods"><summary>Aktienradar / Twelve Data</summary><p>Optionaler Aktienfeed über das Cloudflare-Secret <code>TWELVE_API_KEY</code>. 21 liquide US-Titel werden in drei Gruppen rotierend aktualisiert; zusätzliche Titel können über Suche (Enter/🔎) gezielt geladen und als Favorit gespeichert werden (7 Titel je 5-Minuten-Zyklus, 1 Credit je Titel). Firmennamen stammen aus einer lokalen Tabelle bzw. aus den Metadaten der ohnehin abgerufenen Zeitreihe — <b>keine zusätzlichen Requests pro Refresh</b>. EUR-Beträge sind gekennzeichnete USD-Umrechnungen, keine Tradegate-Kurse. Das Kontingent stammt aus den Antwort-Headern <code>api-credits-used</code> / <code>api-credits-left</code>; liefert der Anbieter sie nicht, zeigt FusionPulse „unbekannt“ statt einer Schätzung.</p></details>
   <details class="methods"><summary>Cloudflare Free-Modus</summary><p>FusionPulse kann Cloudflares kontoweiten Verbrauch ohne zusätzlichen Cloudflare-API-Token nicht auslesen und zeigt deshalb auch keinen. Erkennbar sind 429- und Ressourcenfehler; in diesem Fall erscheint ein Hinweis. Die Anzeige „API-Unterabfragen“ im Scanner zählt Bitpanda-Unterabfragen innerhalb eines Scans, nicht deinen Cloudflare-Tagesverbrauch.</p></details>
   <small>Alle Werte bleiben lokal auf diesem Gerät. Die API-Keys liegen ausschließlich im Cloudflare Worker.</small>
 </article></div>

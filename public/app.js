@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v2.5.2 — Frontend
+   FusionPulse v2.5.3 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -18,7 +18,7 @@ const DEFAULTS = {
   sound: true, token: '', watch: 'BTC-EUR,ETH-EUR,SOL-EUR', minQ: 0, onlyZone: false,
   theme: 'dark', taxPct: 27.5, analysisMode: 'composite', coinCount: 12, stockCount: 12,
   maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0,
-  mutedPairs: [], mutedStocks: [], components: [...ALL_COMPONENTS], stockSound: true,
+  mutedPairs: [], mutedStocks: [], favoritePairs: [], favoriteStocks: [], components: [...ALL_COMPONENTS], stockSound: true,
 };
 const S = { ...DEFAULTS, ...JSON.parse(localStorage.getItem('fp.settings') || '{}') };
 if (!Array.isArray(S.components) || !S.components.length) S.components = [...ALL_COMPONENTS];
@@ -40,6 +40,7 @@ let showRest = false;
 let ac = null;
 let health = {};
 let quotaShownFor = '';     // verhindert Dauer-Popups für dieselbe Lage
+let stockSearchBusy = false;
 
 const state = new Map();      // pair   -> { light, since, streak, level, … }
 const stockState = new Map(); // symbol -> { light, since, streak, level }
@@ -68,6 +69,21 @@ const mins = (ms) => {
 
 const isMuted = (pair) => (S.mutedPairs || []).includes(pair);
 const isStockMuted = (s) => (S.mutedStocks || []).includes(s);
+const isFavPair = (pair) => (S.favoritePairs || []).includes(pair);
+const isFavStock = (symbol) => (S.favoriteStocks || []).includes(symbol);
+
+function togglePairFavorite(pair, ev) {
+  ev?.stopPropagation();
+  const set = new Set(S.favoritePairs || []);
+  if (set.has(pair)) set.delete(pair); else set.add(pair);
+  S.favoritePairs = [...set]; saveSettings(); render();
+}
+function toggleStockFavorite(symbol, ev) {
+  ev?.stopPropagation();
+  const set = new Set(S.favoriteStocks || []);
+  if (set.has(symbol)) set.delete(symbol); else set.add(symbol);
+  S.favoriteStocks = [...set]; saveSettings(); renderStocks();
+}
 
 function togglePairMute(pair, ev) {
   ev?.stopPropagation();
@@ -230,13 +246,12 @@ function quotaText(q) {
 }
 
 function checkQuotaPopup(q, state) {
+  // v2.5.3: Minutenknappheit/429 bleibt eine kleine gelbe Statusmeldung.
+  // Ein Modal ist nur für das echte Tageslimit bzw. eine einmalige Tageswarnung sinnvoll.
   if (state === 'daylimit') return showQuotaWarning('daylimit');
-  if (state === 'ratelimit') return showQuotaWarning('ratelimit');
   if (!q) return;
   if (q.dayLimit && q.dayCredits >= q.dayLimit * 0.9) return showQuotaWarning('daynear', quotaText(q).long);
-  if (q.creditsLeft != null && q.minuteLimit && q.creditsLeft <= 1) return showQuotaWarning('minutenear', quotaText(q).long);
-  // Lage wieder entspannt → Popup darf bei erneuter Verknappung wieder erscheinen.
-  if (['ratelimit', 'daylimit', 'daynear', 'minutenear'].includes(quotaShownFor)) quotaShownFor = '';
+  if (['daylimit', 'daynear'].includes(quotaShownFor) && (!q.dayLimit || q.dayCredits < q.dayLimit * 0.9)) quotaShownFor = '';
 }
 
 async function loadHealth() {
@@ -439,8 +454,9 @@ function renderStocks() {
   }
 
   const search = ($('#q')?.value || '').trim().toUpperCase();
-  const stockFiltered = stockRows.filter((r) => !search || r.symbol.toUpperCase().includes(search) || String(r.name || '').toUpperCase().includes(search));
-  const shown = [...stockFiltered].sort((a, b) => b.score - a.score).slice(0, S.stockCount);
+  const favOnly = $('#f')?.value === 'favorites';
+  const stockFiltered = stockRows.filter((r) => (!search || r.symbol.toUpperCase().includes(search) || String(r.name || '').toUpperCase().includes(search)) && (!favOnly || isFavStock(r.symbol)));
+  const shown = [...stockFiltered].sort((a, b) => (Number(isFavStock(b.symbol)) - Number(isFavStock(a.symbol))) || b.score - a.score).slice(0, S.stockCount);
   const scanned = stockMeta.scanned ?? stockRows.length;
   const universe = stockMeta.universe || 21;
 
@@ -456,7 +472,7 @@ function renderStocks() {
   const topBox = $('#stockFocus');
   const top = shown[0];
   if (topBox) {
-    if (!top) topBox.innerHTML = search ? `<div class="stockfocus-empty">Keine Aktie passend zu „${esc(search)}“ gefunden.</div>` : '';
+    if (!top) topBox.innerHTML = search ? `<div class="stockfocus-empty">Keine geladene Aktie passend zu „${esc(search)}“. <b>Enter</b> oder 🔎 lädt den Titel direkt über Twelve Data.</div>` : (favOnly ? `<div class="stockfocus-empty">Noch keine Aktien-Favoriten. Mit ☆ neben einem Titel hinzufügen.</div>` : '');
     else {
       const sz = stockSizing(top); const buy = stockLevel(top) === 3;
       topBox.innerHTML = `<div class="stockfocus-card ${top.light}${buy ? ' buy' : ''}"><div class="sf-title"><div><small>TOP-AKTIE AKTUELL</small><h3>${esc(top.name)} <b>${esc(top.symbol)}</b></h3><span>${esc(top.sector)} · Score ${num(top.score,1)} · CRV ${num(top.netCRV,1)}:1</span></div><strong>${VERDICT_ICON[top.light]} ${esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${stockPx(top.priceUsd, top.priceEur)}</b></span><span>Kaufsumme <b>${sz ? eur(sz.notional,0) : '–'}</b></span><span>Entry <b>${stockPx(top.entryUsd, top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd, top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd, top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd, top.tp2Eur)}</b></span></div><small>EUR = Umrechnung, kein Tradegate-Kurs. BUY nur wenn Score ≥ 8 und dein Mindest-CRV ${num(S.minCrvStock,1)}:1 erfüllt ist.</small></div>`;
@@ -475,6 +491,7 @@ function renderStocks() {
         return `<div class="stockrow ${r.light} tone-${tone}${buy ? ' buy' : ''}" data-sym="${esc(r.symbol)}">
           <div class="sr-head">
             <b class="sr-tic" title="Ticker-Symbol an der US-Börse ${esc(r.exchange)}">${esc(r.symbol)}</b>
+            <button class="favbtn ${isFavStock(r.symbol) ? 'on' : ''}" data-favstock="${esc(r.symbol)}" title="${isFavStock(r.symbol) ? 'Aus Favoriten entfernen' : 'Zu Favoriten hinzufügen'}">${isFavStock(r.symbol) ? '★' : '☆'}</button>
             <button class="rowmute" data-mutestock="${esc(r.symbol)}" title="Ton nur für ${esc(r.symbol)} ${isStockMuted(r.symbol) ? 'einschalten' : 'ausschalten'}">${isStockMuted(r.symbol) ? '🔇' : '🔊'}</button>
           </div>
           <div class="sr-name" title="${esc(r.name)} · Branche ${esc(r.sector)}">${esc(r.name)}</div>
@@ -492,6 +509,9 @@ function renderStocks() {
 
   box.querySelectorAll('[data-mutestock]').forEach((b) => {
     b.addEventListener('click', (e) => toggleStockMute(b.dataset.mutestock, e));
+  });
+  box.querySelectorAll('[data-favstock]').forEach((b) => {
+    b.addEventListener('click', (e) => toggleStockFavorite(b.dataset.favstock, e));
   });
 }
 
@@ -539,6 +559,36 @@ async function scanStocks(force = false) {
     if (st) { st.textContent = 'Aktienfeed Fehler'; st.className = 'badge err'; st.title = String(e.message || e); }
   }
 }
+async function searchStockNow() {
+  const raw = ($('#q')?.value || '').trim();
+  if (!raw || stockSearchBusy) return;
+  // Geladene Coin-/Aktientreffer brauchen keinen API-Aufruf.
+  const coin = rows.find((r) => r.pair.toUpperCase().includes(raw.toUpperCase()));
+  const stock = stockRows.find((r) => r.symbol.toUpperCase() === raw.toUpperCase() || String(r.name || '').toUpperCase() === raw.toUpperCase());
+  if (coin) { select(coin.pair, true); return; }
+  if (stock) { renderStocks(); return; }
+  stockSearchBusy = true;
+  const st = $('#stockState');
+  if (st) { st.textContent = 'Suche…'; st.className = 'badge'; }
+  try {
+    const q = new URLSearchParams({ lookup: raw, comp: S.components.join(','), minCrv: S.minCrvStock });
+    if (S.token) q.set('t', S.token);
+    const res = await fetch('/api/stocks?' + q, { cache: 'no-store' });
+    const data = await res.json();
+    stockMeta = { ...stockMeta, ...data };
+    if (data.row) {
+      const m = new Map(stockRows.map((r) => [r.symbol, r])); m.set(data.row.symbol, data.row); stockRows = [...m.values()];
+    }
+    renderQuota(data.quota); checkQuotaPopup(data.quota, data.state);
+    if (!res.ok || data.notFound) {
+      if (st) { st.textContent = data.notFound ? 'Nicht gefunden' : 'Suche fehlgeschlagen'; st.className = 'badge warn'; st.title = data.error || 'Bitte Ticker versuchen.'; }
+    } else if (st) { st.textContent = data.cached ? 'Treffer · Cache' : 'Treffer geladen'; st.className = 'badge ok'; }
+    renderStocks();
+  } catch (e) {
+    if (st) { st.textContent = 'Suche fehlgeschlagen'; st.className = 'badge err'; st.title = String(e.message || e); }
+  } finally { stockSearchBusy = false; }
+}
+
 function setStockPoll() {
   clearInterval(stockTimer);
   stockTimer = setInterval(() => { if (document.visibilityState === 'visible') scanStocks(false); }, 5 * 60_000);
@@ -804,16 +854,17 @@ function visible() {
   const f = $('#f').value;
   return rows.filter((r) =>
     (!q || r.pair.includes(q)) &&
-    (!f || r.light === f) &&
+    (!f || f === 'favorites' ? (f !== 'favorites' || isFavPair(r.pair)) : r.light === f) &&
     r.quality >= S.minQ &&
-    (!S.onlyZone || r.inZone));
+    (!S.onlyZone || r.inZone))
+    .sort((a, b) => (Number(isFavPair(b.pair)) - Number(isFavPair(a.pair))) || b.quality - a.quality);
 }
 
 function rowHtml(r) {
   const s = sizing(r);
   const d = r._delta > 0.4 ? '<i class="up">▲</i>' : r._delta < -0.4 ? '<i class="dn">▼</i>' : '';
   return `
-    <span class="c-sym" title="Coin und aktueller Signalstatus. Pulsierender grüner Rahmen = konkrete Kauf-Freigabe nach den definierten Regeln."><b class="dotc ${r.light}"></b>${sym(r.pair)}${d}<button class="rowmute" data-mute="${r.pair}" title="Ton nur für ${sym(r.pair)} ${isMuted(r.pair) ? 'einschalten' : 'ausschalten'}">${isMuted(r.pair) ? '🔇' : '🔊'}</button></span>
+    <span class="c-sym" title="Coin und aktueller Signalstatus. Pulsierender grüner Rahmen = konkrete Kauf-Freigabe nach den definierten Regeln."><button class="favbtn ${isFavPair(r.pair) ? 'on' : ''}" data-favpair="${r.pair}" title="${isFavPair(r.pair) ? 'Aus Favoriten entfernen' : 'Zu Favoriten hinzufügen'}">${isFavPair(r.pair) ? '★' : '☆'}</button><b class="dotc ${r.light}"></b>${sym(r.pair)}${d}<button class="rowmute" data-mute="${r.pair}" title="Ton nur für ${sym(r.pair)} ${isMuted(r.pair) ? 'einschalten' : 'ausschalten'}">${isMuted(r.pair) ? '🔇' : '🔊'}</button></span>
     <span class="c-spk" title="Kurzfristiger Kursverlauf der letzten Bars, normiert">${spark(r.spark)}${statusBand(r)}<small class="trendarr">${trendArrow(r)}</small></span>
     <span class="c-set" title="${esc(explainSetup(r))}">${r.orderType === 'stop' ? '▲' : '▼'} ${esc(r.setup)}</span>
     <span class="c-age ta" title="Reife: ${r._streak || 1} aufeinanderfolgende Scans haben diesen Signalzustand bestätigt. Die Farbintensität steigt mit der Bestätigungsdauer.">${mins(r._age)}<i class="stk">${r._streak || 1}×</i></span>
@@ -861,6 +912,7 @@ function paint(container, list) {
     el.className = `row ${r.light} tone-${strength}${r.pair === selected ? ' sel' : ''}${r.inZone ? ' inzone' : ''}${ready ? ' buy-ready' : ''}`;
     el.innerHTML = rowHtml(r);
     el.querySelector('[data-mute]')?.addEventListener('click', (e) => togglePairMute(r.pair, e));
+    el.querySelector('[data-favpair]')?.addEventListener('click', (e) => togglePairFavorite(r.pair, e));
     if (container.children[i] !== el) container.insertBefore(el, container.children[i] || null);
   });
   [...container.children].forEach((el) => {
@@ -1114,7 +1166,9 @@ $('#sCompAll').onclick = () => $$('#sComponents input[data-comp]').forEach((c) =
 $('#sCompElliott').onclick = () => $$('#sComponents input[data-comp]').forEach((c) => { c.checked = c.dataset.comp === 'elliott'; });
 $('#sClose').onclick = () => $('#settings').classList.remove('open');
 $('#q').oninput = () => { render(); renderStocks(); };
-$('#f').onchange = render;
+$('#q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); searchStockNow(); } });
+$('#searchGo').onclick = searchStockNow;
+$('#f').onchange = () => { render(); renderStocks(); };
 $('#iv').onchange = () => setPoll(+$('#iv').value);
 $('#x').onclick = closeDetail;
 $('#qClose').onclick = () => $('#quotaModal').classList.remove('open');

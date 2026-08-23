@@ -754,9 +754,32 @@ const STOCK_UNIVERSE = [
   ['Industrie',    'GE',    'GE Aerospace'],
 ];
 const STOCK_NAMES = Object.fromEntries(STOCK_UNIVERSE.map(([, s, n]) => [s, n]));
+const STOCK_SEARCH_CATALOG = [
+  ...STOCK_UNIVERSE,
+  ['Technologie','PLTR','Palantir Technologies Inc.'], ['Technologie','IONQ','IonQ, Inc.'],
+  ['Technologie','RGTI','Rigetti Computing, Inc.'], ['Technologie','MSTR','Strategy Inc.'],
+  ['Gesundheit','MRNA','Moderna, Inc.'], ['Technologie','AMD','Advanced Micro Devices, Inc.'],
+  ['Technologie','AVGO','Broadcom Inc.'], ['Technologie','ARM','Arm Holdings plc'],
+  ['Technologie','SMCI','Super Micro Computer, Inc.'], ['Finanzen','COIN','Coinbase Global, Inc.'],
+  ['Finanzen','HOOD','Robinhood Markets, Inc.'], ['Finanzen','SOFI','SoFi Technologies, Inc.'],
+  ['Technologie','CRWD','CrowdStrike Holdings, Inc.'], ['Technologie','SNOW','Snowflake Inc.'],
+  ['Konsum','UBER','Uber Technologies, Inc.'], ['Industrie','RKLB','Rocket Lab USA, Inc.'],
+  ['Rohstoffe','AEM','Agnico Eagle Mines Limited'], ['Rohstoffe','AG','First Majestic Silver Corp.']
+];
+const STOCK_SEARCH_BY_SYMBOL = new Map(STOCK_SEARCH_CATALOG.map(([sector, symbol, name]) => [symbol, { sector, symbol, name }]));
+function resolveStockQuery(raw) {
+  const q = String(raw || '').trim().toUpperCase();
+  if (!q) return null;
+  if (STOCK_SEARCH_BY_SYMBOL.has(q)) return STOCK_SEARCH_BY_SYMBOL.get(q);
+  const hit = STOCK_SEARCH_CATALOG.find(([sector, symbol, name]) => name.toUpperCase() === q || name.toUpperCase().includes(q));
+  if (hit) return { sector: hit[0], symbol: hit[1], name: hit[2] };
+  if (/^[A-Z][A-Z0-9.\-]{0,7}$/.test(q)) return { sector: 'Watchlist', symbol: q, name: q };
+  return null;
+}
 
 let stockMemo = { ts: 0, rows: [], cycle: -1 };
 let fxMemo = { ts: 0, usdPerEur: null };
+const stockLookupMemo = new Map();
 
 /* --- Kontingent-Überwachung ------------------------------------------------
    Twelve Data liefert bei JEDER Antwort die Header api-credits-used und
@@ -904,6 +927,23 @@ async function getFx(key) {
   return fxMemo.usdPerEur;
 }
 
+async function stockLookup(env, raw, comp, minCrv = 3) {
+  if (!env.TWELVE_API_KEY) return { configured: false, state: 'nokey', error: 'TWELVE_API_KEY fehlt', quota: quotaView(), version: APP_VERSION };
+  const info = resolveStockQuery(raw);
+  if (!info) return { configured: true, state: 'ok', notFound: true, error: 'Kein eindeutiger Treffer. Bitte den Börsen-Ticker eingeben.', quota: quotaView(), version: APP_VERSION };
+  const cached = stockLookupMemo.get(info.symbol);
+  if (cached && Date.now() - cached.ts < 5 * 60_000) return { configured: true, state: 'ok', cached: true, lookup: true, row: cached.row, quota: quotaView(), version: APP_VERSION };
+  const fx = await getFx(env.TWELVE_API_KEY);
+  const j = await twelveJSON('time_series', { symbol: info.symbol, interval: '5min', outputsize: '40', format: 'JSON' }, env.TWELVE_API_KEY, 1);
+  const row = analyseStock(info.symbol, info.sector, j, fx, comp, minCrv);
+  if (!row) return { configured: true, state: 'ok', notFound: true, error: 'Titel gefunden, aber noch nicht genügend 5-Minuten-Daten für die Analyse.', quota: quotaView(), version: APP_VERSION };
+  if ((!row.name || row.name === row.symbol) && info.name) row.name = info.name;
+  stockLookupMemo.set(info.symbol, { ts: Date.now(), row });
+  const old = new Map(stockMemo.rows.map((r) => [r.symbol, r])); old.set(row.symbol, row); stockMemo.rows = [...old.values()].sort((a,b) => b.score-a.score);
+  setApiState('stocks', 'ok');
+  return { configured: true, state: 'ok', cached: false, lookup: true, row, quota: quotaView(), version: APP_VERSION };
+}
+
 async function stockSnapshot(env, force = false, comp, minCrv = 3) {
   if (!env.TWELVE_API_KEY) {
     setApiState('stocks', 'nokey', 'TWELVE_API_KEY fehlt');
@@ -998,6 +1038,8 @@ export default {
       try {
         const comp = parseComponents(url.searchParams.get('comp'));
         const minCrv = Math.max(1, +url.searchParams.get('minCrv') || 3);
+        const lookup = url.searchParams.get('lookup');
+        if (lookup) return json(await stockLookup(env, lookup, comp, minCrv));
         return json(await stockSnapshot(env, url.searchParams.get('force') === '1', comp, minCrv));
       } catch (e) {
         const state = classifyError(e);
