@@ -1,5 +1,7 @@
+import { APP_VERSION } from './version.js';
+
 /* ============================================================================
-   FusionPulse v2 — Cloudflare Worker
+   FusionPulse v2.5.1 — Cloudflare Worker
    Momentum- & Einstiegszonen-Scanner für Bitpanda Fusion (EUR-Paare)
 
    Design-Prinzipien:
@@ -23,6 +25,32 @@ const CFG = {
   IMB_BAND: 0.005,        // ±0,5 % Fenster für Orderbuch-Imbalance
   DEFAULT_FEE: 0.0015,    // Fallback-Taker-Fee falls /account nicht lesbar
 };
+
+/* ------------------------------------------------- Analyse-Komponenten v2.5.1
+   Jede Komponente ist einzeln abschaltbar. Wichtig: eine abgeschaltete
+   Komponente darf NICHT als "negativ ausgefallen" in den Score eingehen.
+   Deshalb wird nicht mit 0 multipliziert, sondern das Gewicht aus der Summe
+   entfernt und der Rest neu normiert (gewichteter Mittelwert statt Summe). */
+const COMPONENTS = ['vwap', 'ema21', 'rs', 'mtf', 'volume', 'book', 'squeeze', 'pullback', 'elliott'];
+const ALL_ON = new Set(COMPONENTS);
+
+/** parts = [[componentKey|null, wert, gewicht], …]; null = immer aktiv. */
+function weighted(parts, on) {
+  let sum = 0, w = 0;
+  for (const [key, val, weight] of parts) {
+    if (key && !on.has(key)) continue;
+    if (!Number.isFinite(val)) continue;
+    sum += val * weight; w += weight;
+  }
+  return w > 0 ? sum / w : 5;              // nichts aktiv → neutral, nicht 0
+}
+
+function parseComponents(raw) {
+  if (raw == null || raw === '') return new Set(ALL_ON);
+  const wanted = String(raw).split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const on = new Set(wanted.filter((x) => COMPONENTS.includes(x)));
+  return on.size ? on : new Set(ALL_ON);   // leere Auswahl wäre unbrauchbar
+}
 
 /* ---------------------------------------------------------------- Utilities */
 const num = (x) => { const n = Number(x); return Number.isFinite(n) ? n : 0; };
@@ -191,8 +219,11 @@ function bookMetrics(book, refNotional = 2000) {
 }
 
 /* ============================================================== Kern-Analyse */
-function analyse({ pair, c5, btc5, book, fee, mode = 'composite' }) {
+function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp }) {
   if (c5.length < 60) return null;
+  // "Nur Elliott" ist ein Modus, kein Sonderfall im Scoring: die Komponenten-
+  // auswahl wird auf Elliott reduziert, alles andere läuft unverändert weiter.
+  const on = mode === 'elliott' ? new Set(['elliott']) : (comp instanceof Set ? comp : new Set(ALL_ON));
 
   // --- Anti-Repaint: laufende Kerze abtrennen -------------------------------
   const live = c5.at(-1);
@@ -306,24 +337,39 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite' }) {
   const flushLeg = ret(10) < -1.6 * atrPct;               // vorheriger Abverkauf
   const reclaimLeg = ret(3) > 0.5 * atrPct;               // aktuelle Gegenbewegung
 
-  if (flushLeg && reclaimLeg && volZ > 0.9) {
+  // v2.5.1: Ein Muster wird nur noch erkannt, wenn seine Komponente aktiv ist.
+  // Abgeschaltete Volumenprüfung heißt "nicht geprüft", nicht "nicht erfüllt".
+  const cVol = on.has('volume');
+  const cEma = on.has('ema21');
+
+  if (flushLeg && reclaimLeg && (!cVol || volZ > 0.9)) {
     regime = 'Reversal'; setup = 'Flush → Reclaim'; orderType = 'limit'; setupFit = 8.2;
-  } else if (b60 > 0.05 && emaDev > -2.6 && emaDev < 0.5 && rsi14 >= 33 && rsi14 <= 64 && momentum < 6.6) {
+  } else if (on.has('pullback') && b60 > 0.05 && (!cEma || (emaDev > -2.6 && emaDev < 0.5))
+             && rsi14 >= 33 && rsi14 <= 64 && momentum < 6.6) {
     regime = 'Pullback'; setup = 'Pullback an VWAP/EMA21'; orderType = 'limit'; setupFit = 9.3;
-  } else if (compression >= 6.0 && volumeAcceleration >= 5.4 && posInRange >= 0.55 && b60 >= -0.15) {
+  } else if (on.has('squeeze') && compression >= 6.0 && (!cVol || volumeAcceleration >= 5.4)
+             && posInRange >= 0.55 && b60 >= -0.15) {
     regime = 'Kompression'; setup = 'Squeeze → Breakout'; orderType = 'stop'; setupFit = 8.9;
-  } else if (wasBelow && vwapDev > 0.1 && vwapDev < 1.6 && volZ > 0.6 && b15 > 0) {
+  } else if (on.has('vwap') && wasBelow && vwapDev > 0.1 && vwapDev < 1.6
+             && (!cVol || volZ > 0.6) && b15 > 0) {
     regime = 'Reclaim'; setup = 'VWAP-Reclaim'; orderType = 'limit'; setupFit = 8.7;
-  } else if (relativeStrength >= 6.9 && Math.abs(btcBias) < 1.0 && b60 >= -0.05 && exhaustion < 6) {
+  } else if (on.has('rs') && relativeStrength >= 6.9 && Math.abs(btcBias) < 1.0
+             && b60 >= -0.05 && exhaustion < 6) {
     regime = 'RS-Rotation'; setup = 'Relative Stärke vs. BTC'; orderType = 'limit'; setupFit = 8.0;
-  } else if (momentum > 6.5 && volumeAcceleration > 5.8 && exhaustion < 6.5) {
+  } else if (on.has('mtf') && momentum > 6.5 && (!cVol || volumeAcceleration > 5.8) && exhaustion < 6.5) {
     regime = 'Expansion'; setup = 'Trend-Expansion (spät)'; orderType = 'stop'; setupFit = 6.2;
   }
 
   // --- Einstiegszone statt Einstiegspunkt ---------------------------------
+  // Rücksetzer-Anker nur aus den aktiven Struktur-Komponenten. Ist keine aktiv,
+  // bleibt der ATR-Rahmen als Anker — nicht ein Wert aus einer abgeschalteten Analyse.
+  const anchorRefs = [];
+  if (on.has('vwap')) anchorRefs.push(vwapS);
+  if (on.has('ema21')) anchorRefs.push(e21);
+  const structAnchor = anchorRefs.length ? maxOf(anchorRefs) : px - 0.45 * A;
   const anchor = orderType === 'stop'
     ? Math.max(hi20, px) + 0.10 * A                     // Ausbruchs-Trigger
-    : Math.max(Math.min(px, Math.max(vwapS, e21)), px - 0.9 * A); // Rücksetzer-Anker
+    : Math.max(Math.min(px, structAnchor), px - 0.9 * A); // Rücksetzer-Anker
   const zoneLow = orderType === 'stop' ? anchor : anchor - 0.30 * A;
   const zoneHigh = orderType === 'stop' ? anchor + 0.25 * A : anchor + 0.30 * A;
   const entry = (zoneLow + zoneHigh) / 2;
@@ -364,11 +410,8 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite' }) {
   // (Signalproblem) oder zu teuer (Ausfuehrungsproblem). Getrennt gemessen
   // wird der interessanteste Fall sichtbar: gutes Setup, schlechte
   // Ausfuehrbarkeit -> auf Spread-Verengung warten statt verwerfen.
-  const quality = clamp(
-    setupFit * 0.30 + mtf * 0.21 + volumeAcceleration * 0.16 +
-    relativeStrength * 0.13 + compression * 0.11 + trendQuality * 0.09 -
-    Math.max(0, exhaustion - 5) * 0.34
-  );
+  // Die Handelbarkeit ist eine Sicherheitsachse (Kosten, Spread, Tiefe) und
+  // bleibt bewusst IMMER aktiv, auch wenn Analysekomponenten abgeschaltet sind.
   const spreadScore = spread == null ? 5.5 : clamp(10 - spread * 1100);
   const executability = clamp(
     liquidity * 0.38 + Math.min(10, costRatio * 2) * 0.30 +
@@ -387,18 +430,51 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite' }) {
   const higherStructure = cl.at(-1) > cl.at(-13) && minOf(rl.slice(-8)) >= minOf(rl.slice(-20,-8));
   const elliott = clamp(5 + Math.min(2.2, impulse*.28) + (higherStructure?1.4:-1.0) + Math.max(0,1.5-fibFit*5) - Math.max(0,exhaustion-6)*.35);
 
-  // --- Scores --------------------------------------------------------------
-  const score = clamp(
-    mtf * 0.18 + setupFit * 0.16 + liquidity * 0.14 + volumeAcceleration * 0.12 +
-    relativeStrength * 0.11 + trendQuality * 0.10 + bookScore * 0.09 +
-    compression * 0.06 + momentum * 0.04 - exhaustion * 0.10
-  );
+  if (mode === 'elliott') {
+    setup = elliott >= 7 ? 'Impulsstruktur (Elliott)'
+          : elliott >= 5 ? 'Korrektur / unklar (Elliott)'
+          : 'Gegen die Wellenstruktur';
+    regime = 'Elliott';
+    setupFit = clamp(elliott);
+  }
+
+  // --- Scores (v2.5.1: gewichteter Mittelwert über AKTIVE Komponenten) ------
+  const quality = clamp(weighted([
+    [null,       setupFit,            0.30],
+    ['mtf',      mtf,                 0.21],
+    ['volume',   volumeAcceleration,  0.16],
+    ['rs',       relativeStrength,    0.13],
+    ['squeeze',  compression,         0.11],
+    ['ema21',    trendQuality,        0.09],
+    ['vwap',     aboveVwap ? 8.5 : 3.5, 0.09],
+    ['elliott',  elliott,             0.12],
+  ], on) - Math.max(0, exhaustion - 5) * 0.34);
+
+  const score = clamp(weighted([
+    ['mtf',      mtf,                 0.18],
+    [null,       setupFit,            0.16],
+    ['book',     liquidity,           0.14],
+    ['volume',   volumeAcceleration,  0.12],
+    ['rs',       relativeStrength,    0.11],
+    ['ema21',    trendQuality,        0.10],
+    ['book',     bookScore,           0.09],
+    ['squeeze',  compression,         0.06],
+    ['mtf',      momentum,            0.04],
+    ['vwap',     aboveVwap ? 8.5 : 3.5, 0.08],
+    ['elliott',  elliott,             0.10],
+  ], on) - exhaustion * 0.10);
+
   // Pre-Move: was passiert BEVOR die Bewegung sichtbar ist
-  const premove = clamp(
-    compression * 0.26 + volumeAcceleration * 0.22 + bookScore * 0.16 +
-    relativeStrength * 0.14 + mtf * 0.12 + liquidity * 0.10 -
-    Math.max(0, momentum - 7.2) * 1.4
-  );
+  const premove = clamp(weighted([
+    ['squeeze',  compression,         0.26],
+    ['volume',   volumeAcceleration,  0.22],
+    ['book',     bookScore,           0.16],
+    ['rs',       relativeStrength,    0.14],
+    ['mtf',      mtf,                 0.12],
+    ['book',     liquidity,           0.10],
+    ['elliott',  elliott,             0.10],
+  ], on) - Math.max(0, momentum - 7.2) * 1.4);
+
   let modeScore = score, modeQuality = quality;
   if (mode === 'elliott') { modeScore = elliott; modeQuality = elliott; }
   else if (mode === 'momentum') { modeScore = clamp(momentum*.38 + volumeAcceleration*.34 + compression*.18 + relativeStrength*.10); modeQuality = modeScore; }
@@ -437,7 +513,7 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite' }) {
   return {
     pair, light, score: r1(modeScore), premove: r1(premove), regime, setup, orderType,
     quality: r1(modeQuality), executability: r1(executability), quadrant, analysisMode: mode,
-    blockers,
+    components: [...on], blockers,
     // Faktoren
     momentum: r1(momentum), volumeAcceleration: r1(volumeAcceleration),
     relativeStrength: r1(relativeStrength), compression: r1(compression),
@@ -514,14 +590,19 @@ async function runScan(key, opts = {}) {
   btcRef = btc5;
 
   // Vorlauf ohne Orderbuch → nur die besten Kandidaten bekommen Tiefe
+  const mode = opts.mode || 'composite';
+  const comp = opts.comp instanceof Set ? opts.comp : new Set(ALL_ON);
+  const useBook = mode !== 'elliott' && comp.has('book');
+
   const pre = chosen.map((p) => {
     const cs = candleMap.get(p);
     if (!cs || cs.length < 60) return null;
-    return analyse({ pair: p, c5: cs, btc5: p === 'BTC-EUR' ? null : btc5, book: null, fee, mode: opts.mode || 'composite' });
+    return analyse({ pair: p, c5: cs, btc5: p === 'BTC-EUR' ? null : btc5, book: null, fee, mode, comp });
   }).filter(Boolean);
 
   pre.sort((a, b) => (b.score + b.premove) - (a.score + a.premove));
-  const bookPairs = pre.slice(0, CFG.BOOK_MAX).map((x) => x.pair);
+  // Orderbuch abgeschaltet → keine Orderbuch-Requests. Spart echte API-Calls.
+  const bookPairs = useBook ? pre.slice(0, CFG.BOOK_MAX).map((x) => x.pair) : [];
 
   const bookMap = new Map();
   await pool(bookPairs, CFG.POOL, async (p) => {
@@ -533,7 +614,7 @@ async function runScan(key, opts = {}) {
   const rows = chosen.map((p) => {
     const cs = candleMap.get(p);
     if (!cs || cs.length < 60) return null;
-    return analyse({ pair: p, c5: cs, btc5: p === 'BTC-EUR' ? null : btc5, book: bookMap.get(p) || null, fee, mode: opts.mode || 'composite' });
+    return analyse({ pair: p, c5: cs, btc5: p === 'BTC-EUR' ? null : btc5, book: bookMap.get(p) || null, fee, mode, comp });
   }).filter(Boolean);
 
   // --- Marktregime: Breadth statt Bauchgefühl -----------------------------
@@ -558,10 +639,14 @@ async function runScan(key, opts = {}) {
   rows.sort((a, b) => rank[b.light] - rank[a.light] || b.score - a.score || b.premove - a.premove);
 
   return {
-    ts: Date.now(),
+    ts: Date.now(), version: APP_VERSION,
     fee, feeBps: Math.round(fee * 10_000),
     universe: eur.length, liquidCount: liquid.length, deepCount: rows.length, bookCount: bookPairs.length,
-    subrequests: c.used, marketRegime, breadth: r2(breadth), btcTrend: r1(btcTrend),
+    // scanned = tatsächlich tief analysiert. Die Anzeigemenge legt das Frontend fest.
+    scanned: rows.length, requested: chosen.length,
+    subrequests: c.used, requests: c.used,        // "requests" = Alias fürs Frontend
+    mode, components: [...comp],
+    marketRegime, breadth: r2(breadth), btcTrend: r1(btcTrend),
     rows,
   };
 }
@@ -569,19 +654,56 @@ async function runScan(key, opts = {}) {
 /* ============================================= Cache + Single-Flight-Schutz */
 let memo = { ts: 0, data: null };
 let inflight = null;
+let inflightSig = '';
 let btcRef = null;        // letzte BTC-Kerzen fuer die RS-Berechnung im Einzelabruf
 
-async function getSnapshot(env, opts, force) {
-  const fresh = Date.now() - memo.ts < CFG.TTL_MS;
-  if (!force && fresh && memo.data) return { ...memo.data, cached: true };
-  if (inflight) return { ...(await inflight), cached: true };
+/* ------------------------------------------------------- Verbindungsstatus
+   Speist die Ampeln „Krypto ● | Aktien ●“ in der Kopfzeile. Es wird nur
+   berichtet, was aus echten Antworten ableitbar ist — nichts geschätzt. */
+const apiState = {
+  crypto: { state: 'unknown', ts: 0, message: null },
+  stocks: { state: 'unknown', ts: 0, message: null },
+};
+function setApiState(which, state, message = null) {
+  apiState[which] = { state, ts: Date.now(), message: message ? String(message).slice(0, 220) : null };
+}
+function classifyError(e) {
+  const m = String(e?.message || e || '');
+  if (/api[_-]?key|unauthor|401|403/i.test(m)) return 'nokey';
+  if (/day|daily|täglich|out of api credits for the day/i.test(m)) return 'daylimit';
+  if (/429|rate|too many|run out of api credits/i.test(m)) return 'ratelimit';
+  return 'error';
+}
 
+/** Der Cache muss die Analyse-Einstellung kennen, sonst liefert ein Moduswechsel
+ *  bis zu 18 s lang noch das Ergebnis der alten Einstellung. */
+function snapSig(opts) {
+  return [
+    opts.mode || 'composite',
+    [...(opts.comp || ALL_ON)].sort().join('.'),
+    opts.deep || '',
+    (opts.watch || []).join('.'),
+  ].join('|');
+}
+
+async function getSnapshot(env, opts, force) {
+  const sig = snapSig(opts);
+  const fresh = memo.sig === sig && Date.now() - memo.ts < CFG.TTL_MS;
+  if (!force && fresh && memo.data) return { ...memo.data, cached: true };
+  if (inflight && inflightSig === sig) return { ...(await inflight), cached: true };
+  if (inflight) { try { await inflight; } catch { /* alte Anfrage egal */ } }
+
+  inflightSig = sig;
   inflight = (async () => {
     try {
       const data = await runScan(env.FUSION_API_KEY, opts);
-      memo = { ts: Date.now(), data };
+      memo = { ts: Date.now(), sig, data };
+      setApiState('crypto', 'ok');
       if (env.SNAP) await env.SNAP.put('snapshot', JSON.stringify(data), { expirationTtl: 60 });
       return data;
+    } catch (e) {
+      setApiState('crypto', classifyError(e), e?.message);
+      throw e;
     } finally { inflight = null; }
   })();
   return { ...(await inflight), cached: false };
@@ -599,60 +721,230 @@ const json = (o, status = 200, extra = {}) => new Response(JSON.stringify(o), {
 
 
 /* ========================================================================
-   US-Aktienradar — Twelve Data (optional)
-   Free-friendly: 21 liquide Titel, pro 5-Minuten-Slot nur 7 Titel. Damit wird
-   jeder Titel etwa alle 15 Minuten aktualisiert; FX wird 30 Min gecacht.
-   US-Feed, nicht Tradegate. EUR-Werte sind Näherungen via EUR/USD.
+   US-Aktienradar — Twelve Data (optional)                       v2.5.1
+   Free-freundlich: 21 liquide Titel, pro 5-Minuten-Slot nur 7 Titel. Damit
+   wird jeder Titel etwa alle 15 Minuten aktualisiert; FX wird 30 Min gecacht.
+   Firmennamen kommen aus einer LOKALEN Tabelle — kein zusätzlicher Request
+   pro Refresh. Liefert time_series ein meta.name mit, wird es bevorzugt.
+   US-Feed, nicht Tradegate. EUR-Werte sind gekennzeichnete Umrechnungen.
    ======================================================================== */
 const STOCK_UNIVERSE = [
-  ['Technologie','NVDA'],['Technologie','MSFT'],['Technologie','AAPL'],
-  ['Kommunikation','META'],['Kommunikation','GOOGL'],['Kommunikation','NFLX'],
-  ['Konsum','AMZN'],['Konsum','TSLA'],['Konsum','COST'],
-  ['Finanzen','JPM'],['Finanzen','BAC'],['Finanzen','GS'],
-  ['Gesundheit','LLY'],['Gesundheit','UNH'],['Gesundheit','ABBV'],
-  ['Energie','XOM'],['Energie','CVX'],['Energie','COP'],
-  ['Industrie','CAT'],['Industrie','BA'],['Industrie','GE'],
+  ['Technologie',  'NVDA',  'NVIDIA Corporation'],
+  ['Technologie',  'MSFT',  'Microsoft Corporation'],
+  ['Technologie',  'AAPL',  'Apple Inc.'],
+  ['Kommunikation','META',  'Meta Platforms, Inc.'],
+  ['Kommunikation','GOOGL', 'Alphabet Inc.'],
+  ['Kommunikation','NFLX',  'Netflix, Inc.'],
+  ['Konsum',       'AMZN',  'Amazon.com, Inc.'],
+  ['Konsum',       'TSLA',  'Tesla, Inc.'],
+  ['Konsum',       'COST',  'Costco Wholesale Corporation'],
+  ['Finanzen',     'JPM',   'JPMorgan Chase & Co.'],
+  ['Finanzen',     'BAC',   'Bank of America Corporation'],
+  ['Finanzen',     'GS',    'The Goldman Sachs Group, Inc.'],
+  ['Gesundheit',   'LLY',   'Eli Lilly and Company'],
+  ['Gesundheit',   'UNH',   'UnitedHealth Group Incorporated'],
+  ['Gesundheit',   'ABBV',  'AbbVie Inc.'],
+  ['Energie',      'XOM',   'Exxon Mobil Corporation'],
+  ['Energie',      'CVX',   'Chevron Corporation'],
+  ['Energie',      'COP',   'ConocoPhillips'],
+  ['Industrie',    'CAT',   'Caterpillar Inc.'],
+  ['Industrie',    'BA',    'The Boeing Company'],
+  ['Industrie',    'GE',    'GE Aerospace'],
 ];
-let stockMemo = { ts:0, rows:[], cycle:-1 };
-let fxMemo = { ts:0, usdPerEur:null };
+const STOCK_NAMES = Object.fromEntries(STOCK_UNIVERSE.map(([, s, n]) => [s, n]));
 
-const emaN = (arr,n) => { if(!arr.length) return 0; const k=2/(n+1); let e=arr[0]; for(const x of arr.slice(1)) e=x*k+e*(1-k); return e; };
-const stockATR = (bars,n=14) => { if(bars.length<2) return 0; const tr=[]; for(let i=1;i<bars.length;i++){ const b=bars[i], p=bars[i-1]; tr.push(Math.max(b.h-b.l,Math.abs(b.h-p.c),Math.abs(b.l-p.c))); } return tr.slice(-n).reduce((a,b)=>a+b,0)/Math.max(1,tr.slice(-n).length); };
-function analyseStock(symbol, sector, vals, usdPerEur){
-  const bars=(vals||[]).map(v=>({c:+v.close,h:+v.high,l:+v.low,o:+v.open,v:+v.volume||0,dt:v.datetime})).filter(b=>Number.isFinite(b.c)).reverse();
-  if(bars.length<24) return null;
-  const cs=bars.map(b=>b.c), vs=bars.map(b=>b.v); const last=bars.at(-1), prev=bars.at(-2);
-  const ema9=emaN(cs.slice(-30),9), ema21=emaN(cs.slice(-40),21), atr=stockATR(bars,14);
-  const ret5=(last.c/prev.c-1)*100, ret15=(last.c/bars.at(-4).c-1)*100, ret60=(last.c/bars.at(-13).c-1)*100;
-  const vbase=vs.slice(-21,-1).reduce((a,b)=>a+b,0)/20 || 1; const relVol=last.v/vbase;
-  let q=5;
-  q += Math.max(-1.3,Math.min(1.3,ret15*1.2));
-  q += Math.max(-1.0,Math.min(1.0,ret60*0.45));
-  q += last.c>ema21 ? .7 : -.7; q += ema9>ema21 ? .6 : -.4; q += Math.max(-.4,Math.min(.9,(relVol-1)*.7));
-  q=Math.max(0,Math.min(10,q));
-  const entry=Math.max(ema9, last.c-0.20*atr), stop=entry-1.25*atr, risk=Math.max(.0001,entry-stop);
-  const tp1=entry+1.7*risk, tp2=entry+3.35*risk; const grossCRV=(tp2-entry)/risk;
-  const costPct=.18; const netCRV=Math.max(0,(grossCRV-(costPct/100*entry/risk))).toFixed(1);
-  const eurFx=usdPerEur ? 1/usdPerEur : null; const e=x=>eurFx?x*eurFx:null;
-  const score=+q.toFixed(1); const light=score>=8 && +netCRV>3 ? 'green' : score>=6.5 ? 'yellow' : 'red';
-  const setup = ema9>ema21 && ret15>0 ? 'Trend / Momentum' : last.c>ema21 ? 'Pullback über EMA21' : 'Beobachten';
-  return {symbol,sector,score,light,setup,priceUsd:last.c,priceEur:e(last.c),entryUsd:entry,entryEur:e(entry),stopUsd:stop,stopEur:e(stop),tp1Usd:tp1,tp1Eur:e(tp1),tp2Usd:tp2,tp2Eur:e(tp2),netCRV:+netCRV,ret5:+ret5.toFixed(2),ret15:+ret15.toFixed(2),ret60:+ret60.toFixed(2),relVol:+relVol.toFixed(2),updated:last.dt, feed:'Twelve Data US', tradegate:false};
+let stockMemo = { ts: 0, rows: [], cycle: -1 };
+let fxMemo = { ts: 0, usdPerEur: null };
+
+/* --- Kontingent-Überwachung ------------------------------------------------
+   Twelve Data liefert bei JEDER Antwort die Header api-credits-used und
+   api-credits-left. Beides wird 1:1 übernommen. Es wird NICHTS erfunden:
+   fehlen die Header, bleibt der Wert null und die UI schreibt „unbekannt“.
+   Das Minutenlimit ergibt sich aus used + left. Der Tagesverbrauch ist eine
+   ausdrücklich als solche gekennzeichnete Eigenzählung dieses Workers. */
+let tdQuota = {
+  creditsUsed: null, creditsLeft: null, minuteLimit: null,
+  dayKey: '', dayCredits: 0, dayLimit: null, dayLimitDerived: false,
+  lastHeaderTs: 0,
+};
+const utcDayKey = () => new Date().toISOString().slice(0, 10);
+function noteQuota(res, creditsSpent) {
+  const day = utcDayKey();
+  if (tdQuota.dayKey !== day) { tdQuota.dayKey = day; tdQuota.dayCredits = 0; }
+  tdQuota.dayCredits += creditsSpent;
+
+  const used = res?.headers?.get?.('api-credits-used');
+  const left = res?.headers?.get?.('api-credits-left');
+  if (used != null && left != null && used !== '' && left !== '') {
+    const u = Number(used), l = Number(left);
+    if (Number.isFinite(u) && Number.isFinite(l)) {
+      tdQuota.creditsUsed = u; tdQuota.creditsLeft = l;
+      tdQuota.minuteLimit = u + l;
+      tdQuota.lastHeaderTs = Date.now();
+      // Abgeleitet, nicht erfunden: 8 Credits/Minute ist der Basic-/Trial-Tarif,
+      // dessen Tageskontingent laut Anbieter 800 Credits beträgt.
+      if (tdQuota.minuteLimit === 8) { tdQuota.dayLimit = 800; tdQuota.dayLimitDerived = true; }
+    }
+  }
 }
-async function twelveJSON(path, params, key){ const u=new URL('https://api.twelvedata.com/'+path); for(const [k,v] of Object.entries(params)) if(v!=null) u.searchParams.set(k,v); u.searchParams.set('apikey',key); const r=await fetch(u); const j=await r.json(); if(!r.ok || j?.status==='error') throw new Error(j?.message || `Twelve Data ${r.status}`); return j; }
-async function getFx(key){ if(fxMemo.usdPerEur && Date.now()-fxMemo.ts<30*60_000) return fxMemo.usdPerEur; try{ const j=await twelveJSON('price',{symbol:'EUR/USD'},key); const x=+j.price; if(x>0){ fxMemo={ts:Date.now(),usdPerEur:x}; return x; } }catch{} return fxMemo.usdPerEur; }
-async function stockSnapshot(env, force=false){
-  if(!env.TWELVE_API_KEY) return {configured:false, rows:[], note:'TWELVE_API_KEY fehlt'};
-  const slot=Math.floor(Date.now()/(5*60_000)); const cycle=slot%3;
-  if(!force && stockMemo.rows.length && stockMemo.cycle===cycle && Date.now()-stockMemo.ts<5*60_000) return {configured:true,cached:true,rows:stockMemo.rows,ts:stockMemo.ts,cycle,universe:STOCK_UNIVERSE.length};
-  const batch=STOCK_UNIVERSE.filter((_,i)=>i%3===cycle); const syms=batch.map(x=>x[1]);
-  const fx=await getFx(env.TWELVE_API_KEY);
-  const j=await twelveJSON('time_series',{symbol:syms.join(','),interval:'5min',outputsize:'40',format:'JSON'},env.TWELVE_API_KEY);
-  const fresh=[];
-  for(const [sector,symbol] of batch){ const src=j[symbol] || (syms.length===1?j:null); const r=analyseStock(symbol,sector,src?.values,fx); if(r) fresh.push(r); }
-  const old=new Map(stockMemo.rows.map(r=>[r.symbol,r])); for(const r of fresh) old.set(r.symbol,r);
-  const rows=[...old.values()].sort((a,b)=>b.score-a.score);
-  stockMemo={ts:Date.now(),rows,cycle};
-  return {configured:true,cached:false,rows,ts:stockMemo.ts,cycle,universe:STOCK_UNIVERSE.length,updatedThisCycle:fresh.length,fxApprox:!!fx,note:'US-Marktdaten; EUR nur umgerechnet, nicht Tradegate'};
+function quotaView() {
+  const fresh = tdQuota.lastHeaderTs && Date.now() - tdQuota.lastHeaderTs < 10 * 60_000;
+  return {
+    creditsUsed: fresh ? tdQuota.creditsUsed : null,
+    creditsLeft: fresh ? tdQuota.creditsLeft : null,
+    minuteLimit: tdQuota.minuteLimit,
+    dayCredits: tdQuota.dayCredits,          // Eigenzählung dieses Workers
+    dayKey: tdQuota.dayKey,
+    dayLimit: tdQuota.dayLimit,              // null = Anbieter liefert das nicht
+    dayLimitDerived: tdQuota.dayLimitDerived,
+    headerAgeMs: tdQuota.lastHeaderTs ? Date.now() - tdQuota.lastHeaderTs : null,
+  };
+}
+
+const emaN = (arr, n) => { if (!arr.length) return 0; const k = 2 / (n + 1); let e = arr[0]; for (const x of arr.slice(1)) e = x * k + e * (1 - k); return e; };
+const stockATR = (bars, n = 14) => { if (bars.length < 2) return 0; const tr = []; for (let i = 1; i < bars.length; i++) { const b = bars[i], p = bars[i - 1]; tr.push(Math.max(b.h - b.l, Math.abs(b.h - p.c), Math.abs(b.l - p.c))); } return tr.slice(-n).reduce((a, b) => a + b, 0) / Math.max(1, tr.slice(-n).length); };
+
+function analyseStock(symbol, sector, src, usdPerEur, comp) {
+  const on = comp instanceof Set ? comp : new Set(ALL_ON);
+  const vals = src?.values;
+  const bars = (vals || []).map((v) => ({ c: +v.close, h: +v.high, l: +v.low, o: +v.open, v: +v.volume || 0, dt: v.datetime }))
+    .filter((b) => Number.isFinite(b.c)).reverse();
+  if (bars.length < 24) return null;
+
+  const cs = bars.map((b) => b.c), vs = bars.map((b) => b.v);
+  const last = bars.at(-1), prev = bars.at(-2);
+  const ema9 = emaN(cs.slice(-30), 9), ema21 = emaN(cs.slice(-40), 21), atr = stockATR(bars, 14);
+
+  // VWAP über die vorliegenden Bars (Typical Price × Volumen)
+  let pv = 0, vv = 0;
+  for (const b of bars.slice(-26)) { const tp = (b.h + b.l + b.c) / 3; pv += tp * b.v; vv += b.v; }
+  const vwap = vv > 0 ? pv / vv : last.c;
+
+  const ret5 = (last.c / prev.c - 1) * 100;
+  const ret15 = (last.c / bars.at(-4).c - 1) * 100;
+  const ret60 = (last.c / bars.at(-13).c - 1) * 100;
+  const vbase = vs.slice(-21, -1).reduce((a, b) => a + b, 0) / 20 || 1;
+  const relVol = last.v / vbase;
+
+  // Gewichteter Mittelwert über AKTIVE Komponenten — abgeschaltet ≠ negativ.
+  const trendScore = 5 + (last.c > ema21 ? 1.9 : -1.9) + (ema9 > ema21 ? 1.5 : -1.1);
+  const momoScore = 5 + Math.max(-3.5, Math.min(3.5, ret15 * 2.2)) + Math.max(-1.5, Math.min(1.5, ret60 * 0.7));
+  const volScore = 5 + Math.max(-2.0, Math.min(3.5, (relVol - 1) * 3.0));
+  const vwapScore = last.c >= vwap ? 7.6 : 3.4;
+  const q = clamp(weighted([
+    ['ema21', trendScore, 0.30],
+    ['mtf',   momoScore,  0.30],
+    ['volume', volScore,  0.20],
+    ['vwap',  vwapScore,  0.20],
+  ], on));
+
+  const entry = Math.max(ema9, last.c - 0.20 * atr);
+  const stop = entry - 1.25 * atr;
+  const risk = Math.max(0.0001, entry - stop);
+  const tp1 = entry + 1.7 * risk, tp2 = entry + 3.35 * risk;
+  const grossCRV = (tp2 - entry) / risk;
+  const costPct = 0.18;                                   // Broker + Spread, konservativ
+  const netCRV = +Math.max(0, grossCRV - (costPct / 100 * entry / risk)).toFixed(1);
+
+  const eurPerUsd = usdPerEur ? 1 / usdPerEur : null;      // usdPerEur = EUR/USD-Kurs
+  const e = (x) => (eurPerUsd ? x * eurPerUsd : null);
+
+  const score = +q.toFixed(1);
+  const light = score >= 8 && netCRV > 3 ? 'green' : score >= 6.5 ? 'yellow' : 'red';
+  const verdict = light === 'green' ? 'Kauf-Setup' : light === 'yellow' ? 'Beobachten' : 'Kein Trade';
+  const setup = ema9 > ema21 && ret15 > 0 ? 'Trend / Momentum'
+    : last.c > ema21 ? 'Pullback über EMA21'
+    : last.c >= vwap ? 'Über VWAP, aber ohne Trend' : 'Unter EMA21 – Schwäche';
+  const trend = ema9 > ema21 ? 'aufwärts' : ema9 < ema21 ? 'abwärts' : 'seitwärts';
+
+  return {
+    symbol, sector, name: src?.meta?.name || STOCK_NAMES[symbol] || symbol,
+    exchange: src?.meta?.exchange || 'US', currency: src?.meta?.currency || 'USD',
+    score, light, verdict, setup, trend,
+    priceUsd: last.c, priceEur: e(last.c),
+    entryUsd: entry, entryEur: e(entry),
+    stopUsd: stop, stopEur: e(stop),
+    tp1Usd: tp1, tp1Eur: e(tp1),
+    tp2Usd: tp2, tp2Eur: e(tp2),
+    zoneLowUsd: entry - 0.25 * atr, zoneHighUsd: entry + 0.25 * atr,
+    zoneLowEur: e(entry - 0.25 * atr), zoneHighEur: e(entry + 0.25 * atr),
+    netCRV, atrPct: +((atr / last.c) * 100).toFixed(2),
+    ret5: +ret5.toFixed(2), ret15: +ret15.toFixed(2), ret60: +ret60.toFixed(2),
+    relVol: +relVol.toFixed(2), vwapUsd: vwap, aboveVwap: last.c >= vwap,
+    updated: last.dt, feed: 'Twelve Data US', tradegate: false,
+    fxUsdPerEur: usdPerEur || null, fxKnown: !!usdPerEur,
+    components: [...on],
+  };
+}
+
+async function twelveJSON(path, params, key, creditsSpent = 1) {
+  const u = new URL('https://api.twelvedata.com/' + path);
+  for (const [k, v] of Object.entries(params)) if (v != null) u.searchParams.set(k, v);
+  u.searchParams.set('apikey', key);
+  const r = await fetch(u);
+  noteQuota(r, creditsSpent);
+  const j = await r.json();
+  if (!r.ok || j?.status === 'error') {
+    const err = new Error(j?.message || `Twelve Data ${r.status}`);
+    err.code = j?.code || r.status;
+    throw err;
+  }
+  return j;
+}
+
+async function getFx(key) {
+  if (fxMemo.usdPerEur && Date.now() - fxMemo.ts < 30 * 60_000) return fxMemo.usdPerEur;
+  try {
+    const j = await twelveJSON('price', { symbol: 'EUR/USD' }, key, 1);
+    const x = +j.price;
+    if (x > 0) { fxMemo = { ts: Date.now(), usdPerEur: x }; return x; }
+  } catch { /* FX optional: ohne Kurs zeigt die UI nur USD */ }
+  return fxMemo.usdPerEur;
+}
+
+async function stockSnapshot(env, force = false, comp) {
+  if (!env.TWELVE_API_KEY) {
+    setApiState('stocks', 'nokey', 'TWELVE_API_KEY fehlt');
+    return { configured: false, state: 'nokey', rows: [], universe: STOCK_UNIVERSE.length,
+             note: 'TWELVE_API_KEY fehlt', quota: quotaView(), version: APP_VERSION };
+  }
+  const slot = Math.floor(Date.now() / (5 * 60_000));
+  const cycle = slot % 3;
+  if (!force && stockMemo.rows.length && stockMemo.cycle === cycle && Date.now() - stockMemo.ts < 5 * 60_000) {
+    return { configured: true, state: 'ok', cached: true,
+             rows: stockMemo.rows, ts: stockMemo.ts, cycle, universe: STOCK_UNIVERSE.length,
+             scanned: stockMemo.rows.length, quota: quotaView(), version: APP_VERSION,
+             note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs' };
+  }
+
+  const batch = STOCK_UNIVERSE.filter((_, i) => i % 3 === cycle);
+  const syms = batch.map((x) => x[1]);
+  const fx = await getFx(env.TWELVE_API_KEY);
+  const j = await twelveJSON(
+    'time_series',
+    { symbol: syms.join(','), interval: '5min', outputsize: '40', format: 'JSON' },
+    env.TWELVE_API_KEY,
+    syms.length,                                   // 1 Credit je Symbol
+  );
+
+  const fresh = [];
+  for (const [sector, symbol] of batch) {
+    const src = j[symbol] || (syms.length === 1 ? j : null);
+    const r = analyseStock(symbol, sector, src, fx, comp);
+    if (r) fresh.push(r);
+  }
+  const old = new Map(stockMemo.rows.map((r) => [r.symbol, r]));
+  for (const r of fresh) old.set(r.symbol, r);
+  const rows = [...old.values()].sort((a, b) => b.score - a.score);
+  stockMemo = { ts: Date.now(), rows, cycle };
+  setApiState('stocks', 'ok');
+
+  return {
+    configured: true, state: 'ok', cached: false, rows, ts: stockMemo.ts, cycle,
+    universe: STOCK_UNIVERSE.length, scanned: rows.length, updatedThisCycle: fresh.length,
+    fxUsdPerEur: fx || null, fxApprox: !!fx, quota: quotaView(), version: APP_VERSION,
+    note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs',
+  };
 }
 
 function authed(req, url, env) {
@@ -666,25 +958,53 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/api/health') {
+      // Version kommt aus dem DEPLOYTEN Code, nicht aus einer CF-Variable.
+      // Weicht env.APP_VERSION ab, ist die Variable veraltet – das wird gemeldet.
+      const cryptoState = !env.FUSION_API_KEY ? 'nokey' : apiState.crypto.state;
+      const stocksState = !env.TWELVE_API_KEY ? 'nokey' : apiState.stocks.state;
       return json({
         ok: true,
-        version: env.APP_VERSION || '2.5.0',
+        version: APP_VERSION,
+        varVersion: env.APP_VERSION || null,
+        versionVarInSync: !env.APP_VERSION || env.APP_VERSION === APP_VERSION,
         configured: !!env.FUSION_API_KEY,
         protected: !!env.APP_TOKEN,
         stocksConfigured: !!env.TWELVE_API_KEY,
         kv: !!env.SNAP,
         cacheAgeMs: memo.ts ? Date.now() - memo.ts : null,
-      });
+        components: COMPONENTS,
+        status: {
+          crypto: { ...apiState.crypto, state: cryptoState },
+          stocks: { ...apiState.stocks, state: stocksState },
+        },
+        quota: { twelveData: quotaView() },
+      }, 200, { 'cache-control': 'no-store' });
     }
 
     if (url.pathname.startsWith('/api/')) {
-      if (!env.FUSION_API_KEY) return json({ error: 'FUSION_API_KEY fehlt (Secret setzen).' }, 500);
       if (!authed(request, url, env)) return json({ error: 'Nicht autorisiert.' }, 401);
+      // Der Fusion-Key wird nur für die Krypto-Routen gebraucht. Der Aktienradar
+      // soll auch dann laufen, wenn nur TWELVE_API_KEY gesetzt ist.
+      const needsFusion = url.pathname === '/api/scan' || url.pathname.startsWith('/api/pair/');
+      if (needsFusion && !env.FUSION_API_KEY) {
+        setApiState('crypto', 'nokey', 'FUSION_API_KEY fehlt');
+        return json({ error: 'FUSION_API_KEY fehlt (Secret in Cloudflare setzen).', state: 'nokey' }, 500);
+      }
     }
 
     if (url.pathname === '/api/stocks') {
-      try { return json(await stockSnapshot(env, url.searchParams.get('force') === '1')); }
-      catch (e) { return json({ error: e.message || String(e) }, /credit|limit|rate/i.test(String(e.message||e)) ? 429 : 502); }
+      try {
+        const comp = parseComponents(url.searchParams.get('comp'));
+        return json(await stockSnapshot(env, url.searchParams.get('force') === '1', comp));
+      } catch (e) {
+        const state = classifyError(e);
+        setApiState('stocks', state, e?.message);
+        return json({
+          error: e.message || String(e), state, configured: !!env.TWELVE_API_KEY,
+          rows: stockMemo.rows, cached: true, universe: STOCK_UNIVERSE.length,
+          quota: quotaView(), version: APP_VERSION,
+        }, state === 'ratelimit' || state === 'daylimit' ? 429 : 502);
+      }
     }
 
     if (url.pathname === '/api/scan') {
@@ -693,11 +1013,14 @@ export default {
           deep: +url.searchParams.get('deep') || CFG.DEEP_MAX,
           watch: (url.searchParams.get('watch') || '').split(',').filter(Boolean),
           mode: ['composite','elliott','momentum','trend','micro'].includes(url.searchParams.get('mode')) ? url.searchParams.get('mode') : 'composite',
+          comp: parseComponents(url.searchParams.get('comp')),
         };
         const force = url.searchParams.get('force') === '1';
         return json(await getSnapshot(env, opts, force));
       } catch (e) {
-        return json({ error: e.message || String(e) }, 502);
+        const state = classifyError(e);
+        return json({ error: e.message || String(e), state, version: APP_VERSION },
+                    state === 'ratelimit' || state === 'daylimit' ? 429 : 502);
       }
     }
 
@@ -715,6 +1038,8 @@ export default {
         const row = analyse({
           pair, c5, btc5: pair === 'BTC-EUR' ? null : btcRef,
           book: bk, fee: memo.data?.fee ?? CFG.DEFAULT_FEE,
+          mode: memo.data?.mode || 'composite',
+          comp: parseComponents(url.searchParams.get('comp')),
         });
         return row ? json({ ts: Date.now(), row }) : json({ error: 'Zu wenig Daten.' }, 404);
       } catch (e) {
