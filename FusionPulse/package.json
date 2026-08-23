@@ -1,0 +1,11 @@
+{
+  "name": "fusionpulse",
+  "version": "2.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": { "wrangler": "^4.30.0" }
+}
