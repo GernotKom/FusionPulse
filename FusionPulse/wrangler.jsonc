@@ -3,14 +3,19 @@
   "name": "fusionpulse",
   "main": "src/worker.js",
   "compatibility_date": "2026-08-23",
-  "assets": { "directory": "./public", "binding": "ASSETS" },
+
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
 
   // Cron wärmt den Snapshot-Cache vor -> erster App-Start ist sofort da.
-  "triggers": { "crons": ["* * * * *"] },
+  "triggers": {
+    "crons": ["* * * * *"]
+  }
 
-  // Schutz vor Runaway-Kosten. Free Plan kann ohnehin nur 50.
-  "limits": { "subrequests": 60 }
-
-  // Optional (persistenter Cache über Isolate-Grenzen hinweg):
-  // "kv_namespaces": [{ "binding": "SNAP", "id": "<KV_NAMESPACE_ID>" }]
+  // Optional später: persistenter Cache über Isolate-Grenzen hinweg.
+  // "kv_namespaces": [
+  //   { "binding": "SNAP", "id": "<KV_NAMESPACE_ID>" }
+  // ]
 }
