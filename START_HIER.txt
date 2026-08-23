@@ -1,3 +1,4 @@
+FusionPulse v2.3.0
 FUSIONPULSE v2 - Kurzanleitung
 
 1. Cloudflare-Konto anlegen (Free reicht zum Testen).

@@ -610,7 +610,7 @@ export default {
     if (url.pathname === '/api/health') {
       return json({
         ok: true,
-        version: env.APP_VERSION || '2.2.0',
+        version: env.APP_VERSION || '2.3.0',
         configured: !!env.FUSION_API_KEY,
         protected: !!env.APP_TOKEN,
         kv: !!env.SNAP,

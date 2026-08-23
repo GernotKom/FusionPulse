@@ -9,7 +9,7 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
 <link rel="stylesheet" href="/style.css">
-<title>FusionPulse 2.2</title>
+<title>FusionPulse 2.3</title>
 </head>
 <body>
 
@@ -18,7 +18,7 @@
   <button id="cog" title="Einstellungen">⚙</button>
 
   <div class="hstat">
-    <b id="regime">–</b>
+    <b id="regime">–</b><small id="appver" class="appver">v2.3.0</small>
     <small id="status" data-state="busy">Verbinde…</small>
   </div>
 
@@ -74,11 +74,17 @@
   <div class="thead">
     <span>Coin</span><span>Verlauf</span><span>Setup</span>
     <span class="ta">Reife</span><span>Zonenlage</span>
-    <span class="ta">R</span><span class="ta">Größe</span><span class="ta">Q·H</span>
+    <span class="ta" title="Netto-CRV: erwarteter Ertrag im Verhältnis zum Risiko nach geschätzten Kosten">CRV</span><span class="ta" title="Kaufsumme in Euro, berechnet aus Konto-Einstellung und Risiko pro Trade">Kaufsumme</span><span class="ta" title="Q = Setup-Qualität, H = Handelbarkeit/Ausführbarkeit">Q·H</span>
   </div>
   <section id="list"></section>
   <button id="more" class="more hidden"></button>
   <section id="rest" class="hidden"></section>
+
+  <section id="stocks" class="stocks">
+    <div class="stocks-head"><div><h2>Aktienradar</h2><small>Interessante US-Aktien nach Branche</small></div><span id="stockState" class="badge">Datenquelle noch nicht verbunden</span></div>
+    <div id="stockGroups" class="stockgroups"></div>
+    <p class="stocknote">Für echte Intraday-Aktien benötigt FusionPulse eine separate Aktien-Marktdaten-API. Es werden keine Beispieldaten als echte Signale ausgegeben.</p>
+  </section>
 
   <p class="legend">
     <kbd>Leer</kbd> Scan · <kbd>/</kbd> Suche · <kbd>j</kbd>/<kbd>k</kbd> blättern ·
@@ -95,14 +101,16 @@
 
 <div id="settings" class="modal"><article class="settings">
   <button id="sClose" aria-label="Schließen">×</button>
-  <h2>Einstellungen · v2.2.0</h2>
+  <h2>Einstellungen · <span id="settingsVer">v2.3.0</span></h2>
   <label>Konto-Equity (€)<input id="sEquity" type="number" min="100" step="100"></label>
   <label>Risiko pro Trade (%)<input id="sRisk" type="number" min="0.1" max="5" step="0.05"></label>
-  <label>Tiefen-Scan (Anzahl Paare, 4–30)<input id="sDeep" type="number" min="4" max="30" step="1"></label>
+  <label title="Wie viele Coins der Worker vertieft analysiert. Mehr Coins erzeugen mehr externe API-Abfragen pro Scan.">Tiefen-Scan (Coins tief analysieren, 4–30)<input id="sDeep" type="number" min="4" max="30" step="1"></label>
+  <label title="Wie viele Coin-Zeilen maximal im Radar sichtbar sind. Das verändert nur die Anzeige, nicht die Anzahl der API-Abfragen.">Maximal angezeigte Coins<input id="sCoinCount" type="number" min="3" max="50" step="1"></label>
+  <label title="Wie viele Aktien später im Aktienradar angezeigt werden. Wird erst wirksam, sobald eine Aktien-Datenquelle verbunden ist.">Maximal angezeigte Aktien<input id="sStockCount" type="number" min="3" max="50" step="1"></label>
   <label>Watchlist (immer mitscannen)<input id="sWatch" placeholder="BTC-EUR,ETH-EUR"></label>
   <label>Mindest-Qualität in der Liste<input id="sMin" type="number" min="0" max="10" step="0.5"></label>
   <label class="row"><input id="sZone" type="checkbox"> Nur Coins mit Preis in der Zone</label>
-  <label>Farbschema<select id="sTheme"><option value="dark">Dunkel</option><option value="light">Hell</option><option value="warm">Hell / warm</option></select></label>
+  <label>Farbschema<select id="sTheme"><option value="dark">Dunkel</option><option value="light">Hell gedämpft</option><option value="warm">Warm gedämpft</option></select></label>
   <label>Analysemodus<select id="sMode"><option value="composite">Kombiniert (empfohlen)</option><option value="elliott">Nur Elliott-Wellen-Heuristik</option><option value="momentum">Momentum + Volumen</option><option value="trend">Trend + VWAP/EMA</option><option value="micro">Orderbuch + Liquidität</option></select></label>
   <label>Steuersatz für Gewinnschätzung (%)<input id="sTax" type="number" min="0" max="60" step="0.1"></label>
   <details class="methods"><summary>Verwendete Analysemethoden</summary><p>Multi-Timeframe 5m/15m/1h · Momentum · Volumen-z-Score · Wilder-ATR · VWAP kurz/lang · EMA21 · RSI · relative Stärke vs. BTC · Kompression/Squeeze · Orderbuch-Imbalance · Spread/Slippage/Liquidität · Marktbreite · Strukturziele · Elliott-Wellen-Heuristik (Pivot-/Impulsstruktur). Der Analysemodus schaltet Methodengruppen um.</p></details>
@@ -111,9 +119,11 @@
     <button class="primary" id="sApply">Übernehmen</button>
     <button id="sExport">Journal als CSV</button>
   </div>
+  <details class="methods"><summary>Cloudflare Free-Modus</summary><p>FusionPulse kann Cloudflares kontoweiten Verbrauch ohne zusätzlichen Cloudflare-API-Token nicht exakt auslesen. Die App erkennt aber 429-/Ressourcenfehler und zeigt dann einen Warnhinweis. Die Anzeige „req“ im Scanner sind Bitpanda-Unterabfragen innerhalb eines Scans, nicht dein Cloudflare-Tagesverbrauch.</p></details>
   <small>Alle Werte bleiben lokal auf diesem Gerät. Der API-Key liegt ausschließlich im Worker.</small>
 </article></div>
 
+<div id="quotaModal" class="modal"><article class="quota"><button id="qClose" aria-label="Schließen">×</button><h2>Cloudflare-Limit erreicht</h2><div id="quotaText"></div><div class="actions"><button id="qDismiss" class="primary">Verstanden</button></div></article></div>
 <script src="/app.js"></script>
 </body>
 </html>

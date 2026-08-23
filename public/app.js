@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v2.2 — Frontend
+   FusionPulse v2.3 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -12,7 +12,7 @@ const $$ = (s) => [...document.querySelectorAll(s)];
 const DEFAULTS = {
   equity: 5000, riskPct: 0.75, interval: 20000, deep: 20,
   sound: true, token: '', watch: 'BTC-EUR,ETH-EUR,SOL-EUR', minQ: 0, onlyZone: false,
-  theme: 'dark', taxPct: 27.5, analysisMode: 'composite',
+  theme: 'dark', taxPct: 27.5, analysisMode: 'composite', coinCount: 12, stockCount: 12,
 };
 const S = { ...DEFAULTS, ...JSON.parse(localStorage.getItem('fp.settings') || '{}') };
 const saveSettings = () => localStorage.setItem('fp.settings', JSON.stringify(S));
@@ -116,6 +116,26 @@ async function copy(text, el) {
 
 /* ------------------------------------------------------------------ Scannen */
 let controller = null;
+function showQuotaWarning(kind, detail = '') {
+  const modal = $('#quotaModal');
+  const text = $('#quotaText');
+  if (!modal || !text) return;
+  const cpu = kind === 'cpu';
+  text.innerHTML = cpu
+    ? `<p><b>Cloudflare Free CPU-Limit wahrscheinlich erreicht.</b></p><p>Der Free-Plan erlaubt nur sehr wenig CPU-Zeit pro Worker-Aufruf. Verringere zuerst den Tiefen-Scan und/oder erhöhe das Scan-Intervall. Falls der Scanner trotzdem regelmäßig abbricht, ist Workers Paid die sinnvolle nächste Stufe.</p><p class="hint">Deine Bitpanda-READ-Berechtigung und deine Secrets bleiben davon unverändert.</p>`
+    : `<p><b>Cloudflare Free Request-Limit / Rate-Limit möglicherweise erreicht.</b></p><p>Der Scanner pausiert nicht automatisch auf einen Bezahlplan. Auf Free schlagen weitere Worker-Aufrufe nach Erreichen des Limits fehl. Der Tageszähler wird von Cloudflare zurückgesetzt.</p><p class="hint">${detail || 'Prüfe Cloudflare → Workers & Pages → fusionpulse → Kennzahlen/Nutzung.'}</p>`;
+  modal.classList.add('open');
+}
+
+async function loadVersion(){
+  try {
+    const q = new URLSearchParams(); if (S.token) q.set('t', S.token);
+    const r = await fetch('/api/health?' + q);
+    const h = await r.json();
+    if (h.version) { $('#appver').textContent = 'v' + h.version; const v=$('#settingsVer'); if(v) v.textContent='v'+h.version; }
+  } catch {}
+}
+
 async function scan(force = false) {
   if (scanning) return;
   scanning = true;
@@ -130,19 +150,19 @@ async function scan(force = false) {
     if (force) q.set('force', '1');
     const res = await fetch(`/api/scan?${q}`, { signal: controller.signal });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (!res.ok) { if (res.status === 429) showQuotaWarning('requests'); throw new Error(data.error || `HTTP ${res.status}`); }
 
     rows = data.rows || [];
     meta = data;
     track();
     render();
 
-    $('#status').textContent = `${data.cached ? 'Cache' : 'Live'} · ${data.deepCount}/${data.universe} Paare · ${Math.round(performance.now() - t0)} ms`;
+    $('#status').textContent = `${data.cached ? 'Cache' : 'Live'} · ${data.deepCount}/${data.universe} Coins · ${data.requests ?? '–'} API-Unterabfragen · ${Math.round(performance.now() - t0)} ms`;
     $('#status').dataset.state = 'ok';
     $('#stamp').textContent = new Date(data.ts).toLocaleTimeString('de-AT');
   } catch (e) {
     if (e.name === 'AbortError') return;
-    $('#status').textContent = `Fehler: ${e.message}`;
+    const msg=String(e.message||e); $('#status').textContent = `Fehler: ${msg}`; if (/cpu|exceeded|resource|1102/i.test(msg)) showQuotaWarning('cpu', msg); else if (/429|too many|limit/i.test(msg)) showQuotaWarning('requests', msg);
     $('#status').dataset.state = 'err';
   } finally {
     scanning = false;
@@ -261,16 +281,24 @@ function renderFocus() {
         ? `<div class="fblock"><b>Nicht handeln, weil:</b> ${r.blockers.join(' · ')}</div>` : ''}
 
       <div class="fgrid">
-        <div><span>Zone</span><b>${num(r.zoneLow)} – ${num(r.zoneHigh)}</b></div>
-        <div><span>Größe</span><b>${s ? eur(s.notional, 0) : '–'}</b></div>
-        <div><span>Netto-CRV</span><b class="${r.netCRV >= 1.8 ? 'good' : 'bad'}">${r.netCRV}:1</b></div>
-        <div><span>Risiko</span><b>${s ? eur(s.realRisk, 0) : '–'} · ${r.riskPct} %</b></div>
-        <div><span>Kosten</span><b class="${r.costRatio < 2.5 ? 'bad' : ''}">${r.costPct} % · ${r.costRatio}×</b></div>
-        <div><span>Slippage</span><b>${r.slipBps != null ? r.slipBps + ' bps' : '–'}</b></div>
-        <div><span>TP2 nach Steuer*</span><b class="good">${s ? eur(s.netProfit2, 0) : '–'}</b></div>
-        <div><span>Analyse</span><b>${r.analysisMode || S.analysisMode}</b></div>
+        <div title="Einstiegszone: Preisbereich, in dem der geplante Kauf sinnvoll wird."><span>Einstiegszone</span><b>${num(r.zoneLow)} – ${num(r.zoneHigh)}</b></div>
+        <div title="Kaufsumme: empfohlener Euro-Einsatz aus Konto-Einstellung, Risikoabstand und Orderbuchtiefe."><span>Kaufsumme</span><b>${s ? eur(s.notional, 0) : '–'}</b></div>
+        <div title="Netto-CRV: erwarteter Ertrag im Verhältnis zum Risiko, nachdem geschätzte Kosten berücksichtigt wurden."><span>Netto-CRV</span><b class="${r.netCRV >= 1.8 ? 'good' : 'bad'}">${r.netCRV}:1</b></div>
+        <div title="Maximaler rechnerischer Verlust bis zum Stop-Loss bei der vorgeschlagenen Positionsgröße."><span>Risiko bis SL</span><b>${s ? eur(s.realRisk, 0) : '–'} · ${r.riskPct} %</b></div>
+        <div title="Geschätzte Handelskosten aus Spread, Slippage und Gebühren; × zeigt die Kosten-Deckung."><span>Kosten</span><b class="${r.costRatio < 2.5 ? 'bad' : ''}">${r.costPct} % · ${r.costRatio}×</b></div>
+        <div title="Slippage: erwartete Preisabweichung durch die Ausführung im Orderbuch, angegeben in Basispunkten."><span>Slippage</span><b>${r.slipBps != null ? r.slipBps + ' bps' : '–'}</b></div>
+        <div title="Geschätzter Gewinn bei TP2 nach dem in den Einstellungen hinterlegten Steuersatz."><span>TP2 Gewinn netto*</span><b class="good">${s ? eur(s.netProfit2, 0) : '–'}</b></div>
+        <div title="Aktivierter Analysemodus. Sicherheitsfilter wie Liquidität, Spread und Kosten bleiben aktiv."><span>Analyse</span><b>${r.analysisMode || S.analysisMode}</b></div>
       </div>
       <small class="taxnote">* Schätzung mit ${S.taxPct}% auf positiven Gewinn; keine Steuerberatung.</small>
+      <div class="tradeplan" title="Konkreter manueller Trade-Plan. TP1 = erster Teilverkauf; TP2 = zweiter/finaler Teilverkauf.">
+        <b>${r.light === 'green' ? 'KAUF-PLAN' : 'BEOBACHTUNGS-PLAN'}</b>
+        <span>Kaufsumme <strong>${s ? eur(s.notional,0) : '–'}</strong></span>
+        <span>Entry <strong>${num(r.entry)}</strong></span>
+        <span>Stop-Loss <strong>${num(r.stop)}</strong></span>
+        <span title="TP1 = Take Profit 1: erster Teilverkauf. Standardmäßig z. B. 50 % der Position, sofern du keine andere Tranchierung festlegst.">TP1 · Teilverkauf 1 <strong>${num(r.tp1)}</strong></span>
+        <span title="TP2 = Take Profit 2: zweiter bzw. finaler Teilverkauf der Restposition.">TP2 · Restverkauf <strong>${num(r.tp2)}</strong></span>
+      </div>
 
       <div class="factions">
         <button class="primary" id="fcopy">⧉ Order-Plan kopieren</button>
@@ -352,7 +380,7 @@ function rowHtml(r) {
 }
 
 function renderList() {
-  const list = visible();
+  const list = visible().slice(0, S.coinCount);
   const hot = list.filter((r) => r.light !== 'red');
   const cold = list.filter((r) => r.light === 'red');
   const fill = Math.max(0, 8 - hot.length);          // Liste auf mind. 8 Zeilen auffuellen
@@ -508,7 +536,7 @@ setInterval(() => {
 /* ------------------------------------------------------------ Einstellungen */
 function openSettings() {
   $('#sEquity').value = S.equity; $('#sRisk').value = S.riskPct;
-  $('#sDeep').value = S.deep; $('#sWatch').value = S.watch;
+  $('#sDeep').value = S.deep; $('#sCoinCount').value = S.coinCount; $('#sStockCount').value = S.stockCount; $('#sWatch').value = S.watch;
   $('#sToken').value = S.token; $('#sMin').value = S.minQ;
   $('#sZone').checked = S.onlyZone; $('#sTheme').value = S.theme; $('#sTax').value = S.taxPct; $('#sMode').value = S.analysisMode;
   $('#settings').classList.add('open');
@@ -516,7 +544,7 @@ function openSettings() {
 function applySettings() {
   S.equity = +$('#sEquity').value || DEFAULTS.equity;
   S.riskPct = +$('#sRisk').value || DEFAULTS.riskPct;
-  S.deep = Math.min(30, Math.max(4, +$('#sDeep').value || DEFAULTS.deep));
+  S.deep = Math.min(30, Math.max(4, +$('#sDeep').value || DEFAULTS.deep)); S.coinCount = Math.min(50, Math.max(3, +$('#sCoinCount').value || DEFAULTS.coinCount)); S.stockCount = Math.min(50, Math.max(3, +$('#sStockCount').value || DEFAULTS.stockCount));
   S.watch = $('#sWatch').value.toUpperCase().replace(/\s/g, '');
   S.token = $('#sToken').value.trim();
   S.minQ = +$('#sMin').value || 0;
@@ -527,7 +555,7 @@ function applySettings() {
 function applyTheme(){
   document.documentElement.dataset.theme = S.theme;
   const mc = document.querySelector('meta[name=theme-color]');
-  if (mc) mc.content = S.theme === 'dark' ? '#080b14' : S.theme === 'warm' ? '#f4efe7' : '#f5f7fb';
+  if (mc) mc.content = S.theme === 'dark' ? '#080b14' : S.theme === 'warm' ? '#d8cdbd' : '#d9dee7';
 }
 
 /* --------------------------------------------------------------- Wake Lock */
@@ -596,7 +624,7 @@ $('#sClose').onclick = () => $('#settings').classList.remove('open');
 $('#q').oninput = render;
 $('#f').onchange = render;
 $('#iv').onchange = () => setPoll(+$('#iv').value);
-$('#x').onclick = closeDetail;
+$('#x').onclick = closeDetail; $('#qClose').onclick = () => $('#quotaModal').classList.remove('open'); $('#qDismiss').onclick = () => $('#quotaModal').classList.remove('open');
 $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeDetail(); };
 $('#more').onclick = () => { showRest = !showRest; renderList(); };
 $('#dcopy').onclick = (e) => {
@@ -607,6 +635,7 @@ document.body.addEventListener('pointerdown', () => audio(), { once: true });
 
 /* --------------------------------------------------------------------- Boot */
 applyTheme();
+loadVersion();
 $('#sound').textContent = S.sound ? '🔊' : '🔇';
 $('#iv').value = String(S.interval);
 if ('Notification' in window && Notification.permission === 'default') {

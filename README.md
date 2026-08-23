@@ -1,6 +1,6 @@
-# FusionPulse v2.2.0
+# FusionPulse v2.3.0
 
-## v2.2.0 – Review-/UX-Update
+## v2.3.0 – Klarheits-/Limits-Update
 - Drei Farbschemata: Dunkel, Hell, Hell/Warm.
 - Analysemodus umschaltbar: Kombiniert, Elliott-Heuristik, Momentum+Volumen, Trend+VWAP/EMA, Orderbuch+Liquidität.
 - Elliott ist bewusst als regelbasierte Heuristik gekennzeichnet, nicht als objektive Wellenzählung.
@@ -70,6 +70,15 @@ Weiter:
 - Hotkeys (j/k blättern, c kopieren, d Details, p anheften), Wake Lock
 - Journal loggt den vollständigen Faktorvektor → nach ~50 Trades per
   Regression auswertbar, welche Faktoren bei *dir* mit Gewinnen korrelieren
+
+## v2.3.0 – Klarheit und Limits
+- „Größe“ heißt jetzt **Kaufsumme**; Fokus-Panel zeigt Kaufsumme, Entry, Stop-Loss, TP1 Teilverkauf 1 und TP2 Restverkauf explizit.
+- Erklärungen per Mouseover/Tooltip für zentrale Kennzahlen.
+- Einstellbare Zahl sichtbarer Coins und vorbereitete Zahl sichtbarer Aktien.
+- Helle Themes deutlich abgedunkelt, damit Ampelfarben unterscheidbar bleiben.
+- Aktienradar-Sektion nach Branchen vorbereitet; sie zeigt bewusst keine Fake-Daten, bis eine separate US-Aktien-Datenquelle angebunden ist.
+- Cloudflare-Free-Limit-Popup bei 429/Ressourcenfehlern; „API-Unterabfragen“ wird ausdrücklich von Cloudflare-Worker-Aufrufen unterschieden.
+- APP_VERSION/Package/Service-Worker auf 2.3.0; keine unsupported `limits`-Sektion in wrangler.jsonc.
 
 ## Deployment
 
