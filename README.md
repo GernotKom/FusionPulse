@@ -1,10 +1,10 @@
-# FusionPulse v2.5.1
+# FusionPulse v2.5.2
 
 Momentum- und Einstiegszonen-Scanner für Bitpanda Fusion (EUR) plus US-Aktienradar
 über Twelve Data. Läuft als PWA auf einem Cloudflare Worker. Keine Order-Automatik —
 FusionPulse liefert Trade-Pläne, ausgeführt wird manuell.
 
-## Was in v2.5.1 neu ist
+## Was in v2.5.2 neu ist
 
 | Bereich | Änderung |
 |---|---|
@@ -18,7 +18,7 @@ FusionPulse liefert Trade-Pläne, ausgeführt wird manuell.
 | Anzeige | „gescannt“ und „angezeigt“ sind überall getrennt ausgewiesen |
 | Themes | Light Mode entweißt: gedämpftes Off-White, kräftigere Signalfarben, stärkere Flächenfüllung |
 | Quota | Twelve-Data-Kontingent aus den Headern `api-credits-used` / `api-credits-left`; ohne Header steht dort „unbekannt“, keine erfundenen Restkontingente |
-| Status | Kopfzeile `Krypto ● | Aktien ● | v2.5.1` mit erklärenden Tooltips |
+| Status | Kopfzeile `Krypto ● | Aktien ● | v2.5.2` mit erklärenden Tooltips |
 | Version | Eine einzige Quelle (`package.json`) → Tab-Titel, UI, Worker, Cache-Name; Mismatch-Banner „Neue FusionPulse-Version verfügbar – neu laden“ |
 
 ## Versionierung
@@ -44,7 +44,7 @@ npx wrangler secret put APP_TOKEN          # optional, schützt /api/*
 npm run deploy
 ```
 
-Danach PWA neu laden. Oben muss `v2.5.1` stehen — an derselben Stelle wie im
+Danach PWA neu laden. Oben muss `v2.5.2` stehen — an derselben Stelle wie im
 Browser-Tab. Erscheint das Update-Banner, hat der Browser noch einen alten
 Service-Worker; „Jetzt neu laden“ räumt Cache und Worker auf.
 
@@ -66,3 +66,13 @@ Alle Keys liegen als Cloudflare-Secrets ausschließlich im Worker. Das Frontend
 kennt sie nicht und ruft nur `/api/*` auf. Ist `APP_TOKEN` gesetzt, muss das
 Token in den Einstellungen hinterlegt werden; es bleibt im `localStorage` des
 Geräts.
+
+
+## Änderungen v2.5.2
+- Max. Kaufsumme pro Trade als harter, variabler Deckel in den Einstellungen.
+- Mindest-Netto-CRV separat für Krypto und Aktien einstellbar.
+- Gemeinsames Suchfeld für Coins, Aktien-Ticker und Firmennamen.
+- Verständliche Meldung bei liquiditätsbedingter Reduktion der Kaufsumme.
+- Heatmap mit klar getrennten, beschrifteten Kreisen, Qualitätsgröße und 120-Minuten-Bewegungsschweif.
+- 120-Minuten-Signalband, Trendpfeil, BUY-Nähe und „Was hat sich geändert?“.
+- Großes Fokusfenster für die aktuell interessanteste Aktie.

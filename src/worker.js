@@ -219,7 +219,7 @@ function bookMetrics(book, refNotional = 2000) {
 }
 
 /* ============================================================== Kern-Analyse */
-function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp }) {
+function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv = 2 }) {
   if (c5.length < 60) return null;
   // "Nur Elliott" ist ein Modus, kein Sonderfall im Scoring: die Komponenten-
   // auswahl wird auf Elliott reduziert, alles andere läuft unverändert weiter.
@@ -485,7 +485,7 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp }) {
   // --- Ampel ---------------------------------------------------------------
   let light = 'red';
   const viable = netCRV >= 1.0 && costRatio >= 2.5 && exhaustion < 8.5;
-  const tradable = viable && netCRV >= 1.8 && (spread == null || spread <= 0.0025)
+  const tradable = viable && netCRV >= minCrv && (spread == null || spread <= 0.0025)
                    && liquidity >= 6 && exhaustion < 7;
   if (modeQuality >= 7.0 && executability >= 6.5 && tradable && (mode === 'elliott' || setupFit >= 7)) light = 'green';
   else if (viable && (modeQuality >= 6.0 || (mode === 'composite' && premove >= 7.2))) light = 'yellow';
@@ -497,7 +497,7 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp }) {
 
   // Warum NICHT grün? (spart im Trade-Alltag enorm viel Grübelzeit)
   const blockers = [];
-  if (netCRV < 1.8) blockers.push(`CRV nur ${r2(netCRV)}`);
+  if (netCRV < minCrv) blockers.push(`CRV ${r2(netCRV)}:1 < Minimum ${r2(minCrv)}:1`);
   if (costRatio < 2.5) blockers.push(`Kosten fressen den Stop (${r1(costRatio)}x)`);
   if (spread != null && spread > 0.0025) blockers.push(`Spread ${(spread * 100).toFixed(2)} %`);
   if (liquidity < 6) blockers.push('dünne Tiefe');
@@ -591,13 +591,14 @@ async function runScan(key, opts = {}) {
 
   // Vorlauf ohne Orderbuch → nur die besten Kandidaten bekommen Tiefe
   const mode = opts.mode || 'composite';
+  const minCrv = Math.max(1, Number(opts.minCrv || 2));
   const comp = opts.comp instanceof Set ? opts.comp : new Set(ALL_ON);
   const useBook = mode !== 'elliott' && comp.has('book');
 
   const pre = chosen.map((p) => {
     const cs = candleMap.get(p);
     if (!cs || cs.length < 60) return null;
-    return analyse({ pair: p, c5: cs, btc5: p === 'BTC-EUR' ? null : btc5, book: null, fee, mode, comp });
+    return analyse({ pair: p, c5: cs, btc5: p === 'BTC-EUR' ? null : btc5, book: null, fee, mode, comp, minCrv });
   }).filter(Boolean);
 
   pre.sort((a, b) => (b.score + b.premove) - (a.score + a.premove));
@@ -614,7 +615,7 @@ async function runScan(key, opts = {}) {
   const rows = chosen.map((p) => {
     const cs = candleMap.get(p);
     if (!cs || cs.length < 60) return null;
-    return analyse({ pair: p, c5: cs, btc5: p === 'BTC-EUR' ? null : btc5, book: bookMap.get(p) || null, fee, mode, comp });
+    return analyse({ pair: p, c5: cs, btc5: p === 'BTC-EUR' ? null : btc5, book: bookMap.get(p) || null, fee, mode, comp, minCrv });
   }).filter(Boolean);
 
   // --- Marktregime: Breadth statt Bauchgefühl -----------------------------
@@ -683,6 +684,7 @@ function snapSig(opts) {
     [...(opts.comp || ALL_ON)].sort().join('.'),
     opts.deep || '',
     (opts.watch || []).join('.'),
+    opts.minCrv || '',
   ].join('|');
 }
 
@@ -804,7 +806,7 @@ function quotaView() {
 const emaN = (arr, n) => { if (!arr.length) return 0; const k = 2 / (n + 1); let e = arr[0]; for (const x of arr.slice(1)) e = x * k + e * (1 - k); return e; };
 const stockATR = (bars, n = 14) => { if (bars.length < 2) return 0; const tr = []; for (let i = 1; i < bars.length; i++) { const b = bars[i], p = bars[i - 1]; tr.push(Math.max(b.h - b.l, Math.abs(b.h - p.c), Math.abs(b.l - p.c))); } return tr.slice(-n).reduce((a, b) => a + b, 0) / Math.max(1, tr.slice(-n).length); };
 
-function analyseStock(symbol, sector, src, usdPerEur, comp) {
+function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
   const on = comp instanceof Set ? comp : new Set(ALL_ON);
   const vals = src?.values;
   const bars = (vals || []).map((v) => ({ c: +v.close, h: +v.high, l: +v.low, o: +v.open, v: +v.volume || 0, dt: v.datetime }))
@@ -850,7 +852,7 @@ function analyseStock(symbol, sector, src, usdPerEur, comp) {
   const e = (x) => (eurPerUsd ? x * eurPerUsd : null);
 
   const score = +q.toFixed(1);
-  const light = score >= 8 && netCRV > 3 ? 'green' : score >= 6.5 ? 'yellow' : 'red';
+  const light = score >= 8 && netCRV >= minCrv ? 'green' : score >= 6.5 ? 'yellow' : 'red';
   const verdict = light === 'green' ? 'Kauf-Setup' : light === 'yellow' ? 'Beobachten' : 'Kein Trade';
   const setup = ema9 > ema21 && ret15 > 0 ? 'Trend / Momentum'
     : last.c > ema21 ? 'Pullback über EMA21'
@@ -902,7 +904,7 @@ async function getFx(key) {
   return fxMemo.usdPerEur;
 }
 
-async function stockSnapshot(env, force = false, comp) {
+async function stockSnapshot(env, force = false, comp, minCrv = 3) {
   if (!env.TWELVE_API_KEY) {
     setApiState('stocks', 'nokey', 'TWELVE_API_KEY fehlt');
     return { configured: false, state: 'nokey', rows: [], universe: STOCK_UNIVERSE.length,
@@ -930,7 +932,7 @@ async function stockSnapshot(env, force = false, comp) {
   const fresh = [];
   for (const [sector, symbol] of batch) {
     const src = j[symbol] || (syms.length === 1 ? j : null);
-    const r = analyseStock(symbol, sector, src, fx, comp);
+    const r = analyseStock(symbol, sector, src, fx, comp, minCrv);
     if (r) fresh.push(r);
   }
   const old = new Map(stockMemo.rows.map((r) => [r.symbol, r]));
@@ -995,7 +997,8 @@ export default {
     if (url.pathname === '/api/stocks') {
       try {
         const comp = parseComponents(url.searchParams.get('comp'));
-        return json(await stockSnapshot(env, url.searchParams.get('force') === '1', comp));
+        const minCrv = Math.max(1, +url.searchParams.get('minCrv') || 3);
+        return json(await stockSnapshot(env, url.searchParams.get('force') === '1', comp, minCrv));
       } catch (e) {
         const state = classifyError(e);
         setApiState('stocks', state, e?.message);
@@ -1014,6 +1017,7 @@ export default {
           watch: (url.searchParams.get('watch') || '').split(',').filter(Boolean),
           mode: ['composite','elliott','momentum','trend','micro'].includes(url.searchParams.get('mode')) ? url.searchParams.get('mode') : 'composite',
           comp: parseComponents(url.searchParams.get('comp')),
+          minCrv: Math.max(1, +url.searchParams.get('minCrv') || 2),
         };
         const force = url.searchParams.get('force') === '1';
         return json(await getSnapshot(env, opts, force));
@@ -1039,7 +1043,7 @@ export default {
           pair, c5, btc5: pair === 'BTC-EUR' ? null : btcRef,
           book: bk, fee: memo.data?.fee ?? CFG.DEFAULT_FEE,
           mode: memo.data?.mode || 'composite',
-          comp: parseComponents(url.searchParams.get('comp')),
+          comp: parseComponents(url.searchParams.get('comp')), minCrv: Math.max(1, +url.searchParams.get('minCrv') || 2),
         });
         return row ? json({ ts: Date.now(), row }) : json({ error: 'Zu wenig Daten.' }, 404);
       } catch (e) {

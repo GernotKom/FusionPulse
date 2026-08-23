@@ -108,13 +108,16 @@ header{
 #map .quad{opacity:.5}
 #map .qa{fill:#13cf8b1c} #map .qb{fill:#f2c0150f} #map .qc{fill:#5b8cff0d}
 #map .ax{stroke:var(--line2);stroke-width:1;stroke-dasharray:3 3}
-#map .dot circle{fill:var(--dim2);transition:r .25s, fill .25s;cursor:pointer}
-#map .dot text{fill:var(--fg);font-size:9px;text-anchor:middle;font-weight:700;pointer-events:none}
-#map .q-handeln circle{fill:var(--green)}
-#map .q-blockiert circle{fill:var(--yellow)}
-#map .q-liquide circle{fill:#43597f}
-#map .dot.sel circle{stroke:#fff;stroke-width:2;fill:#fff}
-#map .dot.sel text{fill:#fff}
+#map .dot{cursor:pointer}
+#map .dot .hit{fill:transparent;stroke:none}
+#map .dot .core{fill:var(--dim2);stroke:#0a0f18;stroke-width:1.7;paint-order:stroke;transition:r .25s,fill .25s}
+#map .dot text{fill:#fff;font-size:5.8px;text-anchor:middle;font-weight:850;pointer-events:none;paint-order:stroke;stroke:#08101a;stroke-width:1.35px}
+#map .dot.light-green .core{fill:var(--green)} #map .dot.light-yellow .core{fill:var(--yellow)} #map .dot.light-red .core{fill:#52647d}
+#map .dot.sel .core{stroke:#fff;stroke-width:3}
+#map .trail{fill:none;stroke-width:1.35;stroke-linecap:round;stroke-linejoin:round;opacity:.28;stroke:#7f91aa}
+#map .trail.green{stroke:var(--green);opacity:.48} #map .trail.yellow{stroke:var(--yellow);opacity:.40}
+#map .dot.buy-ready .core{animation:mapbuy 1.25s ease-in-out infinite}
+@keyframes mapbuy{50%{stroke-width:4;filter:drop-shadow(0 0 5px var(--green))}}
 .maplegend{display:flex;flex-direction:column;gap:3px;margin-top:8px;font-size:9.5px;color:var(--dim)}
 .maplegend span{display:flex;align-items:center;gap:5px}
 .maplegend i{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
@@ -488,3 +491,11 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
   .complist{grid-template-columns:1fr}
   .updatebar{font-size:11.5px;padding:8px 10px}
 }
+
+
+/* v2.5.2 — 120-Minuten-Verlauf, gemeinsame Suche, Aktienfokus */
+.histband{display:inline-flex;gap:2px;vertical-align:middle;margin:3px 4px 0 0}.histband .hb{width:13px;height:5px;border-radius:2px;background:var(--line2);display:block}.histband .hb.green{background:var(--green)}.histband .hb.yellow{background:var(--yellow)}.histband .hb.red{background:var(--red)}.trendarr{font-size:11px;font-weight:900;color:var(--fg)}
+.insightbar{display:grid;grid-template-columns:1fr .55fr 1.45fr;gap:8px;margin:8px 0 10px}.insightbar>div{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:7px 9px;min-width:0}.insightbar span{display:block;color:var(--dim);font-size:9px;text-transform:uppercase;letter-spacing:.45px;margin-bottom:3px}.insightbar b{font-size:11px;line-height:1.25}.insightbar .histband .hb{width:16px;height:6px}
+.stockfocus{margin:10px 0 14px}.stockfocus-card{border:1px solid var(--line);border-radius:14px;background:var(--panel2);padding:13px;box-shadow:0 8px 24px #0002}.stockfocus-card.green{border-color:color-mix(in srgb,var(--green) 55%,var(--line))}.stockfocus-card.buy{box-shadow:0 0 0 1px var(--green),0 8px 30px #0003}.sf-title{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.sf-title small{color:var(--dim);letter-spacing:.7px}.sf-title h3{font-size:20px;margin:3px 0}.sf-title h3 b{font-family:ui-monospace,monospace;color:var(--dim)}.sf-title>strong{font-size:12px;white-space:nowrap}.sf-grid{display:grid;grid-template-columns:repeat(3,minmax(130px,1fr));gap:7px;margin:10px 0}.sf-grid span{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px;font-size:9px;color:var(--dim)}.sf-grid b{display:block;color:var(--fg);font-size:12px;margin-top:2px}.stockfocus-empty{padding:12px;border:1px dashed var(--line2);border-radius:10px;color:var(--dim)}
+.fwarn{line-height:1.35}.fwarn span{text-decoration:underline dotted;cursor:help}
+@media(max-width:760px){.insightbar{grid-template-columns:1fr 1fr}.insightbar>div:last-child{grid-column:1/-1}.sf-grid{grid-template-columns:repeat(2,minmax(120px,1fr))}.sf-title{flex-direction:column}.histband .hb{width:10px}}

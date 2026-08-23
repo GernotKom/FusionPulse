@@ -7,7 +7,7 @@
 
   // Nur Diagnose. Die verbindliche Version steht in src/version.js und wird
   // von scripts/sync-version.mjs aus package.json hierher gespiegelt.
-  "vars": { "APP_VERSION": "2.5.1" },
+  "vars": { "APP_VERSION": "2.5.2" },
 
   // Cron wärmt den Snapshot-Cache vor. Keine limits-Konfiguration:
   // der Workers-Free-Plan akzeptiert keine benutzerdefinierten CPU-Limits.

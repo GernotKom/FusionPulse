@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v2.5.1 — Frontend
+   FusionPulse v2.5.2 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -17,6 +17,7 @@ const DEFAULTS = {
   equity: 5000, riskPct: 0.75, interval: 20000, deep: 20,
   sound: true, token: '', watch: 'BTC-EUR,ETH-EUR,SOL-EUR', minQ: 0, onlyZone: false,
   theme: 'dark', taxPct: 27.5, analysisMode: 'composite', coinCount: 12, stockCount: 12,
+  maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0,
   mutedPairs: [], mutedStocks: [], components: [...ALL_COMPONENTS], stockSound: true,
 };
 const S = { ...DEFAULTS, ...JSON.parse(localStorage.getItem('fp.settings') || '{}') };
@@ -85,10 +86,10 @@ function toggleStockMute(symbol, ev) {
    Eine Stufe ist die Einheit, in der akustisch UND farblich gedacht wird.
    0 = kein Trade · 1 = beobachten · 2 = positives Setup · 3 = Kauf-Freigabe */
 function buyReady(r) {
-  return r.light === 'green' && r.inZone && Number(r.netCRV || 0) >= 1.8;
+  return r.light === 'green' && r.inZone && Number(r.netCRV || 0) >= Number(S.minCrvCoin || 2);
 }
 const coinLevel = (r) => (buyReady(r) ? 3 : r.light === 'green' ? 2 : r.light === 'yellow' ? 1 : 0);
-const stockLevel = (r) => (r.light === 'green' && r.score >= 8 && r.netCRV > 3 ? 3
+const stockLevel = (r) => (r.light === 'green' && r.score >= 8 && r.netCRV >= Number(S.minCrvStock || 3) ? 3
   : r.light === 'green' ? 2 : r.light === 'yellow' ? 1 : 0);
 
 /** Intensität wächst mit der Anzahl BESTÄTIGENDER Scans, gedeckelt durch Qualität. */
@@ -154,11 +155,14 @@ function sizing(r) {
   const perUnit = r.entry - r.stop;
   if (perUnit <= 0) return null;
   let notional = (riskEur / perUnit) * r.entry;
-  let capped = false;
-  if (r.buyCapacity && notional > r.buyCapacity) { notional = r.buyCapacity; capped = true; }
+  const rawNotional = notional;
+  const caps = [];
+  const maxTrade = Math.max(0, Number(S.maxTradeEur || 0));
+  if (maxTrade && notional > maxTrade) { notional = maxTrade; caps.push('maxTrade'); }
+  if (r.buyCapacity && notional > r.buyCapacity) { notional = r.buyCapacity; caps.push('liquidity'); }
   const qty = notional / r.entry;
   return {
-    riskEur, qty, notional, capped,
+    riskEur, qty, notional, rawNotional, capped: caps.length > 0, caps,
     profit1: (r.tp1 - r.entry) * qty,
     profit2: (r.tp2 - r.entry) * qty,
     netProfit1: Math.max(0, (r.tp1 - r.entry) * qty) * (1 - S.taxPct / 100),
@@ -177,7 +181,7 @@ function orderPlan(r) {
     `Stop   ${num(r.stop)}   (-${r.riskPct} %)`,
     `TP1    ${num(r.tp1)}`,
     `TP2    ${num(r.tp2)}   (${r.tp2Source})`,
-    s ? `Größe  ${eur(s.notional, 2)}  ≈ ${s.qty.toPrecision(6)} ${sym(r.pair)}${s.capped ? '  [auf Buchtiefe gedeckelt]' : ''}` : '',
+    s ? `Größe  ${eur(s.notional, 2)}  ≈ ${s.qty.toPrecision(6)} ${sym(r.pair)}${s.caps?.includes('liquidity') ? '  [wegen Marktliquidität reduziert]' : s.caps?.includes('maxTrade') ? '  [auf Maximalbetrag begrenzt]' : ''}` : '',
     `CRV    ${r.netCRV}:1 netto · Kosten ${r.costPct} %`,
     s ? `Gewinn TP2 nach ${S.taxPct}% Steuer (Schätzung)  ${eur(s.netProfit2, 2)}` : '',
   ].filter(Boolean).join('\n');
@@ -321,7 +325,7 @@ async function scan(force = false) {
 
   try {
     const q = new URLSearchParams({
-      deep: S.deep, watch: S.watch, mode: S.analysisMode, comp: S.components.join(','),
+      deep: S.deep, watch: S.watch, mode: S.analysisMode, comp: S.components.join(','), minCrv: S.minCrvCoin,
     });
     if (S.token) q.set('t', S.token);
     if (force) q.set('force', '1');
@@ -365,7 +369,9 @@ async function scan(force = false) {
 function stockSizing(r) {
   if (r.entryEur == null || r.stopEur == null || !(r.entryEur > r.stopEur)) return null;
   const riskEur = S.equity * (S.riskPct / 100);
-  const qty = riskEur / (r.entryEur - r.stopEur);
+  let qty = riskEur / (r.entryEur - r.stopEur);
+  const maxTrade = Math.max(0, Number(S.maxTradeEur || 0));
+  if (maxTrade && qty * r.entryEur > maxTrade) qty = maxTrade / r.entryEur;
   const g1 = (r.tp1Eur - r.entryEur) * qty;
   const g2 = (r.tp2Eur - r.entryEur) * qty;
   return {
@@ -432,7 +438,9 @@ function renderStocks() {
     return;
   }
 
-  const shown = [...stockRows].sort((a, b) => b.score - a.score).slice(0, S.stockCount);
+  const search = ($('#q')?.value || '').trim().toUpperCase();
+  const stockFiltered = stockRows.filter((r) => !search || r.symbol.toUpperCase().includes(search) || String(r.name || '').toUpperCase().includes(search));
+  const shown = [...stockFiltered].sort((a, b) => b.score - a.score).slice(0, S.stockCount);
   const scanned = stockMeta.scanned ?? stockRows.length;
   const universe = stockMeta.universe || 21;
 
@@ -443,6 +451,16 @@ function renderStocks() {
   if (counts) {
     counts.textContent = `${scanned} von ${universe} gescannt · ${shown.length} angezeigt`;
     counts.title = 'Gescannt = Titel mit vorliegender Analyse im rotierenden Universum. Angezeigt = Zeilen in dieser Liste (Einstellungen → Aktien anzeigen).';
+  }
+
+  const topBox = $('#stockFocus');
+  const top = shown[0];
+  if (topBox) {
+    if (!top) topBox.innerHTML = search ? `<div class="stockfocus-empty">Keine Aktie passend zu „${esc(search)}“ gefunden.</div>` : '';
+    else {
+      const sz = stockSizing(top); const buy = stockLevel(top) === 3;
+      topBox.innerHTML = `<div class="stockfocus-card ${top.light}${buy ? ' buy' : ''}"><div class="sf-title"><div><small>TOP-AKTIE AKTUELL</small><h3>${esc(top.name)} <b>${esc(top.symbol)}</b></h3><span>${esc(top.sector)} · Score ${num(top.score,1)} · CRV ${num(top.netCRV,1)}:1</span></div><strong>${VERDICT_ICON[top.light]} ${esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${stockPx(top.priceUsd, top.priceEur)}</b></span><span>Kaufsumme <b>${sz ? eur(sz.notional,0) : '–'}</b></span><span>Entry <b>${stockPx(top.entryUsd, top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd, top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd, top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd, top.tp2Eur)}</b></span></div><small>EUR = Umrechnung, kein Tradegate-Kurs. BUY nur wenn Score ≥ 8 und dein Mindest-CRV ${num(S.minCrvStock,1)}:1 erfüllt ist.</small></div>`;
+    }
   }
 
   const groups = new Map();
@@ -495,7 +513,7 @@ function trackStocks() {
 
 async function scanStocks(force = false) {
   try {
-    const q = new URLSearchParams({ comp: S.components.join(',') });
+    const q = new URLSearchParams({ comp: S.components.join(','), minCrv: S.minCrvStock });
     if (S.token) q.set('t', S.token);
     if (force) q.set('force', '1');
     const res = await fetch('/api/stocks?' + q);
@@ -533,15 +551,20 @@ function setStockPoll() {
    v2.5.1: Ton NUR bei neuer Signalstufe, nicht bei jedem Scan.            */
 function track() {
   const now = Date.now();
+  const cutoff = now - 120 * 60_000;
   for (const r of rows) {
     const st = state.get(r.pair)
-      || { light: null, since: now, quality: r.quality, prevQ: r.quality, streak: 0, level: -1, crvBand: 0 };
+      || { light: null, since: now, quality: r.quality, prevQ: r.quality, streak: 0, level: -1, crvBand: 0, history: [] };
+    const oldLight = st.light;
+    const oldCrv = Number(st.netCRV ?? r.netCRV);
     if (st.light !== r.light) { st.since = now; st.streak = 1; } else st.streak++;
     st.prevQ = st.quality; st.quality = r.quality; st.light = r.light;
+    st.prevCrv = oldCrv; st.netCRV = Number(r.netCRV || 0);
+    st.prevLight = oldLight;
 
     const lvl = coinLevel(r);
-    const crvBand = r.netCRV >= 8.0 ? 2 : r.netCRV > 7.6 ? 1 : 0;
-    const known = st.level >= 0;                        // beim allerersten Scan kein Ton
+    const crvBand = r.netCRV >= S.minCrvCoin + 1 ? 2 : r.netCRV >= S.minCrvCoin ? 1 : 0;
+    const known = st.level >= 0;
 
     if (known && lvl > st.level && lvl >= 1) {
       beep(lvl === 3 ? 'buy' : lvl === 2 ? 'green' : 'watch', isMuted(r.pair));
@@ -552,11 +575,19 @@ function track() {
     }
 
     st.level = lvl; st.crvBand = crvBand;
+    st.history = (st.history || []).filter((h) => h.ts >= cutoff);
+    const lastH = st.history.at(-1);
+    if (!lastH || now - lastH.ts >= 55_000 || lastH.light !== r.light) {
+      st.history.push({ ts: now, quality: Number(r.quality || 0), executability: Number(r.executability || 0), light: r.light, crv: Number(r.netCRV || 0) });
+    }
     state.set(r.pair, st);
 
     r._age = now - st.since;
     r._streak = st.streak;
     r._delta = st.quality - st.prevQ;
+    r._crvDelta = Number(r.netCRV || 0) - oldCrv;
+    r._prevLight = oldLight;
+    r._history = st.history;
   }
 }
 
@@ -643,11 +674,12 @@ function renderFocus() {
 
       ${r.light !== 'green' && r.blockers.length
         ? `<div class="fblock"><b>Nicht handeln, weil:</b> ${esc(r.blockers.join(' · '))}</div>` : ''}
+      <div class="insightbar"><div><span>120-Min-Verlauf</span>${statusBand(r)} <b>${trendArrow(r)}</b></div><div title="BUY-Nähe ist keine Trefferwahrscheinlichkeit. Sie zeigt nur, wie viele aktuelle Voraussetzungen bereits erfüllt sind."><span>BUY-Nähe</span><b>${buyNear(r)} %</b></div><div><span>Was hat sich geändert?</span><b>${esc(changeSummary(r))}</b></div></div>
 
       <div class="fgrid">
         <div title="Einstiegszone: Preisbereich, in dem der geplante Kauf sinnvoll wird."><span>Einstiegszone</span><b>${num(r.zoneLow)} – ${num(r.zoneHigh)}</b></div>
         <div title="Kaufsumme: empfohlener Euro-Einsatz aus Konto-Einstellung, Risikoabstand und Orderbuchtiefe."><span>Kaufsumme</span><b>${s ? eur(s.notional, 0) : '–'}</b></div>
-        <div class="metricbox ${r.netCRV >= 3 ? 'positive' : r.netCRV >= 1.8 ? 'wait' : 'negative'}" title="Netto-CRV: erwarteter Ertrag im Verhältnis zum Risiko nach geschätzten Gebühren, Spread und Slippage. Beispiel 3:1 = 3 € potenzieller Ertrag pro 1 € Risiko."><span>Netto-CRV</span><b class="${r.netCRV >= 1.8 ? 'good' : 'bad'}">${r.netCRV}:1</b></div>
+        <div class="metricbox ${r.netCRV >= S.minCrvCoin ? 'positive' : r.netCRV >= Math.max(1, S.minCrvCoin-.5) ? 'wait' : 'negative'}" title="Netto-CRV: erwarteter Ertrag im Verhältnis zum Risiko nach geschätzten Gebühren, Spread und Slippage. Beispiel 3:1 = 3 € potenzieller Ertrag pro 1 € Risiko."><span>Netto-CRV</span><b class="${r.netCRV >= S.minCrvCoin ? 'good' : 'bad'}">${r.netCRV}:1</b></div>
         <div title="Maximaler rechnerischer Verlust bis zum Stop-Loss bei der vorgeschlagenen Positionsgröße."><span>Risiko bis SL</span><b>${s ? eur(s.realRisk, 0) : '–'} · ${r.riskPct} %</b></div>
         <div class="metricbox ${r.costRatio >= 4 ? 'positive' : r.costRatio >= 2.5 ? 'wait' : 'negative'}" title="Kosten: geschätzte Gebühren + Spread + Slippage. Die ×-Zahl zeigt, wie oft die erwartete Bewegung diese Kosten deckt. Höher ist besser."><span>Kosten</span><b class="${r.costRatio < 2.5 ? 'bad' : ''}">${r.costPct} % · ${r.costRatio}×</b></div>
         <div class="metricbox ${r.slipBps == null ? 'wait' : r.slipBps <= 5 ? 'positive' : r.slipBps <= 15 ? 'wait' : 'negative'}" title="Slippage: erwartete Abweichung zwischen geplantem und tatsächlich erreichbarem Ausführungspreis. 1 Basispunkt (bp) = 0,01 %. Niedriger ist besser."><span>Slippage</span><b>${r.slipBps != null ? r.slipBps + ' bps' : '–'}</b></div>
@@ -671,7 +703,7 @@ function renderFocus() {
         <button id="fqty">⧉ Menge</button>
         <button id="fdet">Details</button>
       </div>
-      ${s?.capped ? '<p class="fwarn">Auf Orderbuchtiefe gedeckelt — größer würde spürbar slippen.</p>' : ''}
+      ${capNotice(s)}
     </div>
     ${ladder(r)}`;
 
@@ -688,30 +720,81 @@ function renderFocus() {
   $('#dock').className = `dock ${r.light}`;
 }
 
+
+function statusBand(r) {
+  const hist = r._history || [];
+  const now = Date.now();
+  const bins = [];
+  for (let i = 5; i >= 0; i--) {
+    const lo = now - (i + 1) * 20 * 60_000, hi = now - i * 20 * 60_000;
+    const h = [...hist].reverse().find((x) => x.ts >= lo && x.ts < hi) || (i === 0 ? hist.at(-1) : null);
+    const light = h?.light || 'none';
+    bins.push(`<i class="hb ${light}" title="${120-i*20}–${100-i*20} Minuten zurück: ${light === 'green' ? 'grün' : light === 'yellow' ? 'gelb' : light === 'red' ? 'rot' : 'keine Daten'}"></i>`);
+  }
+  return `<span class="histband" title="Signalverlauf der letzten 120 Minuten, 6 Abschnitte à 20 Minuten">${bins.join('')}</span>`;
+}
+function trendArrow(r) {
+  const h = r._history || [];
+  if (h.length < 2) return '→';
+  const first = h[0], last = h.at(-1);
+  const d = (last.quality + last.executability) - (first.quality + first.executability);
+  return d > 0.8 ? '↗' : d < -0.8 ? '↘' : '→';
+}
+function changeSummary(r) {
+  const bits = [];
+  if (r._prevLight && r._prevLight !== r.light) bits.push(`${r._prevLight === 'red' ? 'Rot' : r._prevLight === 'yellow' ? 'Gelb' : 'Grün'} → ${r.light === 'red' ? 'Rot' : r.light === 'yellow' ? 'Gelb' : 'Grün'}`);
+  if (Math.abs(r._delta || 0) >= 0.15) bits.push(`Qualität ${(r._delta > 0 ? '+' : '') + num(r._delta, 1)}`);
+  if (Math.abs(r._crvDelta || 0) >= 0.15) bits.push(`CRV ${(r._crvDelta > 0 ? '+' : '') + num(r._crvDelta, 1)}`);
+  return bits.length ? bits.join(' · ') : 'Seit dem letzten Vergleich keine wesentliche Änderung';
+}
+function buyNear(r) {
+  const q = Math.min(1, Number(r.quality || 0) / 7.4);
+  const h = Math.min(1, Number(r.executability || 0) / 7.0);
+  const c = Math.min(1, Number(r.netCRV || 0) / Math.max(.1, Number(S.minCrvCoin || 2)));
+  const z = r.inZone ? 1 : .55;
+  return Math.max(0, Math.min(100, Math.round((q*.3 + h*.2 + c*.3 + z*.2) * 100)));
+}
+function capNotice(s) {
+  if (!s?.capped) return '';
+  if (s.caps?.includes('liquidity')) return `<p class="fwarn"><b>⚠ Kaufsumme auf ${eur(s.notional, 0)} reduziert.</b><br>Eine größere Order könnte wegen zu geringer Marktliquidität zu einem schlechteren Kaufpreis führen. <span title="FusionPulse berücksichtigt dazu Orderbuchtiefe und erwartete Slippage.">Warum?</span></p>`;
+  if (s.caps?.includes('maxTrade')) return `<p class="fwarn"><b>ℹ Kaufsumme auf ${eur(s.notional, 0)} begrenzt.</b><br>Das ist dein in den Einstellungen festgelegter Maximalbetrag pro Trade.</p>`;
+  return '';
+}
+
 /* --------------------------------------------------------------- 2D-Karte */
 function renderMap() {
   const svg = $('#map');
-  const g = (x) => 12 + (x / 10) * 176;          // 0..10 → Pixel
-  const dots = rows.map((r) => {
-    const cx = g(r.executability).toFixed(1);
-    const cy = (200 - g(r.quality)).toFixed(1);
-    const sel = r.pair === selected;
-    const rad = sel ? 7 : r.light === 'green' ? 5.5 : 4;
-    return `<g class="dot q-${r.quadrant} ${sel ? 'sel' : ''}" data-pair="${r.pair}">
-      <circle cx="${cx}" cy="${cy}" r="${rad + 6}" fill="transparent"/>
-      <circle cx="${cx}" cy="${cy}" r="${rad}"/>
-      ${sel || r.light === 'green' ? `<text x="${cx}" y="${(+cy - rad - 4).toFixed(1)}">${sym(r.pair)}</text>` : ''}
+  const g = (x) => 12 + (x / 10) * 176;
+  const pts = rows.map((r) => ({ r, x: g(r.executability), y: 200 - g(r.quality), baseX: g(r.executability), baseY: 200 - g(r.quality), rad: 4.5 + Math.max(0, Math.min(3.2, (Number(r.quality || 0) - 5) * .75)) }));
+  // leichte Kollisionstrennung: analytische Position bleibt Basis, Kreise werden nur wenige Pixel auseinandergezogen
+  for (let it = 0; it < 18; it++) for (let i = 0; i < pts.length; i++) for (let j = i+1; j < pts.length; j++) {
+    const a=pts[i], b=pts[j], dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy)||.01, min=a.rad+b.rad+2.5;
+    if (d < min) { const push=(min-d)*.18, ux=dx/d, uy=dy/d; a.x-=ux*push; a.y-=uy*push; b.x+=ux*push; b.y+=uy*push; }
+  }
+  pts.forEach((p) => { p.x = Math.max(10, Math.min(190, p.x)); p.y = Math.max(10, Math.min(190, p.y)); });
+
+  const trails = pts.map(({r}) => {
+    const h=(r._history||[]).filter((x)=>Date.now()-x.ts<=120*60_000).slice(-8);
+    if (h.length < 2) return '';
+    const points=h.map((x)=>`${g(x.executability).toFixed(1)},${(200-g(x.quality)).toFixed(1)}`).join(' ');
+    return `<polyline class="trail ${r.light}" points="${points}"/>`;
+  }).join('');
+  const dots = pts.map(({r,x,y,rad}) => {
+    const sel=r.pair===selected, ready=buyReady(r);
+    return `<g class="dot light-${r.light} ${sel?'sel':''} ${ready?'buy-ready':''}" data-pair="${r.pair}" transform="translate(${x.toFixed(1)} ${y.toFixed(1)})">
+      <circle class="hit" cx="0" cy="0" r="${rad+7}"/>
+      <circle class="core" cx="0" cy="0" r="${sel?rad+1.5:rad}"/>
+      <text x="0" y="2.2">${sym(r.pair).slice(0,5)}</text>
+      <title>${sym(r.pair)} · Q ${r.quality} · H ${r.executability} · CRV ${r.netCRV}:1 · ${trendArrow(r)} ${r.light}</title>
     </g>`;
   }).join('');
 
   svg.innerHTML = `
-    <rect class="quad qa" x="100" y="0"   width="100" height="100"/>
-    <rect class="quad qb" x="0"   y="0"   width="100" height="100"/>
+    <rect class="quad qa" x="100" y="0" width="100" height="100"/>
+    <rect class="quad qb" x="0" y="0" width="100" height="100"/>
     <rect class="quad qc" x="100" y="100" width="100" height="100"/>
-    <line class="ax" x1="100" y1="0" x2="100" y2="200"/>
-    <line class="ax" x1="0" y1="100" x2="200" y2="100"/>
-    ${dots}`;
-
+    <line class="ax" x1="100" y1="0" x2="100" y2="200"/><line class="ax" x1="0" y1="100" x2="200" y2="100"/>
+    ${trails}${dots}`;
   $$('#map .dot').forEach((d) => d.addEventListener('click', () => select(d.dataset.pair, true)));
 }
 
@@ -731,11 +814,11 @@ function rowHtml(r) {
   const d = r._delta > 0.4 ? '<i class="up">▲</i>' : r._delta < -0.4 ? '<i class="dn">▼</i>' : '';
   return `
     <span class="c-sym" title="Coin und aktueller Signalstatus. Pulsierender grüner Rahmen = konkrete Kauf-Freigabe nach den definierten Regeln."><b class="dotc ${r.light}"></b>${sym(r.pair)}${d}<button class="rowmute" data-mute="${r.pair}" title="Ton nur für ${sym(r.pair)} ${isMuted(r.pair) ? 'einschalten' : 'ausschalten'}">${isMuted(r.pair) ? '🔇' : '🔊'}</button></span>
-    <span class="c-spk" title="Kurzfristiger Kursverlauf der letzten Bars, normiert">${spark(r.spark)}</span>
+    <span class="c-spk" title="Kurzfristiger Kursverlauf der letzten Bars, normiert">${spark(r.spark)}${statusBand(r)}<small class="trendarr">${trendArrow(r)}</small></span>
     <span class="c-set" title="${esc(explainSetup(r))}">${r.orderType === 'stop' ? '▲' : '▼'} ${esc(r.setup)}</span>
     <span class="c-age ta" title="Reife: ${r._streak || 1} aufeinanderfolgende Scans haben diesen Signalzustand bestätigt. Die Farbintensität steigt mit der Bestätigungsdauer.">${mins(r._age)}<i class="stk">${r._streak || 1}×</i></span>
     <span class="c-zone" title="Zonenlage: zeigt, wo der aktuelle Preis relativ zu Stop und Einstiegszone liegt. Grün markiert einen Preis innerhalb der Einstiegszone.">${zoneBar(r)}</span>
-    <span class="c-r ta ${r.netCRV >= 3 ? 'positive' : r.netCRV >= 1.8 ? 'wait' : 'negative'}" title="Netto-CRV nach Kosten: erwarteter Ertrag pro Einheit Risiko. Höher ist besser.">${r.netCRV.toFixed(1)}</span>
+    <span class="c-r ta ${r.netCRV >= S.minCrvCoin ? 'positive' : r.netCRV >= Math.max(1, S.minCrvCoin-.5) ? 'wait' : 'negative'}" title="Netto-CRV nach Kosten: erwarteter Ertrag pro Einheit Risiko. Höher ist besser.">${r.netCRV.toFixed(1)}</span>
     <span class="c-sz ta" title="Kaufsumme: aus Konto-Equity, Risiko pro Trade, Stop-Abstand und verfügbarer Orderbuchtiefe berechneter Euro-Einsatz.">${s ? eur(s.notional, 0) : '–'}</span>
     <span class="c-qh ta" title="Q = Setup-Qualität (0–10), H = Handelbarkeit/Ausführbarkeit (0–10)."><b>${r.quality}</b><i>·</i>${r.executability}</span>
     <span class="tradepeek"><b>${sym(r.pair)} · ${esc(r.setup)}</b><br>
@@ -906,7 +989,7 @@ setInterval(() => {
 
 /* ------------------------------------------------------------ Einstellungen */
 function openSettings() {
-  $('#sEquity').value = S.equity; $('#sRisk').value = S.riskPct;
+  $('#sEquity').value = S.equity; $('#sRisk').value = S.riskPct; $('#sMaxTrade').value = S.maxTradeEur; $('#sMinCrvCoin').value = S.minCrvCoin; $('#sMinCrvStock').value = S.minCrvStock;
   $('#sDeep').value = S.deep; $('#sCoinCount').value = S.coinCount; $('#sStockCount').value = S.stockCount;
   $('#sWatch').value = S.watch; $('#sToken').value = S.token; $('#sMin').value = S.minQ;
   $('#sZone').checked = S.onlyZone; $('#sTheme').value = S.theme;
@@ -923,9 +1006,12 @@ function updateCountsInfo() {
     + 'Gescannt und angezeigt sind bewusst getrennt: die Anzeige zu verkleinern spart keine API-Abfragen.';
 }
 function applySettings() {
-  const prevAnalysis = S.analysisMode + '|' + S.components.join(',');
+  const prevAnalysis = S.analysisMode + '|' + S.components.join(',') + '|' + S.minCrvStock;
   S.equity = +$('#sEquity').value || DEFAULTS.equity;
   S.riskPct = +$('#sRisk').value || DEFAULTS.riskPct;
+  S.maxTradeEur = Math.max(100, +$('#sMaxTrade').value || DEFAULTS.maxTradeEur);
+  S.minCrvCoin = Math.max(1, +$('#sMinCrvCoin').value || DEFAULTS.minCrvCoin);
+  S.minCrvStock = Math.max(1, +$('#sMinCrvStock').value || DEFAULTS.minCrvStock);
   S.deep = Math.min(30, Math.max(4, +$('#sDeep').value || DEFAULTS.deep));
   S.coinCount = Math.min(50, Math.max(3, +$('#sCoinCount').value || DEFAULTS.coinCount));
   S.stockCount = Math.min(50, Math.max(3, +$('#sStockCount').value || DEFAULTS.stockCount));
@@ -944,7 +1030,7 @@ function applySettings() {
   scan(true);
   // Aktien nur dann frisch anfordern, wenn sich die Analyse geändert hat —
   // jeder erzwungene Aktien-Refresh kostet echte Twelve-Data-Credits.
-  const changed = prevAnalysis !== S.analysisMode + '|' + S.components.join(',');
+  const changed = prevAnalysis !== S.analysisMode + '|' + S.components.join(',') + '|' + S.minCrvStock;
   scanStocks(changed);
 }
 
@@ -1027,7 +1113,7 @@ $('#sReset').onclick = hardReload;
 $('#sCompAll').onclick = () => $$('#sComponents input[data-comp]').forEach((c) => { c.checked = true; });
 $('#sCompElliott').onclick = () => $$('#sComponents input[data-comp]').forEach((c) => { c.checked = c.dataset.comp === 'elliott'; });
 $('#sClose').onclick = () => $('#settings').classList.remove('open');
-$('#q').oninput = render;
+$('#q').oninput = () => { render(); renderStocks(); };
 $('#f').onchange = render;
 $('#iv').onchange = () => setPoll(+$('#iv').value);
 $('#x').onclick = closeDetail;
