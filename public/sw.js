@@ -1,6 +1,6 @@
 /* Service Worker: App-Shell offline, API NIEMALS cachen.
    Veraltete Kursdaten aus dem Cache sind im Trading gefährlicher als ein Fehler. */
-const CACHE = 'fusionpulse-v2.3.3';
+const CACHE = 'fusionpulse-v2.4.3';
 const SHELL = ['/', '/index.html', '/app.js', '/style.css', '/manifest.webmanifest',
                '/icons/icon-192.png', '/icons/icon-512.png'];
 

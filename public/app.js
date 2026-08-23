@@ -13,6 +13,7 @@ const DEFAULTS = {
   equity: 5000, riskPct: 0.75, interval: 20000, deep: 20,
   sound: true, token: '', watch: 'BTC-EUR,ETH-EUR,SOL-EUR', minQ: 0, onlyZone: false,
   theme: 'dark', taxPct: 27.5, analysisMode: 'composite', coinCount: 12, stockCount: 12,
+  mutedPairs: [],
 };
 const S = { ...DEFAULTS, ...JSON.parse(localStorage.getItem('fp.settings') || '{}') };
 const saveSettings = () => localStorage.setItem('fp.settings', JSON.stringify(S));
@@ -44,14 +45,39 @@ const mins = (ms) => {
   return m < 1 ? 'neu' : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h`;
 };
 
+const isMuted = (pair) => (S.mutedPairs || []).includes(pair);
+function togglePairMute(pair, ev) {
+  ev?.stopPropagation();
+  const set = new Set(S.mutedPairs || []);
+  if (set.has(pair)) set.delete(pair); else set.add(pair);
+  S.mutedPairs = [...set]; saveSettings(); renderList(); renderFocus();
+}
+function signalStrength(r) {
+  const ageMin = Math.max(0, (r._age || 0) / 60000);
+  const q = Number(r.quality || 0);
+  const ageScore = ageMin >= 5 ? 3 : ageMin >= 2 ? 2 : 1;
+  const qScore = q >= 8 ? 3 : q >= 7 ? 2 : 1;
+  return Math.min(ageScore, qScore);
+}
+function buyReady(r) {
+  return r.light === 'green' && r.inZone && Number(r.netCRV || 0) >= 1.8;
+}
+function explainSetup(r) {
+  if (/squeeze|breakout/i.test(r.setup)) return 'Squeeze → Breakout: Die Handelsspanne war komprimiert und beginnt sich nach oben aufzulösen. Noch kein Kauf allein – Zonenlage, Kosten, Liquidität und CRV müssen ebenfalls passen.';
+  if (/pullback/i.test(r.setup)) return 'Pullback an VWAP/EMA21: Der Kurs kommt nach einer Bewegung an einen dynamischen Durchschnitt zurück. Interessant, wenn die Zone hält und die übrigen Filter bestätigen.';
+  if (/relative/i.test(r.setup)) return 'Relative Stärke: Der Coin entwickelt sich stärker als Bitcoin. Das ist ein Bestätigungsfaktor, kein eigenständiges Kaufsignal.';
+  return 'Vom Scanner erkannte Setup-Art. Mouseover zeigt die Bedeutung; die Gesamtentscheidung berücksichtigt zusätzlich Kosten, Liquidität, Zonenlage und Risiko.';
+}
+
+
 /* --------------------------------------------------------------------- Ton */
 function audio() {
   if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
   if (ac.state === 'suspended') ac.resume();
   return ac;
 }
-function beep(kind) {
-  if (!S.sound) return;
+function beep(kind, pair = null) {
+  if (!S.sound || (pair && isMuted(pair))) return;
   const c = audio();
   const tone = (f, dur, delay = 0, gain = 0.18) => {
     const o = c.createOscillator(), g = c.createGain();
@@ -158,6 +184,7 @@ async function scan(force = false) {
     render();
 
     $('#status').textContent = `${data.cached ? 'Cache' : 'Live'} · ${data.deepCount}/${data.universe} Coins · ${data.requests ?? '–'} API-Unterabfragen · ${Math.round(performance.now() - t0)} ms`;
+    $('#status').title = 'Live/Cache = Datenquelle des letzten Scans · x/y Coins = tief analysierte gegenüber verfügbare Coins · API-Unterabfragen = Bitpanda-Unterabfragen innerhalb dieses Scans, NICHT dein Cloudflare-Tagesverbrauch · ms = Dauer des Scans.';
     $('#status').dataset.state = 'ok';
     $('#stamp').textContent = new Date(data.ts).toLocaleTimeString('de-AT');
   } catch (e) {
@@ -184,9 +211,9 @@ function track() {
 
     const cooled = now - st.lastAlert > 90_000;
     const crvBand = r.netCRV >= 8.0 ? 2 : r.netCRV > 7.6 ? 1 : 0;
-    if (crvBand > (st.crvBand || 0) && cooled) { beep(crvBand === 2 ? 'crv8' : 'crv76'); notify(r); st.lastAlert = now; }
-    else if (rose && st.streak >= 2 && cooled) { beep('green'); notify(r); st.lastAlert = now; }
-    else if (r.light === 'green' && r.inZone && st.streak >= 2 && cooled) { beep('zone'); st.lastAlert = now; }
+    if (crvBand > (st.crvBand || 0) && cooled) { beep(crvBand === 2 ? 'crv8' : 'crv76', r.pair); notify(r); st.lastAlert = now; }
+    else if (rose && st.streak >= 2 && cooled) { beep('green', r.pair); notify(r); st.lastAlert = now; }
+    else if (r.light === 'green' && r.inZone && st.streak >= 2 && cooled) { beep('zone', r.pair); st.lastAlert = now; }
     st.crvBand = crvBand;
     state.set(r.pair, st);
 
@@ -262,18 +289,21 @@ function renderFocus() {
     return;
   }
   const s = sizing(r);
-  el.className = `focus ${r.light}${r.inZone ? ' inzone' : ''}`;
+  const strength = signalStrength(r); const ready = buyReady(r);
+  el.className = `focus ${r.light} tone-${strength}${r.inZone ? ' inzone' : ''}${ready ? ' buy-ready' : ''}`;
   el.innerHTML = `
     <div class="fmain">
       <div class="fhead">
         <div>
           <h2>${sym(r.pair)} <small>${num(r.price)}</small></h2>
-          <p class="fsetup">${r.orderType === 'stop' ? '▲ Stop-Buy' : '▼ Limit-Buy'} · ${r.setup}</p>
+          <p class="fsetup" title="${explainSetup(r)}">${r.orderType === 'stop' ? '▲ Stop-Buy' : '▼ Limit-Buy'} · ${r.setup}</p>
         </div>
         <div class="fpins">
-          <span class="pin q" title="Setup-Qualität">Q <b>${r.quality}</b></span>
-          <span class="pin h" title="Handelbarkeit">H <b>${r.executability}</b></span>
-          <span class="pin age" title="Wie lange hält dieser Zustand schon">${mins(r._age)}</span>
+          ${ready ? '<span class="buybadge" title="KAUFEN: Setup ist grün, Preis liegt in der Einstiegszone und das Mindest-CRV ist erfüllt.">🟢 KAUFEN</span>' : ''}
+          <button class="pairmute" id="fmute" title="Akustische Signale nur für diesen Coin ein-/ausschalten">${isMuted(r.pair) ? '🔇' : '🔊'}</button>
+          <span class="pin q" title="Q = Setup-Qualität von 0–10. Höher bedeutet: mehr Analysefaktoren bestätigen dasselbe Setup.">Q <b>${r.quality}</b></span>
+          <span class="pin h" title="H = Handelbarkeit/Ausführbarkeit von 0–10. Berücksichtigt u. a. Spread, Slippage und Orderbuchtiefe.">H <b>${r.executability}</b></span>
+          <span class="pin age" title="Reife: Wie lange dieser Signalzustand bereits bestätigt besteht. Farbe wird mit Dauer UND Qualität intensiver.">${mins(r._age)}</span>
         </div>
       </div>
 
@@ -283,16 +313,16 @@ function renderFocus() {
       <div class="fgrid">
         <div title="Einstiegszone: Preisbereich, in dem der geplante Kauf sinnvoll wird."><span>Einstiegszone</span><b>${num(r.zoneLow)} – ${num(r.zoneHigh)}</b></div>
         <div title="Kaufsumme: empfohlener Euro-Einsatz aus Konto-Einstellung, Risikoabstand und Orderbuchtiefe."><span>Kaufsumme</span><b>${s ? eur(s.notional, 0) : '–'}</b></div>
-        <div title="Netto-CRV: erwarteter Ertrag im Verhältnis zum Risiko, nachdem geschätzte Kosten berücksichtigt wurden."><span>Netto-CRV</span><b class="${r.netCRV >= 1.8 ? 'good' : 'bad'}">${r.netCRV}:1</b></div>
+        <div class="metricbox ${r.netCRV >= 3 ? 'positive' : r.netCRV >= 1.8 ? 'wait' : 'negative'}" title="Netto-CRV: erwarteter Ertrag im Verhältnis zum Risiko nach geschätzten Gebühren, Spread und Slippage. Beispiel 3:1 = 3 € potenzieller Ertrag pro 1 € Risiko."><span>Netto-CRV</span><b class="${r.netCRV >= 1.8 ? 'good' : 'bad'}">${r.netCRV}:1</b></div>
         <div title="Maximaler rechnerischer Verlust bis zum Stop-Loss bei der vorgeschlagenen Positionsgröße."><span>Risiko bis SL</span><b>${s ? eur(s.realRisk, 0) : '–'} · ${r.riskPct} %</b></div>
-        <div title="Geschätzte Handelskosten aus Spread, Slippage und Gebühren; × zeigt die Kosten-Deckung."><span>Kosten</span><b class="${r.costRatio < 2.5 ? 'bad' : ''}">${r.costPct} % · ${r.costRatio}×</b></div>
-        <div title="Slippage: erwartete Preisabweichung durch die Ausführung im Orderbuch, angegeben in Basispunkten."><span>Slippage</span><b>${r.slipBps != null ? r.slipBps + ' bps' : '–'}</b></div>
+        <div class="metricbox ${r.costRatio >= 4 ? 'positive' : r.costRatio >= 2.5 ? 'wait' : 'negative'}" title="Kosten: geschätzte Gebühren + Spread + Slippage. Die ×-Zahl zeigt, wie oft die erwartete Bewegung diese Kosten deckt. Höher ist besser."><span>Kosten</span><b class="${r.costRatio < 2.5 ? 'bad' : ''}">${r.costPct} % · ${r.costRatio}×</b></div>
+        <div class="metricbox ${r.slipBps == null ? 'wait' : r.slipBps <= 5 ? 'positive' : r.slipBps <= 15 ? 'wait' : 'negative'}" title="Slippage: erwartete Abweichung zwischen geplantem und tatsächlich erreichbarem Ausführungspreis. 1 Basispunkt (bp) = 0,01 %. Niedriger ist besser."><span>Slippage</span><b>${r.slipBps != null ? r.slipBps + ' bps' : '–'}</b></div>
         <div title="Geschätzter Gewinn bei TP2 nach dem in den Einstellungen hinterlegten Steuersatz."><span>TP2 Gewinn netto*</span><b class="good">${s ? eur(s.netProfit2, 0) : '–'}</b></div>
         <div title="Aktivierter Analysemodus. Sicherheitsfilter wie Liquidität, Spread und Kosten bleiben aktiv."><span>Analyse</span><b>${r.analysisMode || S.analysisMode}</b></div>
       </div>
       <small class="taxnote">* Schätzung mit ${S.taxPct}% auf positiven Gewinn; keine Steuerberatung.</small>
       <div class="tradeplan" title="Konkreter manueller Trade-Plan. TP1 = erster Teilverkauf; TP2 = zweiter/finaler Teilverkauf.">
-        <b>${r.light === 'green' ? 'KAUF-PLAN' : 'BEOBACHTUNGS-PLAN'}</b>
+        <b>${ready ? '🟢 KAUFEN – TRADE-PLAN' : r.light === 'green' ? 'POSITIVES SETUP – EINSTIEG NOCH PRÜFEN' : 'BEOBACHTUNGS-PLAN'}</b>
         <span>Kaufsumme <strong>${s ? eur(s.notional,0) : '–'}</strong></span>
         <span>Entry <strong>${num(r.entry)}</strong></span>
         <span>Stop-Loss <strong>${num(r.stop)}</strong></span>
@@ -316,6 +346,7 @@ function renderFocus() {
   $('#fstop').onclick = (e) => copy(String(r.stop), e.target);
   $('#fqty').onclick = (e) => copy(s ? String(s.qty) : '0', e.target);
   $('#fdet').onclick = () => openDetail(r.pair);
+  $('#fmute').onclick = (e) => togglePairMute(r.pair, e);
 
   $('#dsym').textContent = sym(r.pair);
   $('#dplan').textContent = `${r.orderType === 'stop' ? 'Stop' : 'Limit'} ${num(r.entry)} · SL ${num(r.stop)} · ${s ? eur(s.notional, 0) : '–'}`;
@@ -364,15 +395,16 @@ function visible() {
 function rowHtml(r) {
   const s = sizing(r);
   const d = r._delta > 0.4 ? '<i class="up">▲</i>' : r._delta < -0.4 ? '<i class="dn">▼</i>' : '';
+  const ready = buyReady(r);
   return `
-    <span class="c-sym"><b class="dotc ${r.light}"></b>${sym(r.pair)}${d}</span>
-    <span class="c-spk">${spark(r.spark)}</span>
-    <span class="c-set">${r.orderType === 'stop' ? '▲' : '▼'} ${r.setup}</span>
-    <span class="c-age ta">${mins(r._age)}</span>
-    <span class="c-zone">${zoneBar(r)}</span>
-    <span class="c-r ta ${r.netCRV >= 1.8 ? 'good' : ''}">${r.netCRV.toFixed(1)}</span>
-    <span class="c-sz ta">${s ? eur(s.notional, 0) : '–'}</span>
-    <span class="c-qh ta"><b>${r.quality}</b><i>·</i>${r.executability}</span>
+    <span class="c-sym" title="Coin und aktueller Signalstatus. Pulsierender grüner Rahmen = konkrete Kauf-Freigabe nach den definierten Regeln."><b class="dotc ${r.light}"></b>${sym(r.pair)}${d}<button class="rowmute" data-mute="${r.pair}" title="Ton nur für ${sym(r.pair)} ${isMuted(r.pair) ? 'einschalten' : 'ausschalten'}">${isMuted(r.pair) ? '🔇' : '🔊'}</button></span>
+    <span class="c-spk" title="Kurzfristiger Verlauf der internen Qualitäts-/Momentumwerte">${spark(r.spark)}</span>
+    <span class="c-set" title="${explainSetup(r)}">${r.orderType === 'stop' ? '▲' : '▼'} ${r.setup}</span>
+    <span class="c-age ta" title="Reife: Dauer, seit der aktuelle Signalzustand ohne Unterbrechung besteht. Intensität steigt nur, wenn Dauer UND Qualität hoch bleiben.">${mins(r._age)}</span>
+    <span class="c-zone" title="Zonenlage: zeigt, wo der aktuelle Preis relativ zu Stop und Einstiegszone liegt. Grün markiert einen Preis innerhalb der Einstiegszone.">${zoneBar(r)}</span>
+    <span class="c-r ta ${r.netCRV >= 3 ? 'positive' : r.netCRV >= 1.8 ? 'wait' : 'negative'}" title="Netto-CRV nach Kosten: erwarteter Ertrag pro Einheit Risiko. Höher ist besser.">${r.netCRV.toFixed(1)}</span>
+    <span class="c-sz ta" title="Kaufsumme: aus Konto-Equity, Risiko pro Trade, Stop-Abstand und verfügbarer Orderbuchtiefe berechneter Euro-Einsatz.">${s ? eur(s.notional, 0) : '–'}</span>
+    <span class="c-qh ta" title="Q = Setup-Qualität (0–10), H = Handelbarkeit/Ausführbarkeit (0–10)."><b>${r.quality}</b><i>·</i>${r.executability}</span>
     <span class="tradepeek"><b>${sym(r.pair)} · ${r.setup}</b><br>
       Einsatz ${s ? eur(s.notional,0) : '–'} · Entry ${num(r.entry)} · SL ${num(r.stop)} · TP1 ${num(r.tp1)} · TP2 ${num(r.tp2)}<br>
       CRV ${r.netCRV}:1 · TP2 nach Steuer* ${s ? eur(s.netProfit2,0) : '–'}
@@ -409,8 +441,10 @@ function paint(container, list) {
       el.addEventListener('click', () => select(r.pair, true));
       rowNodes.set(r.pair, el);
     }
-    el.className = `row ${r.light}${r.pair === selected ? ' sel' : ''}${r.inZone ? ' inzone' : ''}`;
+    const strength = signalStrength(r); const ready = buyReady(r);
+    el.className = `row ${r.light} tone-${strength}${r.pair === selected ? ' sel' : ''}${r.inZone ? ' inzone' : ''}${ready ? ' buy-ready' : ''}`;
     el.innerHTML = rowHtml(r);
+    el.querySelector('[data-mute]')?.addEventListener('click', (e) => togglePairMute(r.pair, e));
     if (container.children[i] !== el) container.insertBefore(el, container.children[i] || null);
   });
   [...container.children].forEach((el) => {
@@ -427,6 +461,7 @@ function render() {
   }
   const reg = $('#regime');
   reg.textContent = `${meta.marketRegime || '–'} · ${Math.round((meta.breadth || 0) * 100)} % über VWAP`;
+  reg.title = 'Marktregime: Risk-On = breite positive Marktstruktur, Risk-Off = breite Schwäche. Der Prozentwert zeigt den Anteil der gescannten Coins oberhalb ihres volumengewichteten Durchschnittspreises (VWAP). Das ist ein Marktfilter, kein eigenständiges Kaufsignal.';
   reg.className = (meta.marketRegime || '').toLowerCase().replace('-', '');
 
   renderFocus();
@@ -614,6 +649,7 @@ $('#scan').onclick = () => scan(true);
 $('#sound').onclick = () => {
   S.sound = !S.sound; saveSettings();
   $('#sound').textContent = S.sound ? '🔊' : '🔇';
+  $('#sound').title = S.sound ? 'Haupt-Ton EIN – alle nicht einzeln stummgeschalteten Signale hörbar (m)' : 'Haupt-Ton AUS – alle akustischen Signale stumm (m)';
   if (S.sound) { audio(); beep('tick'); }
 };
 $('#wake').onclick = () => keepAwake(!wl);
@@ -637,6 +673,7 @@ document.body.addEventListener('pointerdown', () => audio(), { once: true });
 applyTheme();
 loadVersion();
 $('#sound').textContent = S.sound ? '🔊' : '🔇';
+$('#sound').title = S.sound ? 'Haupt-Ton EIN – alle nicht einzeln stummgeschalteten Signale hörbar (m)' : 'Haupt-Ton AUS – alle akustischen Signale stumm (m)';
 $('#iv').value = String(S.interval);
 if ('Notification' in window && Notification.permission === 'default') {
   document.body.addEventListener('pointerdown', () => Notification.requestPermission(), { once: true });

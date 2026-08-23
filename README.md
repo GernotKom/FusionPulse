@@ -1,4 +1,15 @@
-# FusionPulse v2.3.0
+# FusionPulse v2.4.0
+
+## v2.4.0 – Alert-/Erklärungs-UX
+
+- Grün/Gelb/Rot erhalten abgestufte Intensität aus **Dauer × Signalqualität**.
+- **Pulsierendes Grün** ist exklusiv für eine konkrete Kauf-Freigabe reserviert (grünes Setup + Preis in Einstiegszone + Mindest-Netto-CRV).
+- Haupt-Tonschalter oben sowie **Einzel-Stummschaltung pro Coin**; Einzelzustände werden lokal gespeichert.
+- Akustische Schwellenalarme bleiben aktiv (CRV > 7,6 und höherer Alarm ab 8,0), sofern Hauptton und Coin-Ton aktiv sind.
+- Mouseover-Hilfen für Marktregime/VWAP, Setup, Reife, Zonenlage, Netto-CRV, Kaufsumme, Q/H, Kosten und Slippage.
+- Einstellungszahnrad wieder ganz rechts in der oberen Leiste.
+- Positive Kennzahlen dezent grün, abwartende gelb und negative rot hinterlegt.
+
 
 ## v2.3.0 – Klarheits-/Limits-Update
 - Drei Farbschemata: Dunkel, Hell, Hell/Warm.
@@ -78,7 +89,7 @@ Weiter:
 - Helle Themes deutlich abgedunkelt, damit Ampelfarben unterscheidbar bleiben.
 - Aktienradar-Sektion nach Branchen vorbereitet; sie zeigt bewusst keine Fake-Daten, bis eine separate US-Aktien-Datenquelle angebunden ist.
 - Cloudflare-Free-Limit-Popup bei 429/Ressourcenfehlern; „API-Unterabfragen“ wird ausdrücklich von Cloudflare-Worker-Aufrufen unterschieden.
-- APP_VERSION/Package/Service-Worker auf 2.3.0; keine unsupported `limits`-Sektion in wrangler.jsonc.
+- v2.3.0 hatte APP_VERSION/Package/Service-Worker konsistent gesetzt; die aktuelle v2.4.0 übernimmt dies und enthält weiterhin keine unsupported `limits`-Sektion in wrangler.jsonc.
 
 ## Deployment
 

@@ -4,7 +4,7 @@
   "main": "src/worker.js",
   "compatibility_date": "2026-08-23",
   "assets": { "directory": "./public", "binding": "ASSETS" },
-  "vars": { "APP_VERSION": "2.3.0" },
+  "vars": { "APP_VERSION": "2.4.0" },
 
   // Cron wärmt den Snapshot-Cache vor. Keine limits-Konfiguration:
   // der Workers-Free-Plan akzeptiert keine benutzerdefinierten CPU-Limits.

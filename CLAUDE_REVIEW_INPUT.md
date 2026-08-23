@@ -1,3 +1,16 @@
+# Claude Review Input – FusionPulse v2.4.0
+
+Bitte diese Punkte gezielt prüfen:
+- Pulsierendes Grün darf nur bei echter Kauf-Freigabe erscheinen: green + inZone + Mindest-Netto-CRV.
+- Farbstärke muss Dauer UND Qualität berücksichtigen; langes mittelmäßiges Signal darf nicht automatisch dunkelgrün werden.
+- Einzel-Mute pro Coin darf nur dessen Töne stummschalten; Haupt-Mute muss alle Töne abschalten.
+- CRV-Alarme >7,6 und >=8,0 nur bei Schwellenübertritt/Cooldown, nicht bei jedem Poll.
+- Tooltips müssen Marktregime/VWAP, Setup, Reife, Zonenlage, CRV, Kaufsumme, Q/H, Kosten und Slippage laienverständlich erklären.
+- Kein Look-ahead/Repainting; geschlossene Bars beibehalten.
+- Cloudflare Free: keine `limits`-Konfiguration in wrangler.jsonc.
+- Service-Worker/APP_VERSION/package.json konsistent auf 2.4.0.
+- Tablet: Pulsieren und Hover dürfen Touch-Bedienung nicht blockieren.
+
 # FusionPulse v2.2.0 – Review inputs for Claude
 
 Bitte diese Punkte gezielt gegen Code und Trading-Logik prüfen, ohne Secrets in den Code zu schreiben:
