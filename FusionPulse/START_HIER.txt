@@ -1,0 +1,15 @@
+FUSIONPULSE v2 - Kurzanleitung
+
+1. Cloudflare-Konto anlegen (Free reicht zum Testen).
+2. Diesen Ordner in ein neues GitHub-Repository laden.
+3. Cloudflare -> Workers & Pages -> Create application -> Import repository -> Deploy.
+4. Settings -> Variables and Secrets -> Add Secret:
+     FUSION_API_KEY = dein Bitpanda-Fusion-Key (NUR Leserechte)
+     APP_TOKEN      = ein selbst gewaehltes Passwort
+5. Redeploy.
+6. Die *.workers.dev-Adresse am Tablet oeffnen.
+7. Zahnrad -> Token eintragen, Equity und Risiko % setzen -> Uebernehmen.
+8. Browsermenue -> "App installieren".
+
+Tasten: Leertaste Scan | / Suche | 1/2/3 Ampelfilter | 0 alle | z nur Zone
+        m Ton | c Order-Plan des besten Setups kopieren | Esc schliessen

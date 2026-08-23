@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "fusionpulse",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-08-23",
+  "assets": { "directory": "./public", "binding": "ASSETS" },
+  "vars": { "APP_VERSION": "2.2.0" },
+
+  // Cron wärmt den Snapshot-Cache vor -> erster App-Start ist sofort da.
+  "triggers": { "crons": ["* * * * *"] },
+
+  // Schutz vor Runaway-Kosten. Free Plan kann ohnehin nur 50.
+  "limits": { "subrequests": 60 }
+
+  // Optional (persistenter Cache über Isolate-Grenzen hinweg):
+  // "kv_namespaces": [{ "binding": "SNAP", "id": "<KV_NAMESPACE_ID>" }]
+}
