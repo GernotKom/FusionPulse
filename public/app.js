@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v2.5.5 — Frontend
+   FusionPulse v2.5.5a — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -929,6 +929,7 @@ function visible() {
 
 function rowHtml(r) {
   const s = sizing(r);
+  const ready = buyReady(r);
   const d = r._delta > 0.4 ? '<i class="up">▲</i>' : r._delta < -0.4 ? '<i class="dn">▼</i>' : '';
   return `
     <span class="c-sym" title="Coin und aktueller Signalstatus. Pulsierender grüner Rahmen = konkrete Kauf-Freigabe nach den definierten Regeln."><button class="favbtn ${isFavPair(r.pair) ? 'on' : ''}" data-favpair="${r.pair}" title="${isFavPair(r.pair) ? 'Aus Favoriten entfernen' : 'Zu Favoriten hinzufügen'}">${isFavPair(r.pair) ? '★' : '☆'}</button><b class="dotc ${r.light}"></b>${sym(r.pair)}${d}<button class="rowmute" data-mute="${r.pair}" title="Ton nur für ${sym(r.pair)} ${isMuted(r.pair) ? 'einschalten' : 'ausschalten'}">${isMuted(r.pair) ? '🔇' : '🔊'}</button></span>

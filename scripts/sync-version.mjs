@@ -12,7 +12,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const p = (f) => join(root, f);
 const version = JSON.parse(readFileSync(p('package.json'), 'utf8')).version;
 
-if (!/^\d+\.\d+\.\d+$/.test(version)) {
+if (!/^\d+\.\d+\.\d+[a-z]?$/i.test(version)) {
   console.error(`✗ Ungültige Version in package.json: "${version}"`);
   process.exit(1);
 }

@@ -119,3 +119,8 @@ Der Worker nutzt für Opening Momentum pro Aktualisierung zwei gebündelte Alpac
 - Aktien-Fokus zeigt TP1-Netto, TP2-Rest-Netto und Gesamtplan-Netto (Standard: 50 % / 50 %).
 - 120-Minuten-Verlauf auf 8 × 15 Minuten umgestellt und lokal über Reloads gespeichert; auch für Aktien ergänzt.
 - Tooltips/Mouseover für neue Kennzahlen und Historien bleiben verbindlich.
+
+
+## v2.5.5a
+- Hotfix: JavaScript-Fehler `Can't find variable: ready` in der Coin-Listenansicht behoben.
+- Keine Logikänderung an Trading-Regeln; v2.5.5-Funktionen bleiben unverändert.
