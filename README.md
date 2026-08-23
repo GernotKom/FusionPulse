@@ -1,4 +1,18 @@
-# FusionPulse v2
+# FusionPulse v2.2.0
+
+## v2.2.0 – Review-/UX-Update
+- Drei Farbschemata: Dunkel, Hell, Hell/Warm.
+- Analysemodus umschaltbar: Kombiniert, Elliott-Heuristik, Momentum+Volumen, Trend+VWAP/EMA, Orderbuch+Liquidität.
+- Elliott ist bewusst als regelbasierte Heuristik gekennzeichnet, nicht als objektive Wellenzählung.
+- Akustische CRV-Eskalation: >7,6 eigener Ton; ab 8,0 höherer Ton; globaler Ton-Schalter bleibt erhalten.
+- Mouseover-Tradepreview mit Einsatz, Entry, Stop, TP1/TP2, CRV und geschätztem Gewinn nach konfigurierbarer Steuer.
+- Steuerwert ist eine lokale Schätzung und standardmäßig 27,5 %, frei änderbar; keine Steuerberatung.
+- Versionsstände in package.json, wrangler.jsonc und Service-Worker-Cache auf 2.2.0/2.2 angehoben.
+
+## GH oder CF – was wird wo geändert?
+**GH (GitHub)** ist die Quelle des Programmcodes. Änderungen an `src/worker.js`, `public/app.js`, `public/style.css`, `public/index.html`, `public/sw.js`, `package.json` und `wrangler.jsonc` zuerst in GH hochladen/committen.
+
+**CF (Cloudflare)** führt den Worker aus und liefert die PWA aus. `FUSION_API_KEY` und `APP_TOKEN` bleiben ausschließlich als CF-Secrets. Bei einem mit GH verbundenen Worker löst ein Commit auf `main` normalerweise ein Deployment aus; sonst in CF unter Bereitstellungen die neue GH-Version deployen/befördern. Secrets niemals in GH eintragen.
 
 Scanner für Momentum, Einstiegszonen und Ausführbarkeit auf Bitpanda Fusion (EUR-Paare).
 Cloudflare Worker als API-Proxy + PWA-Frontend. Der API-Key verlässt den Server nie.
@@ -29,14 +43,33 @@ Cloudflare Worker als API-Proxy + PWA-Frontend. Der API-Key verlässt den Server
 - Marktbreite (% über VWAP) als globaler Risk-On/Risk-Off-Filter
 - `blockers`: jede Kachel erklärt, *warum* sie nicht grün ist
 
-**Dashboard**
-- Action-Rail mit den Top-3-Setups und Order-Plan in die Zwischenablage
-- Einstiegs**zone** statt Einstiegspunkt, Rahmen leuchtet bei Preis in der Zone
+**Dashboard (v2.1)**
+
+Drei Ebenen statt eines Rasters aus 20 gleichwertigen Kacheln:
+
+1. **Fokus-Panel** — das eine Setup, um das es gerade geht, bewusst groß.
+   Enthält die *Preisleiter*: Stop, Einstiegszone, TP1, TP2 und der aktuelle
+   Preis als wandernder Marker auf einer vertikalen Achse. Ablesbar ohne
+   eine einzige Zahl zu vergleichen. Order-Plan mit einem Tap kopierbar.
+2. **2D-Karte** — Setup-Qualität (y) gegen Handelbarkeit (x). Position
+   kodiert Bedeutung, das Auge lernt auf oben-rechts zu schauen. Macht den
+   Quadranten *gutes Setup, schlechte Ausführbarkeit* sichtbar: dort wartet
+   man auf Spread-Verengung, statt das Setup zu verwerfen.
+3. **Dichte Liste** — ausgerichtete Spalten mit Sparkline, Reifezeit und
+   Zonenlage-Balken. Rote Zeilen sind eingeklappt.
+
+Weiter:
+- **Reifezeit**: wie lange hält ein Zustand schon? Kompression seit drei
+  Stunden ist eine gespannte Feder, Kompression seit zehn Minuten ist Rauschen.
+- **Zonenlage-Balken**: unter / in / über der Zone auf einen Blick
 - Positionsgröße aus Equity × Risiko %, gedeckelt auf die Orderbuchtiefe
+- Aktions-Dock unten, auf dem Tablet immer mit dem Daumen erreichbar
 - Countdown bis Schluss der 5m-Kerze
 - Diff-Rendering statt `innerHTML`-Neuaufbau
 - Alarme mit Hysterese (2 Scans) und 90-s-Cooldown
-- Hotkeys, Wake Lock, Trade-Journal mit CSV-Export
+- Hotkeys (j/k blättern, c kopieren, d Details, p anheften), Wake Lock
+- Journal loggt den vollständigen Faktorvektor → nach ~50 Trades per
+  Regression auswertbar, welche Faktoren bei *dir* mit Gewinnen korrelieren
 
 ## Deployment
 
@@ -56,6 +89,18 @@ und ~15–40 ms CPU — je nach Paarzahl kann das über 10 ms gehen. Wenn im Log
 `exceededResources` auftaucht: Tiefen-Scan in ⚙ reduzieren oder auf Workers Paid (5 $/Monat).
 Auf `*.workers.dev` ist die Cache-API eingeschränkt; der In-Memory-Cache greift trotzdem.
 Für einen Cache über Isolate-Grenzen hinweg optional ein KV-Namespace als `SNAP` binden.
+
+## Getestet
+
+- Worker gegen gemockte Fusion-API: 32 Subrequests, Cache greift, Single-Flight
+  hält 5 parallele Anfragen zusammen, Auth gibt 401/200
+- Analyse gegen konstruierte Szenarien (Pullback, Squeeze, Flush, Parabolik,
+  Seitwärts) — auf reinem Random Walk entstehen **keine** grünen Signale
+- Frontend headless via jsdom: Rendering, Koordinaten aller SVG-Elemente,
+  Klick, Hotkeys, Filter, Modal, Diff-Rendering
+
+Ein Pixel-Render-Test war in der Sandbox nicht möglich. Layout auf dem
+Zielgerät gegenprüfen.
 
 ## Hinweis
 
