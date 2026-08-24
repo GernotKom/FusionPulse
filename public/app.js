@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.2.5 — Frontend
+   FusionPulse v3.2.6 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -854,7 +854,7 @@ function leadModel(r){
   return {n,cur,firstKey,best};
 }
 function leadBadge(r){const m=leadModel(r);const cur=m.cur.length?m.cur.slice(0,4).map(k=>LEAD_LABEL[k]).join('→'):'wartet';let learned='lernt';if(m.n>=5){const f=m.firstKey?LEAD_LABEL[m.firstKey]:'–';const lead=m.best[0]&&Number.isFinite(m.best[0].m)?` · ${LEAD_LABEL[m.best[0].k]} ~${Math.round(m.best[0].m)}m vor +5%`:'';learned=`${f} zuerst · n=${m.n}${lead}`;}return `<span title="Early-Momentum-Learning: speichert, welcher Frühindikator wie viele Minuten VOR einer tatsächlich beobachteten +5%-Expansion angesprungen ist. Aktuelle Reihenfolge: ${esc(cur)}. Auswertung erst nach echten Fällen; 0 % BUY-Gewicht.">🧬 Lead ${esc(cur)} · ${esc(learned)}</span>`;}
-function edgeStrip(r){const e=edgeSignals(r),tw=e.tw;const twinSrc=tw.source==='d1'?'D1':'lokal';const ds=tw.distinctSymbols!=null?` · ${tw.distinctSymbols} Titel`:'';const twin=tw.n>=5?`${tw.edge}% · n=${tw.n}${ds} · ${twinSrc}`:`lernt · n=${tw.n}${ds} · ${twinSrc}`;return `<div class="edge-strip"><span title="Attention-Price-Divergence: hohe Suchaufmerksamkeit bei noch relativ ruhigem Preis. Forschungsindikator, kein BUY allein.">⚡ Attention ${e.apd==null?'n.v.':e.apd+'/100'}</span><span title="Liquidity Vacuum: heuristisch wenig frühere Aktivität/Widerstand direkt oberhalb des Einstiegs. Höher kann schnellere Expansion begünstigen.">↗ Vacuum ${e.vac}/100</span><span title="Sector Leader-Lag: positiver Wert bedeutet, dass andere Titel derselben Branche kurzfristig stärker laufen. Beobachtet potenzielle Nachzügler.">⇢ Sektor-Lag ${e.lag==null?'n.v.':num(e.lag,1)+'%'}</span><span title="Historical Twin: bevorzugt serverseitig in Cloudflare D1 gelernte, ähnlichste frühere Markt-Snapshots; lokal nur Fallback. Prozent = Anteil der ähnlichen Fälle mit mindestens +5 % beobachteter Maximalbewegung. Erst ab 5 Fällen angezeigt.">🧠 Twin ${twin}</span>${leadBadge(r)}</div>`;}
+function edgeStrip(r){const e=edgeSignals(r),tw=e.tw;const twinSrc=tw.source==='d1'?'D1':'lokal';const ds=tw.distinctSymbols!=null?` · ${tw.distinctSymbols} Titel`:'';const avail=tw.available!=null&&tw.available!==tw.n?`/${tw.available}`:'';const twin=tw.n>=5?`${tw.edge}% · n=${tw.n}${avail}${ds} · ${twinSrc}`:`lernt · n=${tw.n}${avail}${ds} · ${twinSrc}`;return `<div class="edge-strip"><span title="Attention-Price-Divergence: hohe Suchaufmerksamkeit bei noch relativ ruhigem Preis. Forschungsindikator, kein BUY allein.">⚡ Attention ${e.apd==null?'n.v.':e.apd+'/100'}</span><span title="Liquidity Vacuum: heuristisch wenig frühere Aktivität/Widerstand direkt oberhalb des Einstiegs. Höher kann schnellere Expansion begünstigen.">↗ Vacuum ${e.vac}/100</span><span title="Sector Leader-Lag: positiver Wert bedeutet, dass andere Titel derselben Branche kurzfristig stärker laufen. Beobachtet potenzielle Nachzügler.">⇢ Sektor-Lag ${e.lag==null?'n.v.':num(e.lag,1)+'%'}</span><span title="Historical Twin: bevorzugt serverseitig in Cloudflare D1 gelernte, ähnlichste frühere Markt-Snapshots; lokal nur Fallback. Prozent = Anteil der ähnlichen Fälle mit mindestens +5 % beobachteter Maximalbewegung. Erst ab 5 Fällen angezeigt.">🧠 Twin ${twin}</span>${leadBadge(r)}</div>`;}
 
 
 function learningBadge(){
@@ -930,9 +930,17 @@ function renderOpeningPanel() {
   }));
 }
 
+function renderMarketGainers(){
+  const el=$('#marketGainers'); if(!el)return;
+  const g=(stockMeta.discovery?.radar?.gainers||[]).slice(0,8);
+  if(!g.length){el.innerHTML='<div class="ophead"><b>📈 Market Gainer · Common Stocks</b><small>Elliott-first Discovery</small></div><span class="hint">Noch keine verifizierten starken Gainer im aktuellen Radar.</span>';return;}
+  el.innerHTML=`<div class="ophead"><b>📈 Market Gainer · Common Stocks</b><span>US-Markt · nur Discovery</span><small>Elliott bleibt Deep-Scan-Basis</small></div><div class="opgrid">${g.map(r=>`<button type="button" class="opcard" data-openstock="${esc(r.symbol)}" title="Verifizierter Common Stock. Tagesbewegung ist nur Discovery; BUY erst nach Elliott-/Qualitäts-/CRV-Prüfung."><b>${esc(r.symbol)}</b><span>${Number(r.movePct)>=0?'+':''}${num(r.movePct,1)}% Tag</span><span>${r.speedPct!=null?'Speed '+num(r.speedPct,2)+'%':'Radar '+num(r.score,1)}</span><span>${r.spreadPct!=null?'Spread '+num(r.spreadPct,2)+'%':'Spread n.v.'}</span><em>Elliott prüfen</em></button>`).join('')}</div>`;
+  el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>{focusStock=b.dataset.openstock||'';renderStocks();$('#stockFocus')?.scrollIntoView({behavior:'smooth',block:'start'});}));
+}
+
 function renderStocks() {
   const box=$('#stockGroups'),st=$('#stockState'),counts=$('#stockCounts'); if(!box||!st)return;
-  renderDepotStrip(); renderOpeningPanel();
+  renderDepotStrip(); renderMarketGainers(); renderOpeningPanel();
   if(stockMeta.configured===false){box.innerHTML='';st.textContent='Aktien-Datenquelle fehlt';st.className='badge err';if(counts)counts.textContent='Aktienradar nicht konfiguriert';stockHeatmap([]);return;}
   const search=($('#stockQ')?.value||'').trim().toUpperCase(); const filter=$('#stockF')?.value||'';
   let stockFiltered=stockRows.filter(r=>(!search||r.symbol.toUpperCase().includes(search)||String(r.name||'').toUpperCase().includes(search)));

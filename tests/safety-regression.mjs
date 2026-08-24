@@ -71,7 +71,7 @@ assert.match(wrangler,/"TIINGO_STOCKS_MODE": "primary"/,'Tiingo Primary must rem
 assert.match(workerText,/Discovery only: unusual overnight move[\s\S]*NEVER enters analyseStock\/BUY/,'BOATS discovery must be explicitly isolated from BUY');
 assert.match(workerText,/row\.discovery=\{type:'iex-radar',\.\.\.rm,buyWeight:0\}/,'IEX Radar candidate metadata must carry 0 BUY weight');
 assert.match(workerText,/row\.discovery=\{type:'boats',\.\.\.bm,buyWeight:0\}/,'BOATS candidate metadata must carry 0 BUY weight');
-assert.match(workerText,/const syms=\[\.\.\.favPick,\.\.\.recheckPick,\.\.\.radarPick,\.\.\.boatsPick,\.\.\.explore\]\.slice\(0,20\)/,'Deep scan must cap adaptive candidate batch at 20');
+assert.match(workerText,/const syms=\[\.\.\.favPick,\.\.\.recheckPick,\.\.\.gainerPick,\.\.\.radarPick,\.\.\.boatsPick,\.\.\.explore\]\.slice\(0,20\)/,'Deep scan must cap adaptive candidate batch at 20');
 assert.match(workerText,/await tiingoFetch\(env,'\/iex'\)/,'Whole-market Radar must use Tiingo IEX bulk snapshot');
 assert.match(workerText,/stockMinute%2===1[\s\S]*tiingoIexMarketRadar\(env,80,true\)/,'Server scheduler must keep the market radar independent of the browser');
 assert.match(workerText,/execution!=='server'&&!force[\s\S]*readLatestPersistedStockScan/,'Browser stock requests must consume the persisted server scan instead of starting a duplicate market scan');
@@ -86,3 +86,9 @@ assert.match(workerText,/Metadaten(?:prüfung|pruefung) fehlgeschlagen/,'Metadat
 assert.match(workerText,/\/tiingo\/daily\/\$\{encodeURIComponent\(sym\)\}/,'Common-stock validation must use stable Tiingo EOD metadata');
 
 console.log('✓ FusionPulse safety regressions: OK');
+
+// v3.2.6 Elliott-first / Market-Gainer guards
+assert.match(workerText,/const ell=Number\(r\?\.elliott\)\|\|0/,'Deep recheck ranking must explicitly include Elliott structure');
+assert.match(workerText,/openingGainers\(radar\.rows\|\|\[\],6\)/,'Verified market gainers must receive dedicated discovery slots');
+assert.match(workerText,/security_meta:v326:/,'Security cache generation must be invalidated for v3.2.6');
+assert.match(workerText,/available:eligible\.length/,'Historical Twin must expose the qualified pool in addition to capped n');
