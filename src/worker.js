@@ -1,7 +1,7 @@
 import { APP_VERSION } from './version.js';
 
 /* ============================================================================
-   FusionPulse v2.5.1 — Cloudflare Worker
+   FusionPulse v3.0.0 — Cloudflare Worker
    Momentum- & Einstiegszonen-Scanner für Bitpanda Fusion (EUR-Paare)
 
    Design-Prinzipien:
@@ -105,13 +105,18 @@ function toCandles(raw) {
 }
 
 /** 5m-Kerzen zu höherem TF verdichten (bucketSec = 900 → 15m, 3600 → 1h). */
-function resample(cs, bucketSec) {
+function resample(cs, bucketSec, closedOnly = false) {
   const out = [];
   let cur = null;
   for (const c of cs) {
     const b = Math.floor(c.t / bucketSec) * bucketSec;
     if (!cur || cur.t !== b) { cur = { t: b, o: c.o, h: c.h, l: c.l, c: c.c, v: c.v }; out.push(cur); }
     else { cur.h = Math.max(cur.h, c.h); cur.l = Math.min(cur.l, c.l); cur.c = c.c; cur.v += c.v; }
+  }
+  if (closedOnly && out.length && cs.length > 1) {
+    const diffs = cs.slice(1).map((c, i) => c.t - cs[i].t).filter((d) => d > 0);
+    const step = diffs.length ? Math.min(...diffs) : 0;
+    if (cs.at(-1).t + step < out.at(-1).t + bucketSec) out.pop();
   }
   return out;
 }
@@ -238,8 +243,8 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
   if (atrPct <= 0) return null;
 
   // --- Multi-Timeframe aus denselben Daten ---------------------------------
-  const c15 = resample(cs, 900);
-  const c60 = resample(cs, 3600);
+  const c15 = resample(cs, 900, true);
+  const c60 = resample(cs, 3600, true);
   const tfBias = (c) => {
     const v = c.map((x) => x.c); if (v.length < 12) return 0;
     const e9 = ema(v, 9).at(-1), e21 = ema(v, 21).at(-1);
@@ -270,7 +275,7 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
   const compression = clamp(10 - (bbNow / bbMed) * 5);
 
   // --- Relative Stärke vs. BTC (vol-normiert) ------------------------------
-  let relativeStrength = 5, btcBias = 0;
+  let relativeStrength = null, btcBias = 0;
   if (btc5 && btc5.length > 40) {
     const bc = btc5.slice(0, -1).map((x) => x.c);
     const bAtrPct = atr(btc5.slice(0, -1), 14) / (bc.at(-1) || 1);
@@ -323,6 +328,7 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
   const bm = book || null;
   const spread = bm?.spread ?? null;
   const imbalance = bm?.imbalance ?? 0;
+  const bookKnown = !!bm;
   const liquidity = bm
     ? clamp(10 - (spread ?? 0.004) * 900 - Math.max(0, 3 - Math.log10(Math.max(bm.buyCapacity, 1))) * 1.6)
     : 5.5;
@@ -412,11 +418,15 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
   // Ausfuehrbarkeit -> auf Spread-Verengung warten statt verwerfen.
   // Die Handelbarkeit ist eine Sicherheitsachse (Kosten, Spread, Tiefe) und
   // bleibt bewusst IMMER aktiv, auch wenn Analysekomponenten abgeschaltet sind.
-  const spreadScore = spread == null ? 5.5 : clamp(10 - spread * 1100);
-  const executability = clamp(
-    liquidity * 0.38 + Math.min(10, costRatio * 2) * 0.30 +
-    spreadScore * 0.18 + Math.min(10, (netCRV / 3) * 10) * 0.14
-  );
+  const spreadScore = spread == null ? null : clamp(10 - spread * 1100);
+  const execParts = [
+    [bookKnown, liquidity, 0.38],
+    [true, Math.min(10, costRatio * 2), 0.30],
+    [spreadScore != null, spreadScore, 0.18],
+    [true, Math.min(10, (netCRV / 3) * 10), 0.14],
+  ].filter(([known]) => known);
+  const execWeight = execParts.reduce((a,x)=>a+x[2],0) || 1;
+  const executability = clamp(execParts.reduce((a,x)=>a+x[1]*x[2],0) / execWeight);
 
   // --- Elliott-Wellen-Heuristik ---------------------------------------------
   // Keine subjektive Wellenbeschriftung: bewertet Impuls-/Korrekturstruktur aus
@@ -486,7 +496,7 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
   let light = 'red';
   const viable = netCRV >= 1.0 && costRatio >= 2.5 && exhaustion < 8.5;
   const tradable = viable && netCRV >= minCrv && (spread == null || spread <= 0.0025)
-                   && liquidity >= 6 && exhaustion < 7;
+                   && (!bookKnown || liquidity >= 6) && exhaustion < 7;
   if (modeQuality >= 7.0 && executability >= 6.5 && tradable && (mode === 'elliott' || setupFit >= 7)) light = 'green';
   else if (viable && (modeQuality >= 6.0 || (mode === 'composite' && premove >= 7.2))) light = 'yellow';
 
@@ -500,7 +510,8 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
   if (netCRV < minCrv) blockers.push(`CRV ${r2(netCRV)}:1 < Minimum ${r2(minCrv)}:1`);
   if (costRatio < 2.5) blockers.push(`Kosten fressen den Stop (${r1(costRatio)}x)`);
   if (spread != null && spread > 0.0025) blockers.push(`Spread ${(spread * 100).toFixed(2)} %`);
-  if (liquidity < 6) blockers.push('dünne Tiefe');
+  if (bookKnown && liquidity < 6) blockers.push('dünne Tiefe');
+  if (!bookKnown) blockers.push('Orderbuch ungeprüft');
   if (exhaustion >= 7) blockers.push('überdehnt');
   if (setupFit < 7) blockers.push('kein klares Setup');
   if (modeScore < 7.4) blockers.push(`Score ${r1(modeScore)}`);
@@ -593,7 +604,7 @@ async function runScan(key, opts = {}) {
   const mode = opts.mode || 'composite';
   const minCrv = Math.max(1, Number(opts.minCrv || 2));
   const comp = opts.comp instanceof Set ? opts.comp : new Set(ALL_ON);
-  const useBook = mode !== 'elliott' && comp.has('book');
+  const useBook = comp.has('book');
 
   const pre = chosen.map((p) => {
     const cs = candleMap.get(p);
@@ -868,8 +879,9 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
   const ret5 = (last.c / prev.c - 1) * 100;
   const ret15 = (last.c / bars.at(-4).c - 1) * 100;
   const ret60 = (last.c / bars.at(-13).c - 1) * 100;
-  const vbase = vs.slice(-21, -1).reduce((a, b) => a + b, 0) / 20 || 1;
-  const relVol = last.v / vbase;
+  const vbaseArr = vs.slice(-21, -1).filter((v) => v > 0);
+  const vbase = vbaseArr.length >= 8 ? mean(vbaseArr) : null;
+  const relVol = vbase > 0 ? last.v / vbase : 1; // unbekannt = keine Volumenbestaetigung
 
   // Gewichteter Mittelwert über AKTIVE Komponenten — abgeschaltet ≠ negativ.
   const trendScore = 5 + (last.c > ema21 ? 1.9 : -1.9) + (ema9 > ema21 ? 1.5 : -1.1);
@@ -893,6 +905,12 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
   const impulsePct = Math.max(Math.abs(ret60), atr > 0 ? (atr / last.c) * 100 * 3 : 0);
   const structurePct = Math.max(0, Math.min(20, impulsePct * 1.618));
   const swingTarget = entry * (1 + structurePct / 100);
+  // Liquidity-Vacuum-Heuristik: wie wenig frühere 5m-Aktivität direkt oberhalb
+  // des Einstiegs liegt. 0 = viel Overhead, 100 = relativ freie Preiszone.
+  const overhead = bars.slice(-36,-1).filter(b => b.c > entry && b.c <= entry + Math.max(atr*4, entry*.05));
+  const avgVol = mean(vs.slice(-36,-1)) || 1;
+  const overheadVol = overhead.reduce((a,b)=>a+b.v,0) / Math.max(1,overhead.length) / avgVol;
+  const liquidityVacuum = clamp(100 - overheadVol*45 - overhead.length*2.2, 0, 100);
   const grossCRV = (tp2 - entry) / risk;
   const costPct = 0.18;                                   // Broker + Spread, konservativ
   const netCRV = +Math.max(0, grossCRV - (costPct / 100 * entry / risk)).toFixed(1);
@@ -923,6 +941,7 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
     netCRV, atrPct: +((atr / last.c) * 100).toFixed(2),
     ret5: +ret5.toFixed(2), ret15: +ret15.toFixed(2), ret60: +ret60.toFixed(2),
     relVol: +relVol.toFixed(2), vwapUsd: vwap, aboveVwap: last.c >= vwap,
+    liquidityVacuum: +liquidityVacuum.toFixed(0),
     updated: last.dt, feed: 'Twelve Data US', tradegate: false, marketPhase: usMarketPhase().key,
     fxUsdPerEur: usdPerEur || null, fxKnown: !!usdPerEur,
     components: [...on],
@@ -1004,7 +1023,18 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3) {
   }
   const old = new Map(stockMemo.rows.map((r) => [r.symbol, r]));
   for (const r of fresh) old.set(r.symbol, r);
-  const rows = [...old.values()].sort((a, b) => b.score - a.score);
+  const rows = [...old.values()];
+  // Sector-Leader/Lag: misst, ob der eigene Sektor bereits läuft, während der
+  // Titel selbst noch hinterherhinkt. Positiv = potenzieller Nachzügler.
+  const sectorMap = new Map();
+  for (const r of rows) { const a=sectorMap.get(r.sector)||[]; a.push(r); sectorMap.set(r.sector,a); }
+  for (const r of rows) {
+    const peers=(sectorMap.get(r.sector)||[]).filter(x=>x.symbol!==r.symbol);
+    const leader=peers.length?Math.max(...peers.map(x=>Number(x.ret15||0))):Number(r.ret15||0);
+    r.sectorLeaderRet15=+leader.toFixed(2);
+    r.sectorLag=+Math.max(-10,Math.min(10,leader-Number(r.ret15||0))).toFixed(2);
+  }
+  rows.sort((a, b) => b.score - a.score);
   stockMemo = { ts: Date.now(), rows, cycle };
   setApiState('stocks', 'ok');
 
@@ -1043,8 +1073,8 @@ function momentumFromAlpaca(symbol, snap, bars=[]){
   if(!(latest>0&&prevClose>0))return null;
   const bs=(bars||[]).map(b=>({t:b.t,c:+b.c,h:+b.h,l:+b.l,v:+b.v||0})).filter(b=>b.c>0).sort((a,b)=>new Date(a.t)-new Date(b.t));
   const closeAgo=(n)=>bs.length>n?bs.at(-1-n).c:bs[0]?.c||latest;
-  const ret5=(latest/closeAgo(5)-1)*100, ret15=(latest/closeAgo(15)-1)*100, ret60=(latest/closeAgo(Math.min(60,bs.length-1))-1)*100;
-  const vols=bs.slice(-25).map(b=>b.v); const base=mean(vols.slice(0,-3))||1; const recent=mean(vols.slice(-3)); const relVol=recent/base;
+  const ret5=(latest/closeAgo(5)-1)*100, ret15=(latest/closeAgo(15)-1)*100, ret60=(latest/closeAgo(Math.max(0,Math.min(60,bs.length-1)))-1)*100;
+  const vols=bs.slice(-25).map(b=>b.v); const baseArr=vols.slice(0,-3).filter(v=>v>0); const base=baseArr.length>=8?mean(baseArr):null; const recent=mean(vols.slice(-3)); const relVol=base>0?recent/base:1; // unbekannt = keine Volumenbestaetigung
   const gapPct=(latest/prevClose-1)*100;
   const pre=bs.filter(b=>{const m=barTimeET(b.t);return m>=480&&m<570;});
   const preHigh=pre.length?maxOf(pre.map(b=>b.h)):null, preLow=pre.length?minOf(pre.map(b=>b.l)):null;
@@ -1076,6 +1106,307 @@ async function openingMomentum(env, force=false){
   openingMemo={ts:Date.now(),data}; setApiState('alpaca','ok',`${rows.length} Momentum-Titel · ${phase.label}`); return data;
 }
 
+
+/* ========================================================================
+   Experimental Lab + Crowd/Search (v2.5.7)
+   Diese Daten sind reine Forschungs-/Kontextvariablen und haben 0 % Gewicht
+   im BUY-Score. Keine kausale Aussage wird unterstellt.
+   ======================================================================== */
+let experimentalMemo={ts:0,data:null};
+let crowdMemo={ts:0,key:'',data:null};
+function star5(x){return Math.max(1,Math.min(5,Math.round(Number(x)||1)));}
+async function fetchJSONPublic(url){
+  const r=await fetch(url,{headers:{accept:'application/json','user-agent':'FusionPulse/2.5.7'}});
+  if(!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+function moonPhase(){
+  const syn=29.53058867, known=Date.UTC(2000,0,6,18,14,0); // known new moon
+  let days=(Date.now()-known)/86400000; let age=((days%syn)+syn)%syn; let f=age/syn;
+  const names=['Neumond','zunehmende Sichel','erstes Viertel','zunehmender Mond','Vollmond','abnehmender Mond','letztes Viertel','abnehmende Sichel'];
+  const idx=Math.floor((f*8)+0.5)%8;
+  const dynamic=Math.abs(Math.sin(2*Math.PI*f)); // quarter phases more "dynamic" for the display only
+  return {phase:names[idx],ageDays:+age.toFixed(1),stars:star5(1+dynamic*4),label:`${names[idx]} · Alter ${age.toFixed(1)} Tage`};
+}
+function parseKp(raw){
+  try{
+    if(Array.isArray(raw)&&raw.length){
+      const rows=Array.isArray(raw[0])?raw.slice(1):raw;
+      const last=rows.at(-1); const kp=Array.isArray(last)?Number(last[1]??last[2]):Number(last?.kp_index??last?.kp??last?.Kp);
+      if(Number.isFinite(kp))return kp;
+    }
+  }catch{}
+  return null;
+}
+async function experimentalPulse(force=false){
+  if(!force&&experimentalMemo.data&&Date.now()-experimentalMemo.ts<10*60_000)return {...experimentalMemo.data,cached:true};
+  let kp=null,solarSpeed=null,seismic=null;
+  try{kp=parseKp(await fetchJSONPublic('https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json'));}catch{}
+  try{const x=await fetchJSONPublic('https://services.swpc.noaa.gov/products/summary/solar-wind-speed.json');solarSpeed=Number(x?.WindSpeed??x?.wind_speed??x?.speed??x?.value??(Array.isArray(x)?x.at(-1)?.[1]:null));if(!Number.isFinite(solarSpeed))solarSpeed=null;}catch{}
+  try{const q=await fetchJSONPublic('https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson');const fs=q?.features||[];const maxMag=Math.max(0,...fs.map(f=>Number(f?.properties?.mag)||0));seismic={count:fs.length,maxMag};}catch{}
+  const geomag=kp==null?null:{stars:star5(1+kp/2),label:`Kp ${kp.toFixed(1)} · ${kp>=5?'Sturmaktivität':'ruhig bis aktiv'}`,value:kp};
+  const solar=solarSpeed==null?null:{stars:star5((solarSpeed-250)/100),label:`Sonnenwind ${Math.round(solarSpeed)} km/s`,value:solarSpeed};
+  const seis=seismic?{stars:star5(1+Math.max(0,seismic.maxMag-4.5)*1.1+Math.min(1.5,seismic.count/15)),label:`${seismic.count}× M4,5+ · max M${seismic.maxMag.toFixed(1)}`,count:seismic.count,maxMag:seismic.maxMag}:null;
+  const data={configured:true,state:'ok',geomag,solar,seismic:seis,astro:moonPhase(),collective:{stars:null,label:'GCP klassisch beendet 03.04.2026 · GCI ohne öffentliche Live-API'},notes:'Nur Dynamik/Aktivität; 0 % BUY-Gewicht.',ts:Date.now(),version:APP_VERSION};
+  experimentalMemo={ts:Date.now(),data};return data;
+}
+function crowdQueryName(sym){
+  const n=STOCK_SEARCH_BY_SYMBOL.get(sym)?.name||STOCK_NAMES[sym]||sym;
+  return `${String(n).replace(/,/g,' ')} stock`;
+}
+function trendScore(values){
+  const a=(values||[]).map(Number).filter(Number.isFinite); if(a.length<3)return null;
+  const recent=mean(a.slice(-3)); const base=mean(a.slice(0,Math.max(1,a.length-3)))||recent||1;
+  const accel=(recent-base)/(Math.abs(base)+1)*100;
+  const score=clamp(50+accel*2.2,0,100); const stars=star5(1+Math.abs(accel)/8);
+  return {score:r1(score),stars,accel:r1(accel),recent:r1(recent)};
+}
+async function crowdPulse(env,symbols,force=false){
+  const syms=[...new Set(String(symbols||'').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,8}$/.test(x)))].slice(0,15);
+  const key=syms.join(',');
+  if(!env.SERPAPI_KEY)return {configured:false,state:'nokey',rows:syms.map(symbol=>({symbol,score:null,stars:null,source:'Google Trends'})),note:'SERPAPI_KEY fehlt; keine Suchwerte werden erfunden.',version:APP_VERSION};
+  if(!force&&crowdMemo.data&&crowdMemo.key===key&&Date.now()-crowdMemo.ts<4*60*60_000)return {...crowdMemo.data,cached:true};
+  const rows=[];
+  // Bis zu fünf Begriffe pro Google-Trends-Aufruf. 4h Cache schützt das Kontingent.
+  for(let i=0;i<syms.length;i+=5){
+    const group=syms.slice(i,i+5),queries=group.map(crowdQueryName);
+    const u=new URL('https://serpapi.com/search.json');u.searchParams.set('engine','google_trends');u.searchParams.set('q',queries.join(','));u.searchParams.set('date','now 4-H');u.searchParams.set('geo','US');u.searchParams.set('data_type','TIMESERIES');u.searchParams.set('api_key',env.SERPAPI_KEY);
+    try{
+      const j=await fetchJSONPublic(u.toString()); const tl=j?.interest_over_time?.timeline_data||[];
+      for(let gi=0;gi<group.length;gi++){
+        const vals=tl.map(t=>Number(t?.values?.[gi]?.extracted_value??t?.values?.[gi]?.value)).filter(Number.isFinite);
+        const m=trendScore(vals);rows.push({symbol:group[gi],score:m?.score??null,stars:m?.stars??null,accel:m?.accel??null,interest:m?.recent??null,source:'Google Trends via SerpApi'});
+      }
+    }catch(e){for(const symbol of group)rows.push({symbol,score:null,stars:null,source:'Google Trends via SerpApi',error:String(e.message||e)});}
+  }
+  const data={configured:true,state:'ok',rows,cacheHours:4,note:'Crowd/Search ist eine separate Aufmerksamkeitsmessung und hat 0 % BUY-Gewicht.',ts:Date.now(),version:APP_VERSION};
+  crowdMemo={ts:Date.now(),key,data};return data;
+}
+
+
+
+/* ========================================================================
+   FusionPulse 3.0 — serverseitiges D1-Learning
+   DB-Binding: env.DB (Cloudflare D1). Die PWA bleibt funktionsfähig, wenn D1
+   noch nicht verbunden ist; dann zeigt /api/learning state="nodb".
+   Gespeichert werden echte Markt-Snapshots und nachfolgend beobachtete
+   Outcomes. Browser-/PWA-Speicher ist damit nicht mehr die einzige Quelle.
+   ======================================================================== */
+const LEARN_HORIZON_MS = 180 * 60_000;
+const LEARN_HISTORY_MS = 120 * 60_000;
+const LEARN_SIGNAL_LABELS = ['attention','crowd','sector','rvol','vacuum','elliott','momentum','technical'];
+
+let d1SchemaReady=false;
+let learnMemo={ts:0,key:'',data:null};
+async function ensureD1Schema(env){
+  if(!env.DB||d1SchemaReady)return !!env.DB;
+  const ddl=[
+    `CREATE TABLE IF NOT EXISTS market_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT,ts INTEGER NOT NULL,bucket5 INTEGER NOT NULL,source TEXT NOT NULL,asset_type TEXT NOT NULL,symbol TEXT NOT NULL,sector TEXT,phase TEXT,price REAL NOT NULL,score REAL,crv REAL,rvol REAL,ret15 REAL,ret60 REAL,atr_pct REAL,liquidity_vacuum REAL,sector_lag REAL,crowd_score REAL,structure_pct REAL,executability REAL,light TEXT,max_pct REAL NOT NULL DEFAULT 0,min_pct REAL NOT NULL DEFAULT 0,success_ts INTEGER,resolved_ts INTEGER,payload TEXT,UNIQUE(source,asset_type,symbol,bucket5))`,
+    `CREATE INDEX IF NOT EXISTS idx_snap_symbol_ts ON market_snapshots(symbol, ts DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_snap_unresolved ON market_snapshots(resolved_ts, ts)`,
+    `CREATE INDEX IF NOT EXISTS idx_snap_sector_resolved ON market_snapshots(sector, resolved_ts, ts DESC)`,
+    `CREATE TABLE IF NOT EXISTS signal_events (id INTEGER PRIMARY KEY AUTOINCREMENT,symbol TEXT NOT NULL,ts INTEGER NOT NULL,bucket5 INTEGER NOT NULL,signal TEXT NOT NULL,price REAL NOT NULL,strength REAL,source TEXT,UNIQUE(symbol,bucket5,signal))`,
+    `CREATE INDEX IF NOT EXISTS idx_event_symbol_ts ON signal_events(symbol, ts DESC)`,
+    `CREATE TABLE IF NOT EXISTS crowd_cache (symbol TEXT PRIMARY KEY,ts INTEGER NOT NULL,score REAL,stars INTEGER,accel REAL,interest REAL,source TEXT)`,
+    `CREATE TABLE IF NOT EXISTS fp_meta (key TEXT PRIMARY KEY,value TEXT,updated_ts INTEGER NOT NULL)`
+  ];
+  for(const q of ddl)await env.DB.prepare(q).run();
+  try { await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN executability REAL').run(); }
+  catch { /* column already exists */ }
+  d1SchemaReady=true;return true;
+}
+const dbNum = (x) => Number.isFinite(Number(x)) ? Number(x) : null;
+function safeJson(x){ try { return JSON.stringify(x); } catch { return null; } }
+function learningFeatures(row){
+  return {
+    score: dbNum(row.score ?? row.momentumScore),
+    crv: dbNum(row.netCRV),
+    rv: dbNum(row.relVol),
+    r15: dbNum(row.ret15),
+    r60: dbNum(row.ret60),
+    atr: dbNum(row.atrPct),
+    vac: dbNum(row.liquidityVacuum),
+    lag: dbNum(row.sectorLag),
+    crowd: dbNum(row.crowdScore),
+    structure: dbNum(row.structurePct),
+  };
+}
+function serverLeadFlags(row){
+  const crowd = dbNum(row.crowdScore);
+  const ret15 = Math.abs(dbNum(row.ret15) ?? 0);
+  const attention = crowd == null ? false : (crowd >= 65 && ret15 <= 2.5);
+  return {
+    attention,
+    crowd: crowd != null && crowd >= 70,
+    sector: (dbNum(row.sectorLag) ?? 0) >= 1,
+    rvol: (dbNum(row.relVol) ?? 0) >= 1.8,
+    vacuum: (dbNum(row.liquidityVacuum) ?? 0) >= 70,
+    elliott: (dbNum(row.structurePct) ?? 0) >= 5,
+    momentum: (dbNum(row.momentumScore) ?? dbNum(row.score) ?? 0) >= 7.5,
+    technical: (dbNum(row.score) ?? 0) >= 7.5,
+  };
+}
+async function d1CrowdScore(env, symbol){
+  if(!env.DB) return null;
+  try{
+    const r=await env.DB.prepare('SELECT score FROM crowd_cache WHERE symbol=? AND ts>? LIMIT 1')
+      .bind(symbol, Date.now()-6*60*60_000).first();
+    return dbNum(r?.score);
+  }catch{return null;}
+}
+async function d1StoreCrowd(env, rows){
+  if(!env.DB || !rows?.length) return;
+  await ensureD1Schema(env);
+  const now=Date.now();
+  const stmts=rows.filter(x=>x?.symbol).map(x=>env.DB.prepare(
+    `INSERT INTO crowd_cache(symbol,ts,score,stars,accel,interest,source)
+     VALUES(?,?,?,?,?,?,?) ON CONFLICT(symbol) DO UPDATE SET
+     ts=excluded.ts,score=excluded.score,stars=excluded.stars,accel=excluded.accel,
+     interest=excluded.interest,source=excluded.source`
+  ).bind(String(x.symbol).toUpperCase(), now, dbNum(x.score), dbNum(x.stars), dbNum(x.accel), dbNum(x.interest), x.source||'Crowd'));
+  if(stmts.length) await env.DB.batch(stmts);
+}
+async function d1UpdateOutcomes(env, symbol, price, now=Date.now()){
+  if(!env.DB || !(price>0) || !symbol) return;
+  const rows=(await env.DB.prepare(
+    `SELECT id,ts,price,max_pct,min_pct,success_ts FROM market_snapshots
+     WHERE symbol=? AND resolved_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 500`
+  ).bind(symbol, now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
+  if(!rows.length) return;
+  const stmts=[];
+  for(const x of rows){
+    const pct=(price/Number(x.price)-1)*100;
+    const mx=Math.max(Number(x.max_pct)||0,pct), mn=Math.min(Number(x.min_pct)||0,pct);
+    const successTs=x.success_ts || (mx>=5 ? now : null);
+    const resolved=(now-Number(x.ts)>=LEARN_HORIZON_MS) ? now : null;
+    stmts.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
+      .bind(mx,mn,successTs,resolved,x.id));
+  }
+  if(stmts.length) await env.DB.batch(stmts);
+}
+async function d1StoreSnapshotRow(env, row, {source='server',assetType='stock',now=Date.now()}={}){
+  if(!env.DB || !row) return;
+  await ensureD1Schema(env);
+  const symbol=String(row.symbol||row.pair||'').toUpperCase();
+  const price=dbNum(row.priceUsd ?? row.price ?? row.livePrice ?? row.priceEur);
+  if(!symbol || !(price>0)) return;
+  await d1UpdateOutcomes(env,symbol,price,now);
+  const crowdScore = dbNum(row.crowdScore) ?? await d1CrowdScore(env,symbol);
+  const enriched={...row,crowdScore};
+  const f=learningFeatures(enriched), bucket5=Math.floor(now/(5*60_000));
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO market_snapshots
+     (ts,bucket5,source,asset_type,symbol,sector,phase,price,score,crv,rvol,ret15,ret60,atr_pct,liquidity_vacuum,sector_lag,crowd_score,structure_pct,executability,light,payload)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(now,bucket5,source,assetType,symbol,row.sector||null,row.marketPhase||row.phase||null,price,
+    f.score,f.crv,f.rv,f.r15,f.r60,f.atr,f.vac,f.lag,crowdScore,f.structure,dbNum(row.executability),row.light||null,safeJson({setup:row.setup||null,phaseAction:row.phaseAction||null,verdict:row.verdict||null})).run();
+  const flags=serverLeadFlags(enriched);
+  const ev=[];
+  for(const k of LEARN_SIGNAL_LABELS){
+    if(!flags[k]) continue;
+    const strength = k==='crowd'?crowdScore : k==='rvol'?f.rv : k==='vacuum'?f.vac : k==='sector'?f.lag : k==='elliott'?f.structure : k==='technical'?f.score : k==='momentum'?(dbNum(row.momentumScore)??f.score) : crowdScore;
+    ev.push(env.DB.prepare('INSERT OR IGNORE INTO signal_events(symbol,ts,bucket5,signal,price,strength,source) VALUES(?,?,?,?,?,?,?)')
+      .bind(symbol,now,bucket5,k,price,strength,source));
+  }
+  if(ev.length) await env.DB.batch(ev);
+}
+async function d1StoreRows(env, rows, opts){
+  if(!env.DB || !rows?.length) return;
+  for(const row of rows.slice(0,60)) await d1StoreSnapshotRow(env,row,opts);
+}
+function twinDistance(a,b){
+  const w={score:1.2,crv:.7,rv:.45,r15:.5,r60:.25,atr:.5,vac:.035,lag:.35,crowd:.025,structure:.08};
+  let z=0,n=0;
+  for(const k of Object.keys(w)){
+    const av=dbNum(a[k]),bv=dbNum(b[k]); if(av==null||bv==null)continue;
+    z+=Math.pow((av-bv)*w[k],2); n++;
+  }
+  return n>=3?Math.sqrt(z):9999;
+}
+async function d1TwinFor(env, symbol){
+  if(!env.DB) return {n:0};
+  const cur=await env.DB.prepare(`SELECT sector,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure
+    FROM market_snapshots WHERE symbol=? ORDER BY ts DESC LIMIT 1`).bind(symbol).first();
+  if(!cur) return {n:0};
+  const q=cur.sector
+    ? env.DB.prepare(`SELECT symbol,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure,max_pct,min_pct
+       FROM market_snapshots WHERE resolved_ts IS NOT NULL AND sector=? ORDER BY ts DESC LIMIT 800`).bind(cur.sector)
+    : env.DB.prepare(`SELECT symbol,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure,max_pct,min_pct
+       FROM market_snapshots WHERE resolved_ts IS NOT NULL ORDER BY ts DESC LIMIT 800`);
+  const rows=(await q.all()).results||[];
+  const nearest=rows.map(x=>({...x,d:twinDistance(cur,x)})).filter(x=>x.d<9999).sort((a,b)=>a.d-b.d).slice(0,12);
+  if(nearest.length<5)return {n:nearest.length};
+  const vals=nearest.map(x=>Number(x.max_pct)||0).sort((a,b)=>a-b);
+  return {n:nearest.length,edge:Math.round(nearest.filter(x=>Number(x.max_pct)>=5).length/nearest.length*100),stops:nearest.filter(x=>Number(x.min_pct)<=-1.5).length,median:r1(vals[Math.floor(vals.length/2)]||0)};
+}
+async function d1LeadModel(env, symbol){
+  if(!env.DB)return {n:0};
+  const successes=(await env.DB.prepare(`SELECT ts,success_ts FROM market_snapshots WHERE symbol=? AND success_ts IS NOT NULL ORDER BY success_ts DESC LIMIT 40`).bind(symbol).all()).results||[];
+  if(!successes.length)return {n:0};
+  const minTs=Math.min(...successes.map(s=>Number(s.ts)))-60*60_000;
+  const maxTs=Math.max(...successes.map(s=>Number(s.success_ts)));
+  const allEvents=(await env.DB.prepare(`SELECT signal,ts FROM signal_events WHERE symbol=? AND ts BETWEEN ? AND ? ORDER BY ts ASC`).bind(symbol,minTs,maxTs).all()).results||[];
+  const leads={}, first={}; let used=0;
+  for(const s of successes){
+    const start=Number(s.ts)-60*60_000,end=Number(s.success_ts);
+    const bySignal=new Map();
+    for(const e of allEvents){const t=Number(e.ts);if(t<start||t>end||bySignal.has(e.signal))continue;bySignal.set(e.signal,t);}
+    const events=[...bySignal].map(([signal,ts])=>({signal,ts})).sort((a,b)=>a.ts-b.ts);
+    if(!events.length)continue; used++;
+    first[events[0].signal]=(first[events[0].signal]||0)+1;
+    for(const e of events){(leads[e.signal]??=[]).push(Math.max(0,(end-Number(e.ts))/60000));}
+  }
+  const med=a=>{const x=[...(a||[])].sort((a,b)=>a-b);return x.length?x[Math.floor(x.length/2)]:null};
+  const firstKey=Object.entries(first).sort((a,b)=>b[1]-a[1])[0]?.[0]||null;
+  const best=Object.entries(leads).map(([k,a])=>({k,m:med(a),n:a.length})).filter(x=>x.n>=3).sort((a,b)=>b.m-a.m).slice(0,3);
+  return {n:used,firstKey,best};
+}
+async function d1History(env, symbol, assetType){
+  if(!env.DB)return [];
+  const rows=(await env.DB.prepare(`SELECT ts,score,crv,executability,light,price FROM market_snapshots
+    WHERE symbol=? AND asset_type=? AND ts>=? ORDER BY ts ASC`).bind(symbol,assetType,Date.now()-LEARN_HISTORY_MS).all()).results||[];
+  // ein Punkt je 15-Minuten-Segment, serverseitig und geräteunabhängig
+  const bins=new Map();
+  for(const x of rows) bins.set(Math.floor(Number(x.ts)/(15*60_000)),{ts:Number(x.ts),quality:Number(x.score)||0,executability:Number(x.executability)||0,light:x.light||'red',crv:Number(x.crv)||0,price:Number(x.price)||0});
+  return [...bins.values()].slice(-8);
+}
+async function learningPayload(env, stocks=[], coins=[]){
+  if(!env.DB)return {configured:false,state:'nodb',message:'D1-Binding DB fehlt',version:APP_VERSION};
+  await ensureD1Schema(env);
+  const now=Date.now();
+  const key=[...stocks.slice(0,30), '|', ...coins.slice(0,30)].join(',');
+  if(learnMemo.data && learnMemo.key===key && now-learnMemo.ts<60_000) return learnMemo.data;
+  const counts=await env.DB.prepare(`SELECT
+    COUNT(*) snapshots,
+    SUM(CASE WHEN resolved_ts IS NOT NULL THEN 1 ELSE 0 END) resolved,
+    SUM(CASE WHEN success_ts IS NOT NULL THEN 1 ELSE 0 END) expansions,
+    MAX(ts) last_ts FROM market_snapshots`).first();
+  const stockOut={};
+  for(const sym of stocks.slice(0,30)) stockOut[sym]={twin:await d1TwinFor(env,sym),lead:await d1LeadModel(env,sym),history:await d1History(env,sym,'stock')};
+  const coinOut={};
+  for(const sym of coins.slice(0,30)) coinOut[sym]={history:await d1History(env,sym,'coin')};
+  const data={configured:true,state:'ok',ts:now,stats:{snapshots:Number(counts?.snapshots)||0,resolved:Number(counts?.resolved)||0,expansions:Number(counts?.expansions)||0,lastTs:Number(counts?.last_ts)||null},stocks:stockOut,coins:coinOut,version:APP_VERSION};
+  learnMemo={ts:now,key,data}; return data;
+}
+async function serverLearningCycle(env, scheduledTime=Date.now()){
+  if(!env.DB) return;
+  await ensureD1Schema(env);
+  const now=Number(scheduledTime)||Date.now(), phase=usMarketPhase(new Date(now));
+  // Krypto: bestehender serverseitiger Scan wird auch ohne geöffnete PWA erfasst.
+  if(env.FUSION_API_KEY && Math.floor(now/60_000)%5===0){
+    try{const snap=await getSnapshot(env,{},true);await d1StoreRows(env,snap.rows||[],{source:'Bitpanda Fusion',assetType:'coin',now});}catch{}
+  }
+  // Alpaca Free/IEX: nur im sinnvollen IEX-Livefenster ab 08:00 ET bis ca. 17:00 ET.
+  const np=nyParts(new Date(now)),minsET=Number(np.hour)*60+Number(np.minute);
+  if(env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY&&minsET>=480&&minsET<=1020&&phase.key!=='closed'){
+    try{const op=await openingMomentum(env,true);await d1StoreRows(env,op.rows||[],{source:'Alpaca IEX',assetType:'stock',now});}catch{}
+  }
+  // Twelve Data nur alle 15 Minuten, damit das Free-Kontingent nicht unnötig belastet wird.
+  if(env.TWELVE_API_KEY && Math.floor(now/60_000)%15===0){
+    try{const st=await stockSnapshot(env,false,new Set(ALL_ON),3);await d1StoreRows(env,st.rows||[],{source:'Twelve Data',assetType:'stock',now});}catch{}
+  }
+}
+
 function authed(req, url, env) {
   if (!env.APP_TOKEN) return true;                      // kein Token gesetzt → offen
   const t = req.headers.get('x-fp-token') || url.searchParams.get('t');
@@ -1101,7 +1432,9 @@ export default {
         protected: !!env.APP_TOKEN,
         stocksConfigured: !!env.TWELVE_API_KEY,
         alpacaConfigured: !!(env.ALPACA_API_KEY_ID && env.ALPACA_API_SECRET_KEY),
+        crowdConfigured: !!env.SERPAPI_KEY,
         kv: !!env.SNAP,
+        d1: !!env.DB,
         cacheAgeMs: memo.ts ? Date.now() - memo.ts : null,
         components: COMPONENTS,
         status: {
@@ -1122,6 +1455,25 @@ export default {
         setApiState('crypto', 'nokey', 'FUSION_API_KEY fehlt');
         return json({ error: 'FUSION_API_KEY fehlt (Secret in Cloudflare setzen).', state: 'nokey' }, 500);
       }
+    }
+
+
+    if (url.pathname === '/api/learning') {
+      try {
+        const stocks=(url.searchParams.get('stocks')||'').split(',').map(x=>x.trim().toUpperCase()).filter(Boolean);
+        const coins=(url.searchParams.get('coins')||'').split(',').map(x=>x.trim().toUpperCase()).filter(Boolean);
+        return json(await learningPayload(env,stocks,coins),200,{ 'cache-control':'no-store' });
+      } catch(e) { return json({configured:!!env.DB,state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/experimental') {
+      try { return json(await experimentalPulse(url.searchParams.get('force') === '1'), 200, { 'cache-control':'no-store' }); }
+      catch (e) { return json({state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/crowd') {
+      try { const d=await crowdPulse(env,url.searchParams.get('symbols'),url.searchParams.get('force') === '1'); if(env.DB&&d.rows?.length) ctx.waitUntil(d1StoreCrowd(env,d.rows).catch(()=>{})); return json(d,200,{ 'cache-control':'no-store' }); }
+      catch (e) { return json({state:'error',configured:!!env.SERPAPI_KEY,error:e.message||String(e),rows:[],version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
     }
 
     if (url.pathname === '/api/opening') {
@@ -1191,9 +1543,8 @@ export default {
     return env.ASSETS.fetch(request);
   },
 
-  // Cron wärmt den Cache vor → erster App-Start ist sofort da
+  // v3.0: Cron sammelt unabhängig von einer geöffneten PWA Markt- und Learning-Daten.
   async scheduled(event, env, ctx) {
-    if (!env.FUSION_API_KEY) return;
-    ctx.waitUntil(getSnapshot(env, {}, true).catch(() => {}));
+    ctx.waitUntil(serverLearningCycle(env,event.scheduledTime).catch(() => {}));
   },
 };

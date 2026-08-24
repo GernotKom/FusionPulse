@@ -7,12 +7,23 @@
 
   // Nur Diagnose. Die verbindliche Version steht in src/version.js und wird
   // von scripts/sync-version.mjs aus package.json hierher gespiegelt.
-  "vars": { "APP_VERSION": "2.5.5a" },
+  "vars": { "APP_VERSION": "3.0.3" },
 
-  // Cron wärmt den Snapshot-Cache vor. Keine limits-Konfiguration:
-  // der Workers-Free-Plan akzeptiert keine benutzerdefinierten CPU-Limits.
-  "triggers": { "crons": ["* * * * *"] }
+  // v3.0: Cron läuft jede Minute. Im Worker selbst wird gedrosselt:
+  // Alpaca Opening-Momentum im sinnvollen IEX-Fenster, Krypto 5-minütig,
+  // Twelve Data nur 15-minütig.
+  "triggers": { "crons": ["* * * * *"] },
 
-  // Optional später:
+  // Cloudflare Wrangler >=4.45 kann D1 beim Deploy automatisch provisionieren.
+  // Das Binding ist im Worker als env.DB verfügbar. Die Tabellen werden in
+  // v3.0 beim ersten Zugriff per CREATE TABLE IF NOT EXISTS initialisiert.
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "fusionpulse-learning",
+    "database_id": "4c63a0fd-d478-46b9-bf6a-e904bbbd738e",
+    "migrations_dir": "migrations"
+  }]
+
+  // Optional weiterhin möglich:
   // "kv_namespaces": [{ "binding": "SNAP", "id": "<KV_NAMESPACE_ID>" }]
 }

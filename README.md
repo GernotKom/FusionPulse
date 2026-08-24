@@ -121,6 +121,91 @@ Der Worker nutzt für Opening Momentum pro Aktualisierung zwei gebündelte Alpac
 - Tooltips/Mouseover für neue Kennzahlen und Historien bleiben verbindlich.
 
 
-## v2.5.5a
+## v2.5.7
 - Hotfix: JavaScript-Fehler `Can't find variable: ready` in der Coin-Listenansicht behoben.
 - Keine Logikänderung an Trading-Regeln; v2.5.5-Funktionen bleiben unverändert.
+
+
+## v2.5.7 – Experimental Lab / Crowd Pulse
+
+- Separate Experimental-Lab-Spalte mit 1–5 Sternen für **Dynamik/Aktivität**. Diese Sterne sind ausdrücklich keine Richtungsprognose und haben zunächst **0 % Gewicht im BUY-Score**.
+- Live/Best-Effort: NOAA-Geomagnetik (Kp), NOAA-Sonnenwind, USGS M4,5+ Tektonik der letzten 24h, Mondphase als astronomischer Zyklus.
+- GCP/GCI werden transparent als nicht-live gekennzeichnet: das klassische GCP beendete 2026 die aktive Datenerfassung; HeartMath stellt keine öffentliche Live-API bereit.
+- Pro Aktie eigener **Crowd/Search-Tachometer**. Echte Suchdynamik wird optional über Google Trends via SerpApi geladen. Dafür in Cloudflare `SERPAPI_KEY` als Secret setzen. Ohne Key zeigt die UI „n.v.“ und erfindet keine Suchwerte.
+- Crowd/Search wird separat gehalten und beeinflusst BUY zunächst nicht. 4-Stunden-Servercache reduziert externe Trends-Abfragen.
+- Alle neuen Elemente haben Mouseover/Touch-Hilfen.
+
+
+## v2.5.7 — Early Edge / Self-Learning
+- Attention-Price-Divergence pro Aktie (Crowd vs. noch ruhiger Preis)
+- Liquidity-Vacuum-Heuristik 0–100 aus jüngster 5-Minuten-Historie
+- Sector-Leader/Lag als Nachzügler-Signal
+- Historical Twin: lokales Outcome-Archiv; speichert 15-Minuten-Snapshots, beobachtet 120 Minuten und vergleicht ähnliche frühere Setups. Erst ab mindestens 5 echten Vergleichsfällen wird eine Quote angezeigt.
+- Alle neuen Edge-Signale sind zunächst Forschungsindikatoren und verändern den BUY-Score nicht. Mouseover erklärt jede Kennzahl.
+
+
+## v2.5.8 — Early-Momentum-Learning
+
+- Ergänzt Historical Twin um ein separates **Lead-Sequence-Learning** für US-Aktien.
+- Pro Aktie wird lokal erfasst, **welcher Frühindikator zuerst anspringt**: Attention, Crowd, Sector-Lag, RVOL, Liquidity Vacuum, Elliott-Struktur, Momentum oder technischer Score.
+- Sobald danach real eine Bewegung von mindestens **+5 %** beobachtet wird, speichert FusionPulse die Reihenfolge und den Zeitvorsprung jedes Signals.
+- Nach mindestens 5 echten erfolgreichen Fällen zeigt die Oberfläche die bisher häufigste erste Signalgruppe und typische Vorlaufzeit.
+- Laufende Sequenz wird als `🧬 Lead ...` direkt in der separaten Early-Edge-Spalte gezeigt.
+- Das Modul hat weiterhin **0 % BUY-Gewicht**. Es lernt zunächst nur beobachtend; keine synthetischen Trefferquoten und keine automatische Score-Optimierung.
+- Mouseover/Touch erklärt die neue Kennzahl laienverständlich.
+
+---
+
+# FusionPulse 3.0.1 — Server Learning / D1
+
+## Ziel
+v3.0 hebt das bisher lokale Learning auf eine serverseitige, geräteunabhängige Basis. Die PWA ist weiterhin Trading-Radar, kein Autotrader. BUY-Regeln werden durch das Learning nicht automatisch aufgeweicht.
+
+## Neu in 3.0
+- **Cloudflare D1 Binding `DB`** für persistente Markt-/Learning-Daten.
+- **Automatische D1-Provisionierung** mit aktuellem Wrangler: `wrangler.jsonc` enthält `d1_databases: [{ "binding": "DB" }]`. Bei Deployment mit Wrangler >=4.45 kann Cloudflare die Ressource automatisch anlegen und binden.
+- **Selbstinitialisierende Tabellen**: der Worker legt die benötigten Tabellen/Indizes beim ersten D1-Zugriff mit `CREATE TABLE/INDEX IF NOT EXISTS` an. Die SQL-Migration `migrations/0001_learning.sql` bleibt zusätzlich als nachvollziehbare Schema-Dokumentation vorhanden.
+- **Serverseitiger Cron-Sammler** unabhängig von geöffneter PWA:
+  - Alpaca/IEX Opening Momentum im sinnvollen IEX-Livefenster bis zu minütlich.
+  - Bitpanda-Krypto-Snapshot serverseitig 5-minütig.
+  - Twelve-Data-Fallback bewusst nur 15-minütig, um das Free-Kontingent zu schonen.
+- **120-Minuten-Historie serverseitig**: 8 × 15-Minuten-Segmente können nach Browser-Neustart, Gerätewechsel oder Löschen lokaler Browserdaten wieder geladen werden.
+- **Historical Twin serverseitig**: ähnlichste echte, abgeschlossene Markt-Snapshots werden aus D1 verglichen. Erst ab mindestens 5 Vergleichsfällen wird eine Quote angezeigt.
+- **Outcome-Learning bis 180 Minuten**: je Snapshot werden später tatsächlich beobachtete Maximal-/Minimalbewegung und Zeitpunkt einer +5-%-Expansion gespeichert.
+- **Early-Momentum-Learning serverseitig**: Signalereignisse für Attention, Crowd, Sektor-Lag, RVOL, Liquidity Vacuum, Elliott-Struktur, Momentum und Technik werden zeitlich gespeichert. Bei echten +5-%-Expansionen wird die typische Vorlaufzeit ermittelt.
+- **Crowd/Search-Cache in D1**: vorhandene echte Suchdaten können den späteren Markt-Snapshots zugeordnet werden. Ohne Datenquelle werden weiterhin keine Werte erfunden.
+- **Learning-Status in der PWA**: zeigt Zahl gespeicherter Setups, ausgewerteter Outcomes und Alter des letzten serverseitigen Snapshots.
+- **Tablet-Schnellnavigation**: Radar · Aktien · Lab/Learning, ohne die Analyse künstlich auf mehrere Apps/Seiten zu zerlegen.
+
+## D1-Datenmodell
+`market_snapshots` speichert Quelle, Asset, Symbol, Preis, Score/Momentum, CRV, RVOL, Returns, ATR, Liquidity Vacuum, Sector-Lag, Crowd, Strukturpotenzial, Ampelstatus sowie spätere Outcomes.
+
+`signal_events` speichert den ersten Zeitpunkt je 5-Minuten-Bucket, an dem ein Early-Indicator aktiv war.
+
+`crowd_cache` speichert echte Crowd/Search-Werte, sofern eine Datenquelle konfiguriert ist.
+
+## Sicherheit / Methodik
+- D1 speichert keine Alpaca-, Twelve-Data- oder Bitpanda-Secrets.
+- Secrets bleiben ausschließlich Cloudflare Secrets.
+- Experimental Lab und Self-Learning starten weiterhin mit **0 % direktem BUY-Gewicht**.
+- Keine synthetischen Trefferquoten: Historical Twin und Lead-Zeiten werden nur aus tatsächlich beobachteten Outcomes gebildet.
+- Ein späteres automatisches Reweighting darf erst nach ausreichender Out-of-sample-Validierung erfolgen.
+
+## Cloudflare
+Der Worker benötigt weiterhin die vorhandenen Secrets:
+- `FUSION_API_KEY`
+- `TWELVE_API_KEY`
+- `ALPACA_API_KEY_ID`
+- `ALPACA_API_SECRET_KEY`
+- optional `APP_TOKEN`
+- optional `SERPAPI_KEY`
+
+D1 ist **kein Secret**. Das Binding heißt exakt `DB`.
+
+## Diagnose
+`/api/health` enthält `d1: true/false`.
+
+`/api/learning?stocks=IONQ,MRNA&coins=BTC-EUR` liefert D1-Status, Datenbankzähler, Historical-Twin-/Lead-Modell und 120-Minuten-Historie für die angefragten Titel.
+
+## Fallback
+Ist D1 noch nicht verfügbar, läuft FusionPulse weiter. In der UI steht `D1 nicht verbunden`; das bisherige lokale Learning dient nur als Fallback. Nach erfolgreicher D1-Anbindung ist D1 die primäre Learning-Quelle.

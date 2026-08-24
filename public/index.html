@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 2.5.5a</title>
+<title>FusionPulse 3.0.3</title>
 </head>
 <body>
 
@@ -51,6 +51,12 @@
   <button id="scan" class="primary" title="Neu scannen (Leertaste)">↻</button>
   <button id="cog" title="Einstellungen">⚙</button>
 </header>
+
+<nav class="viewbar" aria-label="Schnellnavigation">
+  <button data-jump="#focus" title="Springt zur kompakten Radar-/Trade-Ansicht">Radar</button>
+  <button data-jump="#stocks" title="Springt direkt zum Aktienradar und Opening Momentum">Aktien</button>
+  <button data-jump="#experimentalPanel" title="Springt zum Experimental Lab und serverseitigen Learning-Status">Lab / Learning</button>
+</nav>
 
 <!-- ═══════════════════════════════════ Fokus + Karte nebeneinander ═══ -->
 <div class="stage">
@@ -106,6 +112,7 @@
       <div class="stockbadges">
         <span id="stockState" class="badge" title="Aktienradar-Datenquelle und Aktualisierungsstatus">Aktienradar wird geprüft…</span>
         <span id="stockQuota" class="badge" title="Nur Twelve-Data-Kontingent für den bestehenden Aktien-Fallback. Alpaca/IEX hat einen eigenen Datenzugang und wird hier nicht mitgezählt.">Twelve Data Fallback · Kontingent unbekannt</span>
+        <span id="learningState" class="badge" data-state="busy" title="Serverseitiges Learning über Cloudflare D1">🧠 Learning wird geprüft…</span>
       </div>
     </div>
     <div class="stocktools">
@@ -121,6 +128,13 @@
     </div>
     <div id="depotStrip" class="depotstrip" title="Deine mit ★ markierten Aktien. Damit kannst du dein bestehendes Depot bzw. eine persönliche Watchlist abbilden."></div>
     <div id="openingPanel" class="openingpanel" title="Premarket-/Opening-Momentum über Alpaca. Im kostenlosen IEX-Feed ist die Live-Abdeckung auf IEX beschränkt; vor 08:00 ET gibt es dort keine Live-Daten."></div>
+    <div class="experimental-grid">
+      <section id="experimentalPanel" class="experimental-panel" title="Experimentelle externe Einflussgrößen. 1–5 Sterne bewerten ausschließlich die aktuelle Dynamik/Aktivität, nicht die erwartete Kursrichtung. Diese Ebene hat derzeit 0 % Gewicht im BUY-Score."></section>
+      <section class="experimental-note">
+        <b>🧪 Experimental Lab</b>
+        <span>Geomagnetik · Sonnenaktivität · Tektonik · Mond/Astro · GCP/GCI. Nur Beobachtung, <b>0 % BUY-Gewicht</b>. Historical Twin und Early-Momentum-Learning werden in v3.0 bevorzugt serverseitig in Cloudflare D1 gespeichert.</span>
+      </section>
+    </div>
     <div class="stockstage">
       <div id="stockFocus" class="stockfocus"></div>
       <aside class="stockmapwrap">
@@ -216,8 +230,10 @@
 
   <details class="methods"><summary>Verwendete Analysemethoden im Detail</summary><p>Multi-Timeframe 5m/15m/1h aus einem Kerzen-Request · Momentum volatilitätsnormiert · Volumen-z-Score gegen disjunktes Basisfenster · Wilder-ATR · VWAP kurz (24 Bars) und lang (78 Bars) · EMA9/21/50-Staffelung · RSI(14) · relative Stärke vs. BTC · Bollinger-Kompression/Squeeze · Orderbuch-Imbalance, Tiefe, Spread, VWAP-Slippage · Marktbreite über alle gescannten Coins · Strukturziele aus Swing-Hochs · Elliott-Wellen-Heuristik (Impulslänge, Struktur höherer Tiefs, Fibonacci-Nähe des Rücksetzers). Der Analysemodus schaltet Methodengruppen um, die Einzelschalter darüber schalten einzelne Verfahren.</p></details>
   <details class="methods"><summary>Aktienradar / Twelve Data</summary><p>Optionaler Aktienfeed über das Cloudflare-Secret <code>TWELVE_API_KEY</code>. 21 liquide US-Titel werden in drei Gruppen rotierend aktualisiert; zusätzliche Titel können über Suche (Enter/🔎) gezielt geladen und als Favorit gespeichert werden (7 Titel je 5-Minuten-Zyklus, 1 Credit je Titel). Firmennamen stammen aus einer lokalen Tabelle bzw. aus den Metadaten der ohnehin abgerufenen Zeitreihe — <b>keine zusätzlichen Requests pro Refresh</b>. EUR-Beträge sind gekennzeichnete USD-Umrechnungen, keine Tradegate-Kurse. Das Kontingent stammt aus den Antwort-Headern <code>api-credits-used</code> / <code>api-credits-left</code>; liefert der Anbieter sie nicht, zeigt FusionPulse „unbekannt“ statt einer Schätzung.</p></details>
+  <details class="methods"><summary>Experimental Lab / Crowd Pulse</summary><p>Globale experimentelle Faktoren (Geomagnetik, Sonnenwind, Tektonik, Mond/Astro sowie optionale GCP/GCI-Daten) werden <b>separat</b> dargestellt und haben zunächst <b>0 % Gewicht im BUY-Score</b>. Die 1–5 Sterne zeigen nur, wie stark sich ein Faktor aktuell bewegt. Der Aktien-Tachometer „Crowd/Search“ ist pro Aktie separat. Für echte Google-Trends-Daten kann optional das Cloudflare-Secret <code>SERPAPI_KEY</code> gesetzt werden; ohne diese Quelle wird keine Suchaktivität erfunden.</p></details>
+  <details class="methods"><summary>Cloudflare D1 / serverseitiges Learning</summary><p>FusionPulse 3.0 kann das Cloudflare-D1-Binding <code>DB</code> verwenden. Der Worker sammelt über den Cron-Trigger auch bei geschlossener PWA echte Markt-Snapshots, aktualisiert daraus beobachtete Maximal-/Minimalbewegungen bis 180 Minuten und speichert Frühindikator-Ereignisse. Dadurch bleiben Historical Twin, Early-Momentum-Learning und die 120-Minuten-Historie geräteunabhängig erhalten. Das lokale Browser-Learning bleibt nur als Fallback, solange D1 noch nicht verbunden ist.</p></details>
   <details class="methods"><summary>Cloudflare Free-Modus</summary><p>FusionPulse kann Cloudflares kontoweiten Verbrauch ohne zusätzlichen Cloudflare-API-Token nicht auslesen und zeigt deshalb auch keinen. Erkennbar sind 429- und Ressourcenfehler; in diesem Fall erscheint ein Hinweis. Die Anzeige „API-Unterabfragen“ im Scanner zählt Bitpanda-Unterabfragen innerhalb eines Scans, nicht deinen Cloudflare-Tagesverbrauch.</p></details>
-  <small>Alle Werte bleiben lokal auf diesem Gerät. Die API-Keys liegen ausschließlich im Cloudflare Worker.</small>
+  <small>Einstellungen und Favoriten bleiben lokal auf diesem Gerät; Learning-/Markt-Snapshots werden bei verbundenem D1 serverseitig gespeichert. API-Keys liegen ausschließlich im Cloudflare Worker.</small>
 </article></div>
 
 <div id="quotaModal" class="modal"><article class="quota"><button id="qClose" aria-label="Schließen">×</button><h2 id="quotaTitle">Limit erreicht</h2><div id="quotaText"></div><div class="actions"><button id="qDismiss" class="primary">Verstanden</button></div></article></div>

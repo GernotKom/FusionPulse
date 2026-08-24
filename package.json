@@ -1,6 +1,6 @@
 {
   "name": "fusionpulse",
-  "version": "2.5.5a",
+  "version": "3.0.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,6 +13,6 @@
     "check": "node --check public/app.js && node --check src/worker.js && node --check public/sw.js"
   },
   "devDependencies": {
-    "wrangler": "^4.30.0"
+    "wrangler": "^4.68.0"
   }
 }

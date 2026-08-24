@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v2.5.5a — Frontend
+   FusionPulse v3.0.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -20,11 +20,12 @@ const DEFAULTS = {
   maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0, minNetProfitStock: 250, minTp2PctStock: 2.0,
   mutedPairs: [], mutedStocks: [], favoritePairs: [], favoriteStocks: [], components: [...ALL_COMPONENTS], stockSound: true,
 };
-const S = { ...DEFAULTS, ...JSON.parse(localStorage.getItem('fp.settings') || '{}') };
+const storedSettings = (() => { try { return JSON.parse(localStorage.getItem('fp.settings') || '{}'); } catch { return {}; } })();
+const S = { ...DEFAULTS, ...storedSettings };
 if (!Array.isArray(S.components) || !S.components.length) S.components = [...ALL_COMPONENTS];
 S.components = S.components.filter((c) => ALL_COMPONENTS.includes(c));
 if (!S.components.length) S.components = [...ALL_COMPONENTS];
-const saveSettings = () => localStorage.setItem('fp.settings', JSON.stringify(S));
+const saveSettings = () => { try { localStorage.setItem('fp.settings', JSON.stringify(S)); } catch {} };
 
 let rows = [];
 let meta = {};
@@ -44,6 +45,15 @@ let stockSearchBusy = false;
 let openingRows = [];
 let openingMeta = {};
 let openingTimer = null;
+let experimentalData = {};
+let experimentalTimer = null;
+let crowdMap = new Map();
+let crowdMeta = {};
+let crowdTimer = null;
+let learningData = { configured:false, state:'loading', stats:{} };
+let learningStock = new Map();
+let learningCoin = new Map();
+let learningTimer = null;
 
 const state = new Map();      // pair   -> { light, since, streak, level, … }
 const stockState = new Map(); // symbol -> { light, since, streak, level }
@@ -216,7 +226,8 @@ function sizing(r) {
   const caps = [];
   const maxTrade = Math.max(0, Number(S.maxTradeEur || 0));
   if (maxTrade && notional > maxTrade) { notional = maxTrade; caps.push('maxTrade'); }
-  if (r.buyCapacity && notional > r.buyCapacity) { notional = r.buyCapacity; caps.push('liquidity'); }
+  if (r.buyCapacity == null) caps.push('liquidityUnchecked');
+  else if (r.buyCapacity > 0 && notional > r.buyCapacity) { notional = r.buyCapacity; caps.push('liquidity'); }
   const qty = notional / r.entry;
   return {
     riskEur, qty, notional, rawNotional, capped: caps.length > 0, caps,
@@ -238,7 +249,7 @@ function orderPlan(r) {
     `Stop   ${num(r.stop)}   (-${r.riskPct} %)`,
     `TP1    ${num(r.tp1)}`,
     `TP2    ${num(r.tp2)}   (${r.tp2Source})`,
-    s ? `Größe  ${eur(s.notional, 2)}  ≈ ${s.qty.toPrecision(6)} ${sym(r.pair)}${s.caps?.includes('liquidity') ? '  [wegen Marktliquidität reduziert]' : s.caps?.includes('maxTrade') ? '  [auf Maximalbetrag begrenzt]' : ''}` : '',
+    s ? `Größe  ${eur(s.notional, 2)}  ≈ ${s.qty.toPrecision(6)} ${sym(r.pair)}${s.caps?.includes('liquidity') ? '  [wegen Marktliquidität reduziert]' : s.caps?.includes('liquidityUnchecked') ? '  [ohne Liquiditätsprüfung]' : s.caps?.includes('maxTrade') ? '  [auf Maximalbetrag begrenzt]' : ''}` : '',
     `CRV    ${r.netCRV}:1 netto · Kosten ${r.costPct} %`,
     s ? `Gewinn TP2 nach ${S.taxPct}% Steuer (Schätzung)  ${eur(s.netProfit2, 2)}` : '',
   ].filter(Boolean).join('\n');
@@ -528,6 +539,145 @@ function renderDepotStrip() {
   el.querySelectorAll('[data-depot]').forEach(b=>b.onclick=()=>{const q=$('#stockQ');q.value=b.dataset.depot;renderStocks();});
 }
 
+
+function stars(n){
+  const x=Math.max(0,Math.min(5,Math.round(Number(n)||0)));
+  return '★'.repeat(x)+'☆'.repeat(5-x);
+}
+function crowdFor(symbol){ return crowdMap.get(String(symbol||'').toUpperCase()) || null; }
+function crowdGauge(symbol, compact=false){
+  const c=crowdFor(symbol);
+  const ok=!!(c && Number.isFinite(Number(c.score)));
+  const v=ok?Math.max(0,Math.min(100,Number(c.score))):0;
+  const cls=ok?'':' crowd-na';
+  const title=ok
+    ? `Crowd/Search ${num(v,0)}/100 · Suchdynamik ${stars(c.stars)}. Basis: ${c.source||'Google Trends'}. Misst Aufmerksamkeit, nicht Kursrichtung.`
+    : `Crowd/Search noch ohne Live-Suchdaten. ${crowdMeta.configured===false?'Optional SERPAPI_KEY in Cloudflare setzen.':'Daten werden geladen.'} Keine Werte werden erfunden.`;
+  return `<span class="crowd-wrap${cls}" title="${esc(title)}"><span class="crowd-gauge" style="--v:${v}"><i class="crowd-needle"></i></span><span class="crowd-label"><b>${ok?num(v,0):'–'}</b>${compact?'Crowd':'Crowd/Search'} · ${ok?stars(c.stars):'n.v.'}</span></span>`;
+}
+
+/* v3.0 — lokales Fallback-Archiv. Primär wird jetzt D1 serverseitig verwendet;
+ * lokaler Speicher bleibt nur als Rückfall, solange D1 noch nicht verbunden ist.
+ * Lernt nur aus später
+ * tatsächlich beobachteten Kursen; keine synthetischen Trefferquoten. */
+const TWIN_KEY='fp.stockTwins.v1';
+let twinStore=(()=>{try{return JSON.parse(localStorage.getItem(TWIN_KEY)||'{"pending":[],"done":[]}')}catch{return {pending:[],done:[]}}})();
+function saveTwins(){try{localStorage.setItem(TWIN_KEY,JSON.stringify(twinStore))}catch{}}
+function featureOf(r){const c=crowdFor(r.symbol);return {score:+r.score||0,crv:+r.netCRV||0,rv:+r.relVol||0,r15:+r.ret15||0,r60:+r.ret60||0,atr:+r.atrPct||0,vac:+r.liquidityVacuum||0,lag:+r.sectorLag||0,crowd:c&&Number.isFinite(+c.score)?+c.score:50};}
+function twinDist(a,b){const w={score:1.2,crv:.7,rv:.45,r15:.5,r60:.25,atr:.5,vac:.035,lag:.35,crowd:.025};let z=0;for(const k in w)z+=Math.pow((a[k]-b[k])*w[k],2);return Math.sqrt(z)}
+function historicalTwin(r){const srv=learningStock.get(String(r.symbol||'').toUpperCase())?.twin;if(srv&&Number.isFinite(Number(srv.n)))return srv;const f=featureOf(r),d=(twinStore.done||[]).map(x=>({...x,d:twinDist(f,x.f)})).sort((a,b)=>a.d-b.d).slice(0,12);if(d.length<5)return {n:d.length};const wins=d.filter(x=>x.maxPct>=5).length,stops=d.filter(x=>x.minPct<=-1.5).length,med=[...d].map(x=>x.maxPct).sort((a,b)=>a-b)[Math.floor(d.length/2)];return {n:d.length,wins,stops,median:med,edge:Math.round(wins/d.length*100)};}
+function learnStocks(){const now=Date.now(),pending=twinStore.pending||[],done=twinStore.done||[];for(const x of pending){const r=stockRows.find(z=>z.symbol===x.symbol);if(r){const pct=(r.priceUsd/x.px-1)*100;x.maxPct=Math.max(x.maxPct??pct,pct);x.minPct=Math.min(x.minPct??pct,pct)}}const keep=[];for(const x of pending){if(now-x.ts>=120*60_000)done.push({...x,resolved:now});else keep.push(x)}const bucket=Math.floor(now/(15*60_000));for(const r of stockRows){if(!keep.some(x=>x.symbol===r.symbol&&x.bucket===bucket))keep.push({symbol:r.symbol,sector:r.sector,ts:now,bucket,px:r.priceUsd,f:featureOf(r),maxPct:0,minPct:0})}twinStore={pending:keep.slice(-500),done:done.slice(-2500)};saveTwins();}
+function edgeSignals(r){const c=crowdFor(r.symbol),crowd= c&&Number.isFinite(+c.score)?+c.score:null;const quiet=Math.max(0,100-Math.min(100,Math.abs(+r.ret15||0)*18));const apd=crowd==null?null:Math.round(Math.max(0,Math.min(100,crowd*.72+quiet*.28)));const vac=Math.round(+r.liquidityVacuum||0);const lag=+r.sectorLag||0;const lagScore=Math.round(Math.max(0,Math.min(100,50+lag*18)));const tw=historicalTwin(r);return {apd,vac,lag,lagScore,tw};}
+
+/* v2.5.8 — Early-Momentum-Learning. Lernt die Reihenfolge, in der unabhängige
+ * Frühindikatoren VOR einer real beobachteten >=5%-Expansion anspringen.
+ * Forschungsmodul: 0 % BUY-Gewicht, damit keine Selbstbestätigung entsteht. */
+const LEAD_KEY='fp.stockLeadLearning.v1';
+let leadStore=(()=>{try{return JSON.parse(localStorage.getItem(LEAD_KEY)||'{"active":{},"done":[],"cooldown":{}}')}catch{return {active:{},done:[],cooldown:{}}}})();
+function saveLead(){try{localStorage.setItem(LEAD_KEY,JSON.stringify(leadStore))}catch{}}
+const LEAD_LABEL={attention:'Attention',crowd:'Crowd',sector:'Sektor',rvol:'RVOL',vacuum:'Vacuum',structure:'Elliott',elliott:'Elliott',momentum:'Momentum',technical:'Technik'};
+function leadFlags(r){const e=edgeSignals(r),c=crowdFor(r.symbol);return {
+  attention:e.apd!=null&&e.apd>=70,
+  crowd:c&&Number.isFinite(+c.score)&&+c.score>=70,
+  sector:+r.sectorLag>=0.8,
+  rvol:+r.relVol>=2,
+  vacuum:+r.liquidityVacuum>=70,
+  structure:+r.structurePct>=5,
+  momentum:(+r.ret15>=1)||(+r.ret60>=2),
+  technical:+r.score>=7
+};}
+function updateLeadLearning(){
+  const now=Date.now(),active=leadStore.active||{},done=leadStore.done||[],cool=leadStore.cooldown||{};
+  for(const r of stockRows){
+    const sym=String(r.symbol||'').toUpperCase(),px=+r.priceUsd;if(!sym||!Number.isFinite(px)||px<=0)continue;
+    const flags=leadFlags(r),names=Object.keys(flags).filter(k=>flags[k]);
+    let ep=active[sym];
+    if(!ep && names.length && (!cool[sym]||now>cool[sym])) ep=active[sym]={symbol:sym,sector:r.sector||'',start:now,basePx:px,triggers:{},maxPct:0,minPct:0};
+    if(!ep)continue;
+    const pct=(px/ep.basePx-1)*100;ep.maxPct=Math.max(ep.maxPct??pct,pct);ep.minPct=Math.min(ep.minPct??pct,pct);
+    for(const k of names)if(!ep.triggers[k])ep.triggers[k]=now;
+    const age=now-ep.start;
+    if(pct>=5 || age>=180*60_000 || pct<=-3){
+      const success=pct>=5;const seq=Object.entries(ep.triggers).sort((a,b)=>a[1]-b[1]).map(([k,ts])=>({k,leadMin:success?Math.max(0,(now-ts)/60000):null}));
+      done.push({...ep,end:now,success,hitPct:pct,sequence:seq});delete active[sym];cool[sym]=now+45*60_000;
+    }
+  }
+  leadStore={active,done:done.slice(-3000),cooldown:cool};saveLead();
+}
+function leadModel(r){
+  const sym=String(r.symbol||'').toUpperCase();
+  const srv=learningStock.get(sym)?.lead;
+  const active=leadStore.active?.[sym];
+  const cur=active?Object.entries(active.triggers||{}).sort((a,b)=>a[1]-b[1]).map(([k])=>k):[];
+  if(srv&&Number.isFinite(Number(srv.n))) return {...srv,cur};
+  const sector=String(r.sector||'');let pool=(leadStore.done||[]).filter(x=>x.success&&x.sequence?.length);
+  const sec=pool.filter(x=>sector&&x.sector===sector);if(sec.length>=5)pool=sec;
+  const n=pool.length;
+  if(!n)return {n:0,cur};
+  const first={};const leads={};for(const x of pool){const q=x.sequence||[];if(q[0])first[q[0].k]=(first[q[0].k]||0)+1;for(const z of q){(leads[z.k]??=[]).push(z.leadMin)}}
+  const firstKey=Object.entries(first).sort((a,b)=>b[1]-a[1])[0]?.[0]||null;
+  const med=k=>{const a=(leads[k]||[]).filter(Number.isFinite).sort((a,b)=>a-b);return a.length?a[Math.floor(a.length/2)]:null};
+  const best=Object.keys(leads).map(k=>({k,m:med(k),n:leads[k].length})).filter(x=>x.n>=3).sort((a,b)=>b.m-a.m).slice(0,3);
+  return {n,cur,firstKey,best};
+}
+function leadBadge(r){const m=leadModel(r);const cur=m.cur.length?m.cur.slice(0,4).map(k=>LEAD_LABEL[k]).join('→'):'wartet';let learned='lernt';if(m.n>=5){const f=m.firstKey?LEAD_LABEL[m.firstKey]:'–';const lead=m.best[0]&&Number.isFinite(m.best[0].m)?` · ${LEAD_LABEL[m.best[0].k]} ~${Math.round(m.best[0].m)}m vor +5%`:'';learned=`${f} zuerst · n=${m.n}${lead}`;}return `<span title="Early-Momentum-Learning: speichert, welcher Frühindikator wie viele Minuten VOR einer tatsächlich beobachteten +5%-Expansion angesprungen ist. Aktuelle Reihenfolge: ${esc(cur)}. Auswertung erst nach echten Fällen; 0 % BUY-Gewicht.">🧬 Lead ${esc(cur)} · ${esc(learned)}</span>`;}
+function edgeStrip(r){const e=edgeSignals(r),tw=e.tw;const twin=tw.n>=5?`${tw.edge}% · n=${tw.n}`:`lernt · n=${tw.n}`;return `<div class="edge-strip"><span title="Attention-Price-Divergence: hohe Suchaufmerksamkeit bei noch relativ ruhigem Preis. Forschungsindikator, kein BUY allein.">⚡ Attention ${e.apd==null?'n.v.':e.apd+'/100'}</span><span title="Liquidity Vacuum: heuristisch wenig frühere Aktivität/Widerstand direkt oberhalb des Einstiegs. Höher kann schnellere Expansion begünstigen.">↗ Vacuum ${e.vac}/100</span><span title="Sector Leader-Lag: positiver Wert bedeutet, dass andere Titel derselben Branche kurzfristig stärker laufen. Beobachtet potenzielle Nachzügler.">⇢ Sektor-Lag ${num(e.lag,1)}%</span><span title="Historical Twin: bevorzugt serverseitig in Cloudflare D1 gelernte, ähnlichste frühere Markt-Snapshots; lokal nur Fallback. Prozent = Anteil der ähnlichen Fälle mit mindestens +5 % beobachteter Maximalbewegung. Erst ab 5 Fällen angezeigt.">🧠 Twin ${twin}</span>${leadBadge(r)}</div>`;}
+
+
+function learningBadge(){
+  const st=learningData?.stats||{};
+  if(learningData?.configured===false) return '🧠 D1 nicht verbunden';
+  if(learningData?.state==='error') return '🧠 Learning-Fehler';
+  const age=st.lastTs?mins(Date.now()-st.lastTs):'–';
+  return `🧠 ${Number(st.snapshots||0)} Setups · ${Number(st.resolved||0)} ausgewertet · letzter ${age}`;
+}
+function renderLearningStatus(){
+  const el=$('#learningState'); if(!el)return;
+  el.textContent=learningBadge();
+  el.dataset.state=learningData?.configured===false?'warn':learningData?.state==='ok'?'ok':'busy';
+  el.title=learningData?.configured===false
+    ? 'Cloudflare D1 ist noch nicht als Binding DB verbunden. Bis dahin bleibt lokaler Browser-Speicher nur Fallback.'
+    : `Serverseitiges Learning in Cloudflare D1. Browserdaten können gelöscht werden, ohne diese ${Number(learningData?.stats?.snapshots||0)} Snapshots zu verlieren.`;
+}
+function mergeServerHistories(){
+  for(const r of stockRows){const h=learningStock.get(r.symbol)?.history;if(Array.isArray(h)&&h.length)r._history=h;}
+  for(const r of rows){const h=learningCoin.get(r.pair)?.history;if(Array.isArray(h)&&h.length)r._history=h;}
+}
+async function loadLearning(){
+  const stocks=[...new Set([...(S.favoriteStocks||[]),...stockRows.slice(0,20).map(r=>r.symbol),...openingRows.slice(0,10).map(r=>r.symbol)])].slice(0,30);
+  const coins=[...new Set([...(S.favoritePairs||[]),...rows.slice(0,20).map(r=>r.pair)])].slice(0,30);
+  try{
+    const q=new URLSearchParams(); if(stocks.length)q.set('stocks',stocks.join(','));if(coins.length)q.set('coins',coins.join(','));if(S.token)q.set('t',S.token);
+    const r=await fetch('/api/learning?'+q,{cache:'no-store'});const d=await r.json();learningData=d||{};
+    learningStock=new Map(Object.entries(d.stocks||{}));learningCoin=new Map(Object.entries(d.coins||{}));
+    mergeServerHistories();renderLearningStatus();render();renderStocks();
+  }catch(e){learningData={configured:true,state:'error',error:String(e.message||e)};renderLearningStatus();}
+}
+function setLearningPoll(){clearInterval(learningTimer);learningTimer=setInterval(()=>{if(document.visibilityState==='visible')loadLearning();},120_000);}
+
+function renderExperimental(){
+  const el=$('#experimentalPanel'); if(!el) return;
+  const d=experimentalData||{};
+  const cards=[
+    ['🧲 Erdmagnetfeld',d.geomag,'Kp/geomagnetische Aktivität. Sterne = aktuelle Aktivität/Dynamik, nicht bullish/bearish.'],
+    ['☀️ Sonnenwind',d.solar,'Sonnenwind/Solaraktivität. Experimentelle Regimevariable ohne BUY-Gewicht.'],
+    ['🌍 Tektonik',d.seismic,'USGS M4,5+ Aktivität der letzten 24 h. Kein direkter Marktkausalitätsanspruch.'],
+    ['🌙 Astro/Zyklen',d.astro,'Derzeit Mondphase/Zyklus. Planetare Ephemeriden werden erst mit sauberer Datenquelle ergänzt.'],
+    ['🧠 GCP / GCI',d.collective,'Nur Forschungsvariable. Klassisches GCP beendete 2026 die aktive Datenerfassung; HeartMath hat keine öffentliche Live-API.']
+  ];
+  el.innerHTML=`<div class="exp-head"><b>🧪 Externe Dynamik · Experimental Lab</b><small title="Diese Ebene beeinflusst BUY derzeit bewusst nicht.">BUY-Gewicht 0 %</small></div><div class="exp-cards">`+
+    cards.map(([name,x,help])=>{const ok=x&&Number.isFinite(Number(x.stars));return `<div class="exp-card${ok?'':' exp-na'}" title="${esc(help)}"><b>${name}</b><div class="exp-stars">${ok?stars(x.stars):'☆☆☆☆☆'}</div><small>${ok?esc(x.label||''):'nicht live verfügbar'}</small></div>`}).join('')+'</div>';
+}
+async function loadExperimental(force=false){
+  try{const q=new URLSearchParams();if(S.token)q.set('t',S.token);if(force)q.set('force','1');const r=await fetch('/api/experimental?'+q,{cache:'no-store'});experimentalData=await r.json();renderExperimental();}
+  catch(e){experimentalData={error:String(e.message||e)};renderExperimental();}
+}
+async function loadCrowd(force=false){
+  const symbols=[...new Set([...(S.favoriteStocks||[]),...openingRows.slice(0,5).map(r=>r.symbol),...stockRows.slice(0,12).map(r=>r.symbol)])].slice(0,15);
+  if(!symbols.length)return;
+  try{const q=new URLSearchParams({symbols:symbols.join(',')});if(S.token)q.set('t',S.token);if(force)q.set('force','1');const r=await fetch('/api/crowd?'+q,{cache:'no-store'});const d=await r.json();crowdMeta=d;for(const x of d.rows||[])crowdMap.set(x.symbol,x);renderStocks();}
+  catch(e){crowdMeta={state:'error',error:String(e.message||e)};}
+}
 function renderOpeningPanel() {
   const el=$('#openingPanel'); if(!el) return;
   if(openingMeta.configured===false){el.innerHTML='<b>🚀 Opening Momentum</b><span>Alpaca noch nicht verbunden. Benötigt zwei Cloudflare-Secrets: <code>ALPACA_API_KEY_ID</code> und <code>ALPACA_API_SECRET_KEY</code>.</span>';return;}
@@ -557,11 +707,11 @@ function renderStocks() {
   const topBox=$('#stockFocus'), top=shown[0];
   if(topBox){if(!top)topBox.innerHTML=search?`<div class="stockfocus-empty">Keine geladene Aktie passend zu „${esc(search)}“. Enter oder 🔎 lädt den Titel direkt.</div>`:(filter==='favorites'?'<div class="stockfocus-empty">Noch keine Aktien-Favoriten. Mit ☆ neben einem Titel hinzufügen.</div>':'');else{
     const sz=stockSizing(top), buy=stockLevel(top)===3, tr=stockTradeability(top); const struct=Number(top.structurePct||0);
-    topBox.innerHTML=`<div class="stockfocus-card ${top.light}${buy?' buy':''}"><div class="sf-title"><div><small>TOP-AKTIE AKTUELL</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button>${esc(top.name)} <b>${esc(top.symbol)}</b></h3><span>${esc(top.sector)} · Score ${num(top.score,1)} · CRV ${num(top.netCRV,1)}:1</span></div><strong>${buy?'🟢 BUY':VERDICT_ICON[top.light]+' '+esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${stockPx(top.priceUsd,top.priceEur)}</b></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span>Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Größerer Elliott/Fibonacci-Zielraum aus der aktuellen Struktur. Ergänzende Projektion, kein unmittelbares Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span></div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div><small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} BUY: Score ≥8, CRV ≥${num(S.minCrvStock,1)}:1, Netto-TP2 ≥${eur(S.minNetProfitStock,0)}, Kursweg ≥${num(S.minTp2PctStock,1)}%.</small></div>`;
+    topBox.innerHTML=`<div class="stockfocus-card ${top.light}${buy?' buy':''}"><div class="sf-title"><div><small>TOP-AKTIE AKTUELL</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button>${esc(top.name)} <b>${esc(top.symbol)}</b></h3><span>${esc(top.sector)} · Score ${num(top.score,1)} · CRV ${num(top.netCRV,1)}:1</span></div><strong>${buy?'🟢 BUY':VERDICT_ICON[top.light]+' '+esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${stockPx(top.priceUsd,top.priceEur)}</b></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span>Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Größerer Elliott/Fibonacci-Zielraum aus der aktuellen Struktur. Ergänzende Projektion, kein unmittelbares Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}</span></div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} BUY: Score ≥8, CRV ≥${num(S.minCrvStock,1)}:1, Netto-TP2 ≥${eur(S.minNetProfitStock,0)}, Kursweg ≥${num(S.minTp2PctStock,1)}%.</small></div>`;
     topBox.querySelector('[data-favstock]')?.addEventListener('click',e=>toggleStockFavorite(top.symbol,e));
   }}
   const groups=new Map(); for(const r of shown){if(!groups.has(r.sector))groups.set(r.sector,[]);groups.get(r.sector).push(r);}
-  box.innerHTML=[...groups.entries()].map(([sector,arr])=>`<section class="stock-sector"><h3>${esc(sector)}</h3>${arr.map(r=>{const buy=stockLevel(r)===3,tone=stockStrength(r),tr=stockTradeability(r),sz=stockSizing(r);return `<div class="stockrow ${r.light} tone-${tone}${buy?' buy':''}" data-sym="${esc(r.symbol)}"><div class="sr-head"><b class="sr-tic">${esc(r.symbol)}</b><button class="favbtn ${isFavStock(r.symbol)?'on':''}" data-favstock="${esc(r.symbol)}" title="${isFavStock(r.symbol)?'Aus Favoriten/Depot entfernen':'Zu Favoriten/Depot hinzufügen'}">${isFavStock(r.symbol)?'★':'☆'}</button><button class="rowmute" data-mutestock="${esc(r.symbol)}">${isStockMuted(r.symbol)?'🔇':'🔊'}</button></div><div class="sr-name">${esc(r.name)}</div><div class="sr-nums"><span title="Netto-CRV nach geschätzten Kosten.">${num(r.netCRV,1)} : 1</span><i>·</i><span>Score ${num(r.score,1)}</span><i>·</i><span title="Kursweg bis TP2">TP2 ${num(tr.tp2Pct,1)}%</span></div><div class="sr-verdict" title="${tr.ok?'Praktisch ausführbar nach deinen Grenzen.':'Noch nicht praktisch ausführbar: Marktphase, Mindestgewinn oder Mindestkursweg nicht erfüllt.'}">${buy?'🟢 BUY':VERDICT_ICON[r.light]+' '+esc(r.verdict)}</div><div class="sr-px">${stockPx(r.priceUsd,r.priceEur)}${sz?`<small> · ${buy?'Plan netto '+eur(sz.planNet,0):'keine Kauf-Freigabe'}</small>`:''}</div><div class="sr-hist" title="120-Minuten-Signalverlauf">${stockStatusBand(r)}</div>${stockPeek(r)}</div>`}).join('')}</section>`).join('');
+  box.innerHTML=[...groups.entries()].map(([sector,arr])=>`<section class="stock-sector"><h3>${esc(sector)}</h3>${arr.map(r=>{const buy=stockLevel(r)===3,tone=stockStrength(r),tr=stockTradeability(r),sz=stockSizing(r);return `<div class="stockrow ${r.light} tone-${tone}${buy?' buy':''}" data-sym="${esc(r.symbol)}"><div class="sr-head"><b class="sr-tic">${esc(r.symbol)}</b><button class="favbtn ${isFavStock(r.symbol)?'on':''}" data-favstock="${esc(r.symbol)}" title="${isFavStock(r.symbol)?'Aus Favoriten/Depot entfernen':'Zu Favoriten/Depot hinzufügen'}">${isFavStock(r.symbol)?'★':'☆'}</button><button class="rowmute" data-mutestock="${esc(r.symbol)}">${isStockMuted(r.symbol)?'🔇':'🔊'}</button></div><div class="sr-name">${esc(r.name)}</div><div class="sr-nums"><span title="Netto-CRV nach geschätzten Kosten.">${num(r.netCRV,1)} : 1</span><i>·</i><span>Score ${num(r.score,1)}</span><i>·</i><span title="Kursweg bis TP2">TP2 ${num(tr.tp2Pct,1)}%</span></div><div class="sr-verdict" title="${tr.ok?'Praktisch ausführbar nach deinen Grenzen.':'Noch nicht praktisch ausführbar: Marktphase, Mindestgewinn oder Mindestkursweg nicht erfüllt.'}">${buy?'🟢 BUY':VERDICT_ICON[r.light]+' '+esc(r.verdict)}</div><div class="sr-px">${stockPx(r.priceUsd,r.priceEur)}${sz?`<small> · ${buy?'Plan netto '+eur(sz.planNet,0):'keine Kauf-Freigabe'}</small>`:''}</div><div class="sr-hist" title="120-Minuten-Signalverlauf">${stockStatusBand(r)}</div>${crowdGauge(r.symbol,true)}${edgeStrip(r)}${stockPeek(r)}</div>`}).join('')}</section>`).join('');
   box.querySelectorAll('[data-mutestock]').forEach(b=>b.addEventListener('click',e=>toggleStockMute(b.dataset.mutestock,e)));
   box.querySelectorAll('[data-favstock]').forEach(b=>b.addEventListener('click',e=>toggleStockFavorite(b.dataset.favstock,e)));
 }
@@ -587,6 +737,8 @@ function trackStocks() {
     stockState.set(r.symbol, st);
   }
   persistHistory(STOCK_HISTORY_KEY, stockHistoryStore);
+  learnStocks();
+  updateLeadLearning();
 }
 
 async function scanStocks(force = false) {
@@ -650,7 +802,7 @@ async function scanOpeningMomentum(force = false) {
   try {
     const q = new URLSearchParams(); if (S.token) q.set('t', S.token); if (force) q.set('force','1');
     const res = await fetch('/api/opening?' + q, { cache: 'no-store' });
-    const data = await res.json(); openingMeta = data; openingRows = data.rows || []; renderOpeningPanel(); renderStocks();
+    const data = await res.json(); openingMeta = data; openingRows = data.rows || []; renderOpeningPanel(); renderStocks(); loadCrowd(false);
   } catch (e) { openingMeta = { state:'error', phaseLabel:'Alpaca nicht erreichbar', phaseHelp:String(e.message||e) }; renderOpeningPanel(); }
 }
 function setStockPoll() {
@@ -658,6 +810,8 @@ function setStockPoll() {
   stockTimer = setInterval(() => { if (document.visibilityState === 'visible') scanStocks(false); }, 5 * 60_000);
   clearInterval(openingTimer);
   openingTimer = setInterval(() => { if (document.visibilityState === 'visible') scanOpeningMomentum(false); }, 60_000);
+  clearInterval(experimentalTimer); experimentalTimer=setInterval(()=>{if(document.visibilityState==='visible')loadExperimental(false);},15*60_000);
+  clearInterval(crowdTimer); crowdTimer=setInterval(()=>{if(document.visibilityState==='visible')loadCrowd(false);},60*60_000);
 }
 
 /* ------------------------------------------------- Reifezeit + Alarmierung
@@ -685,9 +839,9 @@ function track() {
     if (known && lvl > st.level && lvl >= 1) {
       beep(lvl === 3 ? 'buy' : lvl === 2 ? 'green' : 'watch', isMuted(r.pair));
       if (lvl >= 2) notify(r);
-    } else if (known && crvBand > st.crvBand) {
-      beep('buy', isMuted(r.pair));
-      notify(r);
+    } else if (known && lvl >= 1 && crvBand > st.crvBand) {
+      beep(lvl >= 3 ? 'buy' : 'watch', isMuted(r.pair));
+      if (lvl >= 2) notify(r);
     }
 
     st.level = lvl; st.crvBand = crvBand;
@@ -785,8 +939,8 @@ function renderFocus() {
         </div>
       </div>
 
-      ${r.light !== 'green' && r.blockers.length
-        ? `<div class="fblock"><b>Nicht handeln, weil:</b> ${esc(r.blockers.join(' · '))}</div>` : ''}
+      ${((r.light !== 'green' && r.blockers.length) || r.blockers.includes('Orderbuch ungeprüft'))
+        ? `<div class="fblock"><b>${r.light === 'green' ? 'Vorbehalt:' : 'Nicht handeln, weil:'}</b> ${esc(r.blockers.join(' · '))}</div>` : ''}
       <div class="insightbar"><div><span>120-Min-Verlauf</span>${statusBand(r)} <b>${trendArrow(r)}</b></div><div title="BUY-Nähe ist keine Trefferwahrscheinlichkeit. Sie zeigt nur, wie viele aktuelle Voraussetzungen bereits erfüllt sind."><span>BUY-Nähe</span><b>${buyNear(r)} %</b></div><div><span>Was hat sich geändert?</span><b>${esc(changeSummary(r))}</b></div></div>
 
       <div class="fgrid">
@@ -874,6 +1028,7 @@ function buyNear(r) {
 function capNotice(s) {
   if (!s?.capped) return '';
   if (s.caps?.includes('liquidity')) return `<p class="fwarn"><b>⚠ Kaufsumme auf ${eur(s.notional, 0)} reduziert.</b><br>Eine größere Order könnte wegen zu geringer Marktliquidität zu einem schlechteren Kaufpreis führen. <span title="FusionPulse berücksichtigt dazu Orderbuchtiefe und erwartete Slippage.">Warum?</span></p>`;
+  if (s.caps?.includes('liquidityUnchecked')) return `<p class="fwarn"><b>⚠ Kaufsumme ohne Liquiditätsprüfung.</b><br>Für dieses Setup liegt keine belastbare Orderbuchtiefe vor. Die angezeigte Positionsgröße wurde daher nicht anhand der Marktliquidität gekappt.</p>`;
   if (s.caps?.includes('maxTrade')) return `<p class="fwarn"><b>ℹ Kaufsumme auf ${eur(s.notional, 0)} begrenzt.</b><br>Das ist dein in den Einstellungen festgelegter Maximalbetrag pro Trade.</p>`;
   return '';
 }
@@ -1221,7 +1376,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 /* ------------------------------------------------------------------- Events */
-$('#scan').onclick = () => { scan(true); scanStocks(false); scanOpeningMomentum(true); loadHealth(); };
+$('#scan').onclick = () => { scan(true); scanStocks(false); scanOpeningMomentum(true); loadExperimental(true); loadCrowd(true); loadLearning(); loadHealth(); };
 $('#sound').onclick = () => {
   S.sound = !S.sound; saveSettings();
   $('#sound').textContent = S.sound ? '🔊' : '🔇';
@@ -1254,6 +1409,7 @@ $('#dcopy').onclick = (e) => {
   const r = rows.find((x) => x.pair === selected);
   if (r) copy(orderPlan(r), e.target);
 };
+$$('[data-jump]').forEach(b=>b.onclick=()=>document.querySelector(b.dataset.jump)?.scrollIntoView({behavior:'smooth',block:'start'}));
 document.body.addEventListener('pointerdown', () => audio(), { once: true });
 
 /* --------------------------------------------------------------------- Boot */
@@ -1286,6 +1442,10 @@ loadHealth();
 scan(true);
 scanStocks(false);
 scanOpeningMomentum(false);
+loadExperimental(false);
+loadCrowd(false);
+loadLearning();
 setPoll(S.interval);
 setStockPoll();
 setHealthPoll();
+setLearningPoll();
