@@ -1339,9 +1339,9 @@ async function crowdPulse(env,symbols,force=false){
   const syms=[...new Set(String(symbols||'').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,8}$/.test(x)))].slice(0,15);
   const key=syms.join(',');
   if(!env.SERPAPI_KEY)return {configured:false,state:'nokey',rows:syms.map(symbol=>({symbol,score:null,stars:null,source:'Google Trends'})),note:'SERPAPI_KEY fehlt; keine Suchwerte werden erfunden.',version:APP_VERSION};
-  if(!force&&crowdMemo.data&&crowdMemo.key===key&&Date.now()-crowdMemo.ts<4*60*60_000)return {...crowdMemo.data,cached:true};
+  if(!force&&crowdMemo.data&&crowdMemo.key===key&&Date.now()-crowdMemo.ts<55*60_000)return {...crowdMemo.data,cached:true};
   const rows=[];
-  // Bis zu fünf Begriffe pro Google-Trends-Aufruf. 4h Cache schützt das Kontingent.
+  // Bis zu fünf Begriffe pro Google-Trends-Aufruf. 55-Min-Cache: Crowd ist bewusst ein vorgelagerter Aufmerksamkeitsindikator; Marktvolumen ist keine Voraussetzung.
   for(let i=0;i<syms.length;i+=5){
     const group=syms.slice(i,i+5),queries=group.map(crowdQueryName);
     const u=new URL('https://serpapi.com/search.json');u.searchParams.set('engine','google_trends');u.searchParams.set('q',queries.join(','));u.searchParams.set('date','now 4-H');u.searchParams.set('geo','US');u.searchParams.set('data_type','TIMESERIES');u.searchParams.set('api_key',env.SERPAPI_KEY);
@@ -1353,7 +1353,7 @@ async function crowdPulse(env,symbols,force=false){
       }
     }catch(e){for(const symbol of group)rows.push({symbol,score:null,stars:null,source:'Google Trends via SerpApi',error:String(e.message||e)});}
   }
-  const data={configured:true,state:'ok',rows,cacheHours:4,note:'Crowd/Search ist eine separate Aufmerksamkeitsmessung und hat 0 % BUY-Gewicht.',ts:Date.now(),version:APP_VERSION};
+  const data={configured:true,state:'ok',rows,cacheMinutes:55,note:'Crowd/Search ist ein vorgelagerter Aufmerksamkeitsindikator. Marktvolumen ist keine Voraussetzung; 0 % BUY-Gewicht.',ts:Date.now(),version:APP_VERSION};
   crowdMemo={ts:Date.now(),key,data};return data;
 }
 

@@ -35,6 +35,10 @@ const saveSettings = () => { try { localStorage.setItem('fp.settings', JSON.stri
 let rows = [];
 let meta = {};
 let stockRows = [];
+const STOCK_LAST_ROWS_KEY='fp.stockLastRows.v1';
+let stockLastRows=(()=>{try{const rows=JSON.parse(localStorage.getItem(STOCK_LAST_ROWS_KEY)||'[]');return new Map((Array.isArray(rows)?rows:[]).filter(r=>r?.symbol).map(r=>[String(r.symbol).toUpperCase(),r]));}catch{return new Map();}})();
+function rememberStockRows(rows){for(const r of rows||[])if(r?.symbol)stockLastRows.set(String(r.symbol).toUpperCase(),r);const vals=[...stockLastRows.values()].slice(-120);stockLastRows=new Map(vals.map(r=>[String(r.symbol).toUpperCase(),r]));try{localStorage.setItem(STOCK_LAST_ROWS_KEY,JSON.stringify(vals));}catch{}}
+function mergeFavoriteRows(rows){const m=new Map((rows||[]).filter(r=>r?.symbol).map(r=>[String(r.symbol).toUpperCase(),r]));for(const sym of(S.favoriteStocks||[])){const old=stockLastRows.get(String(sym).toUpperCase());if(old&&!m.has(String(sym).toUpperCase()))m.set(String(sym).toUpperCase(),{...old,_staleFavorite:true});}return [...m.values()];}
 let focusStock = '';
 let stockMeta = {};
 let stockTimer = null;
@@ -128,7 +132,7 @@ function toggleStockFavorite(symbol, ev) {
   ev?.stopPropagation();
   const set = new Set(S.favoriteStocks || []);
   if (set.has(symbol)) set.delete(symbol); else set.add(symbol);
-  S.favoriteStocks = [...set]; saveSettings(); renderStocks();
+  S.favoriteStocks = [...set]; rememberStockRows(stockRows); stockRows=mergeFavoriteRows(stockRows); saveSettings(); renderStocks();
 }
 
 function togglePairMute(pair, ev) {
@@ -537,6 +541,18 @@ function stockLadder(r) {
   </div>`;
 }
 
+function stockInterpretation(r){
+  const c=crowdFor(r.symbol),crowd=c&&Number.isFinite(+c.score)?+c.score:null,accel=c&&Number.isFinite(+c.accel)?+c.accel:null;
+  const rv=r.relVol==null?null:+r.relVol,mom=Math.max(+r.ret15||0,(+r.ret60||0)/2),lm=leadModel(r),tw=historicalTwin(r);
+  const confirmations=[rv!=null&&rv>=1.5,mom>=1,+r.score>=7].filter(Boolean).length;
+  if(crowd!=null&&(crowd>=70||(accel!=null&&accel>=8))&&confirmations===0)return 'Frühe Aufmerksamkeit: Crowd/Search zieht an, Marktvolumen und Momentum bestätigen noch nicht. Beobachten, ob die Marktseite nachzieht.';
+  if(crowd!=null&&(crowd>=70||(accel!=null&&accel>=8))&&confirmations>=2)return 'Bestätigung setzt ein: Ein früher Crowd-Impuls wird von Momentum/Volumen bzw. Technik begleitet.'+((lm?.n>=5||tw?.n>=5)?' Das passt zu bereits beobachteten Vorläufer-/Twin-Mustern; weiter beobachten.':' Das Muster wird jetzt erstmals marktseitig bestätigt; Learning sammelt weitere Fälle.');
+  if(crowd!=null&&crowd>=65&&confirmations===0&&(+r.ret15||0)<=0)return 'Crowd erhöht, aber bislang ohne Preis-/Volumenbestätigung. Noch kein belastbares Setup.';
+  if(lm?.cur?.length>=2)return 'Mehrere Frühindikatoren laufen in Folge an ('+lm.cur.slice(0,4).map(k=>LEAD_LABEL[k]||k).join(' → ')+'). Das ist ein beobachtenswertes Muster, aber kein BUY-Signal.';
+  if(tw?.n>=5&&tw.edge>=60)return 'Historische Twins sind auffällig positiv, aktuell fehlt aber noch eine klare neue Bestätigung. Beobachten statt vorwegnehmen.';
+  return 'Noch kein klarer Vorläuferverbund. Einzelne Änderungen werden beobachtet; für eine Interpretation fehlen derzeit mehrere unabhängige Bestätigungen.';
+}
+
 function stockPeek(r) {
   const sz = stockSizing(r);
   const t = (label, tip, val) => `<div class="pk" title="${esc(tip)}"><span>${label}</span><b>${val}</b></div>`;
@@ -568,6 +584,7 @@ function stockPeek(r) {
       ${t('Rel. Volumen', 'Aktuelles Volumen im Verhältnis zum Mittel der letzten 20 Bars. Über 1× heißt überdurchschnittliches Interesse.', r.relVol==null ? 'n. v.' : num(r.relVol, 2) + '×')}
       ${t('5m / 15m / 1h', 'Kursveränderung über die letzten 5, 15 und 60 Minuten.', `${num(r.ret5, 2)} % / ${num(r.ret15, 2)} % / ${num(r.ret60, 2)} %`)}
     </div>
+    <div class="stock-interpret"><b>Was hat sich geändert? · Interpretation</b><span>${esc(stockInterpretation(r))}</span><small>Crowd/Learning-Interpretation · 0 % BUY-Gewicht</small></div>
     <footer>US-Feed (${esc(r.exchange)}), Stand ${esc(r.updated || '–')}. EUR-Beträge sind Umrechnungen${r.fxUsdPerEur ? ` zu EUR/USD ${num(r.fxUsdPerEur, 4)}` : ''}, keine Tradegate-Kurse.</footer>
   </div>`;
 }
@@ -783,7 +800,7 @@ function renderStocks() {
   const topBox=$('#stockFocus'), top=shown.find(r=>r.symbol===focusStock)||shown[0];
   if(topBox){if(!top)topBox.innerHTML=search?`<div class="stockfocus-empty">Keine geladene Aktie passend zu „${esc(search)}“. Enter oder 🔎 lädt den Titel direkt.</div>`:(filter==='favorites'?'<div class="stockfocus-empty">Noch keine Aktien-Favoriten. Mit ☆ neben einem Titel hinzufügen.</div>':'');else{
     const sz=stockSizing(top), buy=stockLevel(top)===3, tr=stockTradeability(top); const struct=Number(top.structurePct||0);
-    topBox.innerHTML=`<div class="stockfocus-card ${top.light}${buy?' buy':''}"><div class="sf-focus-main"><div class="sf-title"><div><small>TOP-AKTIE AKTUELL</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button>${esc(top.name)} <b>${esc(top.symbol)}</b></h3><span>${esc(top.sector)} · Score ${num(top.score,1)} · CRV ${num(sz?.planCrvAfterCosts ?? top.netCRV,1)}:1 netto</span></div><strong>${buy?'🟢 BUY':VERDICT_ICON[top.light]+' '+esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${stockPx(top.priceUsd,top.priceEur)}</b></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span>Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Größerer Elliott/Fibonacci-Zielraum aus der aktuellen Struktur. Ergänzende Projektion, kein unmittelbares Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}</span></div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} BUY: Score ≥8, CRV ≥${num(S.minCrvStock,1)}:1, Netto-TP2 ≥${eur(S.minNetProfitStock,0)}, Kursweg ≥${num(S.minTp2PctStock,1)}%.</small></div>${stockLadder(top)}</div>`;
+    topBox.innerHTML=`<div class="stockfocus-card ${top.light}${buy?' buy':''}"><div class="sf-focus-main"><div class="sf-title"><div><small>TOP-AKTIE AKTUELL</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button>${esc(top.name)} <b>${esc(top.symbol)}</b></h3><span>${esc(top.sector)} · Score ${num(top.score,1)} · CRV ${num(sz?.planCrvAfterCosts ?? top.netCRV,1)}:1 netto</span></div><strong>${buy?'🟢 BUY':VERDICT_ICON[top.light]+' '+esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${stockPx(top.priceUsd,top.priceEur)}</b></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span>Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Größerer Elliott/Fibonacci-Zielraum aus der aktuellen Struktur. Ergänzende Projektion, kein unmittelbares Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}</span></div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<div class="stock-interpret"><b>Was hat sich geändert? · Interpretation</b><span>${esc(stockInterpretation(top))}</span><small>Crowd/Search kann vor Marktvolumen anschlagen · 0 % BUY-Gewicht</small></div><small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} BUY: Score ≥8, CRV ≥${num(S.minCrvStock,1)}:1, Netto-TP2 ≥${eur(S.minNetProfitStock,0)}, Kursweg ≥${num(S.minTp2PctStock,1)}%.</small></div>${stockLadder(top)}</div>`;
     topBox.querySelector('[data-favstock]')?.addEventListener('click',e=>toggleStockFavorite(top.symbol,e));
   }}
   const groups=new Map(); for(const r of shown){if(!groups.has(r.sector))groups.set(r.sector,[]);groups.get(r.sector).push(r);}
@@ -841,7 +858,7 @@ async function scanStocks(force = false) {
     // Bei 429 oder einem frischen Worker-Isolate niemals bereits sichtbare
     // Aktien durch ein leeres Fallback-Array ersetzen. Letzte gute Werte bleiben
     // sichtbar, bis eine echte neue Teilgruppe angekommen ist.
-    if (Array.isArray(data.rows) && data.rows.length) stockRows = data.rows;
+    if (Array.isArray(data.rows) && data.rows.length) { rememberStockRows(data.rows); stockRows=mergeFavoriteRows(data.rows); } else { stockRows=mergeFavoriteRows(stockRows); }
     if (!res.ok) {
       setSys('#sysStocks', data.state || 'error', data.error);
       renderQuota(data.quota);
@@ -878,7 +895,7 @@ async function searchStockNow() {
     const data = await res.json();
     stockMeta = { ...stockMeta, ...data };
     if (data.row) {
-      const m = new Map(stockRows.map((r) => [r.symbol, r])); m.set(data.row.symbol, data.row); stockRows = [...m.values()];
+      const m = new Map(stockRows.map((r) => [r.symbol, r])); m.set(data.row.symbol, data.row); stockRows = [...m.values()]; rememberStockRows([data.row]); stockRows=mergeFavoriteRows(stockRows);
     }
     renderQuota(data.quota); checkQuotaPopup(data.quota, data.state);
     if (!res.ok || data.notFound) {
