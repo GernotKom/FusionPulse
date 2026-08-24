@@ -76,4 +76,11 @@ assert.match(workerText,/await tiingoFetch\(env,'\/iex'\)/,'Whole-market Radar m
 assert.match(workerText,/Whole-Market-Radar JEDE Minute/,'Server scheduler must keep the market radar independent of the browser');
 assert.match(workerText,/source IN \('Twelve Data','Tiingo IEX'\)/,'Learning must accept Tiingo IEX history after Primary migration');
 
+// v3.2.2 Common-stock gate: ETFs/ETPs must not consume stock deep-scan slots.
+assert.match(workerText,/const FUND_NAME_RE=/,'Radar must define a defensive fund/product name gate');
+assert.match(workerText,/DAILY TARGET/,'Radar fund gate must catch leveraged daily-target products');
+assert.match(workerText,/filterRadarToCommonStocks\(env,ranked/,'Whole-market ranking must pass through common-stock validation before deep scan');
+assert.match(workerText,/tradableStock:Boolean\(active&&stockType&&!fundLike\)/,'Only active verified stocks that are not fund-like may enter the radar queue');
+assert.match(workerText,/Metadatenprüfung fehlgeschlagen/,'Metadata failure must fail closed instead of admitting an unknown instrument');
+
 console.log('✓ FusionPulse safety regressions: OK');

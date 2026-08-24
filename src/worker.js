@@ -1911,6 +1911,44 @@ async function persistIexRadar(env,data){
   if(!env?.DB||!data?.rows?.length)return;
   try{await ensureD1Schema(env);const ts=Date.now(),payload=safeJson({ts,universe:data.universe,rows:data.rows.slice(0,120).map(r=>({symbol:r.symbol,last:r.last,volume:r.volume,spreadPct:r.spreadPct,movePct:r.movePct,score:r.score,ts:r.ts}))});await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`).bind('iex_radar:last',payload,ts).run();}catch(e){console.warn(JSON.stringify({event:'iex_radar_cache_write_failed',message:String(e?.message||e),ts:Date.now()}));}
 }
+// v3.2.2 Security-master gate: the whole-market IEX snapshot also contains
+// ETFs/ETPs. Those are useful as market sensors, but must never consume a stock
+// Deep-Scan slot or become a stock BUY candidate. Tiingo search metadata is
+// cached in D1 so validation is paid only once per symbol for seven days.
+const FUND_NAME_RE=/(?:\bETF\b|\bETN\b|\bETP\b|EXCHANGE[- ]TRADED|DAILY TARGET|\b2X\b|\b3X\b|ULTRA(?:PRO)?\b|BEAR\b|BULL\b|INVERSE\b|LEVERAGED\b|DIREXION|PROSHARES|T-?REX|GRANITESHARES|DEFIANCE|ROUNDHILL|YIELDMAX|REX SHARES|TRADR)/i;
+const nonEquityMemo=new Map();
+async function radarEquityMeta(env,symbol){
+  const sym=String(symbol||'').toUpperCase();
+  const mem=nonEquityMemo.get(sym);
+  if(mem&&Date.now()-mem.ts<7*86400_000)return mem;
+  const key=`security_meta:${sym}`;
+  if(env?.DB){
+    try{await ensureD1Schema(env);const r=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind(key).first();if(r?.value&&Date.now()-Number(r.updated_ts||0)<7*86400_000){const v=JSON.parse(r.value);const out={ts:Number(r.updated_ts||Date.now()),...v};nonEquityMemo.set(sym,out);return out;}}catch{}
+  }
+  let out={ts:Date.now(),tradableStock:false,name:sym,assetType:'unknown',reason:'Metadaten nicht verifiziert'};
+  try{
+    const d=await tiingoFetch(env,`/tiingo/utilities/search?query=${encodeURIComponent(sym)}`);
+    const hits=Array.isArray(d)?d:[];
+    const hit=hits.find(x=>String(x?.ticker||'').toUpperCase().replace(/\./g,'-')===sym) || hits[0];
+    const name=String(hit?.name||sym), assetType=String(hit?.assetType||'').toLowerCase();
+    const active=hit?.isActive!==false;
+    const fundLike=FUND_NAME_RE.test(name);
+    const stockType=assetType==='stock';
+    out={ts:Date.now(),tradableStock:Boolean(active&&stockType&&!fundLike),name,assetType:assetType||'unknown',reason:!active?'inaktiv':!stockType?`Asset-Typ ${assetType||'unbekannt'}`:fundLike?'ETF/ETP/Fonds erkannt':'Common-Stock verifiziert'};
+  }catch(e){out.reason='Metadatenprüfung fehlgeschlagen';}
+  nonEquityMemo.set(sym,out);
+  if(env?.DB){try{await ensureD1Schema(env);await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`).bind(key,safeJson({tradableStock:out.tradableStock,name:out.name,assetType:out.assetType,reason:out.reason}),out.ts).run();}catch{}}
+  return out;
+}
+async function filterRadarToCommonStocks(env,rows,limit){
+  // Validate only the leading radar pool; rejected ETFs are replaced by the
+  // next ranked candidate. Fail-closed: unverifiable instruments do not enter
+  // the stock Deep Scan, in line with the data-quality safety rule.
+  const source=(rows||[]).slice(0,20); // max. 20 Metadaten-Checks; bleibt unter dem Worker-Subrequest-Budget
+  const checked=await pool(source,6,async r=>({r,m:await radarEquityMeta(env,r.symbol)}));
+  return checked.filter(x=>x.m.tradableStock).map(x=>({...x.r,securityName:x.m.name,assetType:'stock',securityVerified:true})).slice(0,limit);
+}
+
 async function tiingoIexMarketRadar(env,limit=80,force=false){
   const now=Date.now();
   if(!force&&tiingoIexRadarMemo.rows.length&&now-tiingoIexRadarMemo.ts<50_000)return tiingoIexRadarMemo;
@@ -1919,10 +1957,11 @@ async function tiingoIexMarketRadar(env,limit=80,force=false){
   const d=await tiingoFetch(env,'/iex'), all=Array.isArray(d)?d:[];
   const phase=usMarketPhase(new Date(now),'iex');
   const maxAge=['opening','regular'].includes(phase.key)?12:['premarket','after'].includes(phase.key)?30:90;
-  const rows=all.map(x=>iexRadarQuote(x,prevMap.get(String(x?.ticker||x?.symbol||'').toUpperCase()))).filter(Boolean)
+  const ranked=all.map(x=>iexRadarQuote(x,prevMap.get(String(x?.ticker||x?.symbol||'').toUpperCase()))).filter(Boolean)
     .filter(r=>r.ageMin==null||r.ageMin<=maxAge)
-    .sort((a,b)=>b.score-a.score).slice(0,Math.max(20,Math.min(120,limit)));
-  tiingoIexRadarMemo={ts:now,rows,universe:all.length,phase:phase.key,source:'Tiingo IEX Whole-Market Radar',buyWeight:0};
+    .sort((a,b)=>b.score-a.score);
+  const rows=await filterRadarToCommonStocks(env,ranked,Math.max(20,Math.min(120,limit)));
+  tiingoIexRadarMemo={ts:now,rows,universe:all.length,phase:phase.key,source:'Tiingo IEX Whole-Market Radar · Common Stocks only',buyWeight:0};
   await persistIexRadar(env,tiingoIexRadarMemo);
   return tiingoIexRadarMemo;
 }

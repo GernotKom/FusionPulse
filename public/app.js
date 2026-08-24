@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.2.1 — Frontend
+   FusionPulse v3.2.2 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
