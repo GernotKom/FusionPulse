@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS market_snapshots (
   sector_lag REAL,
   crowd_score REAL,
   structure_pct REAL,
+  executability REAL,
   light TEXT,
   max_pct REAL NOT NULL DEFAULT 0,
   min_pct REAL NOT NULL DEFAULT 0,

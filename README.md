@@ -1,4 +1,4 @@
-# FusionPulse v3.0.12
+# FusionPulse v3.1.4
 
 Momentum- und Einstiegszonen-Scanner für Bitpanda Fusion (EUR) plus US-Aktienradar über Twelve Data und Alpaca. Läuft als PWA auf einem Cloudflare Worker. Keine Order-Automatik — FusionPulse liefert Trade-Pläne, ausgeführt wird manuell.
 
@@ -57,3 +57,6 @@ npm install
 npm run sync-version
 npm run check
 ```
+
+## v3.1.0 – Tiingo Power + BOATS
+Tiingo wird zunächst als paralleler Discovery-/Marktdaten-Layer integriert. Twelve Data und Alpaca bleiben bis zum erfolgreichen Paralleltest erhalten. `TIINGO_API_TOKEN` ausschließlich als Cloudflare-Secret setzen; keine Keys im Frontend oder Repository.

@@ -55,7 +55,7 @@ function parseComponents(raw) {
 /* ---------------------------------------------------------------- Utilities */
 const num = (x) => { const n = Number(x); return Number.isFinite(n) ? n : 0; };
 const clamp = (x, lo = 0, hi = 10) => Math.max(lo, Math.min(hi, Number.isFinite(x) ? x : lo));
-const r1 = (x) => Math.round(x * 10) / 10;
+const r1 = (x) => x == null || !Number.isFinite(Number(x)) ? null : Math.round(Number(x) * 10) / 10;
 const r2 = (x) => Math.round(x * 100) / 100;
 const mean = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
 const sd = (a) => { if (a.length < 2) return 0; const m = mean(a); return Math.sqrt(mean(a.map((x) => (x - m) ** 2))); };
@@ -335,8 +335,8 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
   const bookKnown = !!bm;
   const liquidity = bm
     ? clamp(10 - (spread ?? 0.004) * 900 - Math.max(0, 3 - Math.log10(Math.max(bm.buyCapacity, 1))) * 1.6)
-    : 5.5;
-  const bookScore = clamp(5 + imbalance * 4.5);
+    : null;
+  const bookScore = bookKnown ? clamp(5 + imbalance * 4.5) : null;
 
   // --- Setup-Klassifikation ------------------------------------------------
   let regime = 'Neutral', setup = 'Beobachten', orderType = 'limit', setupFit = 4;
@@ -430,7 +430,9 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
     [true, Math.min(10, (netCRV / 3) * 10), 0.14],
   ].filter(([known]) => known);
   const execWeight = execParts.reduce((a,x)=>a+x[2],0) || 1;
-  const executability = clamp(execParts.reduce((a,x)=>a+x[1]*x[2],0) / execWeight);
+  let executability = clamp(execParts.reduce((a,x)=>a+x[1]*x[2],0) / execWeight);
+  // Sicherheitsinvariante: unbekanntes Orderbuch darf niemals grün ermöglichen.
+  if (!bookKnown) executability = Math.min(executability, 6.4);
 
   // --- Elliott-Wellen-Heuristik ---------------------------------------------
   // Keine subjektive Wellenbeschriftung: bewertet Impuls-/Korrekturstruktur aus
@@ -499,8 +501,8 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
   // --- Ampel ---------------------------------------------------------------
   let light = 'red';
   const viable = netCRV >= 1.0 && costRatio >= 2.5 && exhaustion < 8.5;
-  const tradable = viable && netCRV >= minCrv && (spread == null || spread <= 0.0025)
-                   && (!bookKnown || liquidity >= 6) && exhaustion < 7;
+  const tradable = viable && netCRV >= minCrv && bookKnown && (spread == null || spread <= 0.0025)
+                   && liquidity >= 6 && exhaustion < 7;
   if (modeQuality >= 7.0 && executability >= 6.5 && tradable && (mode === 'elliott' || setupFit >= 7)) light = 'green';
   else if (viable && (modeQuality >= 6.0 || (mode === 'composite' && premove >= 7.2))) light = 'yellow';
 
@@ -902,6 +904,29 @@ let stockMemo = { ts: 0, rows: [], cycle: -1, sig: '' };
 let fxMemo = { ts: 0, usdPerEur: null };
 const stockLookupMemo = new Map();
 
+async function persistStockScan(env, sig, cycle, rows, meta={}) {
+  if(!env?.DB || !rows?.length) return;
+  try {
+    await ensureD1Schema(env);
+    const ts=Date.now();
+    const payload=safeJson({ts,sig,cycle,rows,meta});
+    await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
+      .bind('stock_scan:last',payload,ts).run();
+  } catch(e){ console.warn(JSON.stringify({event:'fusionpulse_stock_cache_write_failed',message:String(e?.message||e),ts:Date.now()})); }
+}
+async function readPersistedStockScan(env, sig, cycle) {
+  if(!env?.DB) return null;
+  try {
+    await ensureD1Schema(env);
+    const row=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind('stock_scan:last').first();
+    if(!row?.value) return null;
+    const p=JSON.parse(row.value), ts=Number(p?.ts||row.updated_ts||0);
+    if(!p?.rows?.length || p.sig!==sig || Number(p.cycle)!==Number(cycle) || Date.now()-ts>55_000) return null;
+    return {rows:p.rows,ts,meta:p.meta||{}};
+  } catch(e){ console.warn(JSON.stringify({event:'fusionpulse_stock_cache_read_failed',message:String(e?.message||e),ts:Date.now()})); return null; }
+}
+
 /* --- Kontingent-Überwachung ------------------------------------------------
    Twelve Data liefert bei JEDER Antwort die Header api-credits-used und
    api-credits-left. Beides wird 1:1 übernommen. Es wird NICHTS erfunden:
@@ -914,9 +939,11 @@ let tdQuota = {
   lastHeaderTs: 0,
 };
 const utcDayKey = () => new Date().toISOString().slice(0, 10);
-function noteQuota(res, creditsSpent) {
+async function noteQuota(env, res, creditsSpent) {
   const day = utcDayKey();
   if (tdQuota.dayKey !== day) { tdQuota.dayKey = day; tdQuota.dayCredits = 0; }
+  // Lokal sofort fortschreiben; D1 spiegelt den Tagesverbrauch anschließend atomar
+  // worker-/isolate-übergreifend. Dadurch ist die UI nicht mehr nur eine Instanzzählung.
   tdQuota.dayCredits += creditsSpent;
 
   const used = res?.headers?.get?.('api-credits-used');
@@ -927,9 +954,22 @@ function noteQuota(res, creditsSpent) {
       tdQuota.creditsUsed = u; tdQuota.creditsLeft = l;
       tdQuota.minuteLimit = u + l;
       tdQuota.lastHeaderTs = Date.now();
-      // Abgeleitet, nicht erfunden: 8 Credits/Minute ist der Basic-/Trial-Tarif,
-      // dessen Tageskontingent laut Anbieter 800 Credits beträgt.
       if (tdQuota.minuteLimit === 8) { tdQuota.dayLimit = 800; tdQuota.dayLimitDerived = true; }
+    }
+  }
+  if (env?.DB && creditsSpent > 0) {
+    try {
+      await ensureD1Schema(env);
+      const key=`twelve_quota:${day}`;
+      await env.DB.prepare(
+        `INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+         ON CONFLICT(key) DO UPDATE SET value=CAST(COALESCE(CAST(fp_meta.value AS INTEGER),0)+? AS TEXT),updated_ts=excluded.updated_ts`
+      ).bind(key,String(creditsSpent),Date.now(),creditsSpent).run();
+      const row=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind(key).first();
+      const global=Number(row?.value);
+      if(Number.isFinite(global)) tdQuota.dayCredits=global;
+    } catch (e) {
+      console.warn(JSON.stringify({event:'fusionpulse_quota_persist_failed',message:String(e?.message||e),ts:Date.now()}));
     }
   }
 }
@@ -955,11 +995,23 @@ function nyParts(date = new Date()) {
   const parts = NY_FMT.formatToParts(date);
   return Object.fromEntries(parts.map(p=>[p.type,p.value]));
 }
+function easterSundayUTC(year){
+  const a=year%19,b=Math.floor(year/100),c=year%100,d=Math.floor(b/4),e=b%4,f=Math.floor((b+8)/25),g=Math.floor((b-f+1)/3),h=(19*a+b-d-g+15)%30,i=Math.floor(c/4),k=c%4,l=(32+2*e+2*i-h-k)%7,m=Math.floor((a+11*h+22*l)/451),month=Math.floor((h+l-7*m+114)/31),day=((h+l-7*m+114)%31)+1;
+  return new Date(Date.UTC(year,month-1,day));
+}
+function nthWeekdayUTC(year,month,weekday,n){const d=new Date(Date.UTC(year,month,1));const add=(weekday-d.getUTCDay()+7)%7+7*(n-1);d.setUTCDate(1+add);return d;}
+function lastWeekdayUTC(year,month,weekday){const d=new Date(Date.UTC(year,month+1,0));d.setUTCDate(d.getUTCDate()-((d.getUTCDay()-weekday+7)%7));return d;}
+function observedFixedUTC(year,month,day){const d=new Date(Date.UTC(year,month,day));if(d.getUTCDay()===6)d.setUTCDate(d.getUTCDate()-1);else if(d.getUTCDay()===0)d.setUTCDate(d.getUTCDate()+1);return d;}
+function nyseCalendar(year){
+  const easter=easterSundayUTC(year), goodFriday=new Date(easter);goodFriday.setUTCDate(easter.getUTCDate()-2);
+  const dates=[observedFixedUTC(year,0,1),nthWeekdayUTC(year,0,1,3),nthWeekdayUTC(year,1,1,3),goodFriday,lastWeekdayUTC(year,4,1),observedFixedUTC(year,5,19),observedFixedUTC(year,6,4),nthWeekdayUTC(year,8,1,1),nthWeekdayUTC(year,10,4,4),observedFixedUTC(year,11,25)];
+  return new Set(dates.map(d=>d.toISOString().slice(0,10)));
+}
 function usMarketPhase(date = new Date(), feed = null) {
-  const p=nyParts(date), weekend=['Sat','Sun'].includes(p.weekday), mins=Number(p.hour)*60+Number(p.minute);
+  const p=nyParts(date), weekend=['Sat','Sun'].includes(p.weekday), mins=Number(p.hour)*60+Number(p.minute), y=Number(p.year), ymd=`${p.year}-${p.month}-${p.day}`, holiday=nyseCalendar(y).has(ymd);
   const iex = feed === 'iex';
   let key='closed', label='US-Markt geschlossen', help='Aktienwerte dienen nur der Vorbereitung; keine Live-BUY-Freigabe.';
-  if(!weekend){
+  if(!weekend && !holiday){
     if(mins>=240&&mins<480){key='premarket-early';label='Premarket 04:00–08:00 ET';help=iex?'Voller US-Premarket läuft; IEX Free bildet diesen frühen Abschnitt nur eingeschränkt ab.':'US-Premarket / Extended Hours.';}
     else if(mins>=480&&mins<570){key='premarket';label=iex?'Premarket · IEX':'Premarket';help=iex?'IEX liefert Live-Daten, bildet aber nur einen Teil des US-Marktes ab.':'US-Premarket / Extended Hours.';}
     else if(mins>=570&&mins<660){key='opening';label='US-Opening · erste 90 Min.';help='Prioritätsfenster für Opening Momentum, Premarket-High, VWAP und Volumenbeschleunigung.';}
@@ -985,7 +1037,8 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
   // VWAP über die vorliegenden Bars (Typical Price × Volumen)
   let pv = 0, vv = 0;
   for (const b of bars.slice(-26)) { const tp = (b.h + b.l + b.c) / 3; pv += tp * b.v; vv += b.v; }
-  const vwap = vv > 0 ? pv / vv : last.c;
+  const volumeKnown = vv > 0;
+  const vwap = volumeKnown ? pv / vv : null;
 
   const ret5 = (last.c / prev.c - 1) * 100;
   const ret15 = (last.c / bars.at(-4).c - 1) * 100;
@@ -993,13 +1046,13 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
   const vbaseArr = vs.slice(-21, -1).filter((v) => v > 0);
   const vbase = vbaseArr.length >= 8 ? mean(vbaseArr) : null;
   const relVol = vbase > 0 ? last.v / vbase : null; // null = Volumenbasis nicht belastbar
-  const relVolScore = relVol ?? 1; // intern neutral, extern bleibt unbekannt = null
+  const relVolScore = relVol == null ? null : relVol;
 
   // Gewichteter Mittelwert über AKTIVE Komponenten — abgeschaltet ≠ negativ.
   const trendScore = 5 + (last.c > ema21 ? 1.9 : -1.9) + (ema9 > ema21 ? 1.5 : -1.1);
   const momoScore = 5 + Math.max(-3.5, Math.min(3.5, ret15 * 2.2)) + Math.max(-1.5, Math.min(1.5, ret60 * 0.7));
-  const volScore = 5 + Math.max(-2.0, Math.min(3.5, (relVolScore - 1) * 3.0));
-  const vwapScore = last.c >= vwap ? 7.6 : 3.4;
+  const volScore = relVolScore == null ? null : 5 + Math.max(-2.0, Math.min(3.5, (relVolScore - 1) * 3.0));
+  const vwapScore = volumeKnown ? (last.c >= vwap ? 7.6 : 3.4) : null;
   const q = clamp(weighted([
     ['ema21', trendScore, 0.30],
     ['mtf',   momoScore,  0.30],
@@ -1030,9 +1083,12 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
   const eurPerUsd = usdPerEur ? 1 / usdPerEur : null;      // usdPerEur = EUR/USD-Kurs
   const e = (x) => (eurPerUsd ? x * eurPerUsd : null);
 
-  const score = +q.toFixed(1);
-  const executability = +clamp(4 + relVolScore * 1.2 + Math.min(2, Math.abs(ret15))).toFixed(1);
-  const light = score >= 8 && netCRV >= minCrv ? 'green' : score >= 6.5 ? 'yellow' : 'red';
+  // Datenqualitäts-Gate: fehlendes Volumen darf durch Renormierung niemals ein
+  // vermeintlich starkes Aktien-Setup erzeugen. Ohne belastbares Volumen bleibt
+  // die Qualitätsanzeige maximal im Beobachtungsbereich und BUY ist gesperrt.
+  const score = +(volumeKnown ? q : Math.min(q, 6.4)).toFixed(1);
+  const executability = relVolScore == null ? null : +clamp(4 + relVolScore * 1.2 + Math.min(2, Math.abs(ret15))).toFixed(1);
+  const light = volumeKnown && score >= 8 && netCRV >= minCrv ? 'green' : score >= 6.5 ? 'yellow' : 'red';
   const verdict = light === 'green' ? 'Kauf-Setup' : light === 'yellow' ? 'Beobachten' : 'Kein Trade';
   const setup = ema9 > ema21 && ret15 > 0 ? 'Trend / Momentum'
     : last.c > ema21 ? 'Pullback über EMA21'
@@ -1053,20 +1109,27 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
     zoneLowEur: e(entry - 0.25 * atr), zoneHighEur: e(entry + 0.25 * atr),
     netCRV, atrPct: +((atr / last.c) * 100).toFixed(2),
     ret5: +ret5.toFixed(2), ret15: +ret15.toFixed(2), ret60: +ret60.toFixed(2),
-    relVol: relVol == null ? null : +relVol.toFixed(2), vwapUsd: vwap, aboveVwap: last.c >= vwap,
+    relVol: relVol == null ? null : +relVol.toFixed(2), volumeKnown, vwapUsd: vwap, aboveVwap: volumeKnown ? last.c >= vwap : null,
     liquidityVacuum: +liquidityVacuum.toFixed(0),
     updated: last.dt, feed: 'Twelve Data US', tradegate: false, marketPhase: usMarketPhase().key,
     fxUsdPerEur: usdPerEur || null, fxKnown: !!usdPerEur,
+    // v3.1.0: Intraday-Verlauf aus den ohnehin geladenen 5-Minuten-Bars; keine Zusatz-API-Kosten.
+    intraday: (() => {
+      const xs = bars.slice(-40).map(b => b.c).filter(Number.isFinite);
+      if (!xs.length) return [];
+      const lo=Math.min(...xs), hi=Math.max(...xs);
+      return xs.map(c => Math.round(hi>lo ? ((c-lo)/(hi-lo))*100 : 50));
+    })(),
     components: [...on],
   };
 }
 
-async function twelveJSON(path, params, key, creditsSpent = 1) {
+async function twelveJSON(path, params, key, creditsSpent = 1, env = null) {
   const u = new URL('https://api.twelvedata.com/' + path);
   for (const [k, v] of Object.entries(params)) if (v != null) u.searchParams.set(k, v);
   u.searchParams.set('apikey', key);
   const r = await fetch(u);
-  noteQuota(r, creditsSpent);
+  await noteQuota(env, r, creditsSpent);
   const j = await r.json();
   if (!r.ok || j?.status === 'error') {
     const err = new Error(j?.message || `Twelve Data ${r.status}`);
@@ -1076,10 +1139,10 @@ async function twelveJSON(path, params, key, creditsSpent = 1) {
   return j;
 }
 
-async function getFx(key) {
+async function getFx(key, env = null) {
   if (fxMemo.usdPerEur && Date.now() - fxMemo.ts < 30 * 60_000) return fxMemo.usdPerEur;
   try {
-    const j = await twelveJSON('price', { symbol: 'EUR/USD' }, key, 1);
+    const j = await twelveJSON('price', { symbol: 'EUR/USD' }, key, 1, env);
     const x = +j.price;
     if (x > 0) { fxMemo = { ts: Date.now(), usdPerEur: x }; return x; }
   } catch { /* FX optional: ohne Kurs zeigt die UI nur USD */ }
@@ -1094,7 +1157,7 @@ async function resolveStockQueryLive(env, raw) {
   if (local && STOCK_SEARCH_BY_SYMBOL.has(local.symbol)) return local;
   if (!q || !env.TWELVE_API_KEY) return local;
   try {
-    const j = await twelveJSON('symbol_search', { symbol: q, outputsize: '12', show_plan: 'true' }, env.TWELVE_API_KEY, 1);
+    const j = await twelveJSON('symbol_search', { symbol: q, outputsize: '12', show_plan: 'true' }, env.TWELVE_API_KEY, 1, env);
     const data = Array.isArray(j?.data) ? j.data : [];
     const us = data.filter(x => {
       const country = String(x.country || '').toUpperCase();
@@ -1123,11 +1186,11 @@ async function stockLookup(env, raw, comp, minCrv = 3) {
   if (!info) return { configured: true, state: 'ok', notFound: true, error: 'Kein eindeutiger US-Aktientreffer gefunden. Bitte Firmenname oder Ticker versuchen.', quota: quotaView(), version: APP_VERSION };
   const cached = stockLookupMemo.get(info.symbol);
   if (cached && Date.now() - cached.ts < 5 * 60_000) return { configured: true, state: 'ok', cached: true, lookup: true, row: cached.row, quota: quotaView(), version: APP_VERSION };
-  const fx = await getFx(env.TWELVE_API_KEY);
+  const fx = await getFx(env.TWELVE_API_KEY, env);
   let j;
   let extendedHours = true;
   try {
-    j = await twelveJSON('time_series', { symbol: info.symbol, interval: '5min', outputsize: '40', prepost: 'true', format: 'JSON' }, env.TWELVE_API_KEY, 1);
+    j = await twelveJSON('time_series', { symbol: info.symbol, interval: '5min', outputsize: '40', prepost: 'true', format: 'JSON', timezone: 'UTC' }, env.TWELVE_API_KEY, 1, env);
   } catch (e) {
     // Twelve Data stellt aktuelle Extended-Hours je nach Tarif bereit. Ein
     // Treffer darf deshalb nicht komplett scheitern, nur weil prepost=true im
@@ -1135,7 +1198,7 @@ async function stockLookup(env, raw, comp, minCrv = 3) {
     const m = String(e?.message || e || '');
     if (!/pre.?post|extended|plan|subscription|access|permission/i.test(m)) throw e;
     extendedHours = false;
-    j = await twelveJSON('time_series', { symbol: info.symbol, interval: '5min', outputsize: '40', format: 'JSON' }, env.TWELVE_API_KEY, 1);
+    j = await twelveJSON('time_series', { symbol: info.symbol, interval: '5min', outputsize: '40', format: 'JSON', timezone: 'UTC' }, env.TWELVE_API_KEY, 1, env);
   }
   const row = analyseStock(info.symbol, info.sector, j, fx, comp, minCrv);
   if (!row) return { configured: true, state: 'ok', notFound: true, error: 'Titel gefunden, aber noch nicht genügend 5-Minuten-Daten für die Analyse.', quota: quotaView(), version: APP_VERSION };
@@ -1167,8 +1230,19 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3, favoriteSymbo
   if (!force && stockMemo.rows.length && stockMemo.cycle === cycle && stockMemo.sig === sig && Date.now() - stockMemo.ts < 55_000) {
     return { configured: true, state: 'ok', cached: true,
              rows: stockMemo.rows, ts: stockMemo.ts, cycle, universe: STOCK_UNIVERSE.length,
-             scanned: stockMemo.rows.length, quota: quotaView(), version: APP_VERSION,
+             scanned: stockMemo.rows.length, updatedThisCycle: 0, refreshedSymbols: [], favoritePriority: favs.length, quota: quotaView(), version: APP_VERSION,
              market: usMarketPhase(new Date(), null), note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs' };
+  }
+
+  if (!force && !stockMemo.rows.length) {
+    const persisted=await readPersistedStockScan(env,sig,cycle);
+    if(persisted){
+      stockMemo={ts:persisted.ts,rows:persisted.rows,cycle,sig};
+      setApiState('stocks','ok','Persistenter Aktienbatch geladen');
+      return {configured:true,state:'ok',cached:true,persistent:true,rows:stockMemo.rows,ts:stockMemo.ts,cycle,
+        universe:STOCK_UNIVERSE.length,scanned:stockMemo.rows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,
+        quota:quotaView(),version:APP_VERSION,market:usMarketPhase(new Date(),null),note:'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs'};
+    }
   }
 
   // v3.0.10: Depot/Favoriten haben Scan-Priorität. Maximal fünf Twelve-Data-
@@ -1182,26 +1256,25 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3, favoriteSymbo
   const basePick=[];
   const favSet=new Set(favPick);
   const baseStart=(minuteSlot*2)%STOCK_UNIVERSE.length;
-  for(let i=0;i<STOCK_UNIVERSE.length && basePick.length<(favs.length?2:5);i++){
+  for(let i=0;i<STOCK_UNIVERSE.length && basePick.length<Math.max(0,5-favPick.length);i++){
     const x=STOCK_UNIVERSE[(baseStart+i)%STOCK_UNIVERSE.length];
     if(!favSet.has(x[1])) basePick.push(x);
   }
   const favRows=favPick.map(symbol=>{
     const info=STOCK_SEARCH_BY_SYMBOL.get(symbol);
     const core=STOCK_UNIVERSE.find(([,s])=>s===symbol);
-    return core || [info?.sector||'Favoriten',symbol,info?.name||symbol];
+    return core || [info?.sector||null,symbol,info?.name||symbol];
   });
   const batch=[...favRows,...basePick].slice(0,5);
   const syms = batch.map((x) => x[1]);
-  const fx = await getFx(env.TWELVE_API_KEY);
+  const fx = await getFx(env.TWELVE_API_KEY, env);
   // v3.0.8 QUOTA-HOTFIX: Der automatische Teil-Batch verwendet bewusst keine
   // prepost-Abfrage. Auf Tarifen ohne Extended Hours kostete v3.0.7 zuerst 7
   // Credits fuer prepost=true und danach nochmals 7 Credits fuer den Fallback.
   // Premarket/Opening wird bereits separat und passend ueber Alpaca geliefert.
   // Einzel-Lookups duerfen weiterhin prepost testen (max. 1+1 Credit).
   const j = await twelveJSON('time_series', {
-    symbol: syms.join(','), interval:'5min', outputsize:'40', format:'JSON'
-  }, env.TWELVE_API_KEY, syms.length);
+    symbol: syms.join(','), interval:'5min', outputsize:'40', format:'JSON', timezone:'UTC' }, env.TWELVE_API_KEY, syms.length, env);
 
   const fresh = [];
   for (const [sector, symbol] of batch) {
@@ -1225,10 +1298,13 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3, favoriteSymbo
   rows.sort((a, b) => b.score - a.score);
   stockMemo = { ts: Date.now(), rows, cycle, sig };
   setApiState('stocks', 'ok');
+  // Cross-Isolate-Warmcache: verhindert, dass Cron und mehrere PWA-Clients denselben
+  // Twelve-Data-Batch innerhalb derselben Minute erneut verbrauchen.
+  await persistStockScan(env,sig,cycle,rows,{fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol)});
 
   return {
     configured: true, state: 'ok', cached: false, rows, ts: stockMemo.ts, cycle,
-    universe: STOCK_UNIVERSE.length, scanned: rows.length, updatedThisCycle: fresh.length, favoritePriority: favs.length,
+    universe: STOCK_UNIVERSE.length, scanned: rows.length, updatedThisCycle: fresh.length, refreshedSymbols: fresh.map(r=>r.symbol), favoritePriority: favs.length,
     fxUsdPerEur: fx || null, fxApprox: !!fx, quota: quotaView(), version: APP_VERSION,
     market: usMarketPhase(new Date(), null), note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs',
   };
@@ -1266,15 +1342,18 @@ function momentumFromAlpaca(symbol, snap, bars=[]){
   const bs=(bars||[]).map(b=>({t:b.t,c:+b.c,h:+b.h,l:+b.l,v:+b.v||0})).filter(b=>b.c>0).sort((a,b)=>new Date(a.t)-new Date(b.t));
   const closeAgoBars=(n)=>bs.length>n?bs.at(-1-n).c:bs[0]?.c||latest;
   const ret5=(latest/closeAgoBars(1)-1)*100, ret15=(latest/closeAgoBars(3)-1)*100, ret60=(latest/closeAgoBars(Math.max(1,Math.min(12,bs.length-1)))-1)*100;
-  const vols=bs.slice(-25).map(b=>b.v); const baseArr=vols.slice(0,-3).filter(v=>v>0); const base=baseArr.length>=8?mean(baseArr):null; const recent=mean(vols.slice(-3).filter(v=>v>0)); const relVol=base>0?recent/base:1; // unbekannt = keine Volumenbestaetigung
+  const vols=bs.slice(-25).map(b=>b.v); const baseArr=vols.slice(0,-3).filter(v=>v>0); const base=baseArr.length>=8?mean(baseArr):null; const recent=mean(vols.slice(-3).filter(v=>v>0)); const relVol=base>0?recent/base:null; // unbekannt bleibt unbekannt
   const gapPct=(latest/prevClose-1)*100;
   const pre=bs.filter(b=>{const m=barTimeET(b.t);return m>=240&&m<570;});
   const preHigh=pre.length?maxOf(pre.map(b=>b.h)):null, preLow=pre.length?minOf(pre.map(b=>b.l)):null;
   const open=bs.filter(b=>{const m=barTimeET(b.t);return m>=570&&m<585;}); const openingHigh=open.length?maxOf(open.map(b=>b.h)):null;
-  const priceScore=clamp(5+ret15*1.3+ret60*.35,0,10), volScore=clamp(4+(relVol-1)*2.3,0,10);
+  const priceScore=clamp(5+ret15*1.3+ret60*.35,0,10), volScore=relVol==null?null:clamp(4+(relVol-1)*2.3,0,10);
   const gapScore=clamp(5+Math.max(-3,Math.min(4,gapPct*.6)),0,10);
   const levelScore=preHigh?clamp(5+((latest/preHigh)-1)*250,0,10):5;
-  const momentumScore=r1(weighted([[null,priceScore,.35],[null,volScore,.30],[null,gapScore,.20],[null,levelScore,.15]],ALL_ON));
+  const measuredMomentum=weighted([[null,priceScore,.35],[null,volScore,.30],[null,gapScore,.20],[null,levelScore,.15]],ALL_ON);
+  // Unbekanntes Volumen darf den Momentumwert niemals durch Renormierung verbessern.
+  // Konservativer Unknown-Score 4 entspricht dem Modell-Basispunkt und blockiert künstlichen Bonus.
+  const momentumScore=r1(relVol==null?weighted([[null,priceScore,.35],[null,4,.30],[null,gapScore,.20],[null,levelScore,.15]],ALL_ON):measuredMomentum);
   const phase=usMarketPhase();
   const impulsePct=Math.max(Math.abs(gapPct),Math.abs(ret60),bs.length?((maxOf(bs.slice(-60).map(b=>b.h))/minOf(bs.slice(-60).map(b=>b.l))-1)*100):0);
   const structurePct=r1(Math.min(20,Math.max(0,impulsePct*1.618)));
@@ -1409,8 +1488,9 @@ async function ensureD1Schema(env){
     `CREATE TABLE IF NOT EXISTS fp_meta (key TEXT PRIMARY KEY,value TEXT,updated_ts INTEGER NOT NULL)`
   ];
   for(const q of ddl)await env.DB.prepare(q).run();
-  try { await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN executability REAL').run(); }
-  catch { /* column already exists */ }
+  // Bestehende Produktions-D1 aus älteren Versionen sicher nachziehen.
+  const cols=(await env.DB.prepare('PRAGMA table_info(market_snapshots)').all()).results||[];
+  if(!cols.some(c=>String(c.name)==='executability')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN executability REAL').run();
   d1SchemaReady=true;return true;
 }
 const dbNum = (x) => Number.isFinite(Number(x)) ? Number(x) : null;
@@ -1508,9 +1588,59 @@ async function d1StoreSnapshotRow(env, row, {source='server',assetType='stock',n
   }
   if(ev.length) await env.DB.batch(ev);
 }
-async function d1StoreRows(env, rows, opts){
+async function d1BatchChunks(env, stmts, size=50){
+  for(let i=0;i<stmts.length;i+=size) await env.DB.batch(stmts.slice(i,i+size));
+}
+async function d1StoreRows(env, rows, opts={}){
   if(!env.DB || !rows?.length) return;
-  for(const row of rows.slice(0,60)) await d1StoreSnapshotRow(env,row,opts);
+  await ensureD1Schema(env);
+  const source=opts.source||'server', assetType=opts.assetType||'stock', now=opts.now||Date.now();
+  const clean=[];
+  for(const row of rows.slice(0,60)){
+    const symbol=String(row?.symbol||row?.pair||'').toUpperCase();
+    const price=dbNum(row?.priceUsd ?? row?.price ?? row?.livePrice ?? row?.priceEur);
+    if(symbol && price>0) clean.push({row,symbol,price});
+  }
+  if(!clean.length) return;
+  const symbols=[...new Set(clean.map(x=>x.symbol))];
+  const placeholders=symbols.map(()=>'?').join(',');
+
+  // Outcomes in EINER Abfrage laden und anschließend gebündelt aktualisieren.
+  const unresolved=(await env.DB.prepare(`SELECT id,symbol,ts,price,max_pct,min_pct,success_ts FROM market_snapshots
+    WHERE symbol IN (${placeholders}) AND asset_type=? AND source=? AND resolved_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 3000`)
+    .bind(...symbols,assetType,source,now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
+  const pxBySym=new Map(clean.map(x=>[x.symbol,x.price])), updates=[];
+  for(const x of unresolved){
+    const price=pxBySym.get(String(x.symbol).toUpperCase()); if(!(price>0)||!(Number(x.price)>0)) continue;
+    const pct=(price/Number(x.price)-1)*100, mx=Math.max(Number(x.max_pct)||0,pct), mn=Math.min(Number(x.min_pct)||0,pct);
+    const successTs=x.success_ts || (mx>=5?now:null), resolved=(now-Number(x.ts)>=LEARN_HORIZON_MS)?now:null;
+    updates.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
+      .bind(mx,mn,successTs,resolved,x.id));
+  }
+  if(updates.length) await d1BatchChunks(env,updates);
+
+  // Crowd-Scores ebenfalls in einer Abfrage statt pro Symbol.
+  const crowdRows=(await env.DB.prepare(`SELECT symbol,score FROM crowd_cache WHERE symbol IN (${placeholders}) AND ts > ?`).bind(...symbols,now-6*60*60_000).all()).results||[];
+  const crowdBySym=new Map(crowdRows.map(x=>[String(x.symbol).toUpperCase(),dbNum(x.score)]));
+  const bucket5=Math.floor(now/(5*60_000)), inserts=[], events=[];
+  for(const {row,symbol,price} of clean){
+    const crowdScore=dbNum(row.crowdScore) ?? crowdBySym.get(symbol) ?? null;
+    const enriched={...row,crowdScore}, f=learningFeatures(enriched);
+    inserts.push(env.DB.prepare(`INSERT OR IGNORE INTO market_snapshots
+      (ts,bucket5,source,asset_type,symbol,sector,phase,price,score,crv,rvol,ret15,ret60,atr_pct,liquidity_vacuum,sector_lag,crowd_score,structure_pct,executability,light,payload)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(now,bucket5,source,assetType,symbol,row.sector||null,row.marketPhase||row.phase||null,price,
+        f.score,f.crv,f.rv,f.r15,f.r60,f.atr,f.vac,f.lag,crowdScore,f.structure,dbNum(row.executability),row.light||null,
+        safeJson({setup:row.setup||null,phaseAction:row.phaseAction||null,verdict:row.verdict||null})));
+    const flags=serverLeadFlags(enriched);
+    for(const k of LEARN_SIGNAL_LABELS){
+      if(!flags[k]) continue;
+      const strength=k==='crowd'?crowdScore:k==='rvol'?f.rv:k==='vacuum'?f.vac:k==='sector'?f.lag:k==='elliott'?f.structure:k==='technical'?f.score:k==='momentum'?(dbNum(row.momentumScore)??dbNum(row.momentum)??f.score):crowdScore;
+      events.push(env.DB.prepare('INSERT OR IGNORE INTO signal_events(symbol,ts,bucket5,signal,price,strength,source) VALUES(?,?,?,?,?,?,?)')
+        .bind(symbol,now,bucket5,k,price,strength,source));
+    }
+  }
+  if(inserts.length) await d1BatchChunks(env,inserts);
+  if(events.length) await d1BatchChunks(env,events);
 }
 function twinDistance(a,b){
   const w={score:1.2,crv:.7,rv:.45,r15:.5,r60:.25,atr:.5,vac:.035,lag:.35,crowd:.025,structure:.08};
@@ -1522,20 +1652,19 @@ function twinDistance(a,b){
   return n>=3?Math.sqrt(z):9999;
 }
 async function d1TwinFor(env, symbol){
-  if(!env.DB) return {n:0};
+  if(!env.DB) return {n:0,source:'none'};
   const cur=await env.DB.prepare(`SELECT sector,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure
     FROM market_snapshots WHERE symbol=? AND asset_type='stock' AND source='Twelve Data' ORDER BY ts DESC LIMIT 1`).bind(symbol).first();
-  if(!cur) return {n:0};
-  const q=cur.sector
-    ? env.DB.prepare(`SELECT symbol,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure,max_pct,min_pct
-       FROM market_snapshots WHERE resolved_ts IS NOT NULL AND asset_type='stock' AND source='Twelve Data' AND sector=? ORDER BY ts DESC LIMIT 200`).bind(cur.sector)
-    : env.DB.prepare(`SELECT symbol,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure,max_pct,min_pct
-       FROM market_snapshots WHERE resolved_ts IS NOT NULL AND asset_type='stock' AND source='Twelve Data' ORDER BY ts DESC LIMIT 200`);
+  if(!cur) return {n:0,source:'d1'};
+  if(!cur.sector) return {n:0,source:'d1',reason:'kein Sektor'};
+  const curBucket=Math.floor(Date.now()/(5*60_000));
+  const q=env.DB.prepare(`SELECT symbol,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure,max_pct,min_pct
+       FROM market_snapshots WHERE resolved_ts IS NOT NULL AND asset_type='stock' AND source='Twelve Data' AND sector=? AND bucket5<=? AND symbol!=? ORDER BY ts DESC LIMIT 300`).bind(cur.sector,curBucket-36,String(symbol).toUpperCase());
   const rows=(await q.all()).results||[];
   const nearest=rows.map(x=>({...x,d:twinDistance(cur,x)})).filter(x=>x.d<9999).sort((a,b)=>a.d-b.d).slice(0,12);
-  if(nearest.length<5)return {n:nearest.length};
+  if(nearest.length<5)return {n:nearest.length,distinctSymbols:new Set(nearest.map(x=>x.symbol)).size,source:'d1'};
   const vals=nearest.map(x=>Number(x.max_pct)||0).sort((a,b)=>a-b);
-  return {n:nearest.length,edge:Math.round(nearest.filter(x=>Number(x.max_pct)>=5).length/nearest.length*100),stops:nearest.filter(x=>Number(x.min_pct)<=-1.5).length,median:r1(vals[Math.floor(vals.length/2)]||0)};
+  return {n:nearest.length,distinctSymbols:new Set(nearest.map(x=>x.symbol)).size,edge:Math.round(nearest.filter(x=>Number(x.max_pct)>=5).length/nearest.length*100),stops:nearest.filter(x=>Number(x.min_pct)<=-1.5).length,median:r1(vals[Math.floor(vals.length/2)]||0),source:'d1'};
 }
 async function d1LeadModel(env, symbol){
   if(!env.DB)return {n:0};
@@ -1573,7 +1702,7 @@ async function learningPayload(env, stocks=[], coins=[]){
   if(!env.DB)return {configured:false,state:'nodb',message:'D1-Binding DB fehlt',version:APP_VERSION};
   await ensureD1Schema(env);
   const now=Date.now();
-  const key=[...stocks.slice(0,8).sort(), '|', ...coins.slice(0,30).sort()].join(',');
+  const key=[...stocks.slice(0,16).sort(), '|', ...coins.slice(0,30).sort()].join(',');
   if(learnMemo.data && learnMemo.key===key && now-learnMemo.ts<60_000) return learnMemo.data;
   const counts=await env.DB.prepare(`SELECT
     COUNT(*) snapshots,
@@ -1581,7 +1710,7 @@ async function learningPayload(env, stocks=[], coins=[]){
     SUM(CASE WHEN success_ts IS NOT NULL THEN 1 ELSE 0 END) expansions,
     MAX(ts) last_ts FROM market_snapshots`).first();
   const stockOut={};
-  for(const sym of stocks.slice(0,8)) stockOut[sym]={twin:await d1TwinFor(env,sym),lead:await d1LeadModel(env,sym),history:await d1History(env,sym,'stock')};
+  for(const sym of stocks.slice(0,16)) stockOut[sym]={twin:await d1TwinFor(env,sym),lead:await d1LeadModel(env,sym),history:await d1History(env,sym,'stock')};
   const coinOut={};
   for(const sym of coins.slice(0,30)) coinOut[sym]={history:await d1History(env,sym,'coin')};
   const data={configured:true,state:'ok',ts:now,stats:{snapshots:Number(counts?.snapshots)||0,resolved:Number(counts?.resolved)||0,expansions:Number(counts?.expansions)||0,lastTs:Number(counts?.last_ts)||null},stocks:stockOut,coins:coinOut,version:APP_VERSION};
@@ -1632,11 +1761,111 @@ function authed(req, url, env) {
   return t === env.APP_TOKEN;
 }
 
+
+/* ------------------------------------------------ Tiingo v3.1.0 isolated layer */
+async function tiingoFetch(env, path) {
+  if (!env.TIINGO_API_TOKEN) throw new Error('TIINGO_API_TOKEN fehlt');
+  const res = await fetch(`https://api.tiingo.com${path}`, {
+    headers: { accept: 'application/json', authorization: `Token ${env.TIINGO_API_TOKEN}` },
+  });
+  if (res.status === 429) throw new Error('Tiingo Rate-Limit (429)');
+  if (!res.ok) throw new Error(`Tiingo ${res.status}: ${(await res.text()).slice(0,180)}`);
+  return res.json();
+}
+async function tiingoBoatsSnapshot(env, rawSymbols) {
+  const symbols=[...new Set(String(rawSymbols||'').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,25);
+  if(!symbols.length) return {configured:!!env.TIINGO_API_TOKEN,state:'idle',rows:[],source:'Tiingo BOATS',version:APP_VERSION};
+  let rows=[];
+  if(symbols.length>5){
+    const d=await tiingoFetch(env,'/boats');
+    const wanted=new Set(symbols); rows=(Array.isArray(d)?d:[]).filter(x=>wanted.has(String(x.ticker||x.symbol||'').toUpperCase())).map(x=>({symbol:String(x.ticker||x.symbol||'').toUpperCase(),...x}));
+  }else{
+    rows=await pool(symbols,Math.min(5,symbols.length),async symbol=>{try{const d=await tiingoFetch(env,`/boats/${encodeURIComponent(symbol)}`);const r=Array.isArray(d)?d[0]:d;return r?{symbol,...r}:null;}catch(e){return {symbol,error:e.message||String(e)};}});
+  }
+  return {configured:true,state:'ok',rows:rows.filter(Boolean),source:'Tiingo BOATS',session:'20:00–03:59 ET',ts:Date.now(),version:APP_VERSION};
+}
+
+
+function tiingoStocksMode(env){
+  const m=String(env.TIINGO_STOCKS_MODE||'shadow').toLowerCase();
+  return m==='primary'?'primary':'shadow';
+}
+let tiingoFxMemo={ts:0,usdPerEur:null};
+async function getTiingoFx(env){
+  if(tiingoFxMemo.usdPerEur && Date.now()-tiingoFxMemo.ts<30*60_000) return tiingoFxMemo.usdPerEur;
+  try{
+    const d=await tiingoFetch(env,'/tiingo/fx/eurusd/top');
+    const r=Array.isArray(d)?d[0]:d;
+    const x=Number(r?.midPrice ?? ((Number(r?.bidPrice)+Number(r?.askPrice))/2));
+    if(Number.isFinite(x)&&x>0){tiingoFxMemo={ts:Date.now(),usdPerEur:x};return x;}
+  }catch(e){ console.warn(JSON.stringify({event:'tiingo_fx_failed',message:String(e?.message||e),ts:Date.now()})); }
+  return tiingoFxMemo.usdPerEur;
+}
+async function tiingoIexSnapshot(env, rawSymbols){
+  const symbols=[...new Set(String(rawSymbols||'').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,50);
+  if(!symbols.length) return [];
+  const d=await tiingoFetch(env,'/iex');
+  const wanted=new Set(symbols);
+  return (Array.isArray(d)?d:[]).filter(x=>wanted.has(String(x.ticker||x.symbol||'').toUpperCase()));
+}
+async function tiingoIexSeries(env,symbol){
+  const start=new Date(Date.now()-36*60*60_000).toISOString().slice(0,10);
+  const path=`/iex/${encodeURIComponent(symbol)}/prices?startDate=${start}&resampleFreq=5min&columns=open,high,low,close,volume`;
+  const d=await tiingoFetch(env,path);
+  const arr=Array.isArray(d)?d:[];
+  return {meta:{symbol,name:STOCK_NAMES[symbol]||STOCK_SEARCH_BY_SYMBOL.get(symbol)?.name||symbol,exchange:'US',currency:'USD'},values:arr.map(x=>({datetime:x.date,open:x.open,high:x.high,low:x.low,close:x.close,volume:x.volume})).reverse()};
+}
+async function tiingoAnalyseOne(env,symbol,sector,comp,minCrv,fx){
+  const src=await tiingoIexSeries(env,symbol);
+  const r=analyseStock(symbol,sector,src,fx,comp,minCrv);
+  if(r){r.feed='Tiingo IEX';r.dataSource='tiingo-iex';}
+  return r;
+}
+async function tiingoValidation(env,rawSymbols){
+  const symbols=[...new Set(String(rawSymbols||'AAPL,NVDA,TSLA').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,3);
+  const out={configured:!!env.TIINGO_API_TOKEN,mode:tiingoStocksMode(env),symbols,version:APP_VERSION,tests:{},safe:true};
+  if(!env.TIINGO_API_TOKEN){out.state='nokey';return out;}
+  try{const d=await tiingoFetch(env,'/api/test/');out.tests.auth={ok:true,message:d?.message||'authenticated'};}catch(e){out.tests.auth={ok:false,error:String(e.message||e)};out.state='error';return out;}
+  try{const snaps=await tiingoIexSnapshot(env,symbols.join(','));out.tests.iexSnapshot={ok:snaps.length>0,count:snaps.length,rows:snaps.map(x=>({ticker:x.ticker,timestamp:x.timestamp,last:x.last,tngoLast:x.tngoLast,volume:x.volume}))};}catch(e){out.tests.iexSnapshot={ok:false,error:String(e.message||e)};}
+  try{const fx=await getTiingoFx(env);out.tests.fx={ok:Number.isFinite(fx)&&fx>0,usdPerEur:fx||null};}catch(e){out.tests.fx={ok:false,error:String(e.message||e)};}
+  out.tests.history=[];
+  for(const sym of symbols.slice(0,2)){try{const d=await tiingoIexSeries(env,sym);out.tests.history.push({symbol:sym,ok:d.values.length>=24,bars:d.values.length,latest:d.values[0]?.datetime||null,volumeKnown:d.values.some(x=>Number(x.volume)>0)});}catch(e){out.tests.history.push({symbol:sym,ok:false,error:String(e.message||e)});}}
+  out.state=out.tests.auth?.ok && out.tests.iexSnapshot?.ok && out.tests.history.every(x=>x.ok)?'ok':'partial';
+  out.safe=true;out.note='Validierung ist read-only und hat 0 % Einfluss auf BUY/Score. Erst nach erfolgreichem Test TIINGO_STOCKS_MODE=primary setzen.';
+  return out;
+}
+async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols=[]){
+  if(!env.TIINGO_API_TOKEN) return {configured:false,state:'nokey',rows:stockMemo.rows||[],source:'Tiingo IEX',version:APP_VERSION,note:'TIINGO_API_TOKEN fehlt'};
+  const minuteSlot=Math.floor(Date.now()/60_000), favs=[...new Set((favoriteSymbols||[]).map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,8}$/.test(x)))].slice(0,30);
+  const cycle=Math.floor(minuteSlot/2); // Power-ready: max. alle 2 Minuten ein Deep-Batch
+  const sig=[...(comp instanceof Set?comp:new Set(ALL_ON))].sort().join('.')+'|'+minCrv+'|tiingo|fav:'+favs.join('.');
+  if(!force&&stockMemo.rows.length&&stockMemo.cycle===cycle&&stockMemo.sig===sig&&Date.now()-stockMemo.ts<110_000) return {configured:true,state:'ok',cached:true,rows:stockMemo.rows,ts:stockMemo.ts,cycle,universe:STOCK_SEARCH_CATALOG.length,scanned:stockMemo.rows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),version:APP_VERSION};
+  const favPick=favs.slice(0,3), favSet=new Set(favPick), base=[]; const start=(cycle*4)%STOCK_SEARCH_CATALOG.length;
+  for(let i=0;i<STOCK_SEARCH_CATALOG.length&&base.length<Math.max(0,5-favPick.length);i++){const x=STOCK_SEARCH_CATALOG[(start+i)%STOCK_SEARCH_CATALOG.length];if(!favSet.has(x[1]))base.push(x[1]);}
+  const syms=[...favPick,...base].slice(0,5), fx=await getTiingoFx(env);
+  const fresh=(await pool(syms,5,async sym=>{const inf=STOCK_SEARCH_BY_SYMBOL.get(sym)||{sector:null};try{return await tiingoAnalyseOne(env,sym,inf.sector,comp,minCrv,fx);}catch(e){console.warn(JSON.stringify({event:'tiingo_stock_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));return null;}})).filter(Boolean);
+  const old=new Map(stockMemo.rows.map(r=>[r.symbol,r]));for(const r of fresh)old.set(r.symbol,r);const rows=[...old.values()].sort((a,b)=>b.score-a.score);
+  stockMemo={ts:Date.now(),rows,cycle,sig};setApiState('stocks',fresh.length?'ok':'stale',fresh.length?null:'Tiingo lieferte keine analysierbaren Bars');
+  await persistStockScan(env,sig,cycle,rows,{provider:'Tiingo IEX',fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol)});
+  return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:STOCK_SEARCH_CATALOG.length,scanned:rows.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),version:APP_VERSION,note:'Tiingo IEX 5-Minuten-Daten; EUR ist Umrechnung, kein Tradegate-Kurs'};
+}
+async function tiingoStockLookup(env,raw,comp,minCrv=3){
+  const info=resolveStockQuery(raw);
+  if(!info) return {configured:true,state:'ok',notFound:true,error:'Ticker/Firmenname nicht im lokalen Katalog. Im Testmodus wird Twelve-Discovery bewusst nicht verbraucht.',source:'Tiingo IEX',version:APP_VERSION};
+  const cached=stockLookupMemo.get(info.symbol);if(cached&&Date.now()-cached.ts<5*60_000)return {configured:true,state:'ok',cached:true,lookup:true,row:cached.row,source:'Tiingo IEX',version:APP_VERSION};
+  const fx=await getTiingoFx(env),row=await tiingoAnalyseOne(env,info.symbol,info.sector,comp,minCrv,fx);
+  if(!row)return {configured:true,state:'ok',notFound:true,error:'Noch nicht genügend Tiingo-5-Minuten-Daten.',source:'Tiingo IEX',version:APP_VERSION};
+  stockLookupMemo.set(info.symbol,{ts:Date.now(),row});const old=new Map(stockMemo.rows.map(r=>[r.symbol,r]));old.set(row.symbol,row);stockMemo.rows=[...old.values()].sort((a,b)=>b.score-a.score);
+  return {configured:true,state:'ok',cached:false,lookup:true,row,source:'Tiingo IEX',provider:'Tiingo',version:APP_VERSION};
+}
+export { analyse, analyseStock };
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (url.pathname === '/api/health') {
+      if (env.APP_TOKEN && !authed(request, url, env)) return json({ok:true,version:APP_VERSION,protected:true},200,{ 'cache-control':'no-store' });
       // Version kommt aus dem DEPLOYTEN Code, nicht aus einer CF-Variable.
       // Weicht env.APP_VERSION ab, ist die Variable veraltet – das wird gemeldet.
       const [cryptoHealth,stocksHealth,alpacaHealth] = await Promise.all([
@@ -1651,9 +1880,12 @@ export default {
         versionVarInSync: !env.APP_VERSION || env.APP_VERSION === APP_VERSION,
         configured: !!env.FUSION_API_KEY,
         protected: !!env.APP_TOKEN,
-        stocksConfigured: !!env.TWELVE_API_KEY,
+        stocksConfigured: tiingoStocksMode(env)==='primary' ? !!env.TIINGO_API_TOKEN : !!env.TWELVE_API_KEY,
+        stocksProvider: tiingoStocksMode(env)==='primary' ? 'Tiingo IEX' : 'Twelve Data',
+        tiingoStocksMode: tiingoStocksMode(env),
         alpacaConfigured: !!(env.ALPACA_API_KEY_ID && env.ALPACA_API_SECRET_KEY),
         crowdConfigured: !!env.SERPAPI_KEY,
+        tiingoConfigured: !!env.TIINGO_API_TOKEN,
         kv: !!env.SNAP,
         d1: !!env.DB,
         cacheAgeMs: memo.ts ? Date.now() - memo.ts : null,
@@ -1678,6 +1910,22 @@ export default {
       }
     }
 
+
+
+    if (url.pathname === '/api/tiingo/validate') {
+      try { return json(await tiingoValidation(env,url.searchParams.get('symbols')),200,{ 'cache-control':'no-store' }); }
+      catch(e){ return json({configured:!!env.TIINGO_API_TOKEN,state:'error',error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/tiingo/status') {
+      if(!env.TIINGO_API_TOKEN) return json({configured:false,authenticated:false,state:'nokey',version:APP_VERSION},200,{ 'cache-control':'no-store' });
+      try { const d=await tiingoFetch(env,'/api/test/'); return json({configured:true,authenticated:true,state:'ok',message:d?.message||'Tiingo authentication successful',boatsEntitlement:'not-tested',version:APP_VERSION},200,{ 'cache-control':'no-store' }); }
+      catch(e){ return json({configured:true,authenticated:false,state:'error',error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+    if (url.pathname === '/api/tiingo/boats') {
+      try { return json(await tiingoBoatsSnapshot(env,url.searchParams.get('symbols')),200,{ 'cache-control':'no-store' }); }
+      catch(e) { return json({configured:!!env.TIINGO_API_TOKEN,state:'error',error:e.message||String(e),rows:[],source:'Tiingo BOATS',version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
 
     if (url.pathname === '/api/learning') {
       try {
@@ -1707,14 +1955,19 @@ export default {
         const comp = parseComponents(url.searchParams.get('comp'));
         const minCrv = Math.max(1, +url.searchParams.get('minCrv') || 3);
         const lookup = url.searchParams.get('lookup');
-        if (lookup) return json(await stockLookup(env, lookup, comp, minCrv), 200, { 'cache-control':'no-store' });
+        if (lookup) {
+          if(tiingoStocksMode(env)==='primary') return json(await tiingoStockLookup(env,lookup,comp,minCrv),200,{ 'cache-control':'no-store' });
+          const qv=quotaView();
+          if(Number.isFinite(qv.creditsLeft) && qv.creditsLeft<=2) return json({state:'ratelimit',error:'Twelve-Data-Reserve geschützt: Suche kurz warten.',quota:qv,version:APP_VERSION},429,{ 'cache-control':'no-store' });
+          return json(await stockLookup(env, lookup, comp, minCrv), 200, { 'cache-control':'no-store' });
+        }
         const favorites=(url.searchParams.get('favorites')||'').split(',').filter(Boolean);
-        return json(await stockSnapshot(env, url.searchParams.get('force') === '1', comp, minCrv, favorites), 200, { 'cache-control':'no-store' });
+        return json(tiingoStocksMode(env)==='primary' ? await tiingoStockSnapshot(env,url.searchParams.get('force')==='1',comp,minCrv,favorites) : await stockSnapshot(env,url.searchParams.get('force')==='1',comp,minCrv,favorites),200,{ 'cache-control':'no-store' });
       } catch (e) {
         const state = classifyError(e);
         setApiState('stocks', state, e?.message);
         return json({
-          error: e.message || String(e), state, configured: !!env.TWELVE_API_KEY,
+          error: e.message || String(e), state, configured: tiingoStocksMode(env)==='primary' ? !!env.TIINGO_API_TOKEN : !!env.TWELVE_API_KEY,
           rows: stockMemo.rows, cached: true, universe: STOCK_UNIVERSE.length,
           quota: quotaView(), version: APP_VERSION,
         }, state === 'ratelimit' || state === 'daylimit' ? 429 : 502, { 'cache-control':'no-store' });

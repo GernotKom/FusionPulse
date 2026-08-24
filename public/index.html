@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.0.12</title>
+<title>FusionPulse 3.1.4</title>
 </head>
 <body>
 
@@ -51,7 +51,7 @@
   <button id="scan" class="primary" title="Neu scannen (Leertaste)">↻</button>
   <button id="cog" title="Einstellungen">⚙</button>
 </header>
-<div id="signalBanner" class="signal-banner hidden" aria-live="polite"></div>
+<div id="signalBanner" class="signal-banner" aria-live="polite"><span class="signal-idle"><b>SIGNAL-INFO</b><span>Noch kein neues BUY-/Grün-Signal in dieser Sitzung.</span></span></div>
 
 <nav class="viewbar" aria-label="Schnellnavigation">
   <button data-jump="#focus" title="Springt zur kompakten Radar-/Trade-Ansicht">Radar</button>
@@ -179,7 +179,7 @@
   <label>Steuersatz für Gewinnschätzung (%) · Österreich KESt = 27,5<input id="sTax" type="number" min="0" max="60" step="0.1"></label>
 
   <h3>Anzeigeumfang</h3>
-  <label title="Wie viele Coins der Worker vertieft analysiert. Mehr Coins erzeugen mehr externe API-Abfragen pro Scan.">Coins scannen (tief analysieren, 4–30)<input id="sDeep" type="number" min="4" max="30" step="1"></label>
+  <label title="Wie viele Coins der Worker vertieft analysiert. Mehr Coins erzeugen mehr externe API-Abfragen pro Scan.">Coins scannen (tief analysieren, 4–20)<input id="sDeep" type="number" min="4" max="20" step="1"></label>
   <label title="Wie viele Coin-Zeilen maximal im Radar sichtbar sind. Das verändert nur die Anzeige, nicht die Anzahl der API-Abfragen.">Coins anzeigen<input id="sCoinCount" type="number" min="3" max="50" step="1"></label>
   <label title="Wie viele der am besten bewerteten Aktien im Radar angezeigt werden. Das Aktien-Universum wird rotierend gescannt, um API-Credits zu sparen.">Aktien anzeigen<input id="sStockCount" type="number" min="3" max="50" step="1"></label>
   <p class="hint" id="sCountsInfo">–</p>
