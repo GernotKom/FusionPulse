@@ -1,8 +1,8 @@
-# FusionPulse v3.2.0
+# FusionPulse v3.2.1
 
 FusionPulse ist ein autonomer Momentum- und Opportunity-Waechter fuer Krypto und liquide US-Aktien. Ziel ist nicht moeglichst viele Signale, sondern wenige, wirtschaftlich relevante A-Setups: App starten, laufen lassen und nur dann aufmerksam werden, wenn Datenqualitaet, Handelbarkeit, CRV und realistisches absolutes Gewinnpotenzial zusammenpassen.
 
-## Datenarchitektur v3.2.0
+## Datenarchitektur v3.2.1
 
 - **Krypto:** Bitpanda Fusion; serverseitiger Cron-Scan, PWA muss dafuer nicht geoeffnet sein.
 - **Aktien Primary:** Tiingo Power / IEX 5-Minuten-Daten inklusive Volumen.
@@ -11,12 +11,13 @@ FusionPulse ist ein autonomer Momentum- und Opportunity-Waechter fuer Krypto und
 - **Fallback/Referenz:** Twelve Data bleibt im Code vorhanden, ist in `primary` aber nicht der Hauptfeed.
 - **Learning/Health:** Cloudflare D1; Aktien-Learning akzeptiert historische Samples aus Twelve Data und Tiingo IEX, ohne die Quellen unbemerkt zu vermischen.
 
-## v3.2.0: Discovery -> Deep Scan -> Opportunity -> BUY
+## v3.2.1: Whole-Market Radar -> Deep Scan -> Opportunity -> BUY
 
-1. **BOATS Discovery:** breiter Overnight-Snapshot wird nach ungewoehnlicher Bewegung, Aktivitaet und Spread vorgefiltert.
-2. **Deep Scan:** Favoriten + beste BOATS-Kandidaten + rotierende Basistitel gehen in die aufwendige Tiingo-IEX-5-Minuten-Analyse. Maximal 20 Kandidaten pro 2-Minuten-Zyklus.
-3. **Opportunity Watch:** eine Aktie wird nur als Opportunity hervorgehoben, wenn Live-Daten, Qualitaet, Netto-CRV, verbleibender Kursweg und ein wirtschaftlich relevantes Netto-Euro-Potenzial passen.
-4. **BUY:** bleibt hinter den bestehenden harten FusionPulse-Gates. Discovery oder Crowd koennen niemals allein BUY erzeugen.
+1. **Whole-Market Radar:** ein Tiingo-`/iex`-Bulk-Snapshot beobachtet serverseitig jede Minute den verfuegbaren IEX-Markt. Discovery basiert auf frischer Beschleunigung, Aktivitaet, Spread, Range und Tagesstaerke; 0 % BUY-Gewicht.
+2. **BOATS Discovery:** bleibt Overnight-/Extended-Hours-Fruehwarnung und hat ebenfalls 0 % BUY-Gewicht.
+3. **Adaptive Deep-Scan-Queue:** maximal 20 Titel je 2-Minuten-Zyklus aus Favoriten, Recheck fast reifer Setups, Radar-Kandidaten, BOATS und Exploration.
+4. **Opportunity Watch:** Live-Daten, Qualitaet, Netto-CRV, Kursweg und wirtschaftlich relevantes Netto-Euro-Potenzial bleiben Pflicht.
+5. **BUY:** alle bestehenden harten Gates bleiben unveraendert; Discovery kann niemals BUY erzeugen.
 
 ## Zentrale Sicherheitsregeln
 
@@ -38,7 +39,7 @@ Diese Schwellen sind Selektions-/Rankinghilfen, keine Erfolgswahrscheinlichkeite
 
 ## Tiingo Betrieb
 
-`wrangler.jsonc` steht in v3.2.0 standardmaessig auf:
+`wrangler.jsonc` steht in v3.2.1 standardmaessig auf:
 
 ```json
 "TIINGO_STOCKS_MODE": "primary"
@@ -55,11 +56,12 @@ Der Token bleibt ausschliesslich serverseitig. Der v3.1.8-Livetest hat Token, IE
 - permanenter SIGNAL-INFO-Banner unten
 - Aktien-Favoriten und Karten frei sortierbar, Reihenfolge persistent
 - Klick auf Aktie in der Liste oeffnet das grosse Detailfenster
-- Intraday-Chart in Aktien- und Coin-Details
+- Intraday-Chart in Aktien- und Coin-Details; Aktien 5/10/30/60/120/180/240/300 Minuten waehlen
 - EUR-Kurs primär, originaler USD-Kurs direkt in Klammern
 - schnelle Header-Tooltips fuer Risk-On/Off, Countdown und Statussymbole
 - laienverstaendliche Tooltips fuer Zonenlage und Pullback
-- Datenherkunft/Freshness sichtbar; gecachte/stale Daten werden nicht als Live dargestellt
+- Datenherkunft/Freshness sichtbar; Tiingo IEX Primary / Twelve Data Fallback dynamisch gekennzeichnet
+- „Alle Aktien“ priorisiert autonom entdeckte/reife Kandidaten statt nur Favoriten
 
 ## Versionierung
 
@@ -75,6 +77,6 @@ npm run check
 
 `npm run check` umfasst JS-Syntax und die Safety-Regressionssuite.
 
-## Deployment-Hinweis v3.2.0
+## Deployment-Hinweis v3.2.1
 
-v3.2.0 ist die erste Version mit **Tiingo Primary standardmaessig aktiv**. Nach Deploy zuerst Health/Stock-Status, Aktien-Freshness, BOATS-Kandidaten und Signalton beobachten. Twelve Data nicht loeschen, bevor Tiingo im realen Premarket/Opening mehrere Sessions stabil gelaufen ist.
+v3.2.1 erweitert Tiingo Primary um den autonomen Whole-Market-Radar. Nach Deploy zuerst Radar-Universum, RADAR-Kandidaten, Deep-Scan-Queue, Freshness und Worker-Latenz beobachten. Twelve Data nicht loeschen, bevor Tiingo mehrere Sessions stabil gelaufen ist.

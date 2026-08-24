@@ -1115,7 +1115,7 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
     fxUsdPerEur: usdPerEur || null, fxKnown: !!usdPerEur,
     // v3.1.0: Intraday-Verlauf aus den ohnehin geladenen 5-Minuten-Bars; keine Zusatz-API-Kosten.
     intraday: (() => {
-      const xs = bars.slice(-40).map(b => b.c).filter(Number.isFinite);
+      const xs = bars.slice(-60).map(b => b.c).filter(Number.isFinite);
       if (!xs.length) return [];
       const lo=Math.min(...xs), hi=Math.max(...xs);
       return xs.map(c => Math.round(hi>lo ? ((c-lo)/(hi-lo))*100 : 50));
@@ -1742,17 +1742,27 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
       await persistApiState(env,'alpaca',state,e?.message,now); cronLog('alpaca',state,e?.message);
     }
   }
-  if(Math.floor(now/60_000)%10===1 && (tiingoStocksMode(env)==='primary' ? env.TIINGO_API_TOKEN : env.TWELVE_API_KEY)){
+  const stockMinute=Math.floor(now/60_000), primaryStocks=tiingoStocksMode(env)==='primary';
+  if(primaryStocks && env.TIINGO_API_TOKEN){
+    // v3.2.1: serverseitiger Whole-Market-Radar JEDE Minute, unabhaengig von einer offenen PWA.
+    try{await tiingoIexMarketRadar(env,80,true);setApiState('stocks','ok','Whole-Market Radar aktiv');}
+    catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('iex-radar',state,e?.message);}
+    // Teure 5-Minuten-Historienanalyse nur alle 2 Minuten, unveraenderte BUY-Gates.
+    if(stockMinute%2===0){
+      try{
+        const st=await tiingoStockSnapshot(env,false,new Set(ALL_ON),3,[]);
+        await d1StoreRows(env,st.rows||[],{source:'Tiingo IEX',assetType:'stock',now});
+        setApiState('stocks','ok',`${st.rows?.length||0} Rows · Radar ${st.discovery?.radar?.universe||0}`);
+        await persistApiState(env,'stocks','ok',`${st.rows?.length||0} Rows · Radar ${st.discovery?.radar?.universe||0}`,now);
+      }catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('stocks',state,e?.message);}
+    }
+  } else if(!primaryStocks && env.TWELVE_API_KEY && stockMinute%10===1){
     try{
-      const primary=tiingoStocksMode(env)==='primary';
-      const st=primary ? await tiingoStockSnapshot(env,false,new Set(ALL_ON),3,[]) : await stockSnapshot(env,false,new Set(ALL_ON),3);
-      await d1StoreRows(env,st.rows||[],{source:primary?'Tiingo IEX':'Twelve Data',assetType:'stock',now});
+      const st=await stockSnapshot(env,false,new Set(ALL_ON),3);
+      await d1StoreRows(env,st.rows||[],{source:'Twelve Data',assetType:'stock',now});
       setApiState('stocks','ok',`${st.rows?.length||0} Rows`);
       await persistApiState(env,'stocks','ok',`${st.rows?.length||0} Rows`,now);
-    }catch(e){
-      const state=classifyError(e); setApiState('stocks',state,e?.message);
-      await persistApiState(env,'stocks',state,e?.message,now); cronLog('stocks',state,e?.message);
-    }
+    }catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('stocks',state,e?.message);}
   }
 }
 
@@ -1845,6 +1855,81 @@ async function tiingoIexSnapshot(env, rawSymbols){
   const wanted=new Set(symbols);
   return (Array.isArray(d)?d:[]).filter(x=>wanted.has(String(x.ticker||x.symbol||'').toUpperCase()));
 }
+
+/* v3.2.1 Whole-Market Radar -------------------------------------------------
+   Ein einzelner Tiingo-/iex-Bulk-Call beobachtet den gesamten verfuegbaren
+   IEX-Snapshot. Der Radar nominiert nur Kandidaten. Er veraendert weder
+   analyseStock() noch Score/Ampel/BUY und hat damit explizit 0 % BUY-Gewicht.
+   Die Top-Kandidaten werden kompakt in D1 gespeichert, damit auch bei
+   geschlossenem Browser ein serverseitiges Bewegungs-Gedaechtnis entsteht. */
+let tiingoIexRadarMemo={ts:0,rows:[],universe:0};
+function radarTs(x){
+  const raw=x?.timestamp||x?.quoteTimestamp||x?.lastSaleTimestamp||x?.lastUpdated||null;
+  const ms=raw?Date.parse(raw):NaN; return Number.isFinite(ms)?ms:null;
+}
+function iexRadarQuote(x,prev=null){
+  const symbol=String(x?.ticker||x?.symbol||'').toUpperCase();
+  if(!/^[A-Z0-9.\-]{1,12}$/.test(symbol)) return null;
+  const last=Number(x?.tngoLast ?? x?.last ?? x?.lastPrice ?? x?.mid);
+  const prevClose=Number(x?.prevClose ?? x?.previousClose);
+  const open=Number(x?.open ?? x?.openPrice);
+  const high=Number(x?.high ?? x?.highPrice), low=Number(x?.low ?? x?.lowPrice);
+  const bid=Number(x?.bidPrice ?? x?.bid), ask=Number(x?.askPrice ?? x?.ask);
+  const volume=Number(x?.volume ?? x?.tngoVolume);
+  if(!(last>=2) || !(prevClose>0)) return null;
+  const mid=bid>0&&ask>0?(bid+ask)/2:last;
+  const spreadPct=bid>0&&ask>0&&mid>0?(ask-bid)/mid*100:null;
+  if(spreadPct!=null && spreadPct>2.5) return null;
+  const movePct=(last/prevClose-1)*100;
+  const openPct=open>0?(last/open-1)*100:null;
+  const rangePct=high>0&&low>0&&last>0?(high-low)/last*100:null;
+  const prevLast=Number(prev?.last), prevVol=Number(prev?.volume);
+  const speedPct=prevLast>0?(last/prevLast-1)*100:0;
+  const volDelta=volume>=0&&prevVol>=0?Math.max(0,volume-prevVol):0;
+  const spreadImprove=prev?.spreadPct!=null&&spreadPct!=null?Math.max(0,Number(prev.spreadPct)-spreadPct):0;
+  // Long-Opportunity-Radar: frische Aufwaertsbeschleunigung zaehlt staerker als ein bereits gelaufener Tagesmove.
+  // Ein negativer Tagesmove kann trotzdem nominiert werden, wenn gerade eine deutliche Reversal-Beschleunigung beginnt.
+  const activity=Number.isFinite(volume)&&volume>0?Math.min(7,Math.log10(volume+1)):0;
+  let score=Math.max(0,movePct)*0.85 + Math.max(0,speedPct)*9 + Math.max(0,openPct||0)*0.35 + Math.min(4,Math.max(0,rangePct||0)*0.35) + activity*0.45 + Math.min(3,spreadImprove*4);
+  if(movePct>8 && speedPct<0.05) score-=Math.min(4,(movePct-8)*0.25); // spaete Runner nicht blind bevorzugen
+  if(movePct<0 && speedPct<=0) score-=2;
+  if(spreadPct==null) score-=0.6; // fehlender Quote verbessert niemals
+  const reasons=[];
+  if(speedPct>=0.35) reasons.push(`Beschleunigung +${speedPct.toFixed(2)} %`);
+  if(volDelta>0) reasons.push('Volumen zieht an');
+  if(spreadImprove>=0.05) reasons.push('Spread wird enger');
+  if(movePct>=2) reasons.push(`Tagesstaerke +${movePct.toFixed(1)} %`);
+  if(movePct<0&&speedPct>=0.25) reasons.push('Reversal-Versuch');
+  const ts=radarTs(x), ageMin=ts?Math.max(0,(Date.now()-ts)/60000):null;
+  return {symbol,last,prevClose,open:Number.isFinite(open)?open:null,high:Number.isFinite(high)?high:null,low:Number.isFinite(low)?low:null,volume:Number.isFinite(volume)?volume:null,movePct,openPct,rangePct,spreadPct,speedPct,volDelta,score:Math.max(0,score),reasons,ts,ageMin,source:'Tiingo IEX Radar',buyWeight:0};
+}
+async function readPersistedIexRadar(env){
+  if(!env?.DB) return null;
+  try{await ensureD1Schema(env);const r=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind('iex_radar:last').first();if(!r?.value)return null;const p=JSON.parse(r.value);return p?.rows?.length?{ts:Number(p.ts||r.updated_ts||0),rows:p.rows,universe:Number(p.universe||0)}:null;}catch{return null;}
+}
+async function persistIexRadar(env,data){
+  if(!env?.DB||!data?.rows?.length)return;
+  try{await ensureD1Schema(env);const ts=Date.now(),payload=safeJson({ts,universe:data.universe,rows:data.rows.slice(0,120).map(r=>({symbol:r.symbol,last:r.last,volume:r.volume,spreadPct:r.spreadPct,movePct:r.movePct,score:r.score,ts:r.ts}))});await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`).bind('iex_radar:last',payload,ts).run();}catch(e){console.warn(JSON.stringify({event:'iex_radar_cache_write_failed',message:String(e?.message||e),ts:Date.now()}));}
+}
+async function tiingoIexMarketRadar(env,limit=80,force=false){
+  const now=Date.now();
+  if(!force&&tiingoIexRadarMemo.rows.length&&now-tiingoIexRadarMemo.ts<50_000)return tiingoIexRadarMemo;
+  const persisted=tiingoIexRadarMemo.rows.length?tiingoIexRadarMemo:await readPersistedIexRadar(env);
+  const prevMap=new Map((persisted?.rows||[]).map(r=>[r.symbol,r]));
+  const d=await tiingoFetch(env,'/iex'), all=Array.isArray(d)?d:[];
+  const phase=usMarketPhase(new Date(now),'iex');
+  const maxAge=['opening','regular'].includes(phase.key)?12:['premarket','after'].includes(phase.key)?30:90;
+  const rows=all.map(x=>iexRadarQuote(x,prevMap.get(String(x?.ticker||x?.symbol||'').toUpperCase()))).filter(Boolean)
+    .filter(r=>r.ageMin==null||r.ageMin<=maxAge)
+    .sort((a,b)=>b.score-a.score).slice(0,Math.max(20,Math.min(120,limit)));
+  tiingoIexRadarMemo={ts:now,rows,universe:all.length,phase:phase.key,source:'Tiingo IEX Whole-Market Radar',buyWeight:0};
+  await persistIexRadar(env,tiingoIexRadarMemo);
+  return tiingoIexRadarMemo;
+}
+function deepRecheckRank(r){
+  const score=Number(r?.score)||0,crv=Number(r?.netCRV)||0,rv=Number(r?.relVol)||0,ret15=Number(r?.ret15)||0,structure=Number(r?.structurePct)||0;
+  return score*10 + Math.min(30,Math.max(0,crv-1)*8) + Math.min(15,Math.max(0,rv-1)*5) + Math.min(12,Math.max(0,ret15)*2) + Math.min(10,Math.max(0,structure));
+}
 async function tiingoIexSeries(env,symbol){
   const start=new Date(Date.now()-36*60*60_000).toISOString().slice(0,10);
   const path=`/iex/${encodeURIComponent(symbol)}/prices?startDate=${start}&resampleFreq=5min&columns=open,high,low,close,volume`;
@@ -1886,35 +1971,52 @@ async function tiingoValidation(env,rawSymbols){
 async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols=[]){
   if(!env.TIINGO_API_TOKEN) return {configured:false,state:'nokey',rows:stockMemo.rows||[],source:'Tiingo IEX',version:APP_VERSION,note:'TIINGO_API_TOKEN fehlt'};
   const minuteSlot=Math.floor(Date.now()/60_000), favs=[...new Set((favoriteSymbols||[]).map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,30);
-  const cycle=Math.floor(minuteSlot/2); // Power: alle 2 Minuten ein Deep-Batch
-  const sig=[...(comp instanceof Set?comp:new Set(ALL_ON))].sort().join('.')+'|'+minCrv+'|tiingo-primary|fav:'+favs.join('.');
-  if(!force&&stockMemo.rows.length&&stockMemo.cycle===cycle&&stockMemo.sig===sig&&Date.now()-stockMemo.ts<110_000) return {configured:true,state:'ok',cached:true,rows:stockMemo.rows,ts:stockMemo.ts,cycle,universe:12000,universeLabel:'12.000+ Tiingo/BOATS',scanned:stockMemo.rows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:tiingoDiscoveryMemo,version:APP_VERSION};
+  const cycle=Math.floor(minuteSlot/2); // Deep Scan alle 2 Minuten - Browser und Cron verwenden denselben Zyklus.
+  const sig=[...(comp instanceof Set?comp:new Set(ALL_ON))].sort().join('.')+'|'+minCrv+'|tiingo-primary-radar|fav:'+favs.join('.');
+  if(!force&&stockMemo.rows.length&&stockMemo.cycle===cycle&&stockMemo.sig===sig&&Date.now()-stockMemo.ts<110_000) return {configured:true,state:'ok',cached:true,rows:stockMemo.rows,ts:stockMemo.ts,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:stockMemo.rows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:tiingoIexRadarMemo.ts,candidates:(tiingoIexRadarMemo.rows||[]).slice(0,20),buyWeight:0},boats:tiingoDiscoveryMemo},version:APP_VERSION};
 
-  // v3.2.0: broad Discovery -> selective Deep Scan. BOATS only nominates candidates;
-  // it can never set score/light/BUY. Historical IEX bars are still required for analysis.
-  const discovery=await tiingoBoatsDiscovery(env,15,force);
-  const favPick=favs.slice(0,5), picked=new Set(favPick), discoveryPick=[];
-  for(const x of discovery.rows||[]){ if(!picked.has(x.symbol)){picked.add(x.symbol);discoveryPick.push(x.symbol);} if(discoveryPick.length>=10)break; }
-  const base=[]; const start=(cycle*7)%STOCK_SEARCH_CATALOG.length;
-  for(let i=0;i<STOCK_SEARCH_CATALOG.length&&favPick.length+discoveryPick.length+base.length<20;i++){
-    const x=STOCK_SEARCH_CATALOG[(start+i)%STOCK_SEARCH_CATALOG.length],sym=x[1];
-    if(!picked.has(sym)){picked.add(sym);base.push(sym);}
-  }
-  const syms=[...favPick,...discoveryPick,...base].slice(0,20), fx=await getTiingoFx(env);
-  const discMap=new Map((discovery.rows||[]).map(x=>[x.symbol,x]));
+  const phase=usMarketPhase(new Date(),'iex');
+  // v3.2.1: waehrend der US-Session ist /iex der marktweite Primaer-Radar.
+  // BOATS bleibt Overnight-/Uebergangs-Discovery. Beide Layer nominieren nur und haben 0 % BUY-Gewicht.
+  let radar={ts:0,rows:[],universe:12000,source:'Tiingo IEX Whole-Market Radar',buyWeight:0};
+  try{ radar=await tiingoIexMarketRadar(env,80,force); }catch(e){console.warn(JSON.stringify({event:'iex_market_radar_failed',message:String(e?.message||e),ts:Date.now()}));}
+  const boats=await tiingoBoatsDiscovery(env,20,force);
+
+  const picked=new Set(), favPick=[], recheckPick=[], radarPick=[], boatsPick=[], explore=[];
+  // Favoriten bleiben vertreten, blockieren aber nicht mehr die gesamte Queue.
+  for(const sym of favs){if(!picked.has(sym)){picked.add(sym);favPick.push(sym);}if(favPick.length>=2)break;}
+  // Fast reife / zuletzt starke Analysen werden gezielt erneut geprueft.
+  for(const r of [...(stockMemo.rows||[])].sort((a,b)=>deepRecheckRank(b)-deepRecheckRank(a))){const sym=String(r?.symbol||'').toUpperCase();if(sym&&!picked.has(sym)){picked.add(sym);recheckPick.push(sym);}if(recheckPick.length>=4)break;}
+  // Marktweite frische Kandidaten erhalten den groessten Anteil der Deep-Scan-Kapazitaet.
+  for(const x of radar.rows||[]){if(!picked.has(x.symbol)){picked.add(x.symbol);radarPick.push(x.symbol);}if(radarPick.length>=10)break;}
+  // Overnight/Extended-Hours-Kandidaten duerfen die Queue ergaenzen, aber nie BUY setzen.
+  for(const x of boats.rows||[]){if(!picked.has(x.symbol)){picked.add(x.symbol);boatsPick.push(x.symbol);}if(boatsPick.length>=2)break;}
+  // Exploration verhindert Tunnelblick und sorgt fuer fortlaufende Rotation des stabilen Basiskatalogs.
+  const start=(cycle*7)%STOCK_SEARCH_CATALOG.length;
+  for(let i=0;i<STOCK_SEARCH_CATALOG.length&&picked.size<20;i++){const sym=STOCK_SEARCH_CATALOG[(start+i)%STOCK_SEARCH_CATALOG.length][1];if(!picked.has(sym)){picked.add(sym);explore.push(sym);}}
+  const syms=[...favPick,...recheckPick,...radarPick,...boatsPick,...explore].slice(0,20), fx=await getTiingoFx(env);
+  const radarMap=new Map((radar.rows||[]).map(x=>[x.symbol,x])), boatsMap=new Map((boats.rows||[]).map(x=>[x.symbol,x]));
   const fresh=(await pool(syms,6,async sym=>{
-    const inf=STOCK_SEARCH_BY_SYMBOL.get(sym)||{sector:null,name:sym};
+    const inf=STOCK_SEARCH_BY_SYMBOL.get(sym)||{sector:'Discovery',name:sym};
     try{
       const row=await tiingoAnalyseOne(env,sym,inf.sector,comp,minCrv,fx);
-      if(row&&discMap.has(sym)) row.discovery={...discMap.get(sym),buyWeight:0};
+      if(!row)return null;
+      const rm=radarMap.get(sym),bm=boatsMap.get(sym);
+      if(rm) row.discovery={type:'iex-radar',...rm,buyWeight:0};
+      else if(bm) row.discovery={type:'boats',...bm,buyWeight:0};
+      const q=Math.max(0,Math.min(10,Number(row.score)||0)),crv=Math.max(0,Number(row.netCRV)||0),rv=Math.max(0,Number(row.relVol)||0);
+      row.preSignalMaturity=Math.round(Math.max(0,Math.min(100,q/8*50 + Math.min(1,crv/3)*25 + Math.min(1,rv/1.8)*15 + (rm?.speedPct>0.2?10:0))));
+      row.whyNow=(rm?.reasons||[]).slice(0,3);
+      row.radarRank=Number(rm?.score)||0;
       return row;
     }catch(e){console.warn(JSON.stringify({event:'tiingo_stock_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));return null;}
   })).filter(Boolean);
   const old=new Map(stockMemo.rows.map(r=>[r.symbol,r])); for(const r of fresh)old.set(r.symbol,r);
-  const rows=[...old.values()].sort((a,b)=>b.score-a.score).slice(0,80);
+  // Hohe Radar-/Setup-Relevanz oben halten; alte Titel bleiben als Cache sichtbar, Freshness-Gates bleiben unveraendert.
+  const rows=[...old.values()].sort((a,b)=>(Number(b.preSignalMaturity)||0)-(Number(a.preSignalMaturity)||0)||(Number(b.radarRank)||0)-(Number(a.radarRank)||0)||(Number(b.score)||0)-(Number(a.score)||0)).slice(0,100);
   stockMemo={ts:Date.now(),rows,cycle,sig}; setApiState('stocks',fresh.length?'ok':'stale',fresh.length?null:'Tiingo lieferte keine analysierbaren Bars');
-  await persistStockScan(env,sig,cycle,rows,{provider:'Tiingo IEX',fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol)});
-  return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:12000,universeLabel:'12.000+ Tiingo/BOATS',scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{source:'Tiingo BOATS',ts:discovery.ts,session:discovery.session,candidates:(discovery.rows||[]).slice(0,15)},version:APP_VERSION,note:'Tiingo Primary: BOATS Discovery (0 % BUY-Gewicht) -> IEX 5-Min Deep Scan; EUR ist Umrechnung, kein Tradegate-Kurs'};
+  await persistStockScan(env,sig,cycle,rows,{provider:'Tiingo IEX',fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol),queue:{favorites:favPick,recheck:recheckPick,radar:radarPick,boats:boatsPick,explore}});
+  return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:radar.universe||12000,universeLabel:`${radar.universe||'12.000+'} Tiingo/IEX`,scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:phase,queue:{favorites:favPick.length,recheck:recheckPick.length,radar:radarPick.length,boats:boatsPick.length,explore:explore.length},discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar.ts,universe:radar.universe,candidates:(radar.rows||[]).slice(0,20),buyWeight:0},boats:{source:'Tiingo BOATS',ts:boats.ts,session:boats.session,candidates:(boats.rows||[]).slice(0,15),buyWeight:0}},version:APP_VERSION,note:'Tiingo Primary: Whole-Market IEX Radar + BOATS Discovery (beide 0 % BUY-Gewicht) -> adaptive 20er Deep-Scan-Queue -> IEX 5-Min Analyse. BUY-Gates unveraendert.'};
 }
 async function tiingoStockLookup(env,raw,comp,minCrv=3){
   let info=resolveStockQuery(raw);

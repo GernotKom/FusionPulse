@@ -65,12 +65,15 @@ assert.match(app, /UNTER ZONE = Kurs liegt noch unter/, 'Zone tooltip must expla
 assert.match(app, /Pullback: Der Kurs ist zuerst gestiegen/, 'Pullback tooltip must be novice-readable');
 
 
-// v3.2.0 Tiingo Primary / Discovery guards
+// v3.2.1 Tiingo Primary / Whole-Market Radar guards
 const wrangler=fs.readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8');
-assert.match(wrangler,/"TIINGO_STOCKS_MODE": "primary"/,'v3.2.0 must deploy with Tiingo Primary enabled');
+assert.match(wrangler,/"TIINGO_STOCKS_MODE": "primary"/,'Tiingo Primary must remain enabled');
 assert.match(workerText,/Discovery only: unusual overnight move[\s\S]*NEVER enters analyseStock\/BUY/,'BOATS discovery must be explicitly isolated from BUY');
-assert.match(workerText,/row\.discovery=\{\.\.\.discMap\.get\(sym\),buyWeight:0\}/,'BOATS candidate metadata must carry 0 BUY weight');
-assert.match(workerText,/const syms=\[\.\.\.favPick,\.\.\.discoveryPick,\.\.\.base\]\.slice\(0,20\)/,'Deep scan must cap candidate batch at 20');
+assert.match(workerText,/row\.discovery=\{type:'iex-radar',\.\.\.rm,buyWeight:0\}/,'IEX Radar candidate metadata must carry 0 BUY weight');
+assert.match(workerText,/row\.discovery=\{type:'boats',\.\.\.bm,buyWeight:0\}/,'BOATS candidate metadata must carry 0 BUY weight');
+assert.match(workerText,/const syms=\[\.\.\.favPick,\.\.\.recheckPick,\.\.\.radarPick,\.\.\.boatsPick,\.\.\.explore\]\.slice\(0,20\)/,'Deep scan must cap adaptive candidate batch at 20');
+assert.match(workerText,/await tiingoFetch\(env,'\/iex'\)/,'Whole-market Radar must use Tiingo IEX bulk snapshot');
+assert.match(workerText,/Whole-Market-Radar JEDE Minute/,'Server scheduler must keep the market radar independent of the browser');
 assert.match(workerText,/source IN \('Twelve Data','Tiingo IEX'\)/,'Learning must accept Tiingo IEX history after Primary migration');
 
 console.log('✓ FusionPulse safety regressions: OK');

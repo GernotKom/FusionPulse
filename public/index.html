@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.2.0</title>
+<title>FusionPulse 3.2.1</title>
 </head>
 <body>
 
@@ -153,7 +153,7 @@
     </div>
     <div id="stockGroups" class="stockgroups"></div>
     <p class="stocknote" id="stockNote">
-      Datenquelle: <b>Twelve Data, US-Markt</b>. EUR-Beträge sind mit dem aktuellen EUR/USD-Kurs
+      Datenquelle: <b id="stockSourceLabel">wird geladen</b>. EUR-Beträge sind mit dem aktuellen EUR/USD-Kurs
       <b>umgerechnet</b> und ausdrücklich <b>keine Tradegate-Kurse</b>. Vor einer Order den tatsächlichen
       Kurs an deiner Handelsbörse prüfen.
     </p>
@@ -242,7 +242,7 @@
   </div>
 
   <details class="methods"><summary>Verwendete Analysemethoden im Detail</summary><p>Multi-Timeframe 5m/15m/1h aus einem Kerzen-Request · Momentum volatilitätsnormiert · Volumen-z-Score gegen disjunktes Basisfenster · Wilder-ATR · VWAP kurz (24 Bars) und lang (78 Bars) · EMA9/21/50-Staffelung · RSI(14) · relative Stärke vs. BTC · Bollinger-Kompression/Squeeze · Orderbuch-Imbalance, Tiefe, Spread, VWAP-Slippage · Marktbreite über alle gescannten Coins · Strukturziele aus Swing-Hochs · Elliott-Wellen-Heuristik (Impulslänge, Struktur höherer Tiefs, Fibonacci-Nähe des Rücksetzers). Der Analysemodus schaltet Methodengruppen um, die Einzelschalter darüber schalten einzelne Verfahren.</p></details>
-  <details class="methods"><summary>Aktienradar / Twelve Data</summary><p>Optionaler Aktienfeed über das Cloudflare-Secret <code>TWELVE_API_KEY</code>. 21 liquide US-Titel werden in drei Gruppen rotierend aktualisiert; zusätzliche Titel können über Suche (Enter/🔎) gezielt geladen und als Favorit gespeichert werden (7 Titel je 5-Minuten-Zyklus, 1 Credit je Titel). Firmennamen stammen aus einer lokalen Tabelle bzw. aus den Metadaten der ohnehin abgerufenen Zeitreihe — <b>keine zusätzlichen Requests pro Refresh</b>. EUR-Beträge sind gekennzeichnete USD-Umrechnungen, keine Tradegate-Kurse. Das Kontingent stammt aus den Antwort-Headern <code>api-credits-used</code> / <code>api-credits-left</code>; liefert der Anbieter sie nicht, zeigt FusionPulse „unbekannt“ statt einer Schätzung.</p></details>
+  <details class="methods"><summary>Aktienradar / Tiingo Primary</summary><p>Tiingo IEX ist der primäre Aktienfeed. Ein serverseitiger Whole-Market-Bulk-Radar prüft den verfügbaren IEX-Snapshot jede Minute auf frische Bewegung, Aktivität, Spread und Beschleunigung. Daraus wird alle zwei Minuten eine adaptive Deep-Scan-Queue mit maximal 20 Titeln gebildet. Radar und BOATS nominieren Kandidaten ausschließlich mit <b>0 % BUY-Gewicht</b>; BUY entsteht erst nach der vollständigen 5-Minuten-Analyse und allen bestehenden Safety-Gates. Twelve Data bleibt nur als Fallback im Code. EUR-Beträge sind gekennzeichnete USD-Umrechnungen, keine Tradegate-Kurse.</p></details>
   <details class="methods"><summary>Experimental Lab / Crowd Pulse</summary><p>Globale experimentelle Faktoren (Geomagnetik, Sonnenwind, Tektonik, Mond/Astro sowie optionale GCP/GCI-Daten) werden <b>separat</b> dargestellt und haben zunächst <b>0 % Gewicht im BUY-Score</b>. Die 1–5 Sterne zeigen nur, wie stark sich ein Faktor aktuell bewegt. Der Aktien-Tachometer „Crowd/Search“ ist pro Aktie separat. Für echte Google-Trends-Daten kann optional das Cloudflare-Secret <code>SERPAPI_KEY</code> gesetzt werden; ohne diese Quelle wird keine Suchaktivität erfunden.</p></details>
   <details class="methods"><summary>Cloudflare D1 / serverseitiges Learning</summary><p>FusionPulse 3.0 kann das Cloudflare-D1-Binding <code>DB</code> verwenden. Der Worker sammelt über den Cron-Trigger auch bei geschlossener PWA echte Markt-Snapshots, aktualisiert daraus beobachtete Maximal-/Minimalbewegungen bis 180 Minuten und speichert Frühindikator-Ereignisse. Dadurch bleiben Historical Twin, Early-Momentum-Learning und die 120-Minuten-Historie geräteunabhängig erhalten. Das lokale Browser-Learning bleibt nur als Fallback, solange D1 noch nicht verbunden ist.</p></details>
   <details class="methods"><summary>Cloudflare Free-Modus</summary><p>FusionPulse kann Cloudflares kontoweiten Verbrauch ohne zusätzlichen Cloudflare-API-Token nicht auslesen und zeigt deshalb auch keinen. Erkennbar sind 429- und Ressourcenfehler; in diesem Fall erscheint ein Hinweis. Die Anzeige „API-Unterabfragen“ im Scanner zählt Bitpanda-Unterabfragen innerhalb eines Scans, nicht deinen Cloudflare-Tagesverbrauch.</p></details>
