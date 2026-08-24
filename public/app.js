@@ -22,6 +22,11 @@ const DEFAULTS = {
 };
 const storedSettings = (() => { try { return JSON.parse(localStorage.getItem('fp.settings') || '{}'); } catch { return {}; } })();
 const S = { ...DEFAULTS, ...storedSettings };
+// Flatex AT / Tradegate cost model (v3.0.4): public base fee + minimum venue cost
+// per execution. Spread/slippage cannot be known from the Twelve Data candle feed,
+// therefore a separate conservative execution reserve is shown as an estimate.
+const STOCK_ORDER_FIXED_EUR = 10.75; // conservative v3.0.4 estimate for typical 5k–10k executions: 9.90 € flatex example + 0.85 € Tradegate min. external cost
+const STOCK_EXECUTION_FRICTION_PCT = 0.06; // estimated round-trip spread/slippage reserve, not a live Tradegate quote
 if (!Array.isArray(S.components) || !S.components.length) S.components = [...ALL_COMPONENTS];
 S.components = S.components.filter((c) => ALL_COMPONENTS.includes(c));
 if (!S.components.length) S.components = [...ALL_COMPONENTS];
@@ -148,14 +153,17 @@ const coinLevel = (r) => (buyReady(r) ? 3 : r.light === 'green' ? 2 : r.light ==
 function stockTradeability(r) {
   const sz = stockSizing(r);
   const tp2Pct = Number(r.tp2Pct ?? (r.entryUsd ? ((r.tp2Usd / r.entryUsd - 1) * 100) : 0));
-  const netProfit = Number(sz?.planNet ?? sz?.net2 ?? 0);
+  const netProfit = Number(sz?.planNet ?? 0);
+  const netCrv = Number(sz?.planCrvAfterCosts ?? r.netCRV ?? 0);
   const marketOk = !r.marketPhase || ['regular','opening'].includes(r.marketPhase);
-  const ok = marketOk && tp2Pct >= Number(S.minTp2PctStock || 0) && netProfit >= Number(S.minNetProfitStock || 0);
-  return { ok, tp2Pct, netProfit, marketOk };
+  const ok = marketOk && tp2Pct >= Number(S.minTp2PctStock || 0)
+    && netProfit >= Number(S.minNetProfitStock || 0)
+    && netCrv >= Number(S.minCrvStock || 3);
+  return { ok, tp2Pct, netProfit, netCrv, marketOk };
 }
 const stockLevel = (r) => {
   const t = stockTradeability(r);
-  return (r.light === 'green' && r.score >= 8 && r.netCRV >= Number(S.minCrvStock || 3) && t.ok) ? 3
+  return (r.light === 'green' && r.score >= 8 && t.ok) ? 3
     : r.light === 'green' ? 2 : r.light === 'yellow' ? 1 : 0;
 };
 
@@ -229,12 +237,15 @@ function sizing(r) {
   if (r.buyCapacity == null) caps.push('liquidityUnchecked');
   else if (r.buyCapacity > 0 && notional > r.buyCapacity) { notional = r.buyCapacity; caps.push('liquidity'); }
   const qty = notional / r.entry;
+  const tp1Share = 0.5, tp2Share = 0.5, taxFactor = 1 - S.taxPct / 100;
+  const profit1 = (r.tp1 - r.entry) * qty * tp1Share;
+  const profit2 = (r.tp2 - r.entry) * qty * tp2Share;
+  const netProfit1 = Math.max(0, profit1) * taxFactor;
+  const netProfit2 = Math.max(0, profit2) * taxFactor;
   return {
     riskEur, qty, notional, rawNotional, capped: caps.length > 0, caps,
-    profit1: (r.tp1 - r.entry) * qty,
-    profit2: (r.tp2 - r.entry) * qty,
-    netProfit1: Math.max(0, (r.tp1 - r.entry) * qty) * (1 - S.taxPct / 100),
-    netProfit2: Math.max(0, (r.tp2 - r.entry) * qty) * (1 - S.taxPct / 100),
+    tp1Share, tp2Share, profit1, profit2, netProfit1, netProfit2,
+    planGross: profit1 + profit2, planNet: netProfit1 + netProfit2,
     realRisk: perUnit * qty,
   };
 }
@@ -251,7 +262,8 @@ function orderPlan(r) {
     `TP2    ${num(r.tp2)}   (${r.tp2Source})`,
     s ? `Größe  ${eur(s.notional, 2)}  ≈ ${s.qty.toPrecision(6)} ${sym(r.pair)}${s.caps?.includes('liquidity') ? '  [wegen Marktliquidität reduziert]' : s.caps?.includes('liquidityUnchecked') ? '  [ohne Liquiditätsprüfung]' : s.caps?.includes('maxTrade') ? '  [auf Maximalbetrag begrenzt]' : ''}` : '',
     `CRV    ${r.netCRV}:1 netto · Kosten ${r.costPct} %`,
-    s ? `Gewinn TP2 nach ${S.taxPct}% Steuer (Schätzung)  ${eur(s.netProfit2, 2)}` : '',
+    s ? `TP1 50 % netto*  ${eur(s.netProfit1, 2)} · TP2 Rest 50 % netto*  ${eur(s.netProfit2, 2)}` : '',
+    s ? `Gesamtplan netto*  ${eur(s.planNet, 2)}  (*Steuerschätzung ${S.taxPct}%)` : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -439,23 +451,38 @@ function stockSizing(r) {
   let qty = riskEur / (r.entryEur - r.stopEur);
   const maxTrade = Math.max(0, Number(S.maxTradeEur || 0));
   if (maxTrade && qty * r.entryEur > maxTrade) qty = maxTrade / r.entryEur;
-  const fullGross1 = (r.tp1Eur - r.entryEur) * qty;
-  const fullGross2 = (r.tp2Eur - r.entryEur) * qty;
-  // Standard-Plan: 50 % bei TP1, 50 % bei TP2. So entspricht der angezeigte
-  // Gesamtgewinn tatsächlich dem manuellen Teilverkaufsplan.
+  const notional = qty * r.entryEur;
   const tp1Share = 0.5, tp2Share = 0.5;
-  const tp1Gross = fullGross1 * tp1Share;
-  const tp2Gross = fullGross2 * tp2Share;
+  const tp1Gross = (r.tp1Eur - r.entryEur) * qty * tp1Share;
+  const tp2Gross = (r.tp2Eur - r.entryEur) * qty * tp2Share;
+  const planGross = tp1Gross + tp2Gross;
+
+  // Target path = Entry + TP1 + TP2 (3 executions). Stop path = Entry + Stop (2 executions).
+  const targetFixedCosts = STOCK_ORDER_FIXED_EUR * 3;
+  const stopFixedCosts = STOCK_ORDER_FIXED_EUR * 2;
+  const frictionTarget = notional * (STOCK_EXECUTION_FRICTION_PCT / 100);
+  const frictionStop = notional * (STOCK_EXECUTION_FRICTION_PCT / 100);
+  const targetCosts = targetFixedCosts + frictionTarget;
+  const stopCosts = stopFixedCosts + frictionStop;
+
+  const planAfterCosts = planGross - targetCosts;
+  const stopPriceLoss = (r.entryEur - r.stopEur) * qty;
+  const stopLossAfterCosts = stopPriceLoss + stopCosts;
+  const planCrvAfterCosts = stopLossAfterCosts > 0 ? Math.max(0, planAfterCosts) / stopLossAfterCosts : 0;
   const taxFactor = 1 - S.taxPct / 100;
-  const tp1Net = Math.max(0, tp1Gross) * taxFactor;
-  const tp2Net = Math.max(0, tp2Gross) * taxFactor;
+  const taxablePlan = Math.max(0, planAfterCosts);
+  const planNet = taxablePlan * taxFactor;
+  const alloc = planGross > 0 ? Math.max(0, planAfterCosts) / planGross : 0;
+  const tp1AfterCosts = Math.max(0, tp1Gross * alloc);
+  const tp2AfterCosts = Math.max(0, tp2Gross * alloc);
+  const tp1Net = tp1AfterCosts * taxFactor;
+  const tp2Net = tp2AfterCosts * taxFactor;
   return {
-    qty, notional: qty * r.entryEur, risk: (r.entryEur - r.stopEur) * qty,
-    gross1: fullGross1, gross2: fullGross2,
-    net1: Math.max(0, fullGross1) * taxFactor,
-    net2: Math.max(0, fullGross2) * taxFactor,
-    tp1Share, tp2Share, tp1Gross, tp2Gross, tp1Net, tp2Net,
-    planGross: tp1Gross + tp2Gross, planNet: tp1Net + tp2Net,
+    qty, notional, risk: stopPriceLoss,
+    tp1Share, tp2Share, tp1Gross, tp2Gross, planGross,
+    targetFixedCosts, stopFixedCosts, frictionTarget, frictionStop, targetCosts, stopCosts,
+    planAfterCosts, stopLossAfterCosts, planCrvAfterCosts,
+    tp1AfterCosts, tp2AfterCosts, tp1Net, tp2Net, planNet,
   };
 }
 
@@ -477,6 +504,27 @@ function stockSizeDisplay(r, sz, html = true) {
 }
 function stockStatusBand(r) { return historyBand(r._history || [], 'Aktien-Signalverlauf'); }
 
+/** Rechte Preisleiter für den Aktien-Fokus. Die Twelve-Data-Quelle ist USD;
+ *  bei verfügbarem FX-Kurs werden die Marken bewusst als EUR-Umrechnung
+ *  dargestellt, damit SL/TP1/TP2 zur Tradeplanung auf einen Blick lesbar sind. */
+function stockLadder(r) {
+  const vals = [r.stopEur, r.entryEur, r.tp1Eur, r.tp2Eur, r.priceEur].map(Number);
+  if (!vals.every(Number.isFinite)) return `<div class="stock-ladder stock-ladder-na"><small>Preisskala</small><span>EUR/USD fehlt</span></div>`;
+  const [stop, entry, tp1, tp2, price] = vals;
+  let lo = Math.min(stop, entry, price) * 0.9985;
+  let hi = Math.max(tp2, tp1, entry, price) * 1.0015;
+  if (!(hi > lo)) { hi = lo + Math.max(0.01, Math.abs(lo) * 0.01); }
+  const y = (v) => Math.max(1.5, Math.min(98.5, (1 - (v - lo) / (hi - lo)) * 100));
+  const mark = (v, cls, label) => `<div class="slv ${cls}" style="top:${y(v).toFixed(2)}%"><span>${label}</span><b>${eur(v,2)}</b></div>`;
+  return `<div class="stock-ladder" title="Aktien-Preisskala. EUR-Werte sind aus dem US-Kurs mit dem aktuellen EUR/USD-Kurs umgerechnet und keine direkten Tradegate-Kurse.">
+    ${mark(tp2,'tp2','TP2')}
+    ${mark(tp1,'tp1','TP1')}
+    ${mark(entry,'entry','Entry')}
+    ${mark(stop,'stop','SL')}
+    <div class="sl-price" style="top:${y(price).toFixed(2)}%"><span>Aktuell</span><b>${eur(price,2)}</b></div>
+  </div>`;
+}
+
 function stockPeek(r) {
   const sz = stockSizing(r);
   const t = (label, tip, val) => `<div class="pk" title="${esc(tip)}"><span>${label}</span><b>${val}</b></div>`;
@@ -490,7 +538,7 @@ function stockPeek(r) {
       ${t('Branche', 'Sektor-Zuordnung innerhalb des Aktien-Universums.', esc(r.sector))}
       ${t('Kurs', 'Letzter Kurs aus dem 5-Minuten-Feed von Twelve Data (US-Markt).', stockPx(r.priceUsd, r.priceEur))}
       ${t('Score', 'Gesamtbewertung von 0–10 aus den aktivierten Analyseverfahren. Höher = mehr Verfahren bestätigen dasselbe Bild.', num(r.score, 1))}
-      ${t('Netto-CRV', 'CRV = Chance-Risiko-Verhältnis nach geschätzten Kosten. 2,4 : 1 heißt: 2,40 € erwarteter Ertrag je 1,00 € Risiko.', `${num(r.netCRV, 1)} : 1`)}
+      ${t('Netto-CRV Tradeplan', 'CRV des tatsächlichen 50/50-Tradeplans nach geschätzten Flatex/Tradegate-Ausführungskosten. Spread/Slippage sind mangels Live-Tradegate-Bid/Ask nur als Reserve geschätzt.', sz ? `${num(sz.planCrvAfterCosts, 2)} : 1` : `${num(r.netCRV, 1)} : 1`)}
       ${t('Setup', 'Erkanntes Kursmuster aus EMA-Staffelung, VWAP-Lage und kurzfristigem Momentum.', esc(r.setup))}
       ${t('Trend', 'Richtung der EMA9 gegenüber der EMA21. EMA = exponentieller gleitender Durchschnitt.', esc(r.trend))}
       ${t('Entry-Zone', 'Preisbereich, in dem der geplante Kauf sinnvoll wird. Enger als ein Punkt, damit ein Tick keinen Trade zerstört.', stockPx(r.zoneLowUsd, r.zoneLowEur) + ' – ' + stockPx(r.zoneHighUsd, r.zoneHighEur))}
@@ -498,7 +546,9 @@ function stockPeek(r) {
       ${t('TP1 · erster Teilverkauf', 'TP = Take Profit. TP1 ist der erste Teilverkauf, üblicherweise die halbe Position.', stockPx(r.tp1Usd, r.tp1Eur))}
       ${t('TP2 · Restposition', 'TP2 ist der Verkauf der verbleibenden Position.', stockPx(r.tp2Usd, r.tp2Eur))}
       ${t(stockLevel(r)===3?'Kaufsumme':'Potenzielle Größe', stockLevel(r)===3?'Empfohlener Euro-Einsatz bei echter BUY-Freigabe.':'Rechnerische Positionsgröße nur für den Fall, dass später alle BUY-Kriterien erfüllt werden. Aktuell keine Kaufempfehlung.', stockSizeDisplay(r, sz))}
-      ${t('Risiko bis SL', 'Rechnerischer Verlust, wenn der Stop-Loss ausgelöst wird.', sz ? eur(sz.risk, 0) : '–')}
+      ${t('SL-Risiko inkl. Kosten', 'Stop-Szenario: Kursverlust plus Entry-/Stop-Ausführungskosten und geschätzte Spread-/Slippage-Reserve.', sz ? eur(sz.stopLossAfterCosts, 0) : '–')}
+      ${t('Kosten Target-Pfad', 'Entry + TP1 + TP2: drei Ausführungen. Konservativer Ansatz für typische 5.000–10.000-€-Ausführungen: 9,90 € Flatex-Beispiel + mindestens 0,85 € Tradegate je Ausführung; Spread/Slippage zusätzlich als Schätzung.', sz ? eur(sz.targetCosts, 2) : '–')}
+      ${t('Kosten Stop-Pfad', 'Entry + Stop: zwei Ausführungen plus geschätzte Spread-/Slippage-Reserve.', sz ? eur(sz.stopCosts, 2) : '–')}
       ${t('TP1 · 50 % Teilverkauf netto', 'Geschätzter Nettogewinn des ersten Teilverkaufs mit 50 % der Position.', sz ? eur(sz.tp1Net, 0) : '–')}
       ${t('TP2 · 50 % Restverkauf netto', 'Geschätzter Nettogewinn der verbleibenden 50 % der Position bei TP2.', sz ? eur(sz.tp2Net, 0) : '–')}
       ${t('Gesamtplan netto', 'Geschätzter Nettogewinn des Standardplans: 50 % bei TP1 und 50 % bei TP2.', sz ? eur(sz.planNet, 0) : '–')}
@@ -707,11 +757,11 @@ function renderStocks() {
   const topBox=$('#stockFocus'), top=shown[0];
   if(topBox){if(!top)topBox.innerHTML=search?`<div class="stockfocus-empty">Keine geladene Aktie passend zu „${esc(search)}“. Enter oder 🔎 lädt den Titel direkt.</div>`:(filter==='favorites'?'<div class="stockfocus-empty">Noch keine Aktien-Favoriten. Mit ☆ neben einem Titel hinzufügen.</div>':'');else{
     const sz=stockSizing(top), buy=stockLevel(top)===3, tr=stockTradeability(top); const struct=Number(top.structurePct||0);
-    topBox.innerHTML=`<div class="stockfocus-card ${top.light}${buy?' buy':''}"><div class="sf-title"><div><small>TOP-AKTIE AKTUELL</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button>${esc(top.name)} <b>${esc(top.symbol)}</b></h3><span>${esc(top.sector)} · Score ${num(top.score,1)} · CRV ${num(top.netCRV,1)}:1</span></div><strong>${buy?'🟢 BUY':VERDICT_ICON[top.light]+' '+esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${stockPx(top.priceUsd,top.priceEur)}</b></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span>Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Größerer Elliott/Fibonacci-Zielraum aus der aktuellen Struktur. Ergänzende Projektion, kein unmittelbares Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}</span></div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} BUY: Score ≥8, CRV ≥${num(S.minCrvStock,1)}:1, Netto-TP2 ≥${eur(S.minNetProfitStock,0)}, Kursweg ≥${num(S.minTp2PctStock,1)}%.</small></div>`;
+    topBox.innerHTML=`<div class="stockfocus-card ${top.light}${buy?' buy':''}"><div class="sf-focus-main"><div class="sf-title"><div><small>TOP-AKTIE AKTUELL</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button>${esc(top.name)} <b>${esc(top.symbol)}</b></h3><span>${esc(top.sector)} · Score ${num(top.score,1)} · CRV ${num(sz?.planCrvAfterCosts ?? top.netCRV,1)}:1 netto</span></div><strong>${buy?'🟢 BUY':VERDICT_ICON[top.light]+' '+esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${stockPx(top.priceUsd,top.priceEur)}</b></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span>Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Größerer Elliott/Fibonacci-Zielraum aus der aktuellen Struktur. Ergänzende Projektion, kein unmittelbares Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}</span></div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} BUY: Score ≥8, CRV ≥${num(S.minCrvStock,1)}:1, Netto-TP2 ≥${eur(S.minNetProfitStock,0)}, Kursweg ≥${num(S.minTp2PctStock,1)}%.</small></div>${stockLadder(top)}</div>`;
     topBox.querySelector('[data-favstock]')?.addEventListener('click',e=>toggleStockFavorite(top.symbol,e));
   }}
   const groups=new Map(); for(const r of shown){if(!groups.has(r.sector))groups.set(r.sector,[]);groups.get(r.sector).push(r);}
-  box.innerHTML=[...groups.entries()].map(([sector,arr])=>`<section class="stock-sector"><h3>${esc(sector)}</h3>${arr.map(r=>{const buy=stockLevel(r)===3,tone=stockStrength(r),tr=stockTradeability(r),sz=stockSizing(r);return `<div class="stockrow ${r.light} tone-${tone}${buy?' buy':''}" data-sym="${esc(r.symbol)}"><div class="sr-head"><b class="sr-tic">${esc(r.symbol)}</b><button class="favbtn ${isFavStock(r.symbol)?'on':''}" data-favstock="${esc(r.symbol)}" title="${isFavStock(r.symbol)?'Aus Favoriten/Depot entfernen':'Zu Favoriten/Depot hinzufügen'}">${isFavStock(r.symbol)?'★':'☆'}</button><button class="rowmute" data-mutestock="${esc(r.symbol)}">${isStockMuted(r.symbol)?'🔇':'🔊'}</button></div><div class="sr-name">${esc(r.name)}</div><div class="sr-nums"><span title="Netto-CRV nach geschätzten Kosten.">${num(r.netCRV,1)} : 1</span><i>·</i><span>Score ${num(r.score,1)}</span><i>·</i><span title="Kursweg bis TP2">TP2 ${num(tr.tp2Pct,1)}%</span></div><div class="sr-verdict" title="${tr.ok?'Praktisch ausführbar nach deinen Grenzen.':'Noch nicht praktisch ausführbar: Marktphase, Mindestgewinn oder Mindestkursweg nicht erfüllt.'}">${buy?'🟢 BUY':VERDICT_ICON[r.light]+' '+esc(r.verdict)}</div><div class="sr-px">${stockPx(r.priceUsd,r.priceEur)}${sz?`<small> · ${buy?'Plan netto '+eur(sz.planNet,0):'keine Kauf-Freigabe'}</small>`:''}</div><div class="sr-hist" title="120-Minuten-Signalverlauf">${stockStatusBand(r)}</div>${crowdGauge(r.symbol,true)}${edgeStrip(r)}${stockPeek(r)}</div>`}).join('')}</section>`).join('');
+  box.innerHTML=[...groups.entries()].map(([sector,arr])=>`<section class="stock-sector"><h3>${esc(sector)}</h3>${arr.map(r=>{const buy=stockLevel(r)===3,tone=stockStrength(r),tr=stockTradeability(r),sz=stockSizing(r);return `<div class="stockrow ${r.light} tone-${tone}${buy?' buy':''}" data-sym="${esc(r.symbol)}"><div class="sr-head"><b class="sr-tic">${esc(r.symbol)}</b><button class="favbtn ${isFavStock(r.symbol)?'on':''}" data-favstock="${esc(r.symbol)}" title="${isFavStock(r.symbol)?'Aus Favoriten/Depot entfernen':'Zu Favoriten/Depot hinzufügen'}">${isFavStock(r.symbol)?'★':'☆'}</button><button class="rowmute" data-mutestock="${esc(r.symbol)}">${isStockMuted(r.symbol)?'🔇':'🔊'}</button></div><div class="sr-name">${esc(r.name)}</div><div class="sr-nums"><span title="Netto-CRV des 50/50-Tradeplans nach geschätzten Flatex/Tradegate-Kosten.">${num(sz?.planCrvAfterCosts ?? r.netCRV,1)} : 1</span><i>·</i><span>Score ${num(r.score,1)}</span><i>·</i><span title="Kursweg bis TP2">TP2 ${num(tr.tp2Pct,1)}%</span></div><div class="sr-verdict" title="${tr.ok?'Praktisch ausführbar nach deinen Grenzen.':'Noch nicht praktisch ausführbar: Marktphase, Mindestgewinn oder Mindestkursweg nicht erfüllt.'}">${buy?'🟢 BUY':VERDICT_ICON[r.light]+' '+esc(r.verdict)}</div><div class="sr-px">${stockPx(r.priceUsd,r.priceEur)}${sz?`<small> · ${buy?'Plan netto '+eur(sz.planNet,0):'keine Kauf-Freigabe'}</small>`:''}</div><div class="sr-hist" title="120-Minuten-Signalverlauf">${stockStatusBand(r)}</div>${crowdGauge(r.symbol,true)}${edgeStrip(r)}${stockPeek(r)}</div>`}).join('')}</section>`).join('');
   box.querySelectorAll('[data-mutestock]').forEach(b=>b.addEventListener('click',e=>toggleStockMute(b.dataset.mutestock,e)));
   box.querySelectorAll('[data-favstock]').forEach(b=>b.addEventListener('click',e=>toggleStockFavorite(b.dataset.favstock,e)));
 }
@@ -950,7 +1000,9 @@ function renderFocus() {
         <div title="Maximaler rechnerischer Verlust bis zum Stop-Loss bei der vorgeschlagenen Positionsgröße."><span>Risiko bis SL</span><b>${s ? eur(s.realRisk, 0) : '–'} · ${r.riskPct} %</b></div>
         <div class="metricbox ${r.costRatio >= 4 ? 'positive' : r.costRatio >= 2.5 ? 'wait' : 'negative'}" title="Kosten: geschätzte Gebühren + Spread + Slippage. Die ×-Zahl zeigt, wie oft die erwartete Bewegung diese Kosten deckt. Höher ist besser."><span>Kosten</span><b class="${r.costRatio < 2.5 ? 'bad' : ''}">${r.costPct} % · ${r.costRatio}×</b></div>
         <div class="metricbox ${r.slipBps == null ? 'wait' : r.slipBps <= 5 ? 'positive' : r.slipBps <= 15 ? 'wait' : 'negative'}" title="Slippage: erwartete Abweichung zwischen geplantem und tatsächlich erreichbarem Ausführungspreis. 1 Basispunkt (bp) = 0,01 %. Niedriger ist besser."><span>Slippage</span><b>${r.slipBps != null ? r.slipBps + ' bps' : '–'}</b></div>
-        <div title="Geschätzter Gewinn bei TP2 nach dem in den Einstellungen hinterlegten Steuersatz (Österreich: KESt 27,5 %)."><span>TP2 Gewinn netto*</span><b class="good">${s ? eur(s.netProfit2, 0) : '–'}</b></div>
+        <div title="Geschätzter Nettogewinn des ersten 50-%-Teilverkaufs bei TP1."><span>TP1 · 50 % netto*</span><b class="good">${s ? eur(s.netProfit1, 0) : '–'}</b></div>
+        <div title="Geschätzter Nettogewinn der verbleibenden 50 % bei TP2."><span>TP2 Rest · 50 % netto*</span><b class="good">${s ? eur(s.netProfit2, 0) : '–'}</b></div>
+        <div title="Geschätzter Nettogewinn des Gesamtplans: 50 % bei TP1 + 50 % bei TP2."><span>Gesamtplan netto*</span><b class="good">${s ? eur(s.planNet, 0) : '–'}</b></div>
         <div title="Aktive Analyseverfahren. Sicherheitsfilter wie Liquidität, Spread und Kosten bleiben immer aktiv."><span>Analyse</span><b>${esc(r.analysisMode || S.analysisMode)} · ${(r.components || S.components).length}/9</b></div>
       </div>
       <small class="taxnote">* Schätzung mit ${num(S.taxPct, 1)} % auf positiven Gewinn; keine Steuerberatung.</small>
@@ -1097,7 +1149,7 @@ function rowHtml(r) {
     <span class="c-qh ta" title="Q = Setup-Qualität (0–10), H = Handelbarkeit/Ausführbarkeit (0–10)."><b>${r.quality}</b><i>·</i>${r.executability}</span>
     <span class="tradepeek"><b>${sym(r.pair)} · ${esc(r.setup)}</b><br>
       Einsatz ${s ? eur(s.notional, 0) : '–'} · Entry ${num(r.entry)} · SL ${num(r.stop)} · TP1 ${num(r.tp1)} · TP2 ${num(r.tp2)}<br>
-      CRV ${r.netCRV}:1 · TP2 nach Steuer* ${s ? eur(s.netProfit2, 0) : '–'}
+      CRV ${r.netCRV}:1 · Gesamtplan netto* ${s ? eur(s.planNet, 0) : '–'}
     </span>`;
 }
 

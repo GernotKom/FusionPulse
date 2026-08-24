@@ -553,3 +553,19 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
   .stockmapwrap{min-height:300px}
   .experimental-grid{grid-template-columns:1fr!important}
 }
+
+
+/* v3.0.4 — Aktien-Fokus: rechte Preisskala mit Aktuell / SL / TP1 / TP2 */
+.stockfocus-card{display:grid;grid-template-columns:minmax(0,1fr) 142px;gap:14px;align-items:stretch}
+.sf-focus-main{min-width:0;display:flex;flex-direction:column}
+.stock-ladder{position:relative;min-height:250px;border-left:2px solid var(--line2);margin-left:3px;padding-left:8px}
+.slv,.sl-price{position:absolute;left:-6px;right:0;transform:translateY(-50%);display:flex;align-items:center;gap:5px;white-space:nowrap;font-size:9px}
+.slv:before{content:"";width:10px;height:2px;background:currentColor;flex:0 0 auto}
+.slv span,.sl-price span{font-size:8px;text-transform:uppercase;letter-spacing:.35px;color:var(--dim)}
+.slv b,.sl-price b{margin-left:auto;font:800 10px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg);font-variant-numeric:tabular-nums}
+.slv.tp2{color:var(--green)}.slv.tp1{color:#7fd6ff}.slv.entry{color:var(--accent)}.slv.stop{color:var(--red)}
+.sl-price{z-index:3;left:-8px;color:#fff}.sl-price:before{content:"";width:0;height:0;border:5px solid transparent;border-left-color:#fff;flex:0 0 auto}
+.sl-price span,.sl-price b{background:#fff;color:#071019;padding:2px 4px}.sl-price span{border-radius:4px 0 0 4px}.sl-price b{border-radius:0 4px 4px 0;margin-left:-5px}
+.stock-ladder-na{display:flex;flex-direction:column;justify-content:center;gap:4px;color:var(--dim);font-size:10px}.stock-ladder-na small{font-weight:800;color:var(--fg)}
+@media(max-width:760px){.stockfocus-card{grid-template-columns:minmax(0,1fr) 118px;gap:10px}.stock-ladder{min-height:290px}.slv b,.sl-price b{font-size:9px}.slv span,.sl-price span{font-size:7.5px}}
+@media(max-width:520px){.stockfocus-card{grid-template-columns:1fr}.stock-ladder{min-height:210px;margin:8px 2px 0 8px}}

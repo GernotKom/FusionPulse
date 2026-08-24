@@ -264,7 +264,11 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
   // --- Volumenbeschleunigung als echter z-Score (kein Overlap) -------------
   const vRecent = mean(vol.slice(-3));
   const vBase = vol.slice(-27, -3);                        // sauber disjunkt
+  const vBaseMean = mean(vBase);
   const volZ = z(vRecent, vBase);
+  const relVol = vBaseMean > 0 ? vRecent / vBaseMean : null;
+  const ret15 = ret(3) * 100;                              // 3 × 5 Minuten
+  const ret60 = ret(12) * 100;                             // 12 × 5 Minuten
   const volumeAcceleration = clamp(5 + volZ * 1.8);
 
   // --- Kompression / Squeeze ----------------------------------------------
@@ -527,6 +531,7 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
     components: [...on], blockers,
     // Faktoren
     momentum: r1(momentum), volumeAcceleration: r1(volumeAcceleration),
+    ret15: r2(ret15), ret60: r2(ret60), relVol: relVol == null ? null : r2(relVol),
     relativeStrength: r1(relativeStrength), compression: r1(compression),
     trendQuality: r1(trendQuality), mtf: r1(mtf), bookScore: r1(bookScore),
     exhaustion: r1(exhaustion), liquidity: r1(liquidity), elliott: r1(elliott),
@@ -686,6 +691,55 @@ function classifyError(e) {
   if (/day|daily|täglich|out of api credits for the day/i.test(m)) return 'daylimit';
   if (/429|rate|too many|run out of api credits/i.test(m)) return 'ratelimit';
   return 'error';
+}
+
+function cronLog(provider, state, message, extra = {}) {
+  console.error(JSON.stringify({
+    event: 'fusionpulse_cron_provider', provider, state,
+    message: message ? String(message).slice(0, 300) : null,
+    ts: Date.now(), ...extra,
+  }));
+}
+async function persistApiState(env, which, state, message = null, ts = Date.now()) {
+  if (!env?.DB) return;
+  try {
+    await ensureD1Schema(env);
+    const value = safeJson({ state, message: message ? String(message).slice(0, 220) : null, ts });
+    await env.DB.prepare(
+      `INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`
+    ).bind(`provider_health:${which}`, value, ts).run();
+  } catch (e) {
+    console.warn(JSON.stringify({ event:'fusionpulse_health_persist_failed', provider:which, message:String(e?.message||e), ts:Date.now() }));
+  }
+}
+async function persistentApiState(env, which, configured) {
+  if (!configured) return { state:'nokey', ts:0, message:'nicht konfiguriert', persistent:true };
+  const local = apiState[which] || { state:'unknown', ts:0, message:null };
+  if (!env?.DB) return { ...local, persistent:false };
+  try {
+    await ensureD1Schema(env);
+    const meta = await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1')
+      .bind(`provider_health:${which}`).first();
+    let saved = null;
+    if (meta?.value) { try { saved = JSON.parse(meta.value); } catch {} }
+    if (saved?.state) {
+      const age = Date.now() - Number(saved.ts || meta.updated_ts || 0);
+      const staleAfter = which === 'crypto' ? 20*60_000 : 45*60_000;
+      return { state: saved.state === 'ok' && age > staleAfter ? 'stale' : saved.state,
+        ts:Number(saved.ts || meta.updated_ts || 0), message:saved.message || null, persistent:true, ageMs:age };
+    }
+    const source = which === 'crypto' ? 'Bitpanda Fusion' : which === 'stocks' ? 'Twelve Data' : 'Alpaca IEX';
+    const snap = await env.DB.prepare('SELECT MAX(ts) ts FROM market_snapshots WHERE source=?').bind(source).first();
+    if (Number(snap?.ts) > 0) {
+      const age = Date.now() - Number(snap.ts);
+      const staleAfter = which === 'crypto' ? 20*60_000 : 45*60_000;
+      return { state:age > staleAfter ? 'stale' : 'ok', ts:Number(snap.ts), message:'aus letztem D1-Snapshot abgeleitet', persistent:true, ageMs:age };
+    }
+  } catch (e) {
+    console.warn(JSON.stringify({ event:'fusionpulse_health_read_failed', provider:which, message:String(e?.message||e), ts:Date.now() }));
+  }
+  return { ...local, persistent:false };
 }
 
 /** Der Cache muss die Analyse-Einstellung kennen, sonst liefert ein Moduswechsel
@@ -1242,7 +1296,7 @@ function serverLeadFlags(row){
     rvol: (dbNum(row.relVol) ?? 0) >= 1.8,
     vacuum: (dbNum(row.liquidityVacuum) ?? 0) >= 70,
     elliott: (dbNum(row.structurePct) ?? 0) >= 5,
-    momentum: (dbNum(row.momentumScore) ?? dbNum(row.score) ?? 0) >= 7.5,
+    momentum: (dbNum(row.momentumScore) ?? dbNum(row.momentum) ?? dbNum(row.score) ?? 0) >= 7.5,
     technical: (dbNum(row.score) ?? 0) >= 7.5,
   };
 }
@@ -1304,7 +1358,7 @@ async function d1StoreSnapshotRow(env, row, {source='server',assetType='stock',n
   const ev=[];
   for(const k of LEARN_SIGNAL_LABELS){
     if(!flags[k]) continue;
-    const strength = k==='crowd'?crowdScore : k==='rvol'?f.rv : k==='vacuum'?f.vac : k==='sector'?f.lag : k==='elliott'?f.structure : k==='technical'?f.score : k==='momentum'?(dbNum(row.momentumScore)??f.score) : crowdScore;
+    const strength = k==='crowd'?crowdScore : k==='rvol'?f.rv : k==='vacuum'?f.vac : k==='sector'?f.lag : k==='elliott'?f.structure : k==='technical'?f.score : k==='momentum'?(dbNum(row.momentumScore)??dbNum(row.momentum)??f.score) : crowdScore;
     ev.push(env.DB.prepare('INSERT OR IGNORE INTO signal_events(symbol,ts,bucket5,signal,price,strength,source) VALUES(?,?,?,?,?,?,?)')
       .bind(symbol,now,bucket5,k,price,strength,source));
   }
@@ -1392,18 +1446,38 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
   if(!env.DB) return;
   await ensureD1Schema(env);
   const now=Number(scheduledTime)||Date.now(), phase=usMarketPhase(new Date(now));
-  // Krypto: bestehender serverseitiger Scan wird auch ohne geöffnete PWA erfasst.
   if(env.FUSION_API_KEY && Math.floor(now/60_000)%5===0){
-    try{const snap=await getSnapshot(env,{},true);await d1StoreRows(env,snap.rows||[],{source:'Bitpanda Fusion',assetType:'coin',now});}catch{}
+    try{
+      const snap=await getSnapshot(env,{},true);
+      await d1StoreRows(env,snap.rows||[],{source:'Bitpanda Fusion',assetType:'coin',now});
+      setApiState('crypto','ok'); await persistApiState(env,'crypto','ok',`${snap.rows?.length||0} Rows`,now);
+    }catch(e){
+      const state=classifyError(e); setApiState('crypto',state,e?.message);
+      await persistApiState(env,'crypto',state,e?.message,now); cronLog('crypto',state,e?.message);
+    }
   }
-  // Alpaca Free/IEX: nur im sinnvollen IEX-Livefenster ab 08:00 ET bis ca. 17:00 ET.
   const np=nyParts(new Date(now)),minsET=Number(np.hour)*60+Number(np.minute);
   if(env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY&&minsET>=480&&minsET<=1020&&phase.key!=='closed'){
-    try{const op=await openingMomentum(env,true);await d1StoreRows(env,op.rows||[],{source:'Alpaca IEX',assetType:'stock',now});}catch{}
+    try{
+      const op=await openingMomentum(env,true);
+      await d1StoreRows(env,op.rows||[],{source:'Alpaca IEX',assetType:'stock',now});
+      setApiState('alpaca','ok',`${op.rows?.length||0} Rows`);
+      await persistApiState(env,'alpaca','ok',`${op.rows?.length||0} Rows`,now);
+    }catch(e){
+      const state=classifyError(e); setApiState('alpaca',state,e?.message);
+      await persistApiState(env,'alpaca',state,e?.message,now); cronLog('alpaca',state,e?.message);
+    }
   }
-  // Twelve Data nur alle 15 Minuten, damit das Free-Kontingent nicht unnötig belastet wird.
   if(env.TWELVE_API_KEY && Math.floor(now/60_000)%15===0){
-    try{const st=await stockSnapshot(env,false,new Set(ALL_ON),3);await d1StoreRows(env,st.rows||[],{source:'Twelve Data',assetType:'stock',now});}catch{}
+    try{
+      const st=await stockSnapshot(env,false,new Set(ALL_ON),3);
+      await d1StoreRows(env,st.rows||[],{source:'Twelve Data',assetType:'stock',now});
+      setApiState('stocks','ok',`${st.rows?.length||0} Rows`);
+      await persistApiState(env,'stocks','ok',`${st.rows?.length||0} Rows`,now);
+    }catch(e){
+      const state=classifyError(e); setApiState('stocks',state,e?.message);
+      await persistApiState(env,'stocks',state,e?.message,now); cronLog('stocks',state,e?.message);
+    }
   }
 }
 
@@ -1420,9 +1494,11 @@ export default {
     if (url.pathname === '/api/health') {
       // Version kommt aus dem DEPLOYTEN Code, nicht aus einer CF-Variable.
       // Weicht env.APP_VERSION ab, ist die Variable veraltet – das wird gemeldet.
-      const cryptoState = !env.FUSION_API_KEY ? 'nokey' : apiState.crypto.state;
-      const stocksState = !env.TWELVE_API_KEY ? 'nokey' : apiState.stocks.state;
-      const alpacaState = (!env.ALPACA_API_KEY_ID || !env.ALPACA_API_SECRET_KEY) ? 'nokey' : apiState.alpaca.state;
+      const [cryptoHealth,stocksHealth,alpacaHealth] = await Promise.all([
+        persistentApiState(env,'crypto',!!env.FUSION_API_KEY),
+        persistentApiState(env,'stocks',!!env.TWELVE_API_KEY),
+        persistentApiState(env,'alpaca',!!(env.ALPACA_API_KEY_ID && env.ALPACA_API_SECRET_KEY)),
+      ]);
       return json({
         ok: true,
         version: APP_VERSION,
@@ -1438,9 +1514,9 @@ export default {
         cacheAgeMs: memo.ts ? Date.now() - memo.ts : null,
         components: COMPONENTS,
         status: {
-          crypto: { ...apiState.crypto, state: cryptoState },
-          stocks: { ...apiState.stocks, state: stocksState },
-          alpaca: { ...apiState.alpaca, state: alpacaState },
+          crypto: cryptoHealth,
+          stocks: stocksHealth,
+          alpaca: alpacaHealth,
         },
         quota: { twelveData: quotaView() },
       }, 200, { 'cache-control': 'no-store' });
@@ -1545,6 +1621,9 @@ export default {
 
   // v3.0: Cron sammelt unabhängig von einer geöffneten PWA Markt- und Learning-Daten.
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(serverLearningCycle(env,event.scheduledTime).catch(() => {}));
+    ctx.waitUntil(serverLearningCycle(env,event.scheduledTime).catch((e) => {
+      cronLog('scheduler','error',e?.message,{scheduledTime:event.scheduledTime});
+      return persistApiState(env,'scheduler','error',e?.message,Number(event.scheduledTime)||Date.now());
+    }));
   },
 };
