@@ -48,3 +48,8 @@ console.log('✓ FusionPulse safety regressions: OK');
 
 assert.match(app,/if \(data\.length === 1\)/,'Sparkline muss einen Einzelwert ohne Division durch 0 behandeln');
 assert.match(app,/const opportunityEligible=stockOpportunity\(r\)\.ready/,'Opportunity-Regel darf im Tonpfad nicht doppelt implementiert sein');
+assert.match(app,/function setMiniStatus\(/,'Tiingo-/Header-Ministatus-Helfer muss definiert sein');
+const index=fs.readFileSync(new URL('../public/index.html',import.meta.url),'utf8');
+assert.match(index,/id="regime" class="regime-btn fast-tip"/,'Risk-Regime muss schnellen Tooltip verwenden');
+assert.match(index,/id="miniTiingo" class="mini-dot busy fast-tip"/,'Tiingo-T muss schnellen Tooltip verwenden');
+assert.match(index,/class="hclock fast-tip"/,'Countdown muss schnellen Tooltip verwenden');

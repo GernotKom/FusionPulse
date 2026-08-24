@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.1.5 — Frontend
+   FusionPulse v3.1.6 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -355,6 +355,17 @@ function setSys(id, st, detail) {
   el.dataset.raw = key;
   const label = el.id === 'sysCrypto' ? 'Krypto (Bitpanda Fusion)' : 'Aktien (Tiingo/Twelve)';
   el.title = `${label}: ${STATE_TEXT[key]}${detail ? '\n' + detail : ''}\n\nGrün = verbunden · Gelb = eingeschränkt oder Rate-Limit · Rot = Fehler oder nicht verbunden`;
+}
+
+function setMiniStatus(id, st, detail = '') {
+  const el = $(id); if (!el) return;
+  const raw = String(st || 'busy').toLowerCase();
+  const cls = raw === 'ok' ? 'ok' : ['warn','ratelimit','daylimit'].includes(raw) ? 'warn' : ['err','error','nokey'].includes(raw) ? 'err' : 'busy';
+  el.classList.remove('ok','warn','err','busy');
+  el.classList.add(cls);
+  const label = detail || (el.id === 'miniCrypto' ? 'Krypto-Datenquelle' : el.id === 'miniStocks' ? 'Aktien-Datenquelle' : 'Tiingo-Verbindung');
+  el.dataset.tip = label;
+  el.removeAttribute('title'); // eigener schneller Tooltip statt verzögertem Browser-Tooltip
 }
 
 function quotaText(q) {
@@ -1459,7 +1470,8 @@ function render() {
   }
   const reg = $('#regime');
   reg.textContent = `${meta.marketRegime || '–'} · ${Math.round((meta.breadth || 0) * 100)} % über VWAP`;
-  reg.title = 'Marktregime: Risk-On = breite positive Marktstruktur, Risk-Off = breite Schwäche. Der Prozentwert zeigt den Anteil der gescannten Coins oberhalb ihres volumengewichteten Durchschnittspreises (VWAP). Das ist ein Marktfilter, kein eigenständiges Kaufsignal.';
+  reg.dataset.tip = 'Marktregime: Risk-On = breite positive Marktstruktur, Risk-Off = breite Schwäche. Der Prozentwert zeigt den Anteil der gescannten Coins oberhalb ihres volumengewichteten Durchschnittspreises (VWAP). Marktfilter, kein eigenständiges Kaufsignal.';
+  reg.removeAttribute('title');
   reg.className = 'regime-btn '+(meta.marketRegime || '').toLowerCase().replace('-', '');
   const rex=$('#regimeExplain'); if(rex && !rex.classList.contains('hidden')) rex.innerHTML=regimeExplanation();
 

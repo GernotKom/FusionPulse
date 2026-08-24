@@ -617,3 +617,13 @@ body{padding-bottom:108px}.signal-idle{display:flex;align-items:center;gap:9px;w
 .tiingo-testbox{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
 .tiingo-testbox div{display:grid;gap:3px}.tiingo-testbox small{color:var(--dim);line-height:1.3}.tiingo-testbox small.ok{color:var(--green)}.tiingo-testbox small.warn{color:var(--yellow)}.tiingo-testbox small.err{color:var(--red)}
 @media(max-width:760px){.hcenter-tools{order:2;margin-left:0}.mini-status{padding:4px 6px}.regime-explain{top:27px}.tiingo-testbox{align-items:flex-start;flex-direction:column}}
+
+/* v3.1.6: schnelle Tooltips für Kopfzeile (ca. 220 ms statt Browser-title-Verzögerung) */
+.fast-tip{position:relative}
+.fast-tip::after{content:attr(data-tip);position:absolute;left:50%;top:calc(100% + 7px);transform:translateX(-50%) translateY(-2px);z-index:180;max-width:min(360px,82vw);width:max-content;padding:7px 9px;border:1px solid var(--line2);border-radius:8px;background:var(--panel2);box-shadow:0 8px 24px #0009;color:var(--fg);font:500 10.5px/1.3 system-ui,sans-serif;letter-spacing:0;white-space:normal;pointer-events:none;opacity:0;visibility:hidden;transition:opacity .08s ease .22s,transform .08s ease .22s,visibility 0s linear .30s}
+.fast-tip:hover::after,.fast-tip:focus-visible::after{opacity:1;visibility:visible;transform:translateX(-50%) translateY(0);transition-delay:.22s,.22s,0s}
+.regime-btn.fast-tip::after{left:0;transform:translateY(-2px);text-align:left}
+.regime-btn.fast-tip:hover::after,.regime-btn.fast-tip:focus-visible::after{transform:translateY(0)}
+.hclock.fast-tip::after{right:0;left:auto;transform:translateY(-2px);text-align:left}
+.hclock.fast-tip:hover::after,.hclock.fast-tip:focus-visible::after{transform:translateY(0)}
+@media(max-width:760px){.fast-tip::after{display:none}}

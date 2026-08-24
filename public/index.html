@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.1.5</title>
+<title>FusionPulse 3.1.6</title>
 </head>
 <body>
 
@@ -24,7 +24,7 @@
 <!-- ══════════════════════════════════════════════════════ Kopfzeile ═══ -->
 <header>
   <div class="hstat">
-    <button id="regime" class="regime-btn" type="button" aria-expanded="false">–</button>
+    <button id="regime" class="regime-btn fast-tip" type="button" aria-expanded="false" data-tip="Marktregime wird nach dem ersten Scan erklärt.">–</button>
     <div id="regimeExplain" class="regime-explain hidden" role="status"></div>
     <!-- Systemstatus kompakt: Krypto ● | Aktien ● | v3.0.7 -->
     <div class="sysbar" id="sysbar">
@@ -39,11 +39,11 @@
 
   <div class="hcenter-tools">
     <div class="mini-status" aria-label="Datenquellen-Status">
-      <span id="miniCrypto" class="mini-dot busy" title="Krypto-Datenquelle">●</span>
-      <span id="miniStocks" class="mini-dot busy" title="Aktien-Datenquelle">●</span>
-      <span id="miniTiingo" class="mini-dot busy" title="Tiingo-Verbindung">T</span>
+      <span id="miniCrypto" class="mini-dot busy fast-tip" data-tip="Krypto-Datenquelle">●</span>
+      <span id="miniStocks" class="mini-dot busy fast-tip" data-tip="Aktien-Datenquelle">●</span>
+      <span id="miniTiingo" class="mini-dot busy fast-tip" data-tip="Tiingo-Verbindung">T</span>
     </div>
-    <div class="hclock" title="Countdown bis zur nächsten 5-Minuten-Grenze des Coin-Scanners. Kein Börsen-Countdown und keine Signal-Gültigkeit.">
+    <div class="hclock fast-tip" data-tip="Countdown bis zur nächsten 5-Minuten-Grenze des Coin-Scanners. Kein Börsen-Countdown und keine Signal-Gültigkeit.">
       <small>Nächster 5m-Takt</small><b id="barclock">--:--</b>
     </div>
   </div>
