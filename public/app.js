@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.0.11 — Frontend
+   FusionPulse v3.0.12 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -903,8 +903,11 @@ function trackStocks() {
     const st = stockState.get(r.symbol) || { light: null, since: now, streak: 0, level: -1, history: stockHistoryStore[r.symbol] || [] };
     if (st.light !== r.light) { st.since = now; st.streak = 1; } else st.streak++;
     st.light = r.light;
-    if (lvl > st.level && lvl >= 1 && st.level >= 0 && S.stockSound) {
-      const sk=lvl === 3 ? 'stockbuy' : lvl === 2 ? 'stockgreen' : 'stockwatch';
+    // v3.0.12: akustisch nur handlungsrelevante Verbesserung.
+    // WATCH/Crowd/Einzelindikatoren bleiben lautlos. CRV unter Minimum blockiert Ton.
+    const soundEligible = Number(r.netCRV||0) >= Number(S.minCrvStock||3) && r.light !== 'red';
+    if (lvl > st.level && lvl >= 2 && st.level >= 0 && S.stockSound && soundEligible) {
+      const sk=lvl === 3 ? 'stockbuy' : 'stockgreen';
       const sm=isStockMuted(r.symbol); beep(sk,sm); if(S.sound&&!sm)registerSignal('stock',r.symbol,sk);
     }
     st.level = lvl;
@@ -1036,14 +1039,17 @@ function track() {
     const crvBand = r.netCRV >= S.minCrvCoin + 1 ? 2 : r.netCRV >= S.minCrvCoin ? 1 : 0;
     const known = st.level >= 0;
 
-    if (known && lvl > st.level && lvl >= 1) {
-      const ck=lvl === 3 ? 'buy' : lvl === 2 ? 'green' : 'watch'; const cm=isMuted(r.pair);
+    // v3.0.12: WATCH ist bewusst lautlos. Ein Coin mit CRV unter Minimum
+    // oder roter Ampel darf keinen positiven Signalton erzeugen.
+    const soundEligible = Number(r.netCRV||0) >= Number(S.minCrvCoin||3) && r.light !== 'red';
+    if (known && lvl > st.level && lvl >= 2 && soundEligible) {
+      const ck=lvl === 3 ? 'buy' : 'green'; const cm=isMuted(r.pair);
       beep(ck,cm); if(S.sound&&!cm)registerSignal('coin',r.pair,ck);
-      if (lvl >= 2) notify(r);
-    } else if (known && lvl >= 1 && crvBand > st.crvBand) {
-      const ck=lvl >= 3 ? 'buy' : 'watch'; const cm=isMuted(r.pair);
+      notify(r);
+    } else if (known && lvl >= 2 && crvBand > st.crvBand && soundEligible) {
+      const ck=lvl >= 3 ? 'buy' : 'green'; const cm=isMuted(r.pair);
       beep(ck,cm); if(S.sound&&!cm)registerSignal('coin',r.pair,ck);
-      if (lvl >= 2) notify(r);
+      notify(r);
     }
 
     st.level = lvl; st.crvBand = crvBand;

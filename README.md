@@ -1,4 +1,4 @@
-# FusionPulse v3.0.11
+# FusionPulse v3.0.12
 
 Momentum- und Einstiegszonen-Scanner für Bitpanda Fusion (EUR) plus US-Aktienradar über Twelve Data und Alpaca. Läuft als PWA auf einem Cloudflare Worker. Keine Order-Automatik — FusionPulse liefert Trade-Pläne, ausgeführt wird manuell.
 
