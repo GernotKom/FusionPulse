@@ -73,14 +73,16 @@ assert.match(workerText,/row\.discovery=\{type:'iex-radar',\.\.\.rm,buyWeight:0\
 assert.match(workerText,/row\.discovery=\{type:'boats',\.\.\.bm,buyWeight:0\}/,'BOATS candidate metadata must carry 0 BUY weight');
 assert.match(workerText,/const syms=\[\.\.\.favPick,\.\.\.recheckPick,\.\.\.radarPick,\.\.\.boatsPick,\.\.\.explore\]\.slice\(0,20\)/,'Deep scan must cap adaptive candidate batch at 20');
 assert.match(workerText,/await tiingoFetch\(env,'\/iex'\)/,'Whole-market Radar must use Tiingo IEX bulk snapshot');
-assert.match(workerText,/Whole-Market-Radar JEDE Minute/,'Server scheduler must keep the market radar independent of the browser');
+assert.match(workerText,/stockMinute%2===1[\s\S]*tiingoIexMarketRadar\(env,80,true\)/,'Server scheduler must keep the market radar independent of the browser');
+assert.match(workerText,/execution!=='server'&&!force[\s\S]*readLatestPersistedStockScan/,'Browser stock requests must consume the persisted server scan instead of starting a duplicate market scan');
 assert.match(workerText,/source IN \('Twelve Data','Tiingo IEX'\)/,'Learning must accept Tiingo IEX history after Primary migration');
 
 // v3.2.2 Common-stock gate: ETFs/ETPs must not consume stock deep-scan slots.
-assert.match(workerText,/const FUND_NAME_RE=/,'Radar must define a defensive fund/product name gate');
+assert.match(workerText,/const (?:FUND_NAME_RE|NON_COMMON_EQUITY_RE)=/,'Radar must define a defensive fund/product name gate');
 assert.match(workerText,/DAILY TARGET/,'Radar fund gate must catch leveraged daily-target products');
-assert.match(workerText,/filterRadarToCommonStocks\(env,ranked/,'Whole-market ranking must pass through common-stock validation before deep scan');
-assert.match(workerText,/tradableStock:Boolean\(active&&stockType&&!fundLike\)/,'Only active verified stocks that are not fund-like may enter the radar queue');
-assert.match(workerText,/Metadatenprüfung fehlgeschlagen/,'Metadata failure must fail closed instead of admitting an unknown instrument');
+assert.match(workerText,/radar=\{\.\.\.radar,rows:await filterRadarToCommonStocks\(env,radar\.rows\|\|\[\],20\)/,'Deep-scan radar candidates must pass through common-stock validation before analysis');
+assert.match(workerText,/tradableStock:Boolean\(active&&!nonCommon\)/,'Only active verified common stocks may enter the radar queue');
+assert.match(workerText,/Metadaten(?:prüfung|pruefung) fehlgeschlagen/,'Metadata failure must fail closed instead of admitting an unknown instrument');
+assert.match(workerText,/\/tiingo\/daily\/\$\{encodeURIComponent\(sym\)\}/,'Common-stock validation must use stable Tiingo EOD metadata');
 
 console.log('✓ FusionPulse safety regressions: OK');

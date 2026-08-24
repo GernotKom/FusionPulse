@@ -27,3 +27,6 @@ Fehlende, stale oder schlechtere Daten duerfen ein Setup niemals verbessern. Dis
 
 ## In v3.2.2 umgesetzt
 - P1 Hotfix: Whole-Market Radar auf verifizierte Common Stocks begrenzt; ETFs/ETPs/ETNs und gehebelte/inverse Fondsprodukte vor dem Deep Scan ausgeschlossen.
+
+## v3.2.3 Hotfix
+- P0: v3.2.2 Instrumentfilter stabilisieren; keine Beta-Search-Abhaengigkeit im Live-Radar.
