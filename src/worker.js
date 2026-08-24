@@ -694,6 +694,7 @@ function classifyError(e) {
   if (/api[_-]?key|unauthor|401|403/i.test(m)) return 'nokey';
   if (/day|daily|täglich|out of api credits for the day/i.test(m)) return 'daylimit';
   if (/429|rate|too many|run out of api credits/i.test(m)) return 'ratelimit';
+  if (/cpu|exceeded|resource|1102/i.test(m)) return 'cpu';
   return 'error';
 }
 
@@ -1735,7 +1736,12 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
   if(!env.DB) return;
   await ensureD1Schema(env);
   const now=Number(scheduledTime)||Date.now(), phase=usMarketPhase(new Date(now));
-  if(env.FUSION_API_KEY && Math.floor(now/60_000)%5===0){
+  const cronMinute=Math.floor(now/60_000);
+  const cryptoMinute=cronMinute%5===0;
+  // v3.2.5: pro Cron-Aufruf maximal EIN schwerer Marktjob. Alle 5 Minuten
+  // besitzt Krypto den Worker exklusiv; dadurch kollidiert Bitpanda nicht mehr
+  // mit Whole-Market-Radar oder Aktien-Deep-Scan im selben CPU-Budget.
+  if(env.FUSION_API_KEY && cryptoMinute){
     try{
       const snap=await getSnapshot(env,{},true);
       await d1StoreRows(env,snap.rows||[],{source:'Bitpanda Fusion',assetType:'coin',now});
@@ -1746,7 +1752,7 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
     }
   }
   const np=nyParts(new Date(now)),minsET=Number(np.hour)*60+Number(np.minute);
-  if(env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY&&minsET>=480&&minsET<=1020&&phase.key!=='closed'){
+  if(!cryptoMinute && env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY&&minsET>=480&&minsET<=1020&&phase.key!=='closed'){
     try{
       const op=await openingMomentum(env,true);
       if(Math.floor(now/60_000)%5===0) await d1StoreRows(env,op.rows||[],{source:alpacaFeed(env)==='sip'?'Alpaca SIP':'Alpaca IEX',assetType:'opening',now});
@@ -1757,8 +1763,8 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
       await persistApiState(env,'alpaca',state,e?.message,now); cronLog('alpaca',state,e?.message);
     }
   }
-  const stockMinute=Math.floor(now/60_000), primaryStocks=tiingoStocksMode(env)==='primary';
-  if(primaryStocks && env.TIINGO_API_TOKEN){
+  const stockMinute=cronMinute, primaryStocks=tiingoStocksMode(env)==='primary';
+  if(!cryptoMinute && primaryStocks && env.TIINGO_API_TOKEN){
     // v3.2.4 CPU-Hotfix: schwere Jobs werden auf getrennte Cron-Minuten verteilt.
     // Ungerade Minute = Whole-Market-Bulk-Radar. Gerade Minute = Deep Scan aus
     // dem persistierten Radar. So laufen JSON-Bulk-Ranking und 20 Historien-
@@ -1774,7 +1780,7 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
         await persistApiState(env,'stocks','ok',`${st.rows?.length||0} Rows · Radar ${st.discovery?.radar?.universe||0}`,now);
       }catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('stocks',state,e?.message);}
     }
-  } else if(!primaryStocks && env.TWELVE_API_KEY && stockMinute%10===1){
+  } else if(!cryptoMinute && !primaryStocks && env.TWELVE_API_KEY && stockMinute%10===1){
     try{
       const st=await stockSnapshot(env,false,new Set(ALL_ON),3);
       await d1StoreRows(env,st.rows||[],{source:'Twelve Data',assetType:'stock',now});
@@ -1944,7 +1950,7 @@ async function radarEquityMeta(env,symbol){
   if(!sym)return {ts:Date.now(),tradableStock:false,name:String(symbol||''),assetType:'invalid',reason:'Ungueltiges Symbolformat'};
   const mem=nonEquityMemo.get(sym);
   if(mem&&Date.now()-mem.ts<7*86400_000)return mem;
-  const key=`security_meta:${sym}`;
+  const key=`security_meta:v325:${sym}`;
   if(env?.DB){
     try{await ensureD1Schema(env);const r=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind(key).first();if(r?.value&&Date.now()-Number(r.updated_ts||0)<7*86400_000){const v=JSON.parse(r.value);const out={ts:Number(r.updated_ts||Date.now()),...v};nonEquityMemo.set(sym,out);return out;}}catch{}
   }
@@ -2046,7 +2052,9 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
     if(persisted){
       stockMemo={ts:persisted.ts,rows:persisted.rows,cycle:persisted.cycle,sig:persisted.sig};
       const radar=await readPersistedIexRadar(env);
-      return {configured:true,state:'ok',cached:true,persistent:true,rows:persisted.rows,ts:persisted.ts,cycle:persisted.cycle,universe:radar?.universe||12000,universeLabel:`${radar?.universe||'12.000+'} Tiingo/IEX`,scanned:persisted.rows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar?.ts||0,candidates:(radar?.rows||[]).slice(0,20),buyWeight:0},boats:tiingoDiscoveryMemo},version:APP_VERSION,note:'Server-Cache: autonomer Cron-Radar/Deep-Scan; PWA startet keinen Doppel-Scan.'};
+      const verifiedRadar=Array.isArray(persisted.meta?.verifiedRadar)?persisted.meta.verifiedRadar:[];
+      const verifiedBoats=Array.isArray(persisted.meta?.verifiedBoats)?persisted.meta.verifiedBoats:[];
+      return {configured:true,state:'ok',cached:true,persistent:true,rows:persisted.rows,ts:persisted.ts,cycle:persisted.cycle,universe:radar?.universe||12000,universeLabel:`${radar?.universe||'12.000+'} Tiingo/IEX`,scanned:persisted.rows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified',ts:persisted.ts||0,candidates:verifiedRadar,buyWeight:0},boats:{source:'Tiingo BOATS · verified',ts:persisted.ts||0,candidates:verifiedBoats,buyWeight:0}},version:APP_VERSION,note:'Server-Cache: autonomer Cron-Radar/Deep-Scan; PWA startet keinen Doppel-Scan. Nur verifizierte Common Stocks werden an die UI gereicht.'};
     }
     return {configured:true,state:'stale',cached:true,rows:stockMemo.rows||[],ts:stockMemo.ts||0,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:(stockMemo.rows||[]).length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:tiingoIexRadarMemo.ts,candidates:(tiingoIexRadarMemo.rows||[]).slice(0,20),buyWeight:0},boats:tiingoDiscoveryMemo},version:APP_VERSION,note:'Warte auf ersten serverseitigen Cron-Batch.'};
   }
@@ -2060,7 +2068,13 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
     // ETF/ETP-Gate jetzt auf der kleinen Kandidatenmenge und getrennt vom Bulk-Radar.
     radar={...radar,rows:await filterRadarToCommonStocks(env,radar.rows||[],20),source:'Tiingo IEX Whole-Market Radar · Common Stocks verified'};
   }catch(e){console.warn(JSON.stringify({event:'iex_market_radar_cache_failed',message:String(e?.message||e),ts:Date.now()}));}
-  const boats=await tiingoBoatsDiscovery(env,20,false);
+  let boats=await tiingoBoatsDiscovery(env,20,false);
+  try{
+    boats={...boats,rows:await filterRadarToCommonStocks(env,boats.rows||[],12),source:'Tiingo BOATS · Common Stocks verified'};
+  }catch(e){
+    console.warn(JSON.stringify({event:'boats_security_gate_failed',message:String(e?.message||e),ts:Date.now()}));
+    boats={...boats,rows:[]}; // fail-closed: keine unbestätigten BOATS-Instrumente in den Aktien-Deep-Scan
+  }
 
   const picked=new Set(), favPick=[], recheckPick=[], radarPick=[], boatsPick=[], explore=[];
   // Favoriten bleiben vertreten, blockieren aber nicht mehr die gesamte Queue.
@@ -2082,8 +2096,8 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       const row=await tiingoAnalyseOne(env,sym,inf.sector,comp,minCrv,fx);
       if(!row)return null;
       const rm=radarMap.get(sym),bm=boatsMap.get(sym);
-      if(rm) row.discovery={type:'iex-radar',...rm,buyWeight:0};
-      else if(bm) row.discovery={type:'boats',...bm,buyWeight:0};
+      if(rm){ row.discovery={type:'iex-radar',...rm,buyWeight:0}; row.securityVerified=rm.securityVerified===true; row.securityName=rm.securityName||row.name; }
+      else if(bm){ row.discovery={type:'boats',...bm,buyWeight:0}; row.securityVerified=bm.securityVerified===true; row.securityName=bm.securityName||row.name; }
       const q=Math.max(0,Math.min(10,Number(row.score)||0)),crv=Math.max(0,Number(row.netCRV)||0),rv=Math.max(0,Number(row.relVol)||0);
       row.preSignalMaturity=Math.round(Math.max(0,Math.min(100,q/8*50 + Math.min(1,crv/3)*25 + Math.min(1,rv/1.8)*15 + (rm?.speedPct>0.2?10:0))));
       row.whyNow=(rm?.reasons||[]).slice(0,3);
@@ -2091,11 +2105,20 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       return row;
     }catch(e){console.warn(JSON.stringify({event:'tiingo_stock_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));return null;}
   })).filter(Boolean);
-  const old=new Map(stockMemo.rows.map(r=>[r.symbol,r])); for(const r of fresh)old.set(r.symbol,r);
-  // Hohe Radar-/Setup-Relevanz oben halten; alte Titel bleiben als Cache sichtbar, Freshness-Gates bleiben unveraendert.
-  const rows=[...old.values()].sort((a,b)=>(Number(b.preSignalMaturity)||0)-(Number(a.preSignalMaturity)||0)||(Number(b.radarRank)||0)-(Number(a.radarRank)||0)||(Number(b.score)||0)-(Number(a.score)||0)).slice(0,100);
+  // Alte autonom entdeckte Kandidaten aus älteren/bekannt fehlerhaften Security-Gates
+  // nicht endlos mitschleppen. Nur lokaler Basiskatalog/Favoriten dürfen ohne
+  // erneute Discovery-Verifikation aus dem Cache fortbestehen.
+  const safeCarry=new Map();
+  const catalogSet=new Set(STOCK_SEARCH_CATALOG.map(x=>x[1]));
+  for(const r of stockMemo.rows||[]){
+    const sym=String(r?.symbol||'').toUpperCase();
+    if(catalogSet.has(sym)||favs.includes(sym)) safeCarry.set(sym,r);
+  }
+  for(const r of fresh)safeCarry.set(r.symbol,r);
+  // Hohe Radar-/Setup-Relevanz oben halten; Freshness-Gates bleiben unveraendert.
+  const rows=[...safeCarry.values()].sort((a,b)=>(Number(b.preSignalMaturity)||0)-(Number(a.preSignalMaturity)||0)||(Number(b.radarRank)||0)-(Number(a.radarRank)||0)||(Number(b.score)||0)-(Number(a.score)||0)).slice(0,100);
   stockMemo={ts:Date.now(),rows,cycle,sig}; setApiState('stocks',fresh.length?'ok':'stale',fresh.length?null:'Tiingo lieferte keine analysierbaren Bars');
-  await persistStockScan(env,sig,cycle,rows,{provider:'Tiingo IEX',fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol),queue:{favorites:favPick,recheck:recheckPick,radar:radarPick,boats:boatsPick,explore}});
+  await persistStockScan(env,sig,cycle,rows,{provider:'Tiingo IEX',fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol),queue:{favorites:favPick,recheck:recheckPick,radar:radarPick,boats:boatsPick,explore},verifiedRadar:(radar.rows||[]).slice(0,20),verifiedBoats:(boats.rows||[]).slice(0,12)});
   return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:radar.universe||12000,universeLabel:`${radar.universe||'12.000+'} Tiingo/IEX`,scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:phase,queue:{favorites:favPick.length,recheck:recheckPick.length,radar:radarPick.length,boats:boatsPick.length,explore:explore.length},discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar.ts,universe:radar.universe,candidates:(radar.rows||[]).slice(0,20),buyWeight:0},boats:{source:'Tiingo BOATS',ts:boats.ts,session:boats.session,candidates:(boats.rows||[]).slice(0,15),buyWeight:0}},version:APP_VERSION,note:'Tiingo Primary: Whole-Market IEX Radar + BOATS Discovery (beide 0 % BUY-Gewicht) -> adaptive 20er Deep-Scan-Queue -> IEX 5-Min Analyse. BUY-Gates unveraendert.'};
 }
 async function tiingoStockLookup(env,raw,comp,minCrv=3){
