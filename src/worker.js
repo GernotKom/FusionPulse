@@ -1830,8 +1830,9 @@ async function tiingoValidation(env,rawSymbols){
   try{const fx=await getTiingoFx(env);out.tests.fx={ok:Number.isFinite(fx)&&fx>0,usdPerEur:fx||null};}catch(e){out.tests.fx={ok:false,error:String(e.message||e)};}
   out.tests.history=[];
   for(const sym of symbols.slice(0,2)){try{const d=await tiingoIexSeries(env,sym);out.tests.history.push({symbol:sym,ok:d.values.length>=24,bars:d.values.length,latest:d.values[0]?.datetime||null,volumeKnown:d.values.some(x=>Number(x.volume)>0)});}catch(e){out.tests.history.push({symbol:sym,ok:false,error:String(e.message||e)});}}
-  out.state=out.tests.auth?.ok && out.tests.iexSnapshot?.ok && out.tests.history.every(x=>x.ok)?'ok':'partial';
-  out.safe=true;out.note='Validierung ist read-only und hat 0 % Einfluss auf BUY/Score. Erst nach erfolgreichem Test TIINGO_STOCKS_MODE=primary setzen.';
+  try{const b=await tiingoBoatsSnapshot(env,symbols.slice(0,2).join(','));const valid=(b.rows||[]).filter(r=>!r.error);out.tests.boats={ok:valid.length>0,count:valid.length,rows:valid.map(r=>({symbol:r.symbol||r.ticker,last:r.last??r.lastPrice??null,bid:r.bidPrice??r.bid??null,ask:r.askPrice??r.ask??null,timestamp:r.timestamp??r.quoteTimestamp??null}))};if(!valid.length&&b.rows?.some(r=>r.error))out.tests.boats.error=b.rows.map(r=>r.error).filter(Boolean).join(' | ');}catch(e){out.tests.boats={ok:false,error:String(e.message||e)};}
+  out.state=out.tests.auth?.ok && out.tests.iexSnapshot?.ok && out.tests.history.every(x=>x.ok&&x.volumeKnown) && out.tests.boats?.ok?'ok':'partial';
+  out.safe=true;out.note='Read-only-Test mit 0 % Einfluss auf BUY/Score. Token, IEX-Snapshot, 5-Minuten-Historie/Volumen und BOATS werden getrennt geprüft. Primary erst bei vollständigem Erfolg aktivieren.';
   return out;
 }
 async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols=[]){

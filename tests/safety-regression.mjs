@@ -44,7 +44,6 @@ assert.match(app,/v!=null && Number\.isFinite\(Number\(v\)\)/,'Detailfaktoren m�
 assert.match(app,/crowdMap\.delete\(sym\)/,'Crowd-Werte müssen vor einer neuen Abfrage invalidiert werden');
 assert.match(app,/\$\{eur\(eurVal, d\)\}.*\(\$\{usd\(usdVal, d\)\}\)/s,'Aktienkurse müssen EUR zuerst und USD in Klammern anzeigen');
 
-console.log('✓ FusionPulse safety regressions: OK');
 
 assert.match(app,/if \(data\.length === 1\)/,'Sparkline muss einen Einzelwert ohne Division durch 0 behandeln');
 assert.match(app,/const opportunityEligible=stockOpportunity\(r\)\.ready/,'Opportunity-Regel darf im Tonpfad nicht doppelt implementiert sein');
@@ -53,3 +52,13 @@ const index=fs.readFileSync(new URL('../public/index.html',import.meta.url),'utf
 assert.match(index,/id="regime" class="regime-btn fast-tip"/,'Risk-Regime muss schnellen Tooltip verwenden');
 assert.match(index,/id="miniTiingo" class="mini-dot busy fast-tip"/,'Tiingo-T muss schnellen Tooltip verwenden');
 assert.match(index,/class="hclock fast-tip"/,'Countdown muss schnellen Tooltip verwenden');
+
+// v3.1.7 UI/data guards
+assert.match(app, /OPPORTUNITY_MIN_NET_EUR\s*=\s*350/, 'Opportunity floor must remain explicit');
+assert.match(app, /BOATS \$\{mark\(boats\)\}/, 'Tiingo UI must report BOATS separately');
+const workerText=fs.readFileSync(new URL('../src/worker.js',import.meta.url),'utf8');
+assert.match(workerText, /out\.tests\.boats=/, 'Tiingo validation must test BOATS separately');
+assert.match(app, /UNTER ZONE = Kurs liegt noch unter/, 'Zone tooltip must explain below/in/above');
+assert.match(app, /Pullback: Der Kurs ist zuerst gestiegen/, 'Pullback tooltip must be novice-readable');
+
+console.log('✓ FusionPulse safety regressions: OK');

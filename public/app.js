@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.1.6 — Frontend
+   FusionPulse v3.1.7 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -17,7 +17,7 @@ const DEFAULTS = {
   equity: 5000, riskPct: 0.75, interval: 20000, deep: 20,
   sound: true, token: '', watch: 'BTC-EUR,ETH-EUR,SOL-EUR', minQ: 0, onlyZone: false,
   theme: 'dark', taxPct: 27.5, analysisMode: 'composite', coinCount: 12, stockCount: 12,
-  maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0, minNetProfitStock: 250, minTp2PctStock: 2.0,
+  maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0, minNetProfitStock: 350, minTp2PctStock: 2.0,
   mutedPairs: [], mutedStocks: [], favoritePairs: [], favoriteStocks: [], stockOrder: [], components: [...ALL_COMPONENTS], stockSound: true,
 };
 const storedSettings = (() => { try { return JSON.parse(localStorage.getItem('fp.settings') || '{}'); } catch { return {}; } })();
@@ -27,6 +27,8 @@ const S = { ...DEFAULTS, ...storedSettings };
 // therefore a separate conservative execution reserve is shown as an estimate.
 const STOCK_ORDER_FIXED_EUR = 10.75; // conservative v3.0.4 estimate for typical 5k–10k executions: 9.90 € flatex example + 0.85 € Tradegate min. external cost
 const STOCK_EXECUTION_FRICTION_PCT = 0.06; // estimated round-trip spread/slippage reserve, not a live Tradegate quote
+const OPPORTUNITY_MIN_NET_EUR = 350; // wirtschaftlich relevante Untergrenze bei ~10k Referenzeinsatz
+const OPPORTUNITY_HIGH_NET_EUR = 500; // priorisierte High-Opportunity, keine Erfolgswahrscheinlichkeit
 if (!Array.isArray(S.components) || !S.components.length) S.components = [...ALL_COMPONENTS];
 S.components = S.components.filter((c) => ALL_COMPONENTS.includes(c));
 if (!S.components.length) S.components = [...ALL_COMPONENTS];
@@ -197,7 +199,7 @@ function stockTradeability(r) {
   const currentPhase = stockMeta?.market?.key || r.marketPhase;
   const marketOk = !currentPhase || ['regular','opening'].includes(currentPhase);
   const ok = marketOk && tp2Pct >= Number(S.minTp2PctStock || 0)
-    && netProfit >= Number(S.minNetProfitStock || 0)
+    && netProfit >= Math.max(Number(S.minNetProfitStock || 0), OPPORTUNITY_MIN_NET_EUR)
     && netCrv >= Number(S.minCrvStock || 3);
   return { ok, tp2Pct, netProfit, netCrv, marketOk };
 }
@@ -228,7 +230,7 @@ function stockStrength(r) {
 function explainSetup(r) {
   if (/elliott/i.test(r.setup)) return 'Elliott-Wellen-Heuristik: bewertet Impuls- und Korrekturstruktur aus Swing-Extremen, Trendstaffelung und Fibonacci-nahem Rücksetzer. Keine subjektive Wellenbeschriftung, sondern eine Kennzahl von 0–10.';
   if (/squeeze|breakout/i.test(r.setup)) return 'Squeeze → Breakout: Die Handelsspanne war komprimiert und beginnt sich nach oben aufzulösen. Noch kein Kauf allein – Zonenlage, Kosten, Liquidität und CRV müssen ebenfalls passen.';
-  if (/pullback/i.test(r.setup)) return 'Pullback an VWAP/EMA21: Der Kurs kommt nach einer Bewegung an einen dynamischen Durchschnitt zurück. Interessant, wenn die Zone hält und die übrigen Filter bestätigen.';
+  if (/pullback/i.test(r.setup)) return 'Pullback: Der Kurs ist zuerst gestiegen und kommt danach ein Stück zurück. Das kann eine günstigere zweite Einstiegschance sein, wenn der Aufwärtstrend danach wieder bestätigt wird. Ein Pullback allein ist noch kein Kaufsignal.';
   if (/relative/i.test(r.setup)) return 'Relative Stärke: Der Coin entwickelt sich stärker als Bitcoin. Das ist ein Bestätigungsfaktor, kein eigenständiges Kaufsignal.';
   if (/reclaim/i.test(r.setup)) return 'Reclaim: Der Kurs erobert eine zuvor verlorene Referenz (VWAP) zurück. Zählt erst, wenn Volumen und kurzer Zeitrahmen mitziehen.';
   return 'Vom Scanner erkannte Setup-Art. Mouseover zeigt die Bedeutung; die Gesamtentscheidung berücksichtigt zusätzlich Kosten, Liquidität, Zonenlage und Risiko.';
@@ -541,13 +543,24 @@ function stockOpportunity(r){
   const sz=stockSizing(r), tr=stockTradeability(r), f=stockFreshness(r);
   const phase=stockMeta?.market?.key||r.marketPhase||'closed';
   const opportunityPhase=['premarket-early','premarket','opening','regular'].includes(phase);
+  const net=Number(sz?.planNet||0), crv=Number(sz?.planCrvAfterCosts||0), tp2=Number(tr.tp2Pct||0), score=Number(r.score||0);
+  const minNet=Math.max(Number(S.minNetProfitStock||0),OPPORTUNITY_MIN_NET_EUR);
   const reasons=[];
-  if(Number(r.score||0)>=8) reasons.push(`Score ${num(r.score,1)}/10`);
-  if(Number(sz?.planCrvAfterCosts||0)>=Number(S.minCrvStock||3)) reasons.push(`Netto-CRV ${num(sz.planCrvAfterCosts,1)}:1`);
-  if(Number(sz?.planNet||0)>=Number(S.minNetProfitStock||250)) reasons.push(`Plan netto ${eur(sz.planNet,0)}`);
+  if(score>=8) reasons.push(`Score ${num(score,1)}/10`);
+  if(crv>=Number(S.minCrvStock||3)) reasons.push(`Netto-CRV ${num(crv,1)}:1`);
+  if(net>=minNet) reasons.push(`Plan netto ${eur(net,0)}`);
   if(Number(r.relVol||0)>=1.5) reasons.push(`RVOL ${num(r.relVol,1)}×`);
-  const ready=r.light==='green'&&Number(r.score||0)>=8&&f.key==='live'&&opportunityPhase&&Number(sz?.planCrvAfterCosts||0)>=Number(S.minCrvStock||3)&&Number(sz?.planNet||0)>=Number(S.minNetProfitStock||250)&&Number(tr.tp2Pct||0)>=Number(S.minTp2PctStock||2);
-  return {ready,reasons:reasons.slice(0,3),distance:Math.max(0,8-Number(r.score||0))};
+  const ready=r.light==='green'&&score>=8&&f.key==='live'&&opportunityPhase&&crv>=Number(S.minCrvStock||3)&&net>=minNet&&tp2>=Number(S.minTp2PctStock||2);
+  const tier=ready?(net>=OPPORTUNITY_HIGH_NET_EUR?'high':'opportunity'):(net>0&&net<200?'ignore':'watch');
+  const label=tier==='high'?'HIGH OPPORTUNITY':tier==='opportunity'?'OPPORTUNITY':tier==='ignore'?'UNINTERESSANT':'NOCH KEINE OPPORTUNITY';
+  let why='';
+  if(net>0&&net<200) why=`Nur ${eur(net,0)} realistisches Netto-Potenzial – für Aufwand/Risiko zu klein.`;
+  else if(net>0&&net<minNet) why=`Netto-Potenzial ${eur(net,0)} liegt unter der Opportunity-Schwelle ${eur(minNet,0)}.`;
+  else if(crv<Number(S.minCrvStock||3)) why=`CRV ${num(crv,1)}:1 liegt unter ${num(S.minCrvStock||3,1)}:1.`;
+  else if(tp2<Number(S.minTp2PctStock||2)) why=`Verbleibender realistischer Kursweg bis TP2 nur ${num(tp2,1)}%.`;
+  else if(f.key!=='live') why='Daten sind nicht live – keine Opportunity-Freigabe.';
+  else if(!opportunityPhase) why='Marktphase ist für eine Opportunity-Freigabe nicht aktiv.';
+  return {ready,tier,label,why,reasons:reasons.slice(0,3),distance:Math.max(0,8-score),minNet};
 }
 
 function stockSizing(r) {
@@ -936,7 +949,7 @@ function renderStocks() {
   const topBox=$('#stockFocus'), top=shown.find(r=>r.symbol===focusStock)||shown[0];
   if(topBox){if(!top)topBox.innerHTML=search?`<div class="stockfocus-empty">Keine geladene Aktie passend zu „${esc(search)}“. Enter oder 🔎 lädt den Titel direkt.</div>`:(filter==='favorites'?'<div class="stockfocus-empty">Noch keine Aktien-Favoriten. Mit ☆ neben einem Titel hinzufügen.</div>':'');else{
     const sz=stockSizing(top), buy=stockLevel(top)===3, tr=stockTradeability(top), opp=stockOpportunity(top); const struct=Number(top.structurePct||0);
-    topBox.innerHTML=`<div class="stockfocus-card ${top.light}${buy?' buy':''}"><div class="sf-focus-main"><div class="sf-title"><div><small>TOP-AKTIE AKTUELL</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button>${esc(top.name)} <b>${esc(top.symbol)}</b></h3><span>${esc(top.sector)} · Score ${num(top.score,1)} · CRV ${num(sz?.planCrvAfterCosts ?? top.netCRV,1)}:1 netto</span></div><strong>${buy?'🟢 BUY':VERDICT_ICON[top.light]+' '+esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${stockPx(top.priceUsd,top.priceEur)}</b></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span>Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Größerer Elliott/Fibonacci-Zielraum aus der aktuellen Struktur. Ergänzende Projektion, kein unmittelbares Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}${crowdConfirmGauge(top)}</span></div><div class="opportunity-watch ${opp.ready?'ready':'waiting'}"><b>${buy?'BUY FREIGEGEBEN':opp.ready?'OPPORTUNITY':'NOCH KEINE OPPORTUNITY'}</b><span>${opp.reasons.length?esc(opp.reasons.join(' · ')):'Wartet auf Qualität, CRV, Kursweg und wirtschaftlich relevantes Gewinnpotenzial.'}</span></div><div class="intraday-chart" title="Intraday-Kursverlauf aus den bereits geladenen 5-Minuten-Bars; normiert, keine zusätzliche API-Abfrage."><span>Intraday · 5 Min</span>${spark(top.intraday,420,76)}</div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<div class="stock-interpret"><b>Was hat sich geändert? · Interpretation</b><span>${esc(stockInterpretation(top))}</span><small>Crowd/Search kann vor Marktvolumen anschlagen · 0 % BUY-Gewicht</small></div><small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} BUY: Score ≥8, CRV ≥${num(S.minCrvStock,1)}:1, Plan netto ≥${eur(S.minNetProfitStock,0)}, Kursweg ≥${num(S.minTp2PctStock,1)}%.</small></div>${stockLadder(top)}</div>`;
+    topBox.innerHTML=`<div class="stockfocus-card ${top.light}${buy?' buy':''}"><div class="sf-focus-main"><div class="sf-title"><div><small>TOP-AKTIE AKTUELL</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button>${esc(top.name)} <b>${esc(top.symbol)}</b></h3><span>${esc(top.sector)} · Score ${num(top.score,1)} · CRV ${num(sz?.planCrvAfterCosts ?? top.netCRV,1)}:1 netto</span></div><strong>${buy?'🟢 BUY':VERDICT_ICON[top.light]+' '+esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${stockPx(top.priceUsd,top.priceEur)}</b></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span>Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Größerer Elliott/Fibonacci-Zielraum aus der aktuellen Struktur. Ergänzende Projektion, kein unmittelbares Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}${crowdConfirmGauge(top)}</span></div><div class="opportunity-watch ${opp.ready?'ready':'waiting'}"><b>${buy?'BUY FREIGEGEBEN':opp.label}</b><span>${opp.why?esc(opp.why):(opp.reasons.length?esc(opp.reasons.join(' · ')):'Wartet auf Qualität, CRV, Kursweg und wirtschaftlich relevantes Gewinnpotenzial.')}</span></div><div class="intraday-chart" title="Intraday-Kursverlauf aus den bereits geladenen 5-Minuten-Bars; normiert, keine zusätzliche API-Abfrage."><span>Intraday · 5 Min</span>${spark(top.intraday,420,76)}</div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<div class="stock-interpret"><b>Was hat sich geändert? · Interpretation</b><span>${esc(stockInterpretation(top))}</span><small>Crowd/Search kann vor Marktvolumen anschlagen · 0 % BUY-Gewicht</small></div><small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} BUY: Score ≥8, CRV ≥${num(S.minCrvStock,1)}:1, Plan netto ≥${eur(Math.max(Number(S.minNetProfitStock||0),OPPORTUNITY_MIN_NET_EUR),0)}, Kursweg ≥${num(S.minTp2PctStock,1)}%.</small></div>${stockLadder(top)}</div>`;
     topBox.querySelector('[data-favstock]')?.addEventListener('click',e=>toggleStockFavorite(top.symbol,e));
   }}
   const groups=new Map();
@@ -1407,9 +1420,9 @@ function rowHtml(r) {
   return `
     <span class="c-sym" title="Coin und aktueller Signalstatus. Pulsierender grüner Rahmen = konkrete Kauf-Freigabe nach den definierten Regeln."><button class="favbtn ${isFavPair(r.pair) ? 'on' : ''}" data-favpair="${r.pair}" title="${isFavPair(r.pair) ? 'Aus Favoriten entfernen' : 'Zu Favoriten hinzufügen'}">${isFavPair(r.pair) ? '★' : '☆'}</button><b class="dotc ${r.light}"></b>${sym(r.pair)}${d}<button class="rowmute" data-mute="${r.pair}" title="Ton nur für ${sym(r.pair)} ${isMuted(r.pair) ? 'einschalten' : 'ausschalten'}">${isMuted(r.pair) ? '🔇' : '🔊'}</button></span>
     <span class="c-spk" title="Kurzfristiger Kursverlauf der letzten Bars, normiert">${spark(r.spark)}${statusBand(r)}<small class="trendarr">${trendArrow(r)}</small></span>
-    <span class="c-set" title="${esc(explainSetup(r))}">${r.orderType === 'stop' ? '▲' : '▼'} ${esc(r.setup)}</span>
+    <span class="c-set fast-tip" data-tip="${esc(explainSetup(r))}">${r.orderType === 'stop' ? '▲' : '▼'} ${esc(r.setup)}</span>
     <span class="c-age ta" title="Reife: ${r._streak || 1} aufeinanderfolgende Scans haben diesen Signalzustand bestätigt. Die Farbintensität steigt mit der Bestätigungsdauer.">${mins(r._age)}<i class="stk">${r._streak || 1}×</i></span>
-    <span class="c-zone" title="Zonenlage: zeigt, wo der aktuelle Preis relativ zu Stop und Einstiegszone liegt. Grün markiert einen Preis innerhalb der Einstiegszone.">${zoneBar(r)}<small class="zone-label ${zoneState(r).key}">${zoneState(r).label}</small></span>
+    <span class="c-zone fast-tip" data-tip="Zonenlage: UNTER ZONE = Kurs liegt noch unter dem geplanten Einstiegsbereich, warten. IN ZONE = Kurs ist im interessanten Einstiegsbereich, aber noch kein automatisches BUY. ÜBER ZONE = Einstieg ist bereits davongelaufen; nicht hinterherlaufen, auf Pullback/Retest oder neue Zone warten.">${zoneBar(r)}<small class="zone-label ${zoneState(r).key}">${zoneState(r).label}</small></span>
     <span class="c-r ta ${r.netCRV >= S.minCrvCoin ? 'positive' : r.netCRV >= Math.max(1, S.minCrvCoin-.5) ? 'wait' : 'negative'}" title="Netto-CRV nach Kosten: erwarteter Ertrag pro Einheit Risiko. Höher ist besser.">${r.netCRV.toFixed(1)}</span>
     <span class="c-sz ta" title="Bei echter BUY-Freigabe: empfohlene Kaufsumme. Sonst nur potenzielle Größe bzw. kein Trade.">${ready ? (s ? eur(s.notional,0) : '–') : (r.light==='yellow'||r.light==='green' ? (s ? 'pot. '+eur(s.notional,0) : '–') : '—')}</span>
     <span class="c-qh ta" title="Q = Setup-Qualität (0–10), H = Handelbarkeit/Ausführbarkeit (0–10)."><b>${r.quality}</b><i>·</i>${r.executability}</span>
@@ -1762,20 +1775,23 @@ if ('serviceWorker' in navigator) {
 
 async function runTiingoUiTest(){
   const out=$('#tiingoTestState'),btn=$('#tiingoTest'); if(!out||!btn)return;
-  btn.disabled=true; out.className=''; out.textContent='Prüfe Token…';
+  btn.disabled=true; out.className=''; out.textContent='Prüfe Token, IEX, Intraday und BOATS…';
   const qp=()=>{const q=new URLSearchParams();if(S.token)q.set('t',S.token);return q;};
   try{
-    const sr=await fetch('/api/tiingo/status?'+qp(),{cache:'no-store'}), sd=await sr.json();
-    if(sr.status===401){out.className='err';out.textContent='FusionPulse-Zugriff nicht autorisiert – zuerst APP_TOKEN in Einstellungen speichern.';setMiniStatus('#miniTiingo','error',out.textContent);return;}
-    if(!sd.authenticated){out.className='err';out.textContent='Tiingo-Token nicht authentifiziert: '+(sd.error||sd.state||'Fehler');setMiniStatus('#miniTiingo','error',out.textContent);return;}
-    out.className='ok';out.textContent='Token OK · prüfe Free/IEX-Daten…';setMiniStatus('#miniTiingo','ok','Tiingo Token authentifiziert');
-    const q=qp();q.set('symbols','AAPL,NVDA,TSLA'); const vr=await fetch('/api/tiingo/validate?'+q,{cache:'no-store'}), vd=await vr.json();
-    const snap=vd?.tests?.iexSnapshot, hist=vd?.tests?.history||[]; const histOk=hist.some(x=>x.ok);
-    if(snap?.ok && histOk){out.className='ok';out.textContent=`Token + IEX funktionieren · Snapshot ${snap.count||0} Titel · Historie OK. Power kann danach gezielt aktiviert werden.`;setMiniStatus('#miniTiingo','ok',out.textContent);}
-    else {out.className='warn';out.textContent='Token OK, aber IEX/Intraday noch nicht vollständig verfügbar. Das spricht für Tarif/Entitlement – noch keine Primary-Umschaltung.';setMiniStatus('#miniTiingo','warn',out.textContent);}
+    const q=qp();q.set('symbols','AAPL,NVDA,TSLA');
+    const vr=await fetch('/api/tiingo/validate?'+q,{cache:'no-store'}), vd=await vr.json();
+    if(vr.status===401){out.className='err';out.textContent='FusionPulse-Zugriff nicht autorisiert – zuerst APP_TOKEN in Einstellungen speichern.';setMiniStatus('#miniTiingo','error',out.textContent);return;}
+    const t=vd?.tests||{}, hist=t.history||[];
+    const token=!!t.auth?.ok, iex=!!t.iexSnapshot?.ok, intraday=hist.length>0&&hist.every(x=>x.ok), volume=hist.length>0&&hist.every(x=>x.volumeKnown), boats=!!t.boats?.ok;
+    const mark=x=>x?'✅':'❌';
+    const detail=`TOKEN ${mark(token)} · IEX ${mark(iex)} · 5-MIN ${mark(intraday)} · VOLUMEN ${mark(volume)} · BOATS ${mark(boats)}`;
+    if(token&&iex&&intraday&&volume&&boats){out.className='ok';out.textContent=detail+' · Power + BOATS vollständig nutzbar. Primary kann als nächster Schritt aktiviert werden.';setMiniStatus('#miniTiingo','ok',out.textContent);}
+    else if(token){out.className='warn';out.textContent=detail+' · '+(vd?.note||'Mindestens ein Datenbaustein ist noch nicht verfügbar; noch keine Primary-Umschaltung.');setMiniStatus('#miniTiingo','warn',out.textContent);}
+    else {out.className='err';out.textContent=detail+' · '+(t.auth?.error||'Tiingo-Token nicht authentifiziert.');setMiniStatus('#miniTiingo','error',out.textContent);}
   }catch(e){out.className='err';out.textContent='Tiingo-Test fehlgeschlagen: '+(e?.message||e);setMiniStatus('#miniTiingo','error',out.textContent);}
   finally{btn.disabled=false;}
 }
+
 $('#tiingoTest')?.addEventListener('click',runTiingoUiTest);
 $('#regime')?.addEventListener('click',()=>{const el=$('#regimeExplain');if(!el)return;const opening=el.classList.contains('hidden');el.classList.toggle('hidden',!opening);el.innerHTML=regimeExplanation();$('#regime').setAttribute('aria-expanded',opening?'true':'false');});
 document.addEventListener('click',(e)=>{if(!e.target.closest('.hstat')){const el=$('#regimeExplain');if(el&&!el.classList.contains('hidden')){el.classList.add('hidden');$('#regime')?.setAttribute('aria-expanded','false');}}});

@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.1.6</title>
+<title>FusionPulse 3.1.7</title>
 </head>
 <body>
 
@@ -104,7 +104,7 @@
 <main>
   <div class="thead">
     <span title="Coin und Signalstatus. Grün pulsierend = Kauf-Freigabe; Lautsprecher schaltet nur diesen Coin stumm.">Coin</span><span title="Kurzfristiger Verlauf">Verlauf</span><span title="Erkannte Setup-Art; Mouseover erklärt das Muster.">Setup</span>
-    <span class="ta" title="Reife = Anzahl aufeinanderfolgender Scans, die denselben Signalzustand bestätigt haben, und die Dauer dieses Zustands.">Reife</span><span title="Position des aktuellen Preises relativ zu Stop und Einstiegszone.">Zonenlage</span>
+    <span class="ta" title="Reife = Anzahl aufeinanderfolgender Scans, die denselben Signalzustand bestätigt haben, und die Dauer dieses Zustands.">Reife</span><span title="Zonenlage: UNTER ZONE = noch unter dem geplanten Einstieg; IN ZONE = im interessanten Einstiegsbereich, aber noch kein automatisches BUY; ÜBER ZONE = Einstieg davongelaufen, nicht hinterherlaufen.">Zonenlage</span>
     <span class="ta" title="Netto-CRV: erwarteter Ertrag im Verhältnis zum Risiko nach geschätzten Kosten">CRV</span><span class="ta" title="Kaufsumme in Euro: risikobasiert berechnet und zusätzlich durch deinen Maximalbetrag sowie ggf. Marktliquidität begrenzt">Kaufsumme</span><span class="ta" title="Q = Setup-Qualität, H = Handelbarkeit/Ausführbarkeit">Q·H</span>
   </div>
   <section id="list"></section>
@@ -202,7 +202,7 @@
     <label class="row" title="Volumen: z-Score der jüngsten Umsätze gegen ein disjunktes Basisfenster."><input type="checkbox" data-comp="volume"> Volumen (z-Score)</label>
     <label class="row" title="Orderbuch: Imbalance, Tiefe, Spread und Slippage. Abschalten spart pro Scan bis zu 10 API-Abfragen."><input type="checkbox" data-comp="book"> Orderbuch / Imbalance</label>
     <label class="row" title="Breakout/Squeeze: Kompression der Bollinger-Bandbreite und Auflösung nach oben."><input type="checkbox" data-comp="squeeze"> Breakout / Squeeze</label>
-    <label class="row" title="Pullback: Rücksetzer an VWAP oder EMA21 innerhalb eines übergeordneten Trends."><input type="checkbox" data-comp="pullback"> Pullback</label>
+    <label class="row" title="Pullback: Der Kurs ist zuerst gestiegen und kommt danach ein Stück zurück. Das kann eine günstigere zweite Einstiegschance sein, wenn der Aufwärtstrend wieder bestätigt wird. Ein Pullback allein ist noch kein Kaufsignal."><input type="checkbox" data-comp="pullback"> Pullback</label>
     <label class="row" title="Elliott-Wellen-Heuristik: Impuls-/Korrekturstruktur aus Swing-Extremen, Trendstaffelung und Fibonacci-nahem Rücksetzer."><input type="checkbox" data-comp="elliott"> Elliott-Wellen</label>
   </div>
   <div class="actions compact">
