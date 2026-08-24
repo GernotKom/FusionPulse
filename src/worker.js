@@ -1,7 +1,7 @@
 import { APP_VERSION } from './version.js';
 
 /* ============================================================================
-   FusionPulse v3.0.7 — Cloudflare Worker
+   FusionPulse v3.0.8 — Cloudflare Worker
    Momentum- & Einstiegszonen-Scanner für Bitpanda Fusion (EUR-Paare)
 
    Design-Prinzipien:
@@ -1152,27 +1152,32 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3) {
     return { configured: false, state: 'nokey', rows: [], universe: STOCK_UNIVERSE.length,
              note: 'TWELVE_API_KEY fehlt', quota: quotaView(), version: APP_VERSION };
   }
-  const slot = Math.floor(Date.now() / (5 * 60_000));
-  const cycle = slot % 3;
+  // v3.0.8: vier Teilgruppen (6/5/5/5). Der automatische Radar-Scan lässt
+  // bewusst mindestens zwei Twelve-Data-Credits pro Minute als Reserve für
+  // FX/Health bzw. eine manuelle Suche. Während eines Cold Starts fordert die
+  // UI die Gruppen minutenweise nacheinander an; danach bleibt der konservative
+  // 5-Minuten-Poll bestehen.
+  const minuteSlot = Math.floor(Date.now() / 60_000);
+  const cycle = minuteSlot % 4;
   const sig = [...(comp instanceof Set ? comp : new Set(ALL_ON))].sort().join('.') + '|' + minCrv;
-  if (!force && stockMemo.rows.length && stockMemo.cycle === cycle && stockMemo.sig === sig && Date.now() - stockMemo.ts < 5 * 60_000) {
+  if (!force && stockMemo.rows.length && stockMemo.cycle === cycle && stockMemo.sig === sig && Date.now() - stockMemo.ts < 55_000) {
     return { configured: true, state: 'ok', cached: true,
              rows: stockMemo.rows, ts: stockMemo.ts, cycle, universe: STOCK_UNIVERSE.length,
              scanned: stockMemo.rows.length, quota: quotaView(), version: APP_VERSION,
              market: usMarketPhase(new Date(), null), note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs' };
   }
 
-  const batch = STOCK_UNIVERSE.filter((_, i) => i % 3 === cycle);
+  const batch = STOCK_UNIVERSE.filter((_, i) => i % 4 === cycle);
   const syms = batch.map((x) => x[1]);
   const fx = await getFx(env.TWELVE_API_KEY);
-  let j;
-  try {
-    j = await twelveJSON('time_series', { symbol: syms.join(','), interval:'5min', outputsize:'40', prepost:'true', format:'JSON' }, env.TWELVE_API_KEY, syms.length);
-  } catch (e) {
-    const m=String(e?.message||e||'');
-    if(!/pre.?post|extended|plan|subscription|access|permission/i.test(m)) throw e;
-    j = await twelveJSON('time_series', { symbol: syms.join(','), interval:'5min', outputsize:'40', format:'JSON' }, env.TWELVE_API_KEY, syms.length);
-  }
+  // v3.0.8 QUOTA-HOTFIX: Der automatische Teil-Batch verwendet bewusst keine
+  // prepost-Abfrage. Auf Tarifen ohne Extended Hours kostete v3.0.7 zuerst 7
+  // Credits fuer prepost=true und danach nochmals 7 Credits fuer den Fallback.
+  // Premarket/Opening wird bereits separat und passend ueber Alpaca geliefert.
+  // Einzel-Lookups duerfen weiterhin prepost testen (max. 1+1 Credit).
+  const j = await twelveJSON('time_series', {
+    symbol: syms.join(','), interval:'5min', outputsize:'40', format:'JSON'
+  }, env.TWELVE_API_KEY, syms.length);
 
   const fresh = [];
   for (const [sector, symbol] of batch) {
@@ -1207,7 +1212,7 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3) {
 
 
 /* ========================================================================
-   Opening Momentum — Alpaca Market Data (v3.0.7)
+   Opening Momentum — Alpaca Market Data (v3.0.8)
    Free/Test: feed=iex. IEX ist eine einzelne US-Börse und handelt nur ca.
    08:00–17:00 ET; deshalb ist 04:00–08:00 ET im Free-Tarif NICHT vollständig
    live abdeckbar. Die UI kennzeichnet das ausdrücklich. Keine Orders.
@@ -1584,7 +1589,7 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
       await persistApiState(env,'alpaca',state,e?.message,now); cronLog('alpaca',state,e?.message);
     }
   }
-  if(env.TWELVE_API_KEY && Math.floor(now/60_000)%15===1){
+  if(env.TWELVE_API_KEY && Math.floor(now/60_000)%30===1){
     try{
       const st=await stockSnapshot(env,false,new Set(ALL_ON),3);
       await d1StoreRows(env,st.rows||[],{source:'Twelve Data',assetType:'stock',now});

@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.0.7 — Frontend
+   FusionPulse v3.0.8 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -838,7 +838,10 @@ async function scanStocks(force = false) {
     const data = await res.json();
     if(req!==stockReqSeq)return;
     stockMeta = data;
-    if (data.rows) stockRows = data.rows;
+    // Bei 429 oder einem frischen Worker-Isolate niemals bereits sichtbare
+    // Aktien durch ein leeres Fallback-Array ersetzen. Letzte gute Werte bleiben
+    // sichtbar, bis eine echte neue Teilgruppe angekommen ist.
+    if (Array.isArray(data.rows) && data.rows.length) stockRows = data.rows;
     if (!res.ok) {
       setSys('#sysStocks', data.state || 'error', data.error);
       renderQuota(data.quota);
@@ -897,8 +900,19 @@ async function scanOpeningMomentum(force = false) {
   } catch (e) { openingMeta = { state:'error', phaseLabel:'Alpaca nicht erreichbar', phaseHelp:String(e.message||e) }; renderOpeningPanel(); }
 }
 function setStockPoll() {
-  clearInterval(stockTimer);
-  stockTimer = setInterval(() => { if (document.visibilityState === 'visible') scanStocks(false); }, 5 * 60_000);
+  clearTimeout(stockTimer);
+  const scheduleStockPoll = () => {
+    const universe = Number(stockMeta?.universe || 21);
+    // Nach Cold Start vier quota-sichere Teilgruppen in getrennten Minuten auffuellen.
+    // Sobald das Universum vorhanden ist, wieder konservativ alle 5 Minuten.
+    const incomplete = stockRows.length < universe;
+    const delay = incomplete ? 65_000 : 5 * 60_000;
+    stockTimer = setTimeout(async () => {
+      if (document.visibilityState === 'visible') await scanStocks(false);
+      scheduleStockPoll();
+    }, delay);
+  };
+  scheduleStockPoll();
   clearInterval(openingTimer);
   openingTimer = setInterval(() => { if (document.visibilityState === 'visible') scanOpeningMomentum(false); }, 60_000);
   clearInterval(experimentalTimer); experimentalTimer=setInterval(()=>{if(document.visibilityState==='visible')loadExperimental(false);},15*60_000);

@@ -1,4 +1,4 @@
-# FusionPulse v3.0.7
+# FusionPulse v3.0.8
 
 Momentum- und Einstiegszonen-Scanner für Bitpanda Fusion (EUR) plus US-Aktienradar über Twelve Data und Alpaca. Läuft als PWA auf einem Cloudflare Worker. Keine Order-Automatik — FusionPulse liefert Trade-Pläne, ausgeführt wird manuell.
 
@@ -6,10 +6,15 @@ Momentum- und Einstiegszonen-Scanner für Bitpanda Fusion (EUR) plus US-Aktienra
 
 - **Krypto:** Bitpanda Fusion; serverseitiger Cron-Scan, die PWA muss dafür nicht geöffnet sein.
 - **Aktien-Radar und Suche:** Twelve Data. Extended Hours werden genutzt, sofern der Tarif sie freigibt; sonst sauberer Intraday-Fallback.
-- **Opening/Premarket Momentum:** Alpaca. Standard `ALPACA_FEED=iex`; SIP ist vorbereitet, aber nicht erforderlich für v3.0.7.
+- **Opening/Premarket Momentum:** Alpaca. Standard `ALPACA_FEED=iex`; SIP ist vorbereitet, aber nicht erforderlich für v3.0.8.
 - **Learning/Health:** Cloudflare D1. Aktien-Learning trennt Twelve Data jetzt explizit von Alpaca Opening-Daten.
 
-## Neu in v3.0.7
+## Neu in v3.0.8
+
+- **Twelve-Data-Quota-Hotfix:** Der automatische Aktienradar-Scan nutzt vier Teilgruppen (6/5/5/5) statt das Minutenkontingent auszureizen.
+- **Kein doppelter Extended-Hours-Batch:** Der automatische Radar-Scan nutzt Regular-Hours-Daten; Premarket/Opening bleibt bei Alpaca. Dadurch entfällt die teure `prepost=true`-Fallback-Doppelabfrage.
+- **429 ohne leeres Radar:** Bei Rate-Limit bleiben bereits geladene Aktien in der PWA sichtbar; der nächste Teilscan setzt automatisch fort.
+- **Manuelle Aktiensuche unverändert:** Die funktionierende Suche bleibt bewusst unangetastet.
 
 - Aktiensuche bei kurzen/generischen Eingaben korrigiert; eindeutige Ticker bleiben lokal, sonst wird die Live-Suche genutzt.
 - Twelve-Data-`prepost`-Fallback verdoppelt bei Credit-/API-Key-Problemen keine Requests mehr.
@@ -23,7 +28,7 @@ Momentum- und Einstiegszonen-Scanner für Bitpanda Fusion (EUR) plus US-Aktienra
 - Unbekannte Messwerte bleiben `null`/„n. v.“ statt als scheinbar gemessene 0 oder 1 ausgegeben zu werden.
 - Krypto-Warmcache-Schreiblast gedrosselt; doppelte Krypto-Analyse ohne Orderbuch vermieden.
 - Countdown oben ist jetzt als **„Nächster 5m-Takt“** beschriftet.
-- Versionsführung vollständig auf v3.0.7 synchronisiert.
+- Versionsführung vollständig auf v3.0.8 synchronisiert.
 
 ## Versionierung
 
