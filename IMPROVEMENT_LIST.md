@@ -21,3 +21,11 @@
 - Historical Twin: echte qualifizierte Fallzahl transparent darstellen und Unabhängigkeit/Qualität der Fälle weiter prüfen.
 - Shooting/Short-Radar als getrennten Workflow prüfen; keine Vermischung mit Long-BUY-Logik.
 - Countdown 5-Minuten-Takt vs. 2-Minuten-Deep-Scan eindeutig trennen.
+
+
+## v3.2.8 umgesetzt / weiter beobachten
+- P0 Browser-Cache-Leak geschlossen: alte Discovery-Aktien aus `fp.stockLastRows.v1` dürfen nicht mehr zurück in „Alle Aktien“, Heatmap oder Top-Aktie gelangen; Cache auf v2 migriert und Legacy-Key bereinigt.
+- Last-Row-Fallback nur noch für echte Favoriten/Depot-Titel; Discovery ist serverautoritativ.
+- Frontend-Defensivfilter für offensichtliche ETF/ETN/ETP/Leveraged/Inverse-Produkte zusätzlich zum serverseitigen Common-Stock-Gate.
+- Live prüfen: CRWU/AXTU müssen nach Reload verschwinden und dürfen auch nach mehreren Scanzyklen nicht wiederkehren.
+- Shooting/Short-Radar bleibt als eigener, Elliott-basierter Workflow offen; nicht in Long-BUY-Logik mischen.

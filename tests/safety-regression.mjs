@@ -97,3 +97,10 @@ assert.match(workerText,/available:eligible\.length/,'Historical Twin must expos
 assert.match(workerText,/function stripKnownNonCommon\(rows\)/,'Cached stock rows must have a hard non-common sanitizer');
 assert.match(workerText,/const cleanMemo=stripKnownNonCommon\(stockMemo\.rows\)/,'Fast memo return must sanitize cached ETF\/ETP rows');
 assert.match(workerText,/const staleRows=stripKnownNonCommon\(stockMemo\.rows\|\|\[\]\)/,'Stale return must sanitize cached ETF\/ETP rows');
+
+
+// v3.2.8 browser cache regression: stale Discovery must never bypass the Worker ETF gate.
+assert.match(app,/const STOCK_LAST_ROWS_KEY='fp\.stockLastRows\.v2'/,'Browser stock cache must use a new generation');
+assert.match(app,/localStorage\.removeItem\(LEGACY_STOCK_LAST_ROWS_KEY\)/,'Legacy v1 stock cache must be purged');
+assert.match(app,/if\(!isFavStock\(sym\) \|\| !old \|\| !uiStockRowAllowed\(old\) \|\| m\.has\(sym\)\) continue/,'Cached fallback rows must be restricted to favorites and sanitized');
+assert.match(app,/UI_NON_COMMON_SYMBOL_DENY=new Set\(\['CRWU','AXTU'\]\)/,'Frontend defensive deny-set must block known polluted ETF symbols');

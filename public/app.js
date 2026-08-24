@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.2.7 — Frontend
+   FusionPulse v3.2.8 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -37,15 +37,33 @@ const saveSettings = () => { try { localStorage.setItem('fp.settings', JSON.stri
 let rows = [];
 let meta = {};
 let stockRows = [];
-const STOCK_LAST_ROWS_KEY='fp.stockLastRows.v1';
-let stockLastRows=(()=>{try{const rows=JSON.parse(localStorage.getItem(STOCK_LAST_ROWS_KEY)||'[]');return new Map((Array.isArray(rows)?rows:[]).filter(r=>r?.symbol).map(r=>[String(r.symbol).toUpperCase(),r]));}catch{return new Map();}})();
-function rememberStockRows(rows){for(const r of rows||[])if(r?.symbol)stockLastRows.set(String(r.symbol).toUpperCase(),r);const vals=[...stockLastRows.values()].slice(-120);stockLastRows=new Map(vals.map(r=>[String(r.symbol).toUpperCase(),r]));try{localStorage.setItem(STOCK_LAST_ROWS_KEY,JSON.stringify(vals));}catch{}}
+// v3.2.8: Browser-Stock-Cache is versioned separately from the server cache.
+// v1 could resurrect old Discovery ETFs after the Worker had already rejected them.
+const LEGACY_STOCK_LAST_ROWS_KEY='fp.stockLastRows.v1';
+const STOCK_LAST_ROWS_KEY='fp.stockLastRows.v2';
+const UI_NON_COMMON_SYMBOL_DENY=new Set(['CRWU','AXTU']);
+const UI_NON_COMMON_EQUITY_RE=/(?:\bETF\b|\bETN\b|\bETP\b|EXCHANGE[- ]TRADED|DAILY TARGET|\b2X\b|\b3X\b|ULTRA(?:PRO)?\b|\bINVERSE\b|LEVERAGED\b|DIREXION|PROSHARES|T-?REX|GRANITESHARES|DEFIANCE|ROUNDHILL|YIELDMAX|REX SHARES|TRADR|\bWARRANTS?\b|\bUNITS?\b|\bRIGHTS?\b|PREFERRED)/i;
+function uiStockRowAllowed(r){
+  const sym=String(r?.symbol||'').trim().toUpperCase();
+  if(!sym || UI_NON_COMMON_SYMBOL_DENY.has(sym)) return false;
+  if(r?.assetType && String(r.assetType).toLowerCase()!=='stock') return false;
+  return !UI_NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''} ${r?.description||''}`);
+}
+try{localStorage.removeItem(LEGACY_STOCK_LAST_ROWS_KEY);}catch{}
+let stockLastRows=(()=>{try{const cached=JSON.parse(localStorage.getItem(STOCK_LAST_ROWS_KEY)||'[]');return new Map((Array.isArray(cached)?cached:[]).filter(r=>r?.symbol&&uiStockRowAllowed(r)).map(r=>[String(r.symbol).toUpperCase(),r]));}catch{return new Map();}})();
+function rememberStockRows(rows){
+  for(const r of rows||[])if(r?.symbol&&uiStockRowAllowed(r))stockLastRows.set(String(r.symbol).toUpperCase(),r);
+  const vals=[...stockLastRows.values()].filter(uiStockRowAllowed).slice(-120);
+  stockLastRows=new Map(vals.map(r=>[String(r.symbol).toUpperCase(),r]));
+  try{localStorage.setItem(STOCK_LAST_ROWS_KEY,JSON.stringify(vals));}catch{}
+}
 function mergeFavoriteRows(rows){
-  const m=new Map((rows||[]).filter(r=>r?.symbol).map(r=>[String(r.symbol).toUpperCase(),r]));
-  // v3.0.11: gestaffelte Quota-Scans dürfen weder "Alle Aktien" noch das Depot leeren.
-  // Letzte bekannte Rows bleiben sichtbar und werden beim nächsten Slot ersetzt.
+  // Current server rows are authoritative for Discovery. A frontend last-row cache
+  // may only fill a missing FAVORITE/DEPOT row; it must never repopulate old Discovery.
+  const m=new Map((rows||[]).filter(r=>r?.symbol&&uiStockRowAllowed(r)).map(r=>[String(r.symbol).toUpperCase(),r]));
   for(const [sym,old] of stockLastRows){
-    if(old && !m.has(sym)) m.set(sym,{...old,_staleLast:true,_staleFavorite:isFavStock(sym)});
+    if(!isFavStock(sym) || !old || !uiStockRowAllowed(old) || m.has(sym)) continue;
+    m.set(sym,{...old,_staleLast:true,_staleFavorite:true});
   }
   return [...m.values()];
 }
