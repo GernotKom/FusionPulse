@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.1.4 — Frontend
+   FusionPulse v3.1.5 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -400,6 +400,9 @@ async function loadHealth() {
     const cryptoHealth = health.status?.crypto?.state || 'unknown';
     setSys('#sysCrypto', cryptoHealth, health.status?.crypto?.message);
     setSys('#sysStocks', health.status?.stocks?.state || 'unknown', health.status?.stocks?.message);
+    setMiniStatus('#miniCrypto',cryptoHealth,'Krypto: '+(health.status?.crypto?.message||cryptoHealth));
+    setMiniStatus('#miniStocks',health.status?.stocks?.state||'unknown','Aktien: '+(health.status?.stocks?.message||health.stocksProvider||'unbekannt'));
+    setMiniStatus('#miniTiingo',health.tiingoConfigured?'ok':'warn',health.tiingoConfigured?'Tiingo-Token ist im Worker hinterlegt · Modus '+(health.tiingoStocksMode||'shadow'):'Tiingo-Token fehlt');
     // Der große Krypto-Status darf nicht dauerhaft "Verbinde…" anzeigen, wenn
     // der Worker den Bitpanda-Provider bereits als erreichbar bestätigt hat.
     const mainStatus = $('#status');
@@ -411,6 +414,7 @@ async function loadHealth() {
   } catch {
     setSys('#sysCrypto', 'error', 'Worker nicht erreichbar');
     setSys('#sysStocks', 'error', 'Worker nicht erreichbar');
+    setMiniStatus('#miniCrypto','error','Worker nicht erreichbar'); setMiniStatus('#miniStocks','error','Worker nicht erreichbar'); setMiniStatus('#miniTiingo','error','Worker nicht erreichbar');
   }
 }
 
@@ -1456,7 +1460,8 @@ function render() {
   const reg = $('#regime');
   reg.textContent = `${meta.marketRegime || '–'} · ${Math.round((meta.breadth || 0) * 100)} % über VWAP`;
   reg.title = 'Marktregime: Risk-On = breite positive Marktstruktur, Risk-Off = breite Schwäche. Der Prozentwert zeigt den Anteil der gescannten Coins oberhalb ihres volumengewichteten Durchschnittspreises (VWAP). Das ist ein Marktfilter, kein eigenständiges Kaufsignal.';
-  reg.className = (meta.marketRegime || '').toLowerCase().replace('-', '');
+  reg.className = 'regime-btn '+(meta.marketRegime || '').toLowerCase().replace('-', '');
+  const rex=$('#regimeExplain'); if(rex && !rex.classList.contains('hidden')) rex.innerHTML=regimeExplanation();
 
   renderFocus();
   renderMap();
@@ -1742,6 +1747,27 @@ if ('serviceWorker' in navigator) {
     if (reloaded) return; reloaded = true; location.reload();
   });
 }
+
+async function runTiingoUiTest(){
+  const out=$('#tiingoTestState'),btn=$('#tiingoTest'); if(!out||!btn)return;
+  btn.disabled=true; out.className=''; out.textContent='Prüfe Token…';
+  const qp=()=>{const q=new URLSearchParams();if(S.token)q.set('t',S.token);return q;};
+  try{
+    const sr=await fetch('/api/tiingo/status?'+qp(),{cache:'no-store'}), sd=await sr.json();
+    if(sr.status===401){out.className='err';out.textContent='FusionPulse-Zugriff nicht autorisiert – zuerst APP_TOKEN in Einstellungen speichern.';setMiniStatus('#miniTiingo','error',out.textContent);return;}
+    if(!sd.authenticated){out.className='err';out.textContent='Tiingo-Token nicht authentifiziert: '+(sd.error||sd.state||'Fehler');setMiniStatus('#miniTiingo','error',out.textContent);return;}
+    out.className='ok';out.textContent='Token OK · prüfe Free/IEX-Daten…';setMiniStatus('#miniTiingo','ok','Tiingo Token authentifiziert');
+    const q=qp();q.set('symbols','AAPL,NVDA,TSLA'); const vr=await fetch('/api/tiingo/validate?'+q,{cache:'no-store'}), vd=await vr.json();
+    const snap=vd?.tests?.iexSnapshot, hist=vd?.tests?.history||[]; const histOk=hist.some(x=>x.ok);
+    if(snap?.ok && histOk){out.className='ok';out.textContent=`Token + IEX funktionieren · Snapshot ${snap.count||0} Titel · Historie OK. Power kann danach gezielt aktiviert werden.`;setMiniStatus('#miniTiingo','ok',out.textContent);}
+    else {out.className='warn';out.textContent='Token OK, aber IEX/Intraday noch nicht vollständig verfügbar. Das spricht für Tarif/Entitlement – noch keine Primary-Umschaltung.';setMiniStatus('#miniTiingo','warn',out.textContent);}
+  }catch(e){out.className='err';out.textContent='Tiingo-Test fehlgeschlagen: '+(e?.message||e);setMiniStatus('#miniTiingo','error',out.textContent);}
+  finally{btn.disabled=false;}
+}
+$('#tiingoTest')?.addEventListener('click',runTiingoUiTest);
+$('#regime')?.addEventListener('click',()=>{const el=$('#regimeExplain');if(!el)return;const opening=el.classList.contains('hidden');el.classList.toggle('hidden',!opening);el.innerHTML=regimeExplanation();$('#regime').setAttribute('aria-expanded',opening?'true':'false');});
+document.addEventListener('click',(e)=>{if(!e.target.closest('.hstat')){const el=$('#regimeExplain');if(el&&!el.classList.contains('hidden')){el.classList.add('hidden');$('#regime')?.setAttribute('aria-expanded','false');}}});
+renderSignalBanner();
 
 loadHealth();
 scan(false);
