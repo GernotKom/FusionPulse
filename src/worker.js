@@ -1954,7 +1954,7 @@ async function radarEquityMeta(env,symbol){
   if(!sym)return {ts:Date.now(),tradableStock:false,name:String(symbol||''),assetType:'invalid',reason:'Ungueltiges Symbolformat'};
   const mem=nonEquityMemo.get(sym);
   if(mem&&Date.now()-mem.ts<7*86400_000)return mem;
-  const key=`security_meta:v326:${sym}`;
+  const key=`security_meta:v327:${sym}`;
   if(env?.DB){
     try{await ensureD1Schema(env);const r=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind(key).first();if(r?.value&&Date.now()-Number(r.updated_ts||0)<7*86400_000){const v=JSON.parse(r.value);const out={ts:Number(r.updated_ts||Date.now()),...v};nonEquityMemo.set(sym,out);return out;}}catch{}
   }
@@ -1982,6 +1982,15 @@ async function filterRadarToCommonStocks(env,rows,limit){
 
 function verifiedCommonOnly(rows){
   return (rows||[]).filter(r=>r?.securityVerified===true && !NON_COMMON_SYMBOL_DENY.has(String(r?.symbol||'').toUpperCase()) && !NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''}`));
+}
+// v3.2.7 P0: Never let a previously cached/persisted non-common instrument leak
+// back into the visible stock scanner. This is deliberately exclusion-only.
+function stripKnownNonCommon(rows){
+  return (rows||[]).filter(r=>{
+    const sym=String(r?.symbol||'').trim().toUpperCase();
+    if(!sym || NON_COMMON_SYMBOL_DENY.has(sym)) return false;
+    return !NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''} ${r?.description||''}`);
+  });
 }
 function openingGainers(rows,limit=12){
   return verifiedCommonOnly(rows).filter(r=>Number(r.movePct)>=2).sort((a,b)=>(Number(b.movePct)||0)-(Number(a.movePct)||0)).slice(0,limit);
@@ -2055,7 +2064,13 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   const minuteSlot=Math.floor(Date.now()/60_000), favs=[...new Set((favoriteSymbols||[]).map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,30);
   const cycle=Math.floor(minuteSlot/2); // Deep Scan alle 2 Minuten - Browser und Cron verwenden denselben Zyklus.
   const sig=[...(comp instanceof Set?comp:new Set(ALL_ON))].sort().join('.')+'|'+minCrv+'|tiingo-primary-radar|fav:'+favs.join('.');
-  if(!force&&stockMemo.rows.length&&stockMemo.cycle===cycle&&stockMemo.sig===sig&&Date.now()-stockMemo.ts<110_000) return {configured:true,state:'ok',cached:true,rows:stockMemo.rows,ts:stockMemo.ts,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:stockMemo.rows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:tiingoIexRadarMemo.ts,candidates:(tiingoIexRadarMemo.rows||[]).slice(0,20),buyWeight:0},boats:tiingoDiscoveryMemo},version:APP_VERSION};
+  if(!force&&stockMemo.rows.length&&stockMemo.cycle===cycle&&stockMemo.sig===sig&&Date.now()-stockMemo.ts<110_000){
+    const cleanMemo=stripKnownNonCommon(stockMemo.rows);
+    if(cleanMemo.length!==stockMemo.rows.length) stockMemo={...stockMemo,rows:cleanMemo};
+    const memoRadar=verifiedCommonOnly(tiingoIexRadarMemo.rows||[]).slice(0,20);
+    const memoBoats=verifiedCommonOnly(tiingoDiscoveryMemo.rows||[]).slice(0,15);
+    return {configured:true,state:'ok',cached:true,rows:cleanMemo,ts:stockMemo.ts,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:cleanMemo.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified cache only',ts:tiingoIexRadarMemo.ts,candidates:memoRadar,gainers:openingGainers(memoRadar),buyWeight:0},boats:{...tiingoDiscoveryMemo,rows:memoBoats,candidates:memoBoats,buyWeight:0}},version:APP_VERSION};
+  }
 
   // Browser/PWA darf den autonomen Markt-Scan nicht mehr selbst starten.
   // Sie liest den letzten Cron-Batch. Das verhindert parallele CPU-Spitzen bei
@@ -2072,7 +2087,8 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       const radar=await readPersistedIexRadar(env);
       return {configured:true,state:'ok',cached:true,persistent:true,rows:cleanRows,ts:persisted.ts,cycle:persisted.cycle,universe:radar?.universe||12000,universeLabel:`${radar?.universe||'12.000+'} Tiingo/IEX`,scanned:cleanRows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified',ts:persisted.ts||0,candidates:verifiedRadar,gainers:openingGainers(verifiedRadar),buyWeight:0},boats:{source:'Tiingo BOATS · verified',ts:persisted.ts||0,candidates:verifiedBoats,buyWeight:0}},version:APP_VERSION,note:'Server-Cache: autonomer Cron-Radar/Deep-Scan; PWA startet keinen Doppel-Scan. Nur verifizierte Common Stocks werden an die UI gereicht.'};
     }
-    return {configured:true,state:'stale',cached:true,rows:stockMemo.rows||[],ts:stockMemo.ts||0,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:(stockMemo.rows||[]).length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:tiingoIexRadarMemo.ts,candidates:(tiingoIexRadarMemo.rows||[]).slice(0,20),buyWeight:0},boats:tiingoDiscoveryMemo},version:APP_VERSION,note:'Warte auf ersten serverseitigen Cron-Batch.'};
+    const staleRows=stripKnownNonCommon(stockMemo.rows||[]);
+    return {configured:true,state:'stale',cached:true,rows:staleRows,ts:stockMemo.ts||0,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:staleRows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:tiingoIexRadarMemo.ts,candidates:(tiingoIexRadarMemo.rows||[]).slice(0,20),buyWeight:0},boats:tiingoDiscoveryMemo},version:APP_VERSION,note:'Warte auf ersten serverseitigen Cron-Batch.'};
   }
 
   const phase=usMarketPhase(new Date(),'iex');

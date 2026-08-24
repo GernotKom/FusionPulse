@@ -1,10 +1,8 @@
-# FusionPulse v3.2.6
+# FusionPulse Release Notes — v3.2.7
 
-Stabilitäts- und Discovery-Release mit Elliott-first Aktienauswahl.
-
-- Härtet den Common-Stock-Gate gegen ETFs/ETPs/Leveraged-Produkte und invalidiert alte Security-Cache-Klassifikationen.
-- Bereinigt persistierte Discovery-Ergebnisse beim Auslesen, damit alte ETF-Kandidaten nicht weiter als Top-Aktie erscheinen.
-- Neue Market-Gainer-Discovery für verifizierte Common Stocks; kein direktes BUY-Gewicht.
-- Deep-Scan-Priorisierung gewichtet Elliott-Struktur stärker; Momentum/Volumen/CRV bleiben Bestätigung.
-- Historical Twin zeigt verwendete vs. verfügbare qualifizierte Fälle transparenter.
-- BUY-/CRV-/Freshness-Sicherheitsgates unverändert.
+## P0 ETF cache-leak hotfix
+- Fixes a cache-path regression in v3.2.6: an early in-memory return could bypass the new common-stock gate and re-display old ETF/ETP candidates such as CRWU/AXTU.
+- All fast/memo/stale stock-return paths now strip known non-common instruments before they reach the UI.
+- Discovery data exposed from the memo path is restricted to already verified common stocks.
+- Security metadata cache generation bumped to `v327` so stale classifications cannot be reused.
+- Elliott-first discovery, Market Gainers, BUY gates, CRV rules and data-quality safety rules are unchanged.

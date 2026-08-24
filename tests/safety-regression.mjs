@@ -90,5 +90,10 @@ console.log('✓ FusionPulse safety regressions: OK');
 // v3.2.6 Elliott-first / Market-Gainer guards
 assert.match(workerText,/const ell=Number\(r\?\.elliott\)\|\|0/,'Deep recheck ranking must explicitly include Elliott structure');
 assert.match(workerText,/openingGainers\(radar\.rows\|\|\[\],6\)/,'Verified market gainers must receive dedicated discovery slots');
-assert.match(workerText,/security_meta:v326:/,'Security cache generation must be invalidated for v3.2.6');
+assert.match(workerText,/security_meta:v327:/,'Security cache generation must be invalidated for v3.2.6');
 assert.match(workerText,/available:eligible\.length/,'Historical Twin must expose the qualified pool in addition to capped n');
+
+// v3.2.7 ETF cache-leak regression guard
+assert.match(workerText,/function stripKnownNonCommon\(rows\)/,'Cached stock rows must have a hard non-common sanitizer');
+assert.match(workerText,/const cleanMemo=stripKnownNonCommon\(stockMemo\.rows\)/,'Fast memo return must sanitize cached ETF\/ETP rows');
+assert.match(workerText,/const staleRows=stripKnownNonCommon\(stockMemo\.rows\|\|\[\]\)/,'Stale return must sanitize cached ETF\/ETP rows');
