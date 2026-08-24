@@ -882,7 +882,10 @@ const STOCK_SEARCH_CATALOG = [
   ['Finanzen','HOOD','Robinhood Markets, Inc.'], ['Finanzen','SOFI','SoFi Technologies, Inc.'],
   ['Technologie','CRWD','CrowdStrike Holdings, Inc.'], ['Technologie','SNOW','Snowflake Inc.'],
   ['Konsum','UBER','Uber Technologies, Inc.'], ['Industrie','RKLB','Rocket Lab USA, Inc.'],
-  ['Rohstoffe','AEM','Agnico Eagle Mines Limited'], ['Rohstoffe','AG','First Majestic Silver Corp.']
+  ['Rohstoffe','AEM','Agnico Eagle Mines Limited'], ['Rohstoffe','AG','First Majestic Silver Corp.'],
+  ['Gesundheit','ABSI','Absci Corporation'], ['Energie','CEG','Constellation Energy Corporation'],
+  ['Gesundheit','UTHR','United Therapeutics Corporation'], ['Technologie','VEEV','Veeva Systems Inc.'],
+  ['Gesundheit','SDGR','Schrödinger, Inc.']
 ];
 const STOCK_SEARCH_BY_SYMBOL = new Map(STOCK_SEARCH_CATALOG.map(([sector, symbol, name]) => [symbol, { sector, symbol, name }]));
 function resolveStockQuery(raw) {

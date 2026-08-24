@@ -39,7 +39,11 @@ patch('public/sw.js', /const APP_VERSION = '[^']*';/, `const APP_VERSION = '${ve
 // 4) Browser-Tab
 patch('public/index.html', /<title>FusionPulse [^<]*<\/title>/, `<title>FusionPulse ${version}</title>`);
 
-// 5) Cloudflare-Variable (nur Diagnose; der Code-Konstante wird der Vorzug gegeben)
+// 5) Dokumentation / Quellkopf
+patch('README.md', /^# FusionPulse v[^\n]*/m, `# FusionPulse v${version}`);
+patch('public/app.js', /FusionPulse v\d+\.\d+\.\d+ — Frontend/, `FusionPulse v${version} — Frontend`);
+
+// 6) Cloudflare-Variable (nur Diagnose; der Code-Konstante wird der Vorzug gegeben)
 patch('wrangler.jsonc', /"APP_VERSION":\s*"[^"]*"/, `"APP_VERSION": "${version}"`);
 
 console.log(`✓ FusionPulse-Version überall auf ${version} gesetzt`);

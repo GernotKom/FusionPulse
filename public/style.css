@@ -577,3 +577,12 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 .stock-interpret{margin-top:10px;padding:10px 12px;border:1px solid currentColor;border-radius:9px;display:grid;gap:4px;opacity:.92}.stock-interpret span{line-height:1.35}.stock-interpret small{opacity:.7}
 
 .stock-updated{display:block;opacity:.66;font-size:10px;margin-top:3px}.crowd-confirm{margin-left:4px}.crowd-confirm .crowd-gauge{filter:saturate(.85)}
+
+/* v3.0.11 signal origin + compact favourites */
+.signal-banner{position:sticky;top:0;z-index:120;display:flex;gap:7px;align-items:center;padding:6px 10px;background:color-mix(in srgb,var(--panel) 94%,transparent);border-bottom:1px solid var(--line);overflow-x:auto}
+.signal-banner.hidden{display:none}.signal-chip{flex:0 0 auto;border:1px solid var(--line);border-radius:9px;padding:5px 9px;background:var(--panel2);color:var(--fg);text-align:left;animation:signalFlash 1.1s ease-in-out 2}.signal-chip b{display:block;font-size:11px}.signal-chip span{font-size:9px;color:var(--dim)}
+@keyframes signalFlash{50%{box-shadow:0 0 0 2px #fff9,0 0 18px #fff7;background:color-mix(in srgb,var(--panel2) 55%,white)}}
+.row.signal-hot,.stockrow.signal-hot{position:relative}.row.signal-hot:after,.stockrow.signal-hot:after{content:"";position:absolute;right:0;top:4px;bottom:4px;width:4px;border-radius:4px;background:#fff;box-shadow:0 0 10px #fff,0 0 18px #fff8;animation:signalStrip 1.2s ease-in-out 3}
+@keyframes signalStrip{50%{opacity:.25}}
+.flat-favorites{grid-column:1/-1}.flat-favorites .stockrow{max-width:none}
+.stockrow .sr-name{display:flex;flex-direction:column}.stockrow .sr-name b{font-size:12px}.stockrow .sr-name small{font-size:10px}
