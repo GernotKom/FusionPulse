@@ -1829,10 +1829,21 @@ async function tiingoValidation(env,rawSymbols){
   try{const snaps=await tiingoIexSnapshot(env,symbols.join(','));out.tests.iexSnapshot={ok:snaps.length>0,count:snaps.length,rows:snaps.map(x=>({ticker:x.ticker,timestamp:x.timestamp,last:x.last,tngoLast:x.tngoLast,volume:x.volume}))};}catch(e){out.tests.iexSnapshot={ok:false,error:String(e.message||e)};}
   try{const fx=await getTiingoFx(env);out.tests.fx={ok:Number.isFinite(fx)&&fx>0,usdPerEur:fx||null};}catch(e){out.tests.fx={ok:false,error:String(e.message||e)};}
   out.tests.history=[];
-  for(const sym of symbols.slice(0,2)){try{const d=await tiingoIexSeries(env,sym);out.tests.history.push({symbol:sym,ok:d.values.length>=24,bars:d.values.length,latest:d.values[0]?.datetime||null,volumeKnown:d.values.some(x=>Number(x.volume)>0)});}catch(e){out.tests.history.push({symbol:sym,ok:false,error:String(e.message||e)});}}
+  for(const sym of symbols.slice(0,2)){
+    try{
+      const d=await tiingoIexSeries(env,sym), vals=d.values||[], latest=vals[0]?.datetime||null, latestMs=latest?Date.parse(latest):NaN;
+      const ohlcKnown=vals.length>0 && vals.slice(0,Math.min(3,vals.length)).every(x=>[x.open,x.high,x.low,x.close].every(v=>Number.isFinite(Number(v))));
+      const ageMinutes=Number.isFinite(latestMs)?Math.max(0,Math.round((Date.now()-latestMs)/60000)):null;
+      // Verwendbarkeit statt willkuerlicher Mindestzahl: wenige aktuelle Bars sind fuer einen Live-Test ausreichend.
+      // Die Analyse selbst entscheidet spaeter anhand ihrer benoetigten Historie, ob ein Titel tief genug analysierbar ist.
+      const usable=vals.length>=2 && ohlcKnown && Number.isFinite(latestMs);
+      out.tests.history.push({symbol:sym,ok:usable,usable,bars:vals.length,latest,ageMinutes,ohlcKnown,volumeKnown:vals.some(x=>Number(x.volume)>0)});
+    }catch(e){out.tests.history.push({symbol:sym,ok:false,usable:false,error:String(e.message||e)});}
+  }
   try{const b=await tiingoBoatsSnapshot(env,symbols.slice(0,2).join(','));const valid=(b.rows||[]).filter(r=>!r.error);out.tests.boats={ok:valid.length>0,count:valid.length,rows:valid.map(r=>({symbol:r.symbol||r.ticker,last:r.last??r.lastPrice??null,bid:r.bidPrice??r.bid??null,ask:r.askPrice??r.ask??null,timestamp:r.timestamp??r.quoteTimestamp??null}))};if(!valid.length&&b.rows?.some(r=>r.error))out.tests.boats.error=b.rows.map(r=>r.error).filter(Boolean).join(' | ');}catch(e){out.tests.boats={ok:false,error:String(e.message||e)};}
-  out.state=out.tests.auth?.ok && out.tests.iexSnapshot?.ok && out.tests.history.every(x=>x.ok&&x.volumeKnown) && out.tests.boats?.ok?'ok':'partial';
-  out.safe=true;out.note='Read-only-Test mit 0 % Einfluss auf BUY/Score. Token, IEX-Snapshot, 5-Minuten-Historie/Volumen und BOATS werden getrennt geprüft. Primary erst bei vollständigem Erfolg aktivieren.';
+  out.readyForPrimary=!!(out.tests.auth?.ok && out.tests.iexSnapshot?.ok && out.tests.history.length>0 && out.tests.history.every(x=>x.usable&&x.volumeKnown) && out.tests.boats?.ok);
+  out.state=out.readyForPrimary?'ok':'partial';
+  out.safe=true;out.note='Read-only-Test mit 0 % Einfluss auf BUY/Score. 5-MIN wird nach echter Verwendbarkeit (Bars, OHLC, Zeitstempel) statt nach einer starren Anzahl von 24 Bars bewertet. Primary bleibt bis zur ausdruecklichen Umschaltung im Shadow-Modus.';
   return out;
 }
 async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols=[]){

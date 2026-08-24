@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.1.7 — Frontend
+   FusionPulse v3.1.8 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1782,11 +1782,13 @@ async function runTiingoUiTest(){
     const vr=await fetch('/api/tiingo/validate?'+q,{cache:'no-store'}), vd=await vr.json();
     if(vr.status===401){out.className='err';out.textContent='FusionPulse-Zugriff nicht autorisiert – zuerst APP_TOKEN in Einstellungen speichern.';setMiniStatus('#miniTiingo','error',out.textContent);return;}
     const t=vd?.tests||{}, hist=t.history||[];
-    const token=!!t.auth?.ok, iex=!!t.iexSnapshot?.ok, intraday=hist.length>0&&hist.every(x=>x.ok), volume=hist.length>0&&hist.every(x=>x.volumeKnown), boats=!!t.boats?.ok;
+    const token=!!t.auth?.ok, iex=!!t.iexSnapshot?.ok, intraday=hist.length>0&&hist.every(x=>x.usable??x.ok), volume=hist.length>0&&hist.every(x=>x.volumeKnown), boats=!!t.boats?.ok;
     const mark=x=>x?'✅':'❌';
     const detail=`TOKEN ${mark(token)} · IEX ${mark(iex)} · 5-MIN ${mark(intraday)} · VOLUMEN ${mark(volume)} · BOATS ${mark(boats)}`;
-    if(token&&iex&&intraday&&volume&&boats){out.className='ok';out.textContent=detail+' · Power + BOATS vollständig nutzbar. Primary kann als nächster Schritt aktiviert werden.';setMiniStatus('#miniTiingo','ok',out.textContent);}
-    else if(token){out.className='warn';out.textContent=detail+' · '+(vd?.note||'Mindestens ein Datenbaustein ist noch nicht verfügbar; noch keine Primary-Umschaltung.');setMiniStatus('#miniTiingo','warn',out.textContent);}
+    const histDetail=hist.map(x=>`${x.symbol}: ${Number(x.bars||0)} Bars${x.ageMinutes!=null?` · letzter Bar vor ${x.ageMinutes} min`:''}${x.error?` · ${x.error}`:''}`).join(' | ');
+    const suffix=histDetail?` · ${histDetail}`:'';
+    if(vd?.readyForPrimary){out.className='ok';out.textContent=detail+' · Power + BOATS technisch vollständig nutzbar. Shadow bleibt aktiv, bis Primary bewusst freigegeben wird.'+suffix;setMiniStatus('#miniTiingo','ok',out.textContent);}
+    else if(token){out.className='warn';out.textContent=detail+' · '+(vd?.note||'Mindestens ein Datenbaustein ist noch nicht verfügbar; noch keine Primary-Umschaltung.')+suffix;setMiniStatus('#miniTiingo','warn',out.textContent);}
     else {out.className='err';out.textContent=detail+' · '+(t.auth?.error||'Tiingo-Token nicht authentifiziert.');setMiniStatus('#miniTiingo','error',out.textContent);}
   }catch(e){out.className='err';out.textContent='Tiingo-Test fehlgeschlagen: '+(e?.message||e);setMiniStatus('#miniTiingo','error',out.textContent);}
   finally{btn.disabled=false;}

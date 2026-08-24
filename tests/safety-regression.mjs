@@ -58,6 +58,9 @@ assert.match(app, /OPPORTUNITY_MIN_NET_EUR\s*=\s*350/, 'Opportunity floor must r
 assert.match(app, /BOATS \$\{mark\(boats\)\}/, 'Tiingo UI must report BOATS separately');
 const workerText=fs.readFileSync(new URL('../src/worker.js',import.meta.url),'utf8');
 assert.match(workerText, /out\.tests\.boats=/, 'Tiingo validation must test BOATS separately');
+assert.doesNotMatch(workerText, /d\.values\.length>=24/, 'Tiingo 5-min validation must not use the arbitrary 24-bar gate');
+assert.match(workerText, /const usable=vals\.length>=2 && ohlcKnown/, 'Tiingo 5-min validation must test actual bar usability');
+assert.match(app, /letzter Bar vor/, 'Tiingo UI must expose bar count/freshness for diagnosis');
 assert.match(app, /UNTER ZONE = Kurs liegt noch unter/, 'Zone tooltip must explain below/in/above');
 assert.match(app, /Pullback: Der Kurs ist zuerst gestiegen/, 'Pullback tooltip must be novice-readable');
 
