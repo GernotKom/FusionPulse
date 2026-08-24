@@ -1,7 +1,7 @@
 import { APP_VERSION } from './version.js';
 
 /* ============================================================================
-   FusionPulse v3.0.0 — Cloudflare Worker
+   FusionPulse v3.0.7 — Cloudflare Worker
    Momentum- & Einstiegszonen-Scanner für Bitpanda Fusion (EUR-Paare)
 
    Design-Prinzipien:
@@ -26,7 +26,7 @@ const CFG = {
   DEFAULT_FEE: 0.0015,    // Fallback-Taker-Fee falls /account nicht lesbar
 };
 
-/* ------------------------------------------------- Analyse-Komponenten v2.5.1
+/* ------------------------------------------------- Analyse-Komponenten v3.0.7
    Jede Komponente ist einzeln abschaltbar. Wichtig: eine abgeschaltete
    Komponente darf NICHT als "negativ ausgefallen" in den Score eingehen.
    Deshalb wird nicht mit 0 multipliziert, sondern das Gewicht aus der Summe
@@ -100,7 +100,7 @@ function toCandles(raw) {
       t: num(c.timestamp) * (num(c.timestamp) > 1e11 ? 0.001 : 1), // Doku: Sekunden
       o: num(c.open), h: num(c.high), l: num(c.low), c: num(c.close), v: num(c.volume),
     }))
-    .filter((c) => c.c > 0)
+    .filter((c) => c.c > 0 && c.t > 0)
     .sort((a, b) => a.t - b.t);
 }
 
@@ -347,7 +347,7 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
   const flushLeg = ret(10) < -1.6 * atrPct;               // vorheriger Abverkauf
   const reclaimLeg = ret(3) > 0.5 * atrPct;               // aktuelle Gegenbewegung
 
-  // v2.5.1: Ein Muster wird nur noch erkannt, wenn seine Komponente aktiv ist.
+  // v3.0.7: Ein Muster wird nur noch erkannt, wenn seine Komponente aktiv ist.
   // Abgeschaltete Volumenprüfung heißt "nicht geprüft", nicht "nicht erfüllt".
   const cVol = on.has('volume');
   const cEma = on.has('ema21');
@@ -452,7 +452,7 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
     setupFit = clamp(elliott);
   }
 
-  // --- Scores (v2.5.1: gewichteter Mittelwert über AKTIVE Komponenten) ------
+  // --- Scores (v3.0.7: gewichteter Mittelwert über AKTIVE Komponenten) ------
   const quality = clamp(weighted([
     [null,       setupFit,            0.30],
     ['mtf',      mtf,                 0.21],
@@ -493,7 +493,7 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
   if (mode === 'elliott') { modeScore = elliott; modeQuality = elliott; }
   else if (mode === 'momentum') { modeScore = clamp(momentum*.38 + volumeAcceleration*.34 + compression*.18 + relativeStrength*.10); modeQuality = modeScore; }
   else if (mode === 'trend') { modeScore = clamp(mtf*.38 + trendQuality*.30 + setupFit*.22 + (aboveVwap?10:3)*.10); modeQuality = modeScore; }
-  else if (mode === 'micro') { modeScore = clamp(liquidity*.40 + bookScore*.32 + spreadScore*.18 + Math.min(10,costRatio*2)*.10); modeQuality = modeScore; }
+  else if (mode === 'micro') { modeScore = clamp(weighted([[null,liquidity,.40],['book',bookScore,.32],['book',spreadScore,.18],[null,Math.min(10,costRatio*2),.10]], on)); modeQuality = modeScore; }
 
 
   // --- Ampel ---------------------------------------------------------------
@@ -518,7 +518,7 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
   if (!bookKnown) blockers.push('Orderbuch ungeprüft');
   if (exhaustion >= 7) blockers.push('überdehnt');
   if (setupFit < 7) blockers.push('kein klares Setup');
-  if (modeScore < 7.4) blockers.push(`Score ${r1(modeScore)}`);
+  if (modeScore < 7.0) blockers.push(`Score ${r1(modeScore)}`);
 
   // Sparkline: letzte 48 Closes normalisiert 0..100
   const sp = cl.slice(-48);
@@ -532,7 +532,7 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
     // Faktoren
     momentum: r1(momentum), volumeAcceleration: r1(volumeAcceleration),
     ret15: r2(ret15), ret60: r2(ret60), relVol: relVol == null ? null : r2(relVol),
-    relativeStrength: r1(relativeStrength), compression: r1(compression),
+    relativeStrength: relativeStrength == null ? null : r1(relativeStrength), compression: r1(compression),
     trendQuality: r1(trendQuality), mtf: r1(mtf), bookScore: r1(bookScore),
     exhaustion: r1(exhaustion), liquidity: r1(liquidity), elliott: r1(elliott),
     // Preise
@@ -628,9 +628,11 @@ async function runScan(key, opts = {}) {
   });
 
   // Finale Analyse mit Orderbuch, wo vorhanden
+  const preByPair = new Map(pre.map((r) => [r.pair, r]));
   const rows = chosen.map((p) => {
     const cs = candleMap.get(p);
     if (!cs || cs.length < 60) return null;
+    if (!bookMap.has(p)) return preByPair.get(p) || null;
     return analyse({ pair: p, c5: cs, btc5: p === 'BTC-EUR' ? null : btc5, book: bookMap.get(p) || null, fee, mode, comp, minCrv });
   }).filter(Boolean);
 
@@ -754,12 +756,61 @@ function snapSig(opts) {
   ].join('|');
 }
 
+// Persistenter Warm-Start für die PWA. Nach einem Worker-Deploy ist der
+// In-Memory-Cache leer, der Cloudflare-Cron läuft aber unabhängig von der PWA.
+// Der letzte vollständige Scan wird daher zusätzlich in D1/fp_meta abgelegt.
+let lastCryptoPersistTs = 0;
+async function persistCryptoScan(env, sig, data) {
+  if (!env?.DB || !data?.rows?.length) return;
+  if (Date.now() - lastCryptoPersistTs < 60_000) return;
+  lastCryptoPersistTs = Date.now();
+  try {
+    await ensureD1Schema(env);
+    const payload = safeJson({ ts: Date.now(), sig, data });
+    await env.DB.prepare(
+      `INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`
+    ).bind('crypto_scan:last', payload, Date.now()).run();
+  } catch (e) {
+    console.warn(JSON.stringify({ event:'fusionpulse_crypto_cache_write_failed', message:String(e?.message||e), ts:Date.now() }));
+  }
+}
+async function readPersistedCryptoScan(env, sig) {
+  if (!env?.DB) return null;
+  try {
+    await ensureD1Schema(env);
+    const row = await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind('crypto_scan:last').first();
+    if (!row?.value) return null;
+    const p = JSON.parse(row.value);
+    const data = p?.data;
+    const ts = Number(p?.ts || row.updated_ts || data?.ts || 0);
+    if (!data?.rows?.length || !ts || Date.now() - ts > 20*60_000) return null;
+    // Exakte Einstellungen bevorzugen. Ein abweichender letzter Cron-Scan ist
+    // trotzdem besser als minutenlang gar keine Coins; er wird als warmStart
+    // markiert und beim nächsten normalen Scan ersetzt.
+    return { ...data, ts: data.ts || ts, cached:true, persistent:true, warmStart:p?.sig !== sig };
+  } catch (e) {
+    console.warn(JSON.stringify({ event:'fusionpulse_crypto_cache_read_failed', message:String(e?.message||e), ts:Date.now() }));
+    return null;
+  }
+}
+
 async function getSnapshot(env, opts, force) {
   const sig = snapSig(opts);
   const fresh = memo.sig === sig && Date.now() - memo.ts < CFG.TTL_MS;
   if (!force && fresh && memo.data) return { ...memo.data, cached: true };
-  if (inflight && inflightSig === sig) return { ...(await inflight), cached: true };
-  if (inflight) { try { await inflight; } catch { /* alte Anfrage egal */ } }
+  if (!force && !memo.data) {
+    const persisted = await readPersistedCryptoScan(env, sig);
+    if (persisted) {
+      memo = { ts: Date.now(), sig, data: persisted };
+      setApiState('crypto', 'ok', 'Persistenter Cron-Scan geladen');
+      return persisted;
+    }
+  }
+  if (!force && inflight && inflightSig === sig) return { ...(await inflight), cached: true };
+  if (inflight) { try { await inflight; } catch { /* alte Anfrage egal */ }
+    if (!force && inflight && inflightSig === sig) return { ...(await inflight), cached: true };
+  }
 
   inflightSig = sig;
   inflight = (async () => {
@@ -768,6 +819,7 @@ async function getSnapshot(env, opts, force) {
       memo = { ts: Date.now(), sig, data };
       setApiState('crypto', 'ok');
       if (env.SNAP) await env.SNAP.put('snapshot', JSON.stringify(data), { expirationTtl: 60 });
+      await persistCryptoScan(env, sig, data);
       return data;
     } catch (e) {
       setApiState('crypto', classifyError(e), e?.message);
@@ -789,7 +841,7 @@ const json = (o, status = 200, extra = {}) => new Response(JSON.stringify(o), {
 
 
 /* ========================================================================
-   US-Aktienradar — Twelve Data (optional)                       v2.5.1
+   US-Aktienradar — Twelve Data (optional)                       v3.0.7
    Free-freundlich: 21 liquide Titel, pro 5-Minuten-Slot nur 7 Titel. Damit
    wird jeder Titel etwa alle 15 Minuten aktualisiert; FX wird 30 Min gecacht.
    Firmennamen kommen aus einer LOKALEN Tabelle — kein zusätzlicher Request
@@ -837,13 +889,13 @@ function resolveStockQuery(raw) {
   const q = String(raw || '').trim().toUpperCase();
   if (!q) return null;
   if (STOCK_SEARCH_BY_SYMBOL.has(q)) return STOCK_SEARCH_BY_SYMBOL.get(q);
-  const hit = STOCK_SEARCH_CATALOG.find(([sector, symbol, name]) => name.toUpperCase() === q || name.toUpperCase().includes(q));
+  const hit = STOCK_SEARCH_CATALOG.find(([sector, symbol, name]) => name.toUpperCase() === q || (q.length >= 3 && name.toUpperCase().startsWith(q)));
   if (hit) return { sector: hit[0], symbol: hit[1], name: hit[2] };
   if (/^[A-Z][A-Z0-9.\-]{0,7}$/.test(q)) return { sector: 'Watchlist', symbol: q, name: q };
   return null;
 }
 
-let stockMemo = { ts: 0, rows: [], cycle: -1 };
+let stockMemo = { ts: 0, rows: [], cycle: -1, sig: '' };
 let fxMemo = { ts: 0, usdPerEur: null };
 const stockLookupMemo = new Map();
 
@@ -895,20 +947,22 @@ function quotaView() {
 const emaN = (arr, n) => { if (!arr.length) return 0; const k = 2 / (n + 1); let e = arr[0]; for (const x of arr.slice(1)) e = x * k + e * (1 - k); return e; };
 const stockATR = (bars, n = 14) => { if (bars.length < 2) return 0; const tr = []; for (let i = 1; i < bars.length; i++) { const b = bars[i], p = bars[i - 1]; tr.push(Math.max(b.h - b.l, Math.abs(b.h - p.c), Math.abs(b.l - p.c))); } return tr.slice(-n).reduce((a, b) => a + b, 0) / Math.max(1, tr.slice(-n).length); };
 
+const NY_FMT = new Intl.DateTimeFormat('en-US', { timeZone:'America/New_York', weekday:'short', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hourCycle:'h23' });
 function nyParts(date = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone:'America/New_York', weekday:'short', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hourCycle:'h23' }).formatToParts(date);
+  const parts = NY_FMT.formatToParts(date);
   return Object.fromEntries(parts.map(p=>[p.type,p.value]));
 }
-function usMarketPhase(date = new Date()) {
+function usMarketPhase(date = new Date(), feed = null) {
   const p=nyParts(date), weekend=['Sat','Sun'].includes(p.weekday), mins=Number(p.hour)*60+Number(p.minute);
+  const iex = feed === 'iex';
   let key='closed', label='US-Markt geschlossen', help='Aktienwerte dienen nur der Vorbereitung; keine Live-BUY-Freigabe.';
   if(!weekend){
-    if(mins>=240&&mins<480){key='premarket-early';label='Premarket 04:00–08:00 ET';help='Voller US-Premarket läuft, aber Alpaca Free/IEX liefert in diesem frühen Abschnitt keine vollständigen Live-Daten.';}
-    else if(mins>=480&&mins<570){key='premarket';label='Premarket · IEX live ab 08:00 ET';help='Kostenloser IEX-Feed kann jetzt Live-Daten liefern, bildet aber nur einen Teil des US-Marktes ab.';}
+    if(mins>=240&&mins<480){key='premarket-early';label='Premarket 04:00–08:00 ET';help=iex?'Voller US-Premarket läuft; IEX Free bildet diesen frühen Abschnitt nur eingeschränkt ab.':'US-Premarket / Extended Hours.';}
+    else if(mins>=480&&mins<570){key='premarket';label=iex?'Premarket · IEX':'Premarket';help=iex?'IEX liefert Live-Daten, bildet aber nur einen Teil des US-Marktes ab.':'US-Premarket / Extended Hours.';}
     else if(mins>=570&&mins<660){key='opening';label='US-Opening · erste 90 Min.';help='Prioritätsfenster für Opening Momentum, Premarket-High, VWAP und Volumenbeschleunigung.';}
     else if(mins>=660&&mins<960){key='regular';label='US-Markt LIVE';help='Regulärer US-Handel.';}
-    else if(mins>=960&&mins<1020){key='after';label='After Hours · IEX bis 17:00 ET';help='IEX hat nur begrenzte Extended-Hours-Abdeckung.';}
-    else if(mins>=1020&&mins<1200){key='after-limited';label='After Hours · IEX beendet';help='Voller US-Aftermarket läuft weiter, der kostenlose IEX-Feed aber nicht.';}
+    else if(mins>=960&&mins<1020){key='after';label=iex?'After Hours · IEX':'After Hours';help=iex?'IEX hat nur begrenzte Extended-Hours-Abdeckung.':'US-After-Hours.';}
+    else if(mins>=1020&&mins<1200){key='after-limited';label=iex?'After Hours · IEX eingeschränkt':'After Hours';help=iex?'Voller US-Aftermarket läuft weiter, IEX Free ist hier eingeschränkt.':'US-After-Hours.';}
   }
   return { key,label,help, ny:`${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} ET`, weekday:p.weekday };
 }
@@ -935,12 +989,13 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
   const ret60 = (last.c / bars.at(-13).c - 1) * 100;
   const vbaseArr = vs.slice(-21, -1).filter((v) => v > 0);
   const vbase = vbaseArr.length >= 8 ? mean(vbaseArr) : null;
-  const relVol = vbase > 0 ? last.v / vbase : 1; // unbekannt = keine Volumenbestaetigung
+  const relVol = vbase > 0 ? last.v / vbase : null; // null = Volumenbasis nicht belastbar
+  const relVolScore = relVol ?? 1; // intern neutral, extern bleibt unbekannt = null
 
   // Gewichteter Mittelwert über AKTIVE Komponenten — abgeschaltet ≠ negativ.
   const trendScore = 5 + (last.c > ema21 ? 1.9 : -1.9) + (ema9 > ema21 ? 1.5 : -1.1);
   const momoScore = 5 + Math.max(-3.5, Math.min(3.5, ret15 * 2.2)) + Math.max(-1.5, Math.min(1.5, ret60 * 0.7));
-  const volScore = 5 + Math.max(-2.0, Math.min(3.5, (relVol - 1) * 3.0));
+  const volScore = 5 + Math.max(-2.0, Math.min(3.5, (relVolScore - 1) * 3.0));
   const vwapScore = last.c >= vwap ? 7.6 : 3.4;
   const q = clamp(weighted([
     ['ema21', trendScore, 0.30],
@@ -973,6 +1028,7 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
   const e = (x) => (eurPerUsd ? x * eurPerUsd : null);
 
   const score = +q.toFixed(1);
+  const executability = +clamp(4 + relVolScore * 1.2 + Math.min(2, Math.abs(ret15))).toFixed(1);
   const light = score >= 8 && netCRV >= minCrv ? 'green' : score >= 6.5 ? 'yellow' : 'red';
   const verdict = light === 'green' ? 'Kauf-Setup' : light === 'yellow' ? 'Beobachten' : 'Kein Trade';
   const setup = ema9 > ema21 && ret15 > 0 ? 'Trend / Momentum'
@@ -983,7 +1039,7 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
   return {
     symbol, sector, name: src?.meta?.name || STOCK_NAMES[symbol] || symbol,
     exchange: src?.meta?.exchange || 'US', currency: src?.meta?.currency || 'USD',
-    score, light, verdict, setup, trend,
+    score, executability, light, verdict, setup, trend,
     priceUsd: last.c, priceEur: e(last.c),
     entryUsd: entry, entryEur: e(entry),
     stopUsd: stop, stopEur: e(stop),
@@ -994,7 +1050,7 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
     zoneLowEur: e(entry - 0.25 * atr), zoneHighEur: e(entry + 0.25 * atr),
     netCRV, atrPct: +((atr / last.c) * 100).toFixed(2),
     ret5: +ret5.toFixed(2), ret15: +ret15.toFixed(2), ret60: +ret60.toFixed(2),
-    relVol: +relVol.toFixed(2), vwapUsd: vwap, aboveVwap: last.c >= vwap,
+    relVol: relVol == null ? null : +relVol.toFixed(2), vwapUsd: vwap, aboveVwap: last.c >= vwap,
     liquidityVacuum: +liquidityVacuum.toFixed(0),
     updated: last.dt, feed: 'Twelve Data US', tradegate: false, marketPhase: usMarketPhase().key,
     fxUsdPerEur: usdPerEur || null, fxKnown: !!usdPerEur,
@@ -1065,10 +1121,25 @@ async function stockLookup(env, raw, comp, minCrv = 3) {
   const cached = stockLookupMemo.get(info.symbol);
   if (cached && Date.now() - cached.ts < 5 * 60_000) return { configured: true, state: 'ok', cached: true, lookup: true, row: cached.row, quota: quotaView(), version: APP_VERSION };
   const fx = await getFx(env.TWELVE_API_KEY);
-  const j = await twelveJSON('time_series', { symbol: info.symbol, interval: '5min', outputsize: '40', prepost: 'true', format: 'JSON' }, env.TWELVE_API_KEY, 1);
+  let j;
+  let extendedHours = true;
+  try {
+    j = await twelveJSON('time_series', { symbol: info.symbol, interval: '5min', outputsize: '40', prepost: 'true', format: 'JSON' }, env.TWELVE_API_KEY, 1);
+  } catch (e) {
+    // Twelve Data stellt aktuelle Extended-Hours je nach Tarif bereit. Ein
+    // Treffer darf deshalb nicht komplett scheitern, nur weil prepost=true im
+    // vorhandenen Plan nicht freigeschaltet ist.
+    const m = String(e?.message || e || '');
+    if (!/pre.?post|extended|plan|subscription|access|permission/i.test(m)) throw e;
+    extendedHours = false;
+    j = await twelveJSON('time_series', { symbol: info.symbol, interval: '5min', outputsize: '40', format: 'JSON' }, env.TWELVE_API_KEY, 1);
+  }
   const row = analyseStock(info.symbol, info.sector, j, fx, comp, minCrv);
   if (!row) return { configured: true, state: 'ok', notFound: true, error: 'Titel gefunden, aber noch nicht genügend 5-Minuten-Daten für die Analyse.', quota: quotaView(), version: APP_VERSION };
   if ((!row.name || row.name === row.symbol) && info.name) row.name = info.name;
+  row.extendedHours = extendedHours;
+  row.sectorLeaderRet15 = null; row.sectorLag = null;
+  if (stockLookupMemo.size > 200) stockLookupMemo.clear();
   stockLookupMemo.set(info.symbol, { ts: Date.now(), row });
   const old = new Map(stockMemo.rows.map((r) => [r.symbol, r])); old.set(row.symbol, row); stockMemo.rows = [...old.values()].sort((a,b) => b.score-a.score);
   setApiState('stocks', 'ok');
@@ -1083,22 +1154,25 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3) {
   }
   const slot = Math.floor(Date.now() / (5 * 60_000));
   const cycle = slot % 3;
-  if (!force && stockMemo.rows.length && stockMemo.cycle === cycle && Date.now() - stockMemo.ts < 5 * 60_000) {
+  const sig = [...(comp instanceof Set ? comp : new Set(ALL_ON))].sort().join('.') + '|' + minCrv;
+  if (!force && stockMemo.rows.length && stockMemo.cycle === cycle && stockMemo.sig === sig && Date.now() - stockMemo.ts < 5 * 60_000) {
     return { configured: true, state: 'ok', cached: true,
              rows: stockMemo.rows, ts: stockMemo.ts, cycle, universe: STOCK_UNIVERSE.length,
              scanned: stockMemo.rows.length, quota: quotaView(), version: APP_VERSION,
-             market: usMarketPhase(), note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs' };
+             market: usMarketPhase(new Date(), null), note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs' };
   }
 
   const batch = STOCK_UNIVERSE.filter((_, i) => i % 3 === cycle);
   const syms = batch.map((x) => x[1]);
   const fx = await getFx(env.TWELVE_API_KEY);
-  const j = await twelveJSON(
-    'time_series',
-    { symbol: syms.join(','), interval: '5min', outputsize: '40', format: 'JSON' },
-    env.TWELVE_API_KEY,
-    syms.length,                                   // 1 Credit je Symbol
-  );
+  let j;
+  try {
+    j = await twelveJSON('time_series', { symbol: syms.join(','), interval:'5min', outputsize:'40', prepost:'true', format:'JSON' }, env.TWELVE_API_KEY, syms.length);
+  } catch (e) {
+    const m=String(e?.message||e||'');
+    if(!/pre.?post|extended|plan|subscription|access|permission/i.test(m)) throw e;
+    j = await twelveJSON('time_series', { symbol: syms.join(','), interval:'5min', outputsize:'40', format:'JSON' }, env.TWELVE_API_KEY, syms.length);
+  }
 
   const fresh = [];
   for (const [sector, symbol] of batch) {
@@ -1120,20 +1194,20 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3) {
     r.sectorLag=+Math.max(-10,Math.min(10,leader-Number(r.ret15||0))).toFixed(2);
   }
   rows.sort((a, b) => b.score - a.score);
-  stockMemo = { ts: Date.now(), rows, cycle };
+  stockMemo = { ts: Date.now(), rows, cycle, sig };
   setApiState('stocks', 'ok');
 
   return {
     configured: true, state: 'ok', cached: false, rows, ts: stockMemo.ts, cycle,
     universe: STOCK_UNIVERSE.length, scanned: rows.length, updatedThisCycle: fresh.length,
     fxUsdPerEur: fx || null, fxApprox: !!fx, quota: quotaView(), version: APP_VERSION,
-    market: usMarketPhase(), note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs',
+    market: usMarketPhase(new Date(), null), note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs',
   };
 }
 
 
 /* ========================================================================
-   Opening Momentum — Alpaca Market Data (v2.5.4)
+   Opening Momentum — Alpaca Market Data (v3.0.7)
    Free/Test: feed=iex. IEX ist eine einzelne US-Börse und handelt nur ca.
    08:00–17:00 ET; deshalb ist 04:00–08:00 ET im Free-Tarif NICHT vollständig
    live abdeckbar. Die UI kennzeichnet das ausdrücklich. Keine Orders.
@@ -1142,6 +1216,10 @@ const OPENING_UNIVERSE = [
   'MRNA','IONQ','RGTI','PLTR','MSTR','NVDA','AMD','AVGO','SMCI','ARM','TSLA','META','AAPL','MSFT','AMZN','GOOGL','NFLX','COIN','HOOD','SOFI','CRWD','SNOW','UBER','RKLB','AEM','AG','LLY','BA','GE','CAT'
 ];
 let openingMemo={ts:0,data:null};
+function alpacaFeed(env){
+  return String(env.ALPACA_FEED || 'iex').toLowerCase() === 'sip' ? 'sip' : 'iex';
+}
+function alpacaFeedLabel(env){ return alpacaFeed(env) === 'sip' ? 'SIP (All US Exchanges)' : 'IEX (Free)'; }
 async function alpacaJSON(path, params, env){
   const u=new URL('https://data.alpaca.markets'+path); for(const [k,v] of Object.entries(params||{})) if(v!=null)u.searchParams.set(k,v);
   const r=await fetch(u,{headers:{'APCA-API-KEY-ID':env.ALPACA_API_KEY_ID,'APCA-API-SECRET-KEY':env.ALPACA_API_SECRET_KEY,accept:'application/json'}});
@@ -1157,11 +1235,11 @@ function momentumFromAlpaca(symbol, snap, bars=[]){
   const prevClose=Number(snap.prevDailyBar?.c||0), latest=Number(snap.minuteBar?.c||snap.latestTrade?.p||snap.dailyBar?.c||0);
   if(!(latest>0&&prevClose>0))return null;
   const bs=(bars||[]).map(b=>({t:b.t,c:+b.c,h:+b.h,l:+b.l,v:+b.v||0})).filter(b=>b.c>0).sort((a,b)=>new Date(a.t)-new Date(b.t));
-  const closeAgo=(n)=>bs.length>n?bs.at(-1-n).c:bs[0]?.c||latest;
-  const ret5=(latest/closeAgo(5)-1)*100, ret15=(latest/closeAgo(15)-1)*100, ret60=(latest/closeAgo(Math.max(0,Math.min(60,bs.length-1)))-1)*100;
-  const vols=bs.slice(-25).map(b=>b.v); const baseArr=vols.slice(0,-3).filter(v=>v>0); const base=baseArr.length>=8?mean(baseArr):null; const recent=mean(vols.slice(-3)); const relVol=base>0?recent/base:1; // unbekannt = keine Volumenbestaetigung
+  const closeAgoBars=(n)=>bs.length>n?bs.at(-1-n).c:bs[0]?.c||latest;
+  const ret5=(latest/closeAgoBars(1)-1)*100, ret15=(latest/closeAgoBars(3)-1)*100, ret60=(latest/closeAgoBars(Math.max(1,Math.min(12,bs.length-1)))-1)*100;
+  const vols=bs.slice(-25).map(b=>b.v); const baseArr=vols.slice(0,-3).filter(v=>v>0); const base=baseArr.length>=8?mean(baseArr):null; const recent=mean(vols.slice(-3).filter(v=>v>0)); const relVol=base>0?recent/base:1; // unbekannt = keine Volumenbestaetigung
   const gapPct=(latest/prevClose-1)*100;
-  const pre=bs.filter(b=>{const m=barTimeET(b.t);return m>=480&&m<570;});
+  const pre=bs.filter(b=>{const m=barTimeET(b.t);return m>=240&&m<570;});
   const preHigh=pre.length?maxOf(pre.map(b=>b.h)):null, preLow=pre.length?minOf(pre.map(b=>b.l)):null;
   const open=bs.filter(b=>{const m=barTimeET(b.t);return m>=570&&m<585;}); const openingHigh=open.length?maxOf(open.map(b=>b.h)):null;
   const priceScore=clamp(5+ret15*1.3+ret60*.35,0,10), volScore=clamp(4+(relVol-1)*2.3,0,10);
@@ -1173,27 +1251,33 @@ function momentumFromAlpaca(symbol, snap, bars=[]){
   const structurePct=r1(Math.min(20,Math.max(0,impulsePct*1.618)));
   const light=momentumScore>=8?'green':momentumScore>=6.5?'yellow':'red';
   const actionable=['opening','regular'].includes(phase.key)&&momentumScore>=8;
-  const phaseAction=phase.key==='premarket'?(momentumScore>=7.5?'VORBEREITEN':'beobachten'):actionable?'Opening-Bestätigung prüfen':phase.key==='closed'?'Vorbereitung':'beobachten';
+  const phaseAction=['premarket-early','premarket'].includes(phase.key)?(momentumScore>=7.5?'VORBEREITEN':'beobachten'):actionable?'Opening-Bestätigung prüfen':phase.key==='closed'?'Vorbereitung':'beobachten';
   return {symbol,priceUsd:latest,gapPct:r1(gapPct),ret5:r1(ret5),ret15:r1(ret15),ret60:r1(ret60),relVol:r1(relVol),momentumScore,preHigh,preLow,openingHigh,breakPremarketHigh:!!(preHigh&&latest>preHigh),structurePct,structureTargetUsd:r2(latest*(1+structurePct/100)),light,phaseAction,marketPhase:phase.key,updated:snap.minuteBar?.t||snap.latestTrade?.t||null};
 }
 async function openingMomentum(env, force=false){
   const phase=usMarketPhase();
-  if(!env.ALPACA_API_KEY_ID||!env.ALPACA_API_SECRET_KEY){setApiState('alpaca','nokey','Alpaca Secrets fehlen');return {configured:false,state:'nokey',rows:[],feed:'IEX (Free)',phase:phase.key,phaseLabel:phase.label,phaseHelp:phase.help,version:APP_VERSION};}
+  const feed=alpacaFeed(env), feedLabel=alpacaFeedLabel(env);
+  const phaseLabel=feed==='sip' && phase.key==='premarket-early' ? 'Premarket 04:00–08:00 ET · SIP live' : phase.label;
+  const phaseHelp=feed==='sip' && phase.key==='premarket-early' ? 'Alpaca SIP liefert den konsolidierten US-Gesamtmarkt auch im frühen Premarket.' : phase.help;
+  if(!env.ALPACA_API_KEY_ID||!env.ALPACA_API_SECRET_KEY){setApiState('alpaca','nokey','Alpaca Secrets fehlen');return {configured:false,state:'nokey',rows:[],feed:feedLabel,phase:phase.key,phaseLabel,phaseHelp,version:APP_VERSION};}
   if(!force&&openingMemo.data&&Date.now()-openingMemo.ts<45_000)return {...openingMemo.data,cached:true};
-  // 1 Snapshot-Request + 1 Multi-Symbol-Bars-Request; dadurch bleiben wir weit unter 200 REST-Requests/min.
+  // 1 Snapshot-Request + 1 Multi-Symbol-Bars-Request. 5-Minuten-Bars reichen
+  // für unser Momentum-Modell und decken mit 8h Historie den kompletten
+  // 04:00-ET-Premarket ab, ohne unnötig große Multi-Symbol-Antworten.
   const symbols=OPENING_UNIVERSE.join(',');
   const [snaps,hist]=await Promise.all([
-    alpacaJSON('/v2/stocks/snapshots',{symbols,feed:'iex'},env),
-    alpacaJSON('/v2/stocks/bars',{symbols,timeframe:'1Min',start:isoAgo(150),limit:'10000',feed:'iex',sort:'asc'},env),
+    alpacaJSON('/v2/stocks/snapshots',{symbols,feed},env),
+    alpacaJSON('/v2/stocks/bars',{symbols,timeframe:'5Min',start:isoAgo(480),limit:'10000',feed,sort:'asc'},env),
   ]);
   const rows=OPENING_UNIVERSE.map(sym=>momentumFromAlpaca(sym,snaps?.[sym],hist?.bars?.[sym]||[])).filter(Boolean).sort((a,b)=>b.momentumScore-a.momentumScore);
-  const data={configured:true,state:'ok',rows,scanned:rows.length,universe:OPENING_UNIVERSE.length,feed:'IEX (Free)',phase:phase.key,phaseLabel:phase.label,phaseHelp:phase.help,limitations:'IEX ist nur eine US-Börse; live ca. 08:00–17:00 ET, nicht der vollständige SIP-Gesamtmarkt.',ts:Date.now(),version:APP_VERSION};
+  const limitations=feed==='sip'?'SIP: konsolidierter Echtzeit-Feed aller US-Börsen einschließlich Extended Hours.':'IEX Free: nur eine US-Börse; frühe Premarket-Daten sind unvollständig.';
+  const data={configured:true,state:'ok',rows,scanned:rows.length,universe:OPENING_UNIVERSE.length,feed:feedLabel,phase:phase.key,phaseLabel,phaseHelp,limitations,ts:Date.now(),version:APP_VERSION};
   openingMemo={ts:Date.now(),data}; setApiState('alpaca','ok',`${rows.length} Momentum-Titel · ${phase.label}`); return data;
 }
 
 
 /* ========================================================================
-   Experimental Lab + Crowd/Search (v2.5.7)
+   Experimental Lab + Crowd/Search (v3.0.7)
    Diese Daten sind reine Forschungs-/Kontextvariablen und haben 0 % Gewicht
    im BUY-Score. Keine kausale Aussage wird unterstellt.
    ======================================================================== */
@@ -1201,7 +1285,7 @@ let experimentalMemo={ts:0,data:null};
 let crowdMemo={ts:0,key:'',data:null};
 function star5(x){return Math.max(1,Math.min(5,Math.round(Number(x)||1)));}
 async function fetchJSONPublic(url){
-  const r=await fetch(url,{headers:{accept:'application/json','user-agent':'FusionPulse/2.5.7'}});
+  const r=await fetch(url,{headers:{accept:'application/json','user-agent':`FusionPulse/${APP_VERSION}`}});
   if(!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -1351,12 +1435,12 @@ async function d1StoreCrowd(env, rows){
   ).bind(String(x.symbol).toUpperCase(), now, dbNum(x.score), dbNum(x.stars), dbNum(x.accel), dbNum(x.interest), x.source||'Crowd'));
   if(stmts.length) await env.DB.batch(stmts);
 }
-async function d1UpdateOutcomes(env, symbol, price, now=Date.now()){
+async function d1UpdateOutcomes(env, symbol, price, now=Date.now(), assetType='stock', source='server'){
   if(!env.DB || !(price>0) || !symbol) return;
   const rows=(await env.DB.prepare(
     `SELECT id,ts,price,max_pct,min_pct,success_ts FROM market_snapshots
-     WHERE symbol=? AND resolved_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 500`
-  ).bind(symbol, now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
+     WHERE symbol=? AND asset_type=? AND source=? AND resolved_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 500`
+  ).bind(symbol, assetType, source, now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
   if(!rows.length) return;
   const stmts=[];
   for(const x of rows){
@@ -1375,7 +1459,7 @@ async function d1StoreSnapshotRow(env, row, {source='server',assetType='stock',n
   const symbol=String(row.symbol||row.pair||'').toUpperCase();
   const price=dbNum(row.priceUsd ?? row.price ?? row.livePrice ?? row.priceEur);
   if(!symbol || !(price>0)) return;
-  await d1UpdateOutcomes(env,symbol,price,now);
+  await d1UpdateOutcomes(env,symbol,price,now,assetType,source);
   const crowdScore = dbNum(row.crowdScore) ?? await d1CrowdScore(env,symbol);
   const enriched={...row,crowdScore};
   const f=learningFeatures(enriched), bucket5=Math.floor(now/(5*60_000));
@@ -1411,13 +1495,13 @@ function twinDistance(a,b){
 async function d1TwinFor(env, symbol){
   if(!env.DB) return {n:0};
   const cur=await env.DB.prepare(`SELECT sector,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure
-    FROM market_snapshots WHERE symbol=? ORDER BY ts DESC LIMIT 1`).bind(symbol).first();
+    FROM market_snapshots WHERE symbol=? AND asset_type='stock' AND source='Twelve Data' ORDER BY ts DESC LIMIT 1`).bind(symbol).first();
   if(!cur) return {n:0};
   const q=cur.sector
     ? env.DB.prepare(`SELECT symbol,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure,max_pct,min_pct
-       FROM market_snapshots WHERE resolved_ts IS NOT NULL AND sector=? ORDER BY ts DESC LIMIT 800`).bind(cur.sector)
+       FROM market_snapshots WHERE resolved_ts IS NOT NULL AND asset_type='stock' AND source='Twelve Data' AND sector=? ORDER BY ts DESC LIMIT 200`).bind(cur.sector)
     : env.DB.prepare(`SELECT symbol,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure,max_pct,min_pct
-       FROM market_snapshots WHERE resolved_ts IS NOT NULL ORDER BY ts DESC LIMIT 800`);
+       FROM market_snapshots WHERE resolved_ts IS NOT NULL AND asset_type='stock' AND source='Twelve Data' ORDER BY ts DESC LIMIT 200`);
   const rows=(await q.all()).results||[];
   const nearest=rows.map(x=>({...x,d:twinDistance(cur,x)})).filter(x=>x.d<9999).sort((a,b)=>a.d-b.d).slice(0,12);
   if(nearest.length<5)return {n:nearest.length};
@@ -1426,11 +1510,11 @@ async function d1TwinFor(env, symbol){
 }
 async function d1LeadModel(env, symbol){
   if(!env.DB)return {n:0};
-  const successes=(await env.DB.prepare(`SELECT ts,success_ts FROM market_snapshots WHERE symbol=? AND success_ts IS NOT NULL ORDER BY success_ts DESC LIMIT 40`).bind(symbol).all()).results||[];
+  const successes=(await env.DB.prepare(`SELECT ts,success_ts FROM market_snapshots WHERE symbol=? AND asset_type='stock' AND source='Twelve Data' AND success_ts IS NOT NULL ORDER BY success_ts DESC LIMIT 40`).bind(symbol).all()).results||[];
   if(!successes.length)return {n:0};
   const minTs=Math.min(...successes.map(s=>Number(s.ts)))-60*60_000;
   const maxTs=Math.max(...successes.map(s=>Number(s.success_ts)));
-  const allEvents=(await env.DB.prepare(`SELECT signal,ts FROM signal_events WHERE symbol=? AND ts BETWEEN ? AND ? ORDER BY ts ASC`).bind(symbol,minTs,maxTs).all()).results||[];
+  const allEvents=(await env.DB.prepare(`SELECT signal,ts FROM signal_events WHERE symbol=? AND source='Twelve Data' AND ts BETWEEN ? AND ? ORDER BY ts ASC`).bind(symbol,minTs,maxTs).all()).results||[];
   const leads={}, first={}; let used=0;
   for(const s of successes){
     const start=Number(s.ts)-60*60_000,end=Number(s.success_ts);
@@ -1448,8 +1532,9 @@ async function d1LeadModel(env, symbol){
 }
 async function d1History(env, symbol, assetType){
   if(!env.DB)return [];
+  const sourceClause = assetType === 'stock' ? " AND source='Twelve Data'" : '';
   const rows=(await env.DB.prepare(`SELECT ts,score,crv,executability,light,price FROM market_snapshots
-    WHERE symbol=? AND asset_type=? AND ts>=? ORDER BY ts ASC`).bind(symbol,assetType,Date.now()-LEARN_HISTORY_MS).all()).results||[];
+    WHERE symbol=? AND asset_type=?${sourceClause} AND ts>=? ORDER BY ts ASC`).bind(symbol,assetType,Date.now()-LEARN_HISTORY_MS).all()).results||[];
   // ein Punkt je 15-Minuten-Segment, serverseitig und geräteunabhängig
   const bins=new Map();
   for(const x of rows) bins.set(Math.floor(Number(x.ts)/(15*60_000)),{ts:Number(x.ts),quality:Number(x.score)||0,executability:Number(x.executability)||0,light:x.light||'red',crv:Number(x.crv)||0,price:Number(x.price)||0});
@@ -1459,7 +1544,7 @@ async function learningPayload(env, stocks=[], coins=[]){
   if(!env.DB)return {configured:false,state:'nodb',message:'D1-Binding DB fehlt',version:APP_VERSION};
   await ensureD1Schema(env);
   const now=Date.now();
-  const key=[...stocks.slice(0,30), '|', ...coins.slice(0,30)].join(',');
+  const key=[...stocks.slice(0,8).sort(), '|', ...coins.slice(0,30).sort()].join(',');
   if(learnMemo.data && learnMemo.key===key && now-learnMemo.ts<60_000) return learnMemo.data;
   const counts=await env.DB.prepare(`SELECT
     COUNT(*) snapshots,
@@ -1467,7 +1552,7 @@ async function learningPayload(env, stocks=[], coins=[]){
     SUM(CASE WHEN success_ts IS NOT NULL THEN 1 ELSE 0 END) expansions,
     MAX(ts) last_ts FROM market_snapshots`).first();
   const stockOut={};
-  for(const sym of stocks.slice(0,30)) stockOut[sym]={twin:await d1TwinFor(env,sym),lead:await d1LeadModel(env,sym),history:await d1History(env,sym,'stock')};
+  for(const sym of stocks.slice(0,8)) stockOut[sym]={twin:await d1TwinFor(env,sym),lead:await d1LeadModel(env,sym),history:await d1History(env,sym,'stock')};
   const coinOut={};
   for(const sym of coins.slice(0,30)) coinOut[sym]={history:await d1History(env,sym,'coin')};
   const data={configured:true,state:'ok',ts:now,stats:{snapshots:Number(counts?.snapshots)||0,resolved:Number(counts?.resolved)||0,expansions:Number(counts?.expansions)||0,lastTs:Number(counts?.last_ts)||null},stocks:stockOut,coins:coinOut,version:APP_VERSION};
@@ -1491,7 +1576,7 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
   if(env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY&&minsET>=480&&minsET<=1020&&phase.key!=='closed'){
     try{
       const op=await openingMomentum(env,true);
-      await d1StoreRows(env,op.rows||[],{source:'Alpaca IEX',assetType:'stock',now});
+      if(Math.floor(now/60_000)%5===0) await d1StoreRows(env,op.rows||[],{source:alpacaFeed(env)==='sip'?'Alpaca SIP':'Alpaca IEX',assetType:'opening',now});
       setApiState('alpaca','ok',`${op.rows?.length||0} Rows`);
       await persistApiState(env,'alpaca','ok',`${op.rows?.length||0} Rows`,now);
     }catch(e){
@@ -1499,7 +1584,7 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
       await persistApiState(env,'alpaca',state,e?.message,now); cronLog('alpaca',state,e?.message);
     }
   }
-  if(env.TWELVE_API_KEY && Math.floor(now/60_000)%15===0){
+  if(env.TWELVE_API_KEY && Math.floor(now/60_000)%15===1){
     try{
       const st=await stockSnapshot(env,false,new Set(ALL_ON),3);
       await d1StoreRows(env,st.rows||[],{source:'Twelve Data',assetType:'stock',now});
@@ -1585,7 +1670,7 @@ export default {
 
     if (url.pathname === '/api/opening') {
       try { return json(await openingMomentum(env, url.searchParams.get('force') === '1'), 200, { 'cache-control':'no-store' }); }
-      catch (e) { const state=classifyError(e); setApiState('alpaca',state,e?.message); return json({configured:!!(env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY),state,error:e.message||String(e),rows:openingMemo.data?.rows||[],feed:'IEX (Free)',phaseLabel:usMarketPhase().label,phaseHelp:usMarketPhase().help,version:APP_VERSION},state==='ratelimit'?429:502,{ 'cache-control':'no-store' }); }
+      catch (e) { const state=classifyError(e); setApiState('alpaca',state,e?.message); return json({configured:!!(env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY),state,error:e.message||String(e),rows:openingMemo.data?.rows||[],feed:alpacaFeedLabel(env),phaseLabel:usMarketPhase().label,phaseHelp:usMarketPhase().help,version:APP_VERSION},state==='ratelimit'?429:502,{ 'cache-control':'no-store' }); }
     }
 
     if (url.pathname === '/api/stocks') {
@@ -1593,8 +1678,8 @@ export default {
         const comp = parseComponents(url.searchParams.get('comp'));
         const minCrv = Math.max(1, +url.searchParams.get('minCrv') || 3);
         const lookup = url.searchParams.get('lookup');
-        if (lookup) return json(await stockLookup(env, lookup, comp, minCrv));
-        return json(await stockSnapshot(env, url.searchParams.get('force') === '1', comp, minCrv));
+        if (lookup) return json(await stockLookup(env, lookup, comp, minCrv), 200, { 'cache-control':'no-store' });
+        return json(await stockSnapshot(env, url.searchParams.get('force') === '1', comp, minCrv), 200, { 'cache-control':'no-store' });
       } catch (e) {
         const state = classifyError(e);
         setApiState('stocks', state, e?.message);
@@ -1602,7 +1687,7 @@ export default {
           error: e.message || String(e), state, configured: !!env.TWELVE_API_KEY,
           rows: stockMemo.rows, cached: true, universe: STOCK_UNIVERSE.length,
           quota: quotaView(), version: APP_VERSION,
-        }, state === 'ratelimit' || state === 'daylimit' ? 429 : 502);
+        }, state === 'ratelimit' || state === 'daylimit' ? 429 : 502, { 'cache-control':'no-store' });
       }
     }
 
@@ -1616,11 +1701,11 @@ export default {
           minCrv: Math.max(1, +url.searchParams.get('minCrv') || 2),
         };
         const force = url.searchParams.get('force') === '1';
-        return json(await getSnapshot(env, opts, force));
+        return json(await getSnapshot(env, opts, force), 200, { 'cache-control':'no-store' });
       } catch (e) {
         const state = classifyError(e);
         return json({ error: e.message || String(e), state, version: APP_VERSION },
-                    state === 'ratelimit' || state === 'daylimit' ? 429 : 502);
+                    state === 'ratelimit' || state === 'daylimit' ? 429 : 502, { 'cache-control':'no-store' });
       }
     }
 
@@ -1638,7 +1723,7 @@ export default {
         const row = analyse({
           pair, c5, btc5: pair === 'BTC-EUR' ? null : btcRef,
           book: bk, fee: memo.data?.fee ?? CFG.DEFAULT_FEE,
-          mode: memo.data?.mode || 'composite',
+          mode: ['composite','elliott','momentum','trend','micro'].includes(url.searchParams.get('mode')) ? url.searchParams.get('mode') : (memo.data?.mode || 'composite'),
           comp: parseComponents(url.searchParams.get('comp')), minCrv: Math.max(1, +url.searchParams.get('minCrv') || 2),
         });
         return row ? json({ ts: Date.now(), row }) : json({ error: 'Zu wenig Daten.' }, 404);

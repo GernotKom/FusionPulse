@@ -19,8 +19,8 @@ if (!/^\d+\.\d+\.\d+[a-z]?$/i.test(version)) {
 
 const patch = (file, re, replacement) => {
   const before = readFileSync(p(file), 'utf8');
-  const after = before.replace(re, replacement);
   if (!re.test(before)) { console.error(`✗ Muster nicht gefunden in ${file}`); process.exit(1); }
+  const after = before.replace(re, replacement);
   if (after !== before) writeFileSync(p(file), after);
   return after !== before;
 };

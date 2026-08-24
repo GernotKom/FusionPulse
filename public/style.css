@@ -310,7 +310,7 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 #cog{margin-left:0}
 
 
-/* ═════════════════════════════════════════════════ Aktienradar v2.5 ═══ */
+/* ═════════════════════════════════════════════════ Aktienradar v3.0.7 ═══ */
 .stock-sector h3{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
 .stockrow{display:grid;grid-template-columns:52px 1fr 48px 66px;align-items:center;gap:7px;border-left:3px solid transparent;padding:7px 6px;border-radius:7px;margin:2px 0}
 .stockrow.green{border-left-color:var(--green);background:color-mix(in srgb,var(--green) 10%,transparent)}
@@ -325,7 +325,7 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 
 
 /* ════════════════════════════════════════════════════════════════════════════
-   v2.5.1 — Systemstatus, Update-Hinweis, Aktienradar, Light-Mode-Überarbeitung
+   v3.0.7 — Systemstatus, Update-Hinweis, Aktienradar, Light-Mode-Überarbeitung
    ════════════════════════════════════════════════════════════════════════ */
 
 /* ───────────────────────────────────────────────── Update-/Versionshinweis ─ */
@@ -364,7 +364,7 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 .factor.off{opacity:.45}
 .factor.off em{font-style:normal;font-size:10px}
 
-/* ═══════════════════════════════════════════════════ Aktienradar v2.5.1 ═══ */
+/* ═══════════════════════════════════════════════════ Aktienradar v3.0.7 ═══ */
 .stockbadges{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .badge.warn{color:var(--yellow);border-color:color-mix(in srgb,var(--yellow) 60%,var(--line))}
 #stockCounts{display:block;margin-top:3px;cursor:help}
@@ -416,8 +416,9 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
   border:1px solid var(--line2);border-radius:13px;box-shadow:0 22px 52px #0006;
   color:var(--fg);font-size:11.5px;line-height:1.5;pointer-events:auto
 }
-.stockrow:hover .stockpeek,.stockrow:focus-within .stockpeek{display:block}
-.stockrow:hover{z-index:70}
+.stockrow.peek-open .stockpeek{display:block}
+/* v3.0.7: kein sofortiges focus-within; Detail nur nach 2,3 s ruhigem Hover */
+.stockrow.peek-open{z-index:70}
 .stockpeek header{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;
   padding-bottom:8px;margin-bottom:9px;border-bottom:1px solid var(--line)}
 .stockpeek header b{font-size:14px}
@@ -433,7 +434,7 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
   font-size:10px;color:var(--dim2)}
 @media(hover:none){.stockpeek{display:none!important}}
 
-/* ══════════════════════════════════ Light Mode überarbeitet (v2.5.1) ═══ */
+/* ══════════════════════════════════ Light Mode überarbeitet (v3.0.7) ═══ */
 /* Kein Reinweiß mehr: gedämpftes Off-White als Fläche, kräftigere Signalfarben,
    spürbar stärkere Farbfüllung der Zeilen, damit Grün/Gelb/Rot trennscharf sind. */
 :root[data-theme="light"]{
@@ -493,7 +494,7 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 }
 
 
-/* v2.5.2 — 120-Minuten-Verlauf, gemeinsame Suche, Aktienfokus */
+/* v3.0.7 — 120-Minuten-Verlauf, gemeinsame Suche, Aktienfokus */
 .histband{display:inline-flex;gap:2px;vertical-align:middle;margin:3px 4px 0 0}.histband .hb{width:13px;height:5px;border-radius:2px;background:var(--line2);display:block}.histband .hb.green{background:var(--green)}.histband .hb.yellow{background:var(--yellow)}.histband .hb.red{background:var(--red)}.trendarr{font-size:11px;font-weight:900;color:var(--fg)}
 .insightbar{display:grid;grid-template-columns:1fr .55fr 1.45fr;gap:8px;margin:8px 0 10px}.insightbar>div{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:7px 9px;min-width:0}.insightbar span{display:block;color:var(--dim);font-size:9px;text-transform:uppercase;letter-spacing:.45px;margin-bottom:3px}.insightbar b{font-size:11px;line-height:1.25}.insightbar .histband .hb{width:16px;height:6px}
 .stockfocus{margin:10px 0 14px}.stockfocus-card{border:1px solid var(--line);border-radius:14px;background:var(--panel2);padding:13px;box-shadow:0 8px 24px #0002}.stockfocus-card.green{border-color:color-mix(in srgb,var(--green) 55%,var(--line))}.stockfocus-card.buy{box-shadow:0 0 0 1px var(--green),0 8px 30px #0003}.sf-title{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.sf-title small{color:var(--dim);letter-spacing:.7px}.sf-title h3{font-size:20px;margin:3px 0}.sf-title h3 b{font-family:ui-monospace,monospace;color:var(--dim)}.sf-title>strong{font-size:12px;white-space:nowrap}.sf-grid{display:grid;grid-template-columns:repeat(3,minmax(130px,1fr));gap:7px;margin:10px 0}.sf-grid span{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px;font-size:9px;color:var(--dim)}.sf-grid b{display:block;color:var(--fg);font-size:12px;margin-top:2px}.stockfocus-empty{padding:12px;border:1px dashed var(--line2);border-radius:10px;color:var(--dim)}
@@ -501,7 +502,7 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 @media(max-width:760px){.insightbar{grid-template-columns:1fr 1fr}.insightbar>div:last-child{grid-column:1/-1}.sf-grid{grid-template-columns:repeat(2,minmax(120px,1fr))}.sf-title{flex-direction:column}.histband .hb{width:10px}}
 
 
-/* ═════════════════════════════════════════════════ v2.5.3 Suche + Favoriten ═══ */
+/* ═════════════════════════════════════════════════ v3.0.7 Suche + Favoriten ═══ */
 .searchgo{min-width:38px;padding:7px 9px;font-size:14px}
 .favbtn{border:0;background:transparent;color:var(--dim);padding:2px 4px;min-width:22px;font-size:17px;line-height:1;cursor:pointer}
 .favbtn:hover,.favbtn.on{color:var(--yellow);transform:scale(1.06)}
@@ -509,7 +510,7 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 .stockrow .sr-head{justify-content:flex-start}.stockrow .sr-head .rowmute{margin-left:auto}
 @media(max-width:680px){nav input#q{max-width:none}.searchgo{min-width:34px}}
 
-/* ===== v2.5.4: getrennte Suche, Depot/Favoriten, Aktien-Heatmap, Opening Momentum ===== */
+/* ===== v3.0.7: Suche, Depot/Favoriten, klickbare Aktien-Heatmap, Opening Momentum ===== */
 .coinbar,.stocktools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .stocktools{margin:10px 0}.stocktools input{flex:1;min-width:220px}
 .depotstrip{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 10px;margin:8px 0;border:1px solid var(--line);border-radius:10px;background:var(--panel2);font-size:11px;color:var(--dim)}
@@ -517,17 +518,17 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 .openingpanel{margin:8px 0 12px;padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}
 .ophead{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}.ophead>b{font-size:13px}.ophead>span{color:var(--yellow);font-size:11px}.ophead>small{margin-left:auto;color:var(--dim)}
 .opgrid{display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:6px}.opcard{padding:7px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:inherit;font:inherit;text-align:left;display:grid;gap:2px;font-size:9px;cursor:pointer}.opcard b{font:800 12px ui-monospace,monospace}.opcard em{font-style:normal;color:var(--dim)}.opcard.green{border-color:color-mix(in srgb,var(--green) 55%,var(--line))}.opcard.yellow{border-color:color-mix(in srgb,var(--yellow) 55%,var(--line))}
-.stockstage{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(260px,.8fr);gap:12px;align-items:stretch}.stockmapwrap{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:8px;min-height:245px}.stockmapwrap svg{display:block;width:100%;height:215px;border-radius:9px;overflow:hidden}.stockmapwrap .stockbg{fill:var(--panel)}.stockmapwrap .quad{opacity:.55}.stockmapwrap .qa{fill:#13cf8b1c}.stockmapwrap .qb{fill:#f2c0150f}.stockmapwrap .qc{fill:#5b8cff0d}.stockmapwrap .ax{stroke:var(--line2);stroke-width:1;stroke-dasharray:3 3}.stockmapwrap .dot{cursor:help}.stockmapwrap .dot .hit{fill:transparent;stroke:none}.stockmapwrap .dot text{font-size:6px;text-anchor:middle;pointer-events:none;fill:#fff;font-weight:850;paint-order:stroke;stroke:#08101a;stroke-width:1.1px}.stockmapwrap .dot .core{fill:var(--dim2);stroke:#0a0f18;stroke-width:1.8;paint-order:stroke}.stockmapwrap .light-green .core{fill:var(--green)}.stockmapwrap .light-yellow .core{fill:var(--yellow)}.stockmapwrap .light-red .core{fill:#52647d}.stockmapwrap .stocktrail{fill:none;stroke:var(--dim2);stroke-width:1.3;stroke-linecap:round;stroke-linejoin:round;opacity:.3}.stockmapwrap .stocktrail.green{stroke:var(--green);opacity:.48}.stockmapwrap .stocktrail.yellow{stroke:var(--yellow);opacity:.42}.stockmapwrap .dot.buy-ready .core{animation:mapbuy 1.25s ease-in-out infinite}
+.stockstage{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(260px,.8fr);gap:12px;align-items:stretch}.stockmapwrap{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:8px;min-height:245px}.stockmapwrap svg{display:block;width:100%;height:215px;border-radius:9px;overflow:hidden}.stockmapwrap .stockbg{fill:var(--panel)}.stockmapwrap .quad{opacity:.55}.stockmapwrap .qa{fill:#13cf8b1c}.stockmapwrap .qb{fill:#f2c0150f}.stockmapwrap .qc{fill:#5b8cff0d}.stockmapwrap .ax{stroke:var(--line2);stroke-width:1;stroke-dasharray:3 3}.stockmapwrap .dot{cursor:pointer}.stockmapwrap .dot .hit{fill:transparent;stroke:none}.stockmapwrap .dot text{font-size:6px;text-anchor:middle;pointer-events:none;fill:#fff;font-weight:850;paint-order:stroke;stroke:#08101a;stroke-width:1.1px}.stockmapwrap .dot .core{fill:var(--dim2);stroke:#0a0f18;stroke-width:1.8;paint-order:stroke}.stockmapwrap .light-green .core{fill:var(--green)}.stockmapwrap .light-yellow .core{fill:var(--yellow)}.stockmapwrap .light-red .core{fill:#52647d}.stockmapwrap .stocktrail{fill:none;stroke:var(--dim2);stroke-width:1.3;stroke-linecap:round;stroke-linejoin:round;opacity:.3}.stockmapwrap .stocktrail.green{stroke:var(--green);opacity:.48}.stockmapwrap .stocktrail.yellow{stroke:var(--yellow);opacity:.42}.stockmapwrap .dot.buy-ready .core{animation:mapbuy 1.25s ease-in-out infinite}
 .sr-px small{display:block;color:var(--dim);font-size:9px;margin-top:2px}
 @media(max-width:900px){.stockstage{grid-template-columns:1fr}.opgrid{grid-template-columns:repeat(2,minmax(120px,1fr))}.stockmapwrap{min-height:220px}.stockmapwrap svg{height:190px}}
 
-/* v2.5.5: klare Handlungs-/Historienanzeige */
+/* v3.0.7: klare Handlungs-/Historienanzeige */
 .potential-size{color:var(--yellow)}.no-trade-size{color:var(--dim)}.action-size{color:var(--green)}
 .sf-history{display:flex;align-items:center;gap:8px;margin:8px 0;padding:7px 9px;background:var(--panel2);border:1px solid var(--line);border-radius:9px}.sf-history>span{font-size:9px;text-transform:uppercase;letter-spacing:.4px;color:var(--dim)}.sf-history .histband .hb{width:18px;height:7px}
 .sr-hist{margin-top:5px}.sr-hist .histband .hb{width:12px;height:5px}
 .histband .hb.none{background:transparent;border:1px solid var(--line2);box-sizing:border-box}
 
-/* v2.5.6 — Experimental Lab + Crowd/Search Tachometer */
+/* v3.0.7 — Experimental Lab + Crowd/Search Tachometer */
 .experimental-grid{display:grid;grid-template-columns:minmax(0,2.2fr) minmax(230px,1fr);gap:10px;margin:8px 0 12px}
 .experimental-panel,.experimental-note{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:10px}
 .experimental-note{display:flex;flex-direction:column;gap:6px;color:var(--dim);font-size:11px}.experimental-note b{color:var(--fg);font-size:13px}
@@ -536,7 +537,7 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 .crowd-wrap{display:flex;align-items:center;gap:7px;margin-top:5px}.crowd-gauge{--v:0;position:relative;width:58px;height:31px;overflow:hidden;flex:0 0 58px}.crowd-gauge:before{content:"";position:absolute;left:0;top:0;width:58px;height:58px;border-radius:50%;background:conic-gradient(from 270deg,#ef5a5a 0deg,#e8b93d 70deg,#3fcf8e 150deg,#1b2433 150deg 360deg);mask:radial-gradient(circle at 50% 50%,transparent 0 17px,#000 18px)}.crowd-needle{position:absolute;left:28px;bottom:0;width:2px;height:23px;background:var(--fg);transform-origin:50% 100%;transform:rotate(calc(-90deg + var(--v)*1.8deg));border-radius:2px}.crowd-gauge:after{content:"";position:absolute;left:24px;bottom:-4px;width:10px;height:10px;border-radius:50%;background:var(--fg)}.crowd-label{font-size:9px;color:var(--dim);line-height:1.15}.crowd-label b{display:block;color:var(--fg);font-size:11px}.crowd-na .crowd-gauge{opacity:.3}.crowd-na .crowd-needle{display:none}
 .stockrow .crowd-wrap{margin-top:6px}.stockrow .crowd-gauge{transform:scale(.82);transform-origin:left center;margin-right:-8px}.sf-crowd{grid-column:auto}
 @media(max-width:900px){.experimental-grid{grid-template-columns:1fr}.exp-cards{grid-template-columns:repeat(2,minmax(110px,1fr))}}
-/* v2.5.7 — Early Edge + Historical Twin */
+/* v3.0.7 — Early Edge + Historical Twin */
 .edge-strip{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}.edge-strip span{font-size:9px!important;color:var(--dim);background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:4px 7px!important;cursor:help}.sf-grid+.sf-history{margin-top:5px}.stockfocus-card>.edge-strip{margin:7px 0}.stockrow>.edge-strip{opacity:.9}
 
 /* ========================= FusionPulse 3.0 · Tablet UX / D1 status ===== */
@@ -569,3 +570,6 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 .stock-ladder-na{display:flex;flex-direction:column;justify-content:center;gap:4px;color:var(--dim);font-size:10px}.stock-ladder-na small{font-weight:800;color:var(--fg)}
 @media(max-width:760px){.stockfocus-card{grid-template-columns:minmax(0,1fr) 118px;gap:10px}.stock-ladder{min-height:290px}.slv b,.sl-price b{font-size:9px}.slv span,.sl-price span{font-size:7.5px}}
 @media(max-width:520px){.stockfocus-card{grid-template-columns:1fr}.stock-ladder{min-height:210px;margin:8px 2px 0 8px}}
+
+/* v3.0.7: Countdown eindeutig beschriftet */
+.hclock small{display:block;font-size:9px;line-height:1.05;opacity:.65;white-space:nowrap}

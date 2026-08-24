@@ -11,11 +11,11 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.0.5</title>
+<title>FusionPulse 3.0.7</title>
 </head>
 <body>
 
-<!-- ═════════════════════════════════════════════ Update-Hinweis (v2.5.2) ═══ -->
+<!-- ═════════════════════════════════════════════ Update-Hinweis (v3.0.7) ═══ -->
 <div id="updateBar" class="updatebar hidden">
   <span id="updateText">Neue FusionPulse-Version verfügbar – neu laden</span>
   <button id="updateReload" class="primary">Jetzt neu laden</button>
@@ -25,7 +25,7 @@
 <header>
   <div class="hstat">
     <b id="regime">–</b>
-    <!-- Systemstatus kompakt: Krypto ● | Aktien ● | v2.5.2 -->
+    <!-- Systemstatus kompakt: Krypto ● | Aktien ● | v3.0.7 -->
     <div class="sysbar" id="sysbar">
       <span class="sys" id="sysCrypto" data-state="busy" title="Status der Krypto-Datenquelle (Bitpanda Fusion)">Krypto <i></i></span>
       <span class="sysSep">|</span>
@@ -36,8 +36,8 @@
     <small id="status" data-state="busy">Verbinde…</small>
   </div>
 
-  <div class="hclock" title="Restzeit bis Schluss der 5-Minuten-Kerze">
-    <b id="barclock">--:--</b>
+  <div class="hclock" title="Countdown bis zur nächsten 5-Minuten-Grenze des Coin-Scanners. Kein Börsen-Countdown und keine Signal-Gültigkeit.">
+    <small>Nächster 5m-Takt</small><b id="barclock">--:--</b>
   </div>
 
   <div class="hcounts" title="Handeln / Beobachten / Rest">
