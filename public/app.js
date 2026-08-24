@@ -331,8 +331,16 @@ async function loadHealth() {
         showUpdateBar(`Neue FusionPulse-Version verfügbar – neu laden (Oberfläche v${FP_VERSION}, Server v${health.version})`);
       }
     }
-    setSys('#sysCrypto', health.status?.crypto?.state || 'unknown', health.status?.crypto?.message);
+    const cryptoHealth = health.status?.crypto?.state || 'unknown';
+    setSys('#sysCrypto', cryptoHealth, health.status?.crypto?.message);
     setSys('#sysStocks', health.status?.stocks?.state || 'unknown', health.status?.stocks?.message);
+    // Der große Krypto-Status darf nicht dauerhaft "Verbinde…" anzeigen, wenn
+    // der Worker den Bitpanda-Provider bereits als erreichbar bestätigt hat.
+    const mainStatus = $('#status');
+    if (mainStatus && cryptoHealth === 'ok' && (mainStatus.textContent.trim() === 'Verbinde…' || mainStatus.dataset.state === 'busy')) {
+      mainStatus.textContent = 'Bitpanda verbunden · erster Scan läuft…';
+      mainStatus.dataset.state = 'busy';
+    }
     renderQuota(health.quota?.twelveData);
   } catch {
     setSys('#sysCrypto', 'error', 'Worker nicht erreichbar');
@@ -734,7 +742,14 @@ function renderOpeningPanel() {
   const phase=openingMeta.phaseLabel||'Status wird geladen';
   const top=openingRows.slice(0,5);
   el.innerHTML=`<div class="ophead"><b>🚀 Opening Momentum</b><span title="${esc(openingMeta.phaseHelp||'')} ">${esc(phase)}</span><small title="Kostenloser Alpaca-Livefeed = IEX, eine einzelne US-Börse. Vollständiger SIP-Gesamtmarkt ist kostenpflichtig.">Alpaca · ${esc(openingMeta.feed||'IEX')}</small></div>`+
-    (top.length?`<div class="opgrid">${top.map(r=>`<div class="opcard ${r.light}" title="Momentum-Score kombiniert Gap, Volumenbeschleunigung, kurzfristige Kursdynamik und Premarket-/Opening-Level. Kein BUY allein."><b>${esc(r.symbol)}</b><span>${r.gapPct>=0?'+':''}${num(r.gapPct,1)}% Gap</span><span>Mom ${num(r.momentumScore,1)}</span><span>RV ${num(r.relVol,1)}×</span><span title="Elliott/Fibonacci-Strukturprojektion: grober möglicher Bewegungsraum aus aktuellem Impuls und 1,618-Projektion; kein garantiertes Kursziel.">Struktur ${num(r.structurePct,1)}%</span><em>${esc(r.phaseAction)}</em></div>`).join('')}</div>`:'<span class="hint">Noch keine verwertbaren Live-Daten im aktuellen IEX-Zeitfenster.</span>');
+    (top.length?`<div class="opgrid">${top.map(r=>`<button type="button" class="opcard ${r.light}" data-openstock="${esc(r.symbol)}" title="${esc(r.symbol)} im Aktienradar öffnen. Momentum-Score kombiniert Gap, Volumenbeschleunigung, kurzfristige Kursdynamik und Premarket-/Opening-Level. Kein BUY allein."><b>${esc(r.symbol)}</b><span>${r.gapPct>=0?'+':''}${num(r.gapPct,1)}% Gap</span><span>Mom ${num(r.momentumScore,1)}</span><span>RV ${num(r.relVol,1)}×</span><span title="Elliott/Fibonacci-Strukturprojektion: grober möglicher Bewegungsraum aus aktuellem Impuls und 1,618-Projektion; kein garantiertes Kursziel.">Struktur ${num(r.structurePct,1)}%</span><em>${esc(r.phaseAction)}</em></button>`).join('')}</div>`:'<span class="hint">Noch keine verwertbaren Live-Daten im aktuellen IEX-Zeitfenster.</span>');
+  el.querySelectorAll('[data-openstock]').forEach(btn => btn.addEventListener('click', async () => {
+    const q = $('#stockQ'); if (!q) return;
+    q.value = btn.dataset.openstock || '';
+    renderStocks();
+    await searchStockNow();
+    $('#stockFocus')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }));
 }
 
 function renderStocks() {

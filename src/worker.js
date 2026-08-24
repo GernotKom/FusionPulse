@@ -1027,14 +1027,45 @@ async function getFx(key) {
   return fxMemo.usdPerEur;
 }
 
+async function resolveStockQueryLive(env, raw) {
+  const local = resolveStockQuery(raw);
+  const q = String(raw || '').trim();
+  // Lokale Treffer sind kostenlos und eindeutig. Für unbekannte Namen/Symbole
+  // dient Twelve Data /symbol_search als vollständiger Discovery-Fallback.
+  if (local && STOCK_SEARCH_BY_SYMBOL.has(local.symbol)) return local;
+  if (!q || !env.TWELVE_API_KEY) return local;
+  try {
+    const j = await twelveJSON('symbol_search', { symbol: q, outputsize: '12', show_plan: 'true' }, env.TWELVE_API_KEY, 1);
+    const data = Array.isArray(j?.data) ? j.data : [];
+    const us = data.filter(x => {
+      const country = String(x.country || '').toUpperCase();
+      const currency = String(x.currency || '').toUpperCase();
+      const type = String(x.instrument_type || '').toUpperCase();
+      return (country === 'UNITED STATES' || country === 'US' || currency === 'USD') && (!type || /STOCK|COMMON|EQUITY|ADR/.test(type));
+    });
+    const hit = us[0] || data[0];
+    if (hit?.symbol) return {
+      sector: local?.sector || 'Watchlist',
+      symbol: String(hit.symbol).toUpperCase(),
+      name: hit.instrument_name || local?.name || String(hit.symbol).toUpperCase(),
+      exchange: hit.exchange || null,
+    };
+  } catch (e) {
+    // Bei einem Discovery-Fehler bleibt ein syntaktisch gültiger Ticker nutzbar.
+    if (local) return local;
+    throw e;
+  }
+  return local;
+}
+
 async function stockLookup(env, raw, comp, minCrv = 3) {
   if (!env.TWELVE_API_KEY) return { configured: false, state: 'nokey', error: 'TWELVE_API_KEY fehlt', quota: quotaView(), version: APP_VERSION };
-  const info = resolveStockQuery(raw);
-  if (!info) return { configured: true, state: 'ok', notFound: true, error: 'Kein eindeutiger Treffer. Bitte den Börsen-Ticker eingeben.', quota: quotaView(), version: APP_VERSION };
+  const info = await resolveStockQueryLive(env, raw);
+  if (!info) return { configured: true, state: 'ok', notFound: true, error: 'Kein eindeutiger US-Aktientreffer gefunden. Bitte Firmenname oder Ticker versuchen.', quota: quotaView(), version: APP_VERSION };
   const cached = stockLookupMemo.get(info.symbol);
   if (cached && Date.now() - cached.ts < 5 * 60_000) return { configured: true, state: 'ok', cached: true, lookup: true, row: cached.row, quota: quotaView(), version: APP_VERSION };
   const fx = await getFx(env.TWELVE_API_KEY);
-  const j = await twelveJSON('time_series', { symbol: info.symbol, interval: '5min', outputsize: '40', format: 'JSON' }, env.TWELVE_API_KEY, 1);
+  const j = await twelveJSON('time_series', { symbol: info.symbol, interval: '5min', outputsize: '40', prepost: 'true', format: 'JSON' }, env.TWELVE_API_KEY, 1);
   const row = analyseStock(info.symbol, info.sector, j, fx, comp, minCrv);
   if (!row) return { configured: true, state: 'ok', notFound: true, error: 'Titel gefunden, aber noch nicht genügend 5-Minuten-Daten für die Analyse.', quota: quotaView(), version: APP_VERSION };
   if ((!row.name || row.name === row.symbol) && info.name) row.name = info.name;
