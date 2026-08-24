@@ -1,56 +1,71 @@
-# FusionPulse v3.1.8
+# FusionPulse v3.2.0
 
-Momentum- und Einstiegszonen-Scanner für Bitpanda Fusion (EUR) plus US-Aktienradar über Twelve Data und Alpaca. Läuft als PWA auf einem Cloudflare Worker. Keine Order-Automatik — FusionPulse liefert Trade-Pläne, ausgeführt wird manuell.
+FusionPulse ist ein autonomer Momentum- und Opportunity-Waechter fuer Krypto und liquide US-Aktien. Ziel ist nicht moeglichst viele Signale, sondern wenige, wirtschaftlich relevante A-Setups: App starten, laufen lassen und nur dann aufmerksam werden, wenn Datenqualitaet, Handelbarkeit, CRV und realistisches absolutes Gewinnpotenzial zusammenpassen.
 
-## Datenquellen
+## Datenarchitektur v3.2.0
 
-- **Krypto:** Bitpanda Fusion; serverseitiger Cron-Scan, die PWA muss dafür nicht geöffnet sein.
-- **Aktien-Radar und Suche:** Twelve Data. Extended Hours werden genutzt, sofern der Tarif sie freigibt; sonst sauberer Intraday-Fallback.
-- **Opening/Premarket Momentum:** Alpaca. Standard `ALPACA_FEED=iex`; SIP ist vorbereitet, aber nicht erforderlich für v3.0.8.
-- **Learning/Health:** Cloudflare D1. Aktien-Learning trennt Twelve Data jetzt explizit von Alpaca Opening-Daten.
+- **Krypto:** Bitpanda Fusion; serverseitiger Cron-Scan, PWA muss dafuer nicht geoeffnet sein.
+- **Aktien Primary:** Tiingo Power / IEX 5-Minuten-Daten inklusive Volumen.
+- **Overnight Discovery:** Tiingo BOATS. BOATS nominiert nur auffaellige Kandidaten und hat **0 % direkten BUY-Einfluss**.
+- **Opening/Premarket Zusatzquelle:** Alpaca IEX bleibt vorerst als unabhaengige Opening-/Plausibilitaetsquelle erhalten.
+- **Fallback/Referenz:** Twelve Data bleibt im Code vorhanden, ist in `primary` aber nicht der Hauptfeed.
+- **Learning/Health:** Cloudflare D1; Aktien-Learning akzeptiert historische Samples aus Twelve Data und Tiingo IEX, ohne die Quellen unbemerkt zu vermischen.
 
-## Neu in v3.0.8
+## v3.2.0: Discovery -> Deep Scan -> Opportunity -> BUY
 
-- **Twelve-Data-Quota-Hotfix:** Der automatische Aktienradar-Scan nutzt vier Teilgruppen (6/5/5/5) statt das Minutenkontingent auszureizen.
-- **Kein doppelter Extended-Hours-Batch:** Der automatische Radar-Scan nutzt Regular-Hours-Daten; Premarket/Opening bleibt bei Alpaca. Dadurch entfällt die teure `prepost=true`-Fallback-Doppelabfrage.
-- **429 ohne leeres Radar:** Bei Rate-Limit bleiben bereits geladene Aktien in der PWA sichtbar; der nächste Teilscan setzt automatisch fort.
-- **Manuelle Aktiensuche unverändert:** Die funktionierende Suche bleibt bewusst unangetastet.
+1. **BOATS Discovery:** breiter Overnight-Snapshot wird nach ungewoehnlicher Bewegung, Aktivitaet und Spread vorgefiltert.
+2. **Deep Scan:** Favoriten + beste BOATS-Kandidaten + rotierende Basistitel gehen in die aufwendige Tiingo-IEX-5-Minuten-Analyse. Maximal 20 Kandidaten pro 2-Minuten-Zyklus.
+3. **Opportunity Watch:** eine Aktie wird nur als Opportunity hervorgehoben, wenn Live-Daten, Qualitaet, Netto-CRV, verbleibender Kursweg und ein wirtschaftlich relevantes Netto-Euro-Potenzial passen.
+4. **BUY:** bleibt hinter den bestehenden harten FusionPulse-Gates. Discovery oder Crowd koennen niemals allein BUY erzeugen.
 
-- Aktiensuche bei kurzen/generischen Eingaben korrigiert; eindeutige Ticker bleiben lokal, sonst wird die Live-Suche genutzt.
-- Twelve-Data-`prepost`-Fallback verdoppelt bei Credit-/API-Key-Problemen keine Requests mehr.
-- Aktien-Zyklus und Einzel-Lookup verwenden konsistente Extended-Hours-Semantik.
-- Aktien-Cache berücksichtigt aktive Komponenten und Mindest-CRV.
-- Alpaca-Zeitformatierung deutlich CPU-schonender; Opening-D1-Schreiben auf 5-Minuten-Takt reduziert.
-- `/api/learning` stark entlastet und Cache stabilisiert; Aktien-Learning/History nutzt Twelve Data als definierte Quelle.
-- Aktien-Hover-Detail öffnet zuverlässig erst nach 2,3 Sekunden ruhigem Hover und nicht mehr sofort durch Fokus/Scrollen.
-- Heatmap-Klick fokussiert eine Aktie ohne versteckten Dauerfilter.
-- Live-Scan-Routen sind `no-store`; erzwungene Coin-Scans können einen laufenden Poll wirklich ersetzen.
-- Unbekannte Messwerte bleiben `null`/„n. v.“ statt als scheinbar gemessene 0 oder 1 ausgegeben zu werden.
-- Krypto-Warmcache-Schreiblast gedrosselt; doppelte Krypto-Analyse ohne Orderbuch vermieden.
-- Countdown oben ist jetzt als **„Nächster 5m-Takt“** beschriftet.
-- Versionsführung vollständig auf v3.0.8 synchronisiert.
+## Zentrale Sicherheitsregeln
+
+- Fehlende, stale oder qualitativ schlechtere Daten duerfen Score, BUY oder positiven Signalton niemals verbessern.
+- WATCH bleibt akustisch stumm.
+- BUY nur bei ausreichender Qualitaet, Handelbarkeit und Netto-CRV > 3:1.
+- BOATS, Crowd, Learning und Elliott/Fibonacci sind Zusatz-/Discovery-Layer; sie duerfen ein schlechtes Setup nicht hochstufen.
+- Ein bereits stark gelaufener Kurs ist keine Opportunity, wenn der attraktive Einstieg/CRV bereits vorbei ist.
+
+## Opportunity-Value
+
+FusionPulse beruecksichtigt neben CRV auch das realistische absolute Netto-Potenzial bei der Referenzposition. Kleine, formal korrekte Trades sollen nicht unnoetig Aufmerksamkeit binden. Aktuell gilt im Aktien-Opportunity-Waechter:
+
+- unter ca. EUR 200 Netto-Potenzial: **UNINTERESSANT**
+- ab ca. EUR 350 bei vollstaendigen Gates: **OPPORTUNITY**
+- ab ca. EUR 500 bei vollstaendigen Gates: **HIGH OPPORTUNITY**
+
+Diese Schwellen sind Selektions-/Rankinghilfen, keine Erfolgswahrscheinlichkeiten und ersetzen keine BUY-Gates.
+
+## Tiingo Betrieb
+
+`wrangler.jsonc` steht in v3.2.0 standardmaessig auf:
+
+```json
+"TIINGO_STOCKS_MODE": "primary"
+```
+
+Erforderliches Cloudflare Secret:
+
+- `TIINGO_API_TOKEN`
+
+Der Token bleibt ausschliesslich serverseitig. Der v3.1.8-Livetest hat Token, IEX, 5-Minuten-Historie, Volumen und BOATS erfolgreich bestaetigt.
+
+## UI / VL Stand
+
+- permanenter SIGNAL-INFO-Banner unten
+- Aktien-Favoriten und Karten frei sortierbar, Reihenfolge persistent
+- Klick auf Aktie in der Liste oeffnet das grosse Detailfenster
+- Intraday-Chart in Aktien- und Coin-Details
+- EUR-Kurs primär, originaler USD-Kurs direkt in Klammern
+- schnelle Header-Tooltips fuer Risk-On/Off, Countdown und Statussymbole
+- laienverstaendliche Tooltips fuer Zonenlage und Pullback
+- Datenherkunft/Freshness sichtbar; gecachte/stale Daten werden nicht als Live dargestellt
 
 ## Versionierung
 
-`package.json` ist die verbindliche Versionsquelle. `npm run sync-version` synchronisiert Worker, Frontend, Service Worker, HTML und Wrangler-Konfiguration. README und Release Notes werden bei jedem Release zusätzlich inhaltlich geprüft.
+`package.json` ist die einzige technische Versionsquelle. `npm run sync-version` synchronisiert Worker, Frontend, Service Worker, HTML, Wrangler und README-Kopf. Release Notes und Verbesserungsliste werden je Release inhaltlich gepflegt. Keine Suffix-Versionen wie `-2.0`.
 
-## Alpaca Feed umstellen
-
-Standard:
-
-```json
-"ALPACA_FEED": "iex"
-```
-
-Nach Aktivierung eines Alpaca-Tarifs mit SIP-Zugriff:
-
-```json
-"ALPACA_FEED": "sip"
-```
-
-Danach neu deployen. Die vorhandenen `ALPACA_API_KEY_ID` und `ALPACA_API_SECRET_KEY` bleiben bestehen.
-
-## Checks
+## Checks vor Deploy
 
 ```bash
 npm install
@@ -58,5 +73,8 @@ npm run sync-version
 npm run check
 ```
 
-## v3.1.0 – Tiingo Power + BOATS
-Tiingo wird zunächst als paralleler Discovery-/Marktdaten-Layer integriert. Twelve Data und Alpaca bleiben bis zum erfolgreichen Paralleltest erhalten. `TIINGO_API_TOKEN` ausschließlich als Cloudflare-Secret setzen; keine Keys im Frontend oder Repository.
+`npm run check` umfasst JS-Syntax und die Safety-Regressionssuite.
+
+## Deployment-Hinweis v3.2.0
+
+v3.2.0 ist die erste Version mit **Tiingo Primary standardmaessig aktiv**. Nach Deploy zuerst Health/Stock-Status, Aktien-Freshness, BOATS-Kandidaten und Signalton beobachten. Twelve Data nicht loeschen, bevor Tiingo im realen Premarket/Opening mehrere Sessions stabil gelaufen ist.

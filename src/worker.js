@@ -1654,12 +1654,12 @@ function twinDistance(a,b){
 async function d1TwinFor(env, symbol){
   if(!env.DB) return {n:0,source:'none'};
   const cur=await env.DB.prepare(`SELECT sector,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure
-    FROM market_snapshots WHERE symbol=? AND asset_type='stock' AND source='Twelve Data' ORDER BY ts DESC LIMIT 1`).bind(symbol).first();
+    FROM market_snapshots WHERE symbol=? AND asset_type='stock' AND source IN ('Twelve Data','Tiingo IEX') ORDER BY ts DESC LIMIT 1`).bind(symbol).first();
   if(!cur) return {n:0,source:'d1'};
   if(!cur.sector) return {n:0,source:'d1',reason:'kein Sektor'};
   const curBucket=Math.floor(Date.now()/(5*60_000));
   const q=env.DB.prepare(`SELECT symbol,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure,max_pct,min_pct
-       FROM market_snapshots WHERE resolved_ts IS NOT NULL AND asset_type='stock' AND source='Twelve Data' AND sector=? AND bucket5<=? AND symbol!=? ORDER BY ts DESC LIMIT 300`).bind(cur.sector,curBucket-36,String(symbol).toUpperCase());
+       FROM market_snapshots WHERE resolved_ts IS NOT NULL AND asset_type='stock' AND source IN ('Twelve Data','Tiingo IEX') AND sector=? AND bucket5<=? AND symbol!=? ORDER BY ts DESC LIMIT 300`).bind(cur.sector,curBucket-36,String(symbol).toUpperCase());
   const rows=(await q.all()).results||[];
   const nearest=rows.map(x=>({...x,d:twinDistance(cur,x)})).filter(x=>x.d<9999).sort((a,b)=>a.d-b.d).slice(0,12);
   if(nearest.length<5)return {n:nearest.length,distinctSymbols:new Set(nearest.map(x=>x.symbol)).size,source:'d1'};
@@ -1668,11 +1668,11 @@ async function d1TwinFor(env, symbol){
 }
 async function d1LeadModel(env, symbol){
   if(!env.DB)return {n:0};
-  const successes=(await env.DB.prepare(`SELECT ts,success_ts FROM market_snapshots WHERE symbol=? AND asset_type='stock' AND source='Twelve Data' AND success_ts IS NOT NULL ORDER BY success_ts DESC LIMIT 40`).bind(symbol).all()).results||[];
+  const successes=(await env.DB.prepare(`SELECT ts,success_ts FROM market_snapshots WHERE symbol=? AND asset_type='stock' AND source IN ('Twelve Data','Tiingo IEX') AND success_ts IS NOT NULL ORDER BY success_ts DESC LIMIT 40`).bind(symbol).all()).results||[];
   if(!successes.length)return {n:0};
   const minTs=Math.min(...successes.map(s=>Number(s.ts)))-60*60_000;
   const maxTs=Math.max(...successes.map(s=>Number(s.success_ts)));
-  const allEvents=(await env.DB.prepare(`SELECT signal,ts FROM signal_events WHERE symbol=? AND source='Twelve Data' AND ts BETWEEN ? AND ? ORDER BY ts ASC`).bind(symbol,minTs,maxTs).all()).results||[];
+  const allEvents=(await env.DB.prepare(`SELECT signal,ts FROM signal_events WHERE symbol=? AND source IN ('Twelve Data','Tiingo IEX') AND ts BETWEEN ? AND ? ORDER BY ts ASC`).bind(symbol,minTs,maxTs).all()).results||[];
   const leads={}, first={}; let used=0;
   for(const s of successes){
     const start=Number(s.ts)-60*60_000,end=Number(s.success_ts);
@@ -1690,7 +1690,7 @@ async function d1LeadModel(env, symbol){
 }
 async function d1History(env, symbol, assetType){
   if(!env.DB)return [];
-  const sourceClause = assetType === 'stock' ? " AND source='Twelve Data'" : '';
+  const sourceClause = assetType === 'stock' ? " AND source IN ('Twelve Data','Tiingo IEX')" : '';
   const rows=(await env.DB.prepare(`SELECT ts,score,crv,executability,light,price FROM market_snapshots
     WHERE symbol=? AND asset_type=?${sourceClause} AND ts>=? ORDER BY ts ASC`).bind(symbol,assetType,Date.now()-LEARN_HISTORY_MS).all()).results||[];
   // ein Punkt je 15-Minuten-Segment, serverseitig und geräteunabhängig
@@ -1742,10 +1742,11 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
       await persistApiState(env,'alpaca',state,e?.message,now); cronLog('alpaca',state,e?.message);
     }
   }
-  if(env.TWELVE_API_KEY && Math.floor(now/60_000)%30===1){
+  if(Math.floor(now/60_000)%10===1 && (tiingoStocksMode(env)==='primary' ? env.TIINGO_API_TOKEN : env.TWELVE_API_KEY)){
     try{
-      const st=await stockSnapshot(env,false,new Set(ALL_ON),3);
-      await d1StoreRows(env,st.rows||[],{source:'Twelve Data',assetType:'stock',now});
+      const primary=tiingoStocksMode(env)==='primary';
+      const st=primary ? await tiingoStockSnapshot(env,false,new Set(ALL_ON),3,[]) : await stockSnapshot(env,false,new Set(ALL_ON),3);
+      await d1StoreRows(env,st.rows||[],{source:primary?'Tiingo IEX':'Twelve Data',assetType:'stock',now});
       setApiState('stocks','ok',`${st.rows?.length||0} Rows`);
       await persistApiState(env,'stocks','ok',`${st.rows?.length||0} Rows`,now);
     }catch(e){
@@ -1785,6 +1786,42 @@ async function tiingoBoatsSnapshot(env, rawSymbols) {
   return {configured:true,state:'ok',rows:rows.filter(Boolean),source:'Tiingo BOATS',session:'20:00–03:59 ET',ts:Date.now(),version:APP_VERSION};
 }
 
+
+
+let tiingoDiscoveryMemo={ts:0,rows:[],session:null};
+function boatsDiscoveryScore(r){
+  const last=Number(r?.tngoLast ?? r?.last ?? r?.mid);
+  const prev=Number(r?.prevClose), bid=Number(r?.bidPrice), ask=Number(r?.askPrice), vol=Number(r?.volume);
+  if(!(last>0) || !(prev>0) || last<2) return null;
+  const movePct=(last/prev-1)*100;
+  const mid=bid>0&&ask>0?(bid+ask)/2:last;
+  const spreadPct=bid>0&&ask>0&&mid>0?((ask-bid)/mid)*100:null;
+  // Discovery only: unusual overnight move + real activity + acceptable quote.
+  // This score NEVER enters analyseStock/BUY and is only used to choose Deep-Scan candidates.
+  if(spreadPct!=null && spreadPct>3.0) return null;
+  if(Number.isFinite(vol) && vol<100) return null;
+  const activity=Number.isFinite(vol)&&vol>0?Math.log10(vol+1):0;
+  const score=Math.abs(movePct)*2.4 + Math.min(8,activity) - (spreadPct==null?1.5:Math.min(6,spreadPct*2));
+  return {score,movePct,spreadPct,volume:Number.isFinite(vol)?vol:null,last,prev};
+}
+async function tiingoBoatsDiscovery(env,limit=15,force=false){
+  const now=Date.now();
+  if(!force && tiingoDiscoveryMemo.rows.length && now-tiingoDiscoveryMemo.ts<5*60_000) return tiingoDiscoveryMemo;
+  try{
+    const d=await tiingoFetch(env,'/boats');
+    const rows=(Array.isArray(d)?d:[]).map(x=>{
+      const symbol=String(x.ticker||x.symbol||'').toUpperCase();
+      if(!/^[A-Z0-9\-]{1,12}$/.test(symbol)) return null;
+      const m=boatsDiscoveryScore(x); if(!m) return null;
+      return {symbol,...m,timestamp:x.timestamp||x.quoteTimestamp||x.lastSaleTimestamp||null,source:'Tiingo BOATS'};
+    }).filter(Boolean).sort((a,b)=>b.score-a.score).slice(0,Math.max(1,Math.min(30,limit)));
+    tiingoDiscoveryMemo={ts:now,rows,session:'BOATS 20:00–04:00 ET'};
+    return tiingoDiscoveryMemo;
+  }catch(e){
+    console.warn(JSON.stringify({event:'tiingo_boats_discovery_failed',message:String(e?.message||e),ts:now}));
+    return tiingoDiscoveryMemo.rows.length?tiingoDiscoveryMemo:{ts:now,rows:[],session:'BOATS unavailable',error:String(e?.message||e)};
+  }
+}
 
 function tiingoStocksMode(env){
   const m=String(env.TIINGO_STOCKS_MODE||'shadow').toLowerCase();
@@ -1848,26 +1885,53 @@ async function tiingoValidation(env,rawSymbols){
 }
 async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols=[]){
   if(!env.TIINGO_API_TOKEN) return {configured:false,state:'nokey',rows:stockMemo.rows||[],source:'Tiingo IEX',version:APP_VERSION,note:'TIINGO_API_TOKEN fehlt'};
-  const minuteSlot=Math.floor(Date.now()/60_000), favs=[...new Set((favoriteSymbols||[]).map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,8}$/.test(x)))].slice(0,30);
-  const cycle=Math.floor(minuteSlot/2); // Power-ready: max. alle 2 Minuten ein Deep-Batch
-  const sig=[...(comp instanceof Set?comp:new Set(ALL_ON))].sort().join('.')+'|'+minCrv+'|tiingo|fav:'+favs.join('.');
-  if(!force&&stockMemo.rows.length&&stockMemo.cycle===cycle&&stockMemo.sig===sig&&Date.now()-stockMemo.ts<110_000) return {configured:true,state:'ok',cached:true,rows:stockMemo.rows,ts:stockMemo.ts,cycle,universe:STOCK_SEARCH_CATALOG.length,scanned:stockMemo.rows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),version:APP_VERSION};
-  const favPick=favs.slice(0,3), favSet=new Set(favPick), base=[]; const start=(cycle*4)%STOCK_SEARCH_CATALOG.length;
-  for(let i=0;i<STOCK_SEARCH_CATALOG.length&&base.length<Math.max(0,5-favPick.length);i++){const x=STOCK_SEARCH_CATALOG[(start+i)%STOCK_SEARCH_CATALOG.length];if(!favSet.has(x[1]))base.push(x[1]);}
-  const syms=[...favPick,...base].slice(0,5), fx=await getTiingoFx(env);
-  const fresh=(await pool(syms,5,async sym=>{const inf=STOCK_SEARCH_BY_SYMBOL.get(sym)||{sector:null};try{return await tiingoAnalyseOne(env,sym,inf.sector,comp,minCrv,fx);}catch(e){console.warn(JSON.stringify({event:'tiingo_stock_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));return null;}})).filter(Boolean);
-  const old=new Map(stockMemo.rows.map(r=>[r.symbol,r]));for(const r of fresh)old.set(r.symbol,r);const rows=[...old.values()].sort((a,b)=>b.score-a.score);
-  stockMemo={ts:Date.now(),rows,cycle,sig};setApiState('stocks',fresh.length?'ok':'stale',fresh.length?null:'Tiingo lieferte keine analysierbaren Bars');
+  const minuteSlot=Math.floor(Date.now()/60_000), favs=[...new Set((favoriteSymbols||[]).map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,30);
+  const cycle=Math.floor(minuteSlot/2); // Power: alle 2 Minuten ein Deep-Batch
+  const sig=[...(comp instanceof Set?comp:new Set(ALL_ON))].sort().join('.')+'|'+minCrv+'|tiingo-primary|fav:'+favs.join('.');
+  if(!force&&stockMemo.rows.length&&stockMemo.cycle===cycle&&stockMemo.sig===sig&&Date.now()-stockMemo.ts<110_000) return {configured:true,state:'ok',cached:true,rows:stockMemo.rows,ts:stockMemo.ts,cycle,universe:12000,universeLabel:'12.000+ Tiingo/BOATS',scanned:stockMemo.rows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:tiingoDiscoveryMemo,version:APP_VERSION};
+
+  // v3.2.0: broad Discovery -> selective Deep Scan. BOATS only nominates candidates;
+  // it can never set score/light/BUY. Historical IEX bars are still required for analysis.
+  const discovery=await tiingoBoatsDiscovery(env,15,force);
+  const favPick=favs.slice(0,5), picked=new Set(favPick), discoveryPick=[];
+  for(const x of discovery.rows||[]){ if(!picked.has(x.symbol)){picked.add(x.symbol);discoveryPick.push(x.symbol);} if(discoveryPick.length>=10)break; }
+  const base=[]; const start=(cycle*7)%STOCK_SEARCH_CATALOG.length;
+  for(let i=0;i<STOCK_SEARCH_CATALOG.length&&favPick.length+discoveryPick.length+base.length<20;i++){
+    const x=STOCK_SEARCH_CATALOG[(start+i)%STOCK_SEARCH_CATALOG.length],sym=x[1];
+    if(!picked.has(sym)){picked.add(sym);base.push(sym);}
+  }
+  const syms=[...favPick,...discoveryPick,...base].slice(0,20), fx=await getTiingoFx(env);
+  const discMap=new Map((discovery.rows||[]).map(x=>[x.symbol,x]));
+  const fresh=(await pool(syms,6,async sym=>{
+    const inf=STOCK_SEARCH_BY_SYMBOL.get(sym)||{sector:null,name:sym};
+    try{
+      const row=await tiingoAnalyseOne(env,sym,inf.sector,comp,minCrv,fx);
+      if(row&&discMap.has(sym)) row.discovery={...discMap.get(sym),buyWeight:0};
+      return row;
+    }catch(e){console.warn(JSON.stringify({event:'tiingo_stock_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));return null;}
+  })).filter(Boolean);
+  const old=new Map(stockMemo.rows.map(r=>[r.symbol,r])); for(const r of fresh)old.set(r.symbol,r);
+  const rows=[...old.values()].sort((a,b)=>b.score-a.score).slice(0,80);
+  stockMemo={ts:Date.now(),rows,cycle,sig}; setApiState('stocks',fresh.length?'ok':'stale',fresh.length?null:'Tiingo lieferte keine analysierbaren Bars');
   await persistStockScan(env,sig,cycle,rows,{provider:'Tiingo IEX',fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol)});
-  return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:STOCK_SEARCH_CATALOG.length,scanned:rows.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),version:APP_VERSION,note:'Tiingo IEX 5-Minuten-Daten; EUR ist Umrechnung, kein Tradegate-Kurs'};
+  return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:12000,universeLabel:'12.000+ Tiingo/BOATS',scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{source:'Tiingo BOATS',ts:discovery.ts,session:discovery.session,candidates:(discovery.rows||[]).slice(0,15)},version:APP_VERSION,note:'Tiingo Primary: BOATS Discovery (0 % BUY-Gewicht) -> IEX 5-Min Deep Scan; EUR ist Umrechnung, kein Tradegate-Kurs'};
 }
 async function tiingoStockLookup(env,raw,comp,minCrv=3){
-  const info=resolveStockQuery(raw);
-  if(!info) return {configured:true,state:'ok',notFound:true,error:'Ticker/Firmenname nicht im lokalen Katalog. Im Testmodus wird Twelve-Discovery bewusst nicht verbraucht.',source:'Tiingo IEX',version:APP_VERSION};
+  let info=resolveStockQuery(raw);
+  if(!info){
+    try{
+      const q=encodeURIComponent(String(raw||'').trim());
+      const d=await tiingoFetch(env,`/tiingo/utilities/search?query=${q}`);
+      const hit=(Array.isArray(d)?d:[]).find(x=>x?.isActive!==false && String(x?.assetType||'').toLowerCase()==='stock') || (Array.isArray(d)?d:[])[0];
+      if(hit?.ticker) info={symbol:String(hit.ticker).toUpperCase().replace(/\./g,'-'),name:hit.name||hit.ticker,sector:null,exchange:null};
+    }catch(e){ console.warn(JSON.stringify({event:'tiingo_search_failed',query:String(raw||''),message:String(e?.message||e),ts:Date.now()})); }
+  }
+  if(!info) return {configured:true,state:'ok',notFound:true,error:'Ticker/Firmenname bei Tiingo nicht gefunden.',source:'Tiingo IEX',version:APP_VERSION};
   const cached=stockLookupMemo.get(info.symbol);if(cached&&Date.now()-cached.ts<5*60_000)return {configured:true,state:'ok',cached:true,lookup:true,row:cached.row,source:'Tiingo IEX',version:APP_VERSION};
   const fx=await getTiingoFx(env),row=await tiingoAnalyseOne(env,info.symbol,info.sector,comp,minCrv,fx);
   if(!row)return {configured:true,state:'ok',notFound:true,error:'Noch nicht genügend Tiingo-5-Minuten-Daten.',source:'Tiingo IEX',version:APP_VERSION};
-  stockLookupMemo.set(info.symbol,{ts:Date.now(),row});const old=new Map(stockMemo.rows.map(r=>[r.symbol,r]));old.set(row.symbol,row);stockMemo.rows=[...old.values()].sort((a,b)=>b.score-a.score);
+  if(info.name&&row.name===row.symbol)row.name=info.name;
+  stockLookupMemo.set(info.symbol,{ts:Date.now(),row});const old=new Map(stockMemo.rows.map(r=>[r.symbol,r]));old.set(row.symbol,row);stockMemo.rows=[...old.values()].sort((a,b)=>b.score-a.score).slice(0,80);
   return {configured:true,state:'ok',cached:false,lookup:true,row,source:'Tiingo IEX',provider:'Tiingo',version:APP_VERSION};
 }
 export { analyse, analyseStock };
@@ -1882,7 +1946,7 @@ export default {
       // Weicht env.APP_VERSION ab, ist die Variable veraltet – das wird gemeldet.
       const [cryptoHealth,stocksHealth,alpacaHealth] = await Promise.all([
         persistentApiState(env,'crypto',!!env.FUSION_API_KEY),
-        persistentApiState(env,'stocks',!!env.TWELVE_API_KEY),
+        persistentApiState(env,'stocks',tiingoStocksMode(env)==='primary'?!!env.TIINGO_API_TOKEN:!!env.TWELVE_API_KEY),
         persistentApiState(env,'alpaca',!!(env.ALPACA_API_KEY_ID && env.ALPACA_API_SECRET_KEY)),
       ]);
       return json({

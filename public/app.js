@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.1.8 — Frontend
+   FusionPulse v3.2.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -939,12 +939,12 @@ function renderStocks() {
   if(filter==='green'||filter==='yellow') stockFiltered=stockFiltered.filter(r=>r.light===filter);
   if(filter==='momentum') { const hot=new Set(openingRows.slice(0,20).map(r=>r.symbol)); stockFiltered=stockFiltered.filter(r=>hot.has(r.symbol)); }
   const shown=[...stockFiltered].sort((a,b)=>(Number(isFavStock(b.symbol))-Number(isFavStock(a.symbol)))||(stockOrderIndex(a.symbol)-stockOrderIndex(b.symbol))||b.score-a.score).slice(0,S.stockCount);
-  const scanned=stockMeta.scanned??stockRows.length, universe=stockMeta.universe||21, stateKey=stockMeta.state||(stockRows.length?'ok':'unknown');
+  const scanned=stockMeta.scanned??stockRows.length, universeLabel=stockMeta.universeLabel||stockMeta.universe||21, stateKey=stockMeta.state||(stockRows.length?'ok':'unknown');
   const phase=stockMeta.market?.label||'';
   st.textContent=(stateKey==='ok'?'Aktienfeed':STATE_TEXT[stateKey]||'Status unbekannt')+(phase?` · ${phase}`:'');
   st.className='badge '+(STATE_TONE[stateKey]==='ok'?'ok':STATE_TONE[stateKey]==='warn'?'warn':'err');
   st.title=`${stockMeta.source||stockMeta.provider||'US-Aktienfeed'}. ${phase||''}\nAußerhalb der regulären US-Börsenzeit sind Analysen Vorbereitung und keine Live-BUY-Freigabe.`;
-  if(counts) counts.textContent=`${stockMeta.updatedThisCycle!=null?stockMeta.updatedThisCycle+' aktualisiert · ':''}${scanned} geladen / ${universe} Universum · ${shown.length} angezeigt · ★ ${(S.favoriteStocks||[]).length} · Abfrage ${clock(stockMeta.ts)}`;
+  if(counts){const dc=stockMeta.discovery?.candidates?.length||0;counts.textContent=`${stockMeta.updatedThisCycle!=null?stockMeta.updatedThisCycle+' aktualisiert · ':''}${scanned} geladen / ${universeLabel} Universum · ${shown.length} angezeigt · ${dc?'BOATS '+dc+' Kandidaten · ':''}★ ${(S.favoriteStocks||[]).length} · Abfrage ${clock(stockMeta.ts)}`;}
   stockHeatmap(shown);
   const topBox=$('#stockFocus'), top=shown.find(r=>r.symbol===focusStock)||shown[0];
   if(topBox){if(!top)topBox.innerHTML=search?`<div class="stockfocus-empty">Keine geladene Aktie passend zu „${esc(search)}“. Enter oder 🔎 lädt den Titel direkt.</div>`:(filter==='favorites'?'<div class="stockfocus-empty">Noch keine Aktien-Favoriten. Mit ☆ neben einem Titel hinzufügen.</div>':'');else{
@@ -1062,7 +1062,7 @@ async function scanStocks(force = false) {
       return;
     }
     setSys('#sysStocks', data.configured === false ? 'nokey' : 'ok',
-      data.configured === false ? 'TWELVE_API_KEY fehlt' : `${data.scanned ?? stockRows.length} von ${data.universe} Titeln analysiert`);
+      data.configured === false ? ((data.source||'').includes('Tiingo')?'TIINGO_API_TOKEN fehlt':'Aktien-Datenquelle fehlt') : `${data.updatedThisCycle ?? 0} frisch analysiert · ${data.scanned ?? stockRows.length} geladen`);
     renderQuota(data.quota);
     checkQuotaPopup(data.quota, data.state);
     trackStocks();
@@ -1114,11 +1114,11 @@ async function scanOpeningMomentum(force = false) {
 function setStockPoll() {
   clearTimeout(stockTimer);
   const scheduleStockPoll = () => {
+    const primaryTiingo = String(stockMeta?.provider||'').toLowerCase()==='tiingo' || String(stockMeta?.source||'').includes('Tiingo');
     const universe = Number(stockMeta?.universe || 21);
-    // Nach Cold Start vier quota-sichere Teilgruppen in getrennten Minuten auffuellen.
-    // Sobald das Universum vorhanden ist, wieder konservativ alle 5 Minuten.
-    const incomplete = stockRows.length < universe;
-    const delay = incomplete ? 65_000 : 5 * 60_000;
+    // Tiingo Power: Deep-Scan alle 2 Minuten. Twelve Data bleibt konservativ/quota-sicher.
+    const incomplete = Number.isFinite(universe) ? stockRows.length < universe : true;
+    const delay = primaryTiingo ? 2 * 60_000 : (incomplete ? 65_000 : 5 * 60_000);
     stockTimer = setTimeout(async () => {
       if (document.visibilityState === 'visible') await scanStocks(false);
       scheduleStockPoll();
