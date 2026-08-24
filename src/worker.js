@@ -1146,7 +1146,7 @@ async function stockLookup(env, raw, comp, minCrv = 3) {
   return { configured: true, state: 'ok', cached: false, lookup: true, row, quota: quotaView(), version: APP_VERSION };
 }
 
-async function stockSnapshot(env, force = false, comp, minCrv = 3) {
+async function stockSnapshot(env, force = false, comp, minCrv = 3, favoriteSymbols = []) {
   if (!env.TWELVE_API_KEY) {
     setApiState('stocks', 'nokey', 'TWELVE_API_KEY fehlt');
     return { configured: false, state: 'nokey', rows: [], universe: STOCK_UNIVERSE.length,
@@ -1158,8 +1158,9 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3) {
   // UI die Gruppen minutenweise nacheinander an; danach bleibt der konservative
   // 5-Minuten-Poll bestehen.
   const minuteSlot = Math.floor(Date.now() / 60_000);
-  const cycle = minuteSlot % 4;
-  const sig = [...(comp instanceof Set ? comp : new Set(ALL_ON))].sort().join('.') + '|' + minCrv;
+  const favs=[...new Set((favoriteSymbols||[]).map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,8}$/.test(x)))].slice(0,30);
+  const cycle = minuteSlot; // Cache-Slot: exakt ein automatischer Aktienbatch pro Minute
+  const sig = [...(comp instanceof Set ? comp : new Set(ALL_ON))].sort().join('.') + '|' + minCrv + '|fav:' + favs.join('.');
   if (!force && stockMemo.rows.length && stockMemo.cycle === cycle && stockMemo.sig === sig && Date.now() - stockMemo.ts < 55_000) {
     return { configured: true, state: 'ok', cached: true,
              rows: stockMemo.rows, ts: stockMemo.ts, cycle, universe: STOCK_UNIVERSE.length,
@@ -1167,7 +1168,27 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3) {
              market: usMarketPhase(new Date(), null), note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs' };
   }
 
-  const batch = STOCK_UNIVERSE.filter((_, i) => i % 4 === cycle);
+  // v3.0.10: Depot/Favoriten haben Scan-Priorität. Maximal fünf Twelve-Data-
+  // Credits pro Minute; dadurch bleiben Reserve-Credits für FX/Suche und 429
+  // wird vermieden. Favoriten außerhalb des Standarduniversums sind erlaubt.
+  const favPick=[];
+  if(favs.length){
+    const start=(minuteSlot*3)%favs.length;
+    for(let i=0;i<Math.min(3,favs.length);i++) favPick.push(favs[(start+i)%favs.length]);
+  }
+  const basePick=[];
+  const favSet=new Set(favPick);
+  const baseStart=(minuteSlot*2)%STOCK_UNIVERSE.length;
+  for(let i=0;i<STOCK_UNIVERSE.length && basePick.length<(favs.length?2:5);i++){
+    const x=STOCK_UNIVERSE[(baseStart+i)%STOCK_UNIVERSE.length];
+    if(!favSet.has(x[1])) basePick.push(x);
+  }
+  const favRows=favPick.map(symbol=>{
+    const info=STOCK_SEARCH_BY_SYMBOL.get(symbol);
+    const core=STOCK_UNIVERSE.find(([,s])=>s===symbol);
+    return core || [info?.sector||'Favoriten',symbol,info?.name||symbol];
+  });
+  const batch=[...favRows,...basePick].slice(0,5);
   const syms = batch.map((x) => x[1]);
   const fx = await getFx(env.TWELVE_API_KEY);
   // v3.0.8 QUOTA-HOTFIX: Der automatische Teil-Batch verwendet bewusst keine
@@ -1204,7 +1225,7 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3) {
 
   return {
     configured: true, state: 'ok', cached: false, rows, ts: stockMemo.ts, cycle,
-    universe: STOCK_UNIVERSE.length, scanned: rows.length, updatedThisCycle: fresh.length,
+    universe: STOCK_UNIVERSE.length, scanned: rows.length, updatedThisCycle: fresh.length, favoritePriority: favs.length,
     fxUsdPerEur: fx || null, fxApprox: !!fx, quota: quotaView(), version: APP_VERSION,
     market: usMarketPhase(new Date(), null), note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs',
   };
@@ -1684,7 +1705,8 @@ export default {
         const minCrv = Math.max(1, +url.searchParams.get('minCrv') || 3);
         const lookup = url.searchParams.get('lookup');
         if (lookup) return json(await stockLookup(env, lookup, comp, minCrv), 200, { 'cache-control':'no-store' });
-        return json(await stockSnapshot(env, url.searchParams.get('force') === '1', comp, minCrv), 200, { 'cache-control':'no-store' });
+        const favorites=(url.searchParams.get('favorites')||'').split(',').filter(Boolean);
+        return json(await stockSnapshot(env, url.searchParams.get('force') === '1', comp, minCrv, favorites), 200, { 'cache-control':'no-store' });
       } catch (e) {
         const state = classifyError(e);
         setApiState('stocks', state, e?.message);
