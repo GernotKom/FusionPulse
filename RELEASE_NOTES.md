@@ -1,4 +1,4 @@
-# FusionPulse v3.3.5
+# FusionPulse v3.3.6
 
 ## P0 Stabilisierung – Connection Watchdog
 - Harte Timeouts für die zentralen PWA-Abrufe (Krypto-Scan, Aktien, Opening Momentum, Health und Aktiensuche), damit ein hängender Request die Oberfläche nicht dauerhaft auf „Verbinde…“ festhält.
@@ -53,3 +53,9 @@ Stabilisierungsrelease nach dem ersten Live-Test von v3.3.0. Keine Änderung an 
 - UX-Nachschärfung: Aktienblock vor Krypto; im Krypto-Bereich Übersicht vor Detailfenster.
 - Momentum-/Opening-Prozentwerte farbcodiert und Karten dezent grün/rot hinterlegt.
 - Google-Finance-Link im großen Aktienfenster deutlich sichtbar.
+## v3.3.6 P0 Feed-Isolation Hotfix
+- Bitpanda/Fusion-Upstream-Aufrufe haben nun einen Worker-seitigen harten Timeout von 5,5 s. Ein hängender externer Feed blockiert damit nicht mehr den gesamten `/api/scan`-Request bis zum Browser-Timeout.
+- Single-Flight entkoppelt: ein bereits laufender Krypto-Refresh wird nicht mehr von jeder neuen PWA-Anfrage abgewartet. Wenn ein letzter guter Snapshot vorhanden ist, wird dieser sofort als `staleWhileRefresh` geliefert.
+- Bei Upstream-Fehlern wird der letzte gute Krypto-Datensatz als klar veralteter Cache zurückgegeben statt die komplette Oberfläche leer laufen zu lassen. Alte Daten dürfen weiterhin keine frische BUY-Freigabe erzeugen.
+- Ein erzwungener Refresh wartet nicht mehr auf ein eventuell festhängendes altes Inflight-Promise.
+- Frontend-Timeout auf 12 s reduziert; der Header kennzeichnet Cache-/Reconnect-Zustand als Warnung statt fälschlich grün.

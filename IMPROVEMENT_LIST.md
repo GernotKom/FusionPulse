@@ -1,6 +1,6 @@
-# FusionPulse Improvement List — Stand v3.3.5
+# FusionPulse Improvement List — Stand v3.3.6
 
-## In v3.3.5 weiterhin enthalten / umgesetzt
+## In v3.3.6 weiterhin enthalten / umgesetzt
 
 - Radar → Deep Scan: marktweite Kandidaten vor Cache-Rechecks priorisiert; verifizierte Nicht-Favoriten bleiben zwischen Zyklen sichtbar.
 - Radar-/Opening-/Extended-Hours-Karten laden beim Klick fehlende Deep-Analyse direkt und öffnen anschließend das große Aktienfenster.
@@ -48,5 +48,11 @@
 - Google-Finance-Link im großen Aktien-Detailfenster prominent und eindeutig beschriftet; öffnet in neuem Tab.
 
 
-## VL nach v3.3.5
+## VL nach v3.3.6
 - Aktienchart: Premarket/After Hours als echte Zeitreihe darstellen, Previous Close und Gap-% sichtbar machen, Sessions optisch trennen; keine künstliche Linie über Datenlücken.
+
+## In v3.3.6 umgesetzt
+- P0: hängende Krypto-Upstream-Requests vom PWA-Lebenszyklus entkoppelt.
+- Worker-Upstream-Timeout, stale-while-refresh und sofortiger letzter guter Snapshot statt globalem Feed-Hänger.
+- Manueller Refresh kann unabhängig von altem Inflight-Zustand neu ansetzen.
+- Header/Status kennzeichnet veraltete Cache-Daten explizit; keine grüne Freshness-Anzeige bei Stale-Daten.

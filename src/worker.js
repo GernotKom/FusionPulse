@@ -1,7 +1,7 @@
 import { APP_VERSION } from './version.js';
 
 /* ============================================================================
-   FusionPulse v3.3.5 — Cloudflare Worker
+   FusionPulse v3.3.6 — Cloudflare Worker
    Momentum- & Einstiegszonen-Scanner für Bitpanda Fusion (EUR-Paare)
 
    Design-Prinzipien:
@@ -76,6 +76,17 @@ async function pool(items, limit, fn) {
 }
 
 /* -------------------------------------------------------------- Fusion-Fetch */
+const FUSION_UPSTREAM_TIMEOUT_MS = 5_500;
+async function fetchUpstreamWithTimeout(url, options = {}, timeoutMs = FUSION_UPSTREAM_TIMEOUT_MS) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort('timeout'), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: ac.signal });
+  } catch (e) {
+    if (ac.signal.aborted) throw new Error(`Fusion Upstream Timeout nach ${Math.round(timeoutMs/1000)} s`);
+    throw e;
+  } finally { clearTimeout(timer); }
+}
 function makeClient(key) {
   let used = 0;
   return {
@@ -84,7 +95,7 @@ function makeClient(key) {
       used++;
       const u = new URL(`${API}/${path}`);
       for (const [k, v] of Object.entries(params)) if (v != null) u.searchParams.set(k, v);
-      const res = await fetch(u, { headers: { 'x-api-key': key, accept: 'application/json' } });
+      const res = await fetchUpstreamWithTimeout(u, { headers: { 'x-api-key': key, accept: 'application/json' } });
       if (res.status === 429) throw new Error('Fusion Rate-Limit (429) – Intervall erhöhen');
       if (!res.ok) throw new Error(`Fusion ${res.status} @ ${path}: ${(await res.text()).slice(0, 140)}`);
       return res.json();
@@ -810,9 +821,17 @@ async function getSnapshot(env, opts, force) {
       return persisted;
     }
   }
-  if (!force && inflight && inflightSig === sig) return { ...(await inflight), cached: true };
-  if (inflight) { try { await inflight; } catch { /* alte Anfrage egal */ }
-    if (!force && inflight && inflightSig === sig) return { ...(await inflight), cached: true };
+  // v3.3.6: Ein langsamer/defekter Upstream darf den Browser niemals an ein
+  // bereits laufendes Promise ketten. Bevorzugt wird der letzte gute Snapshot;
+  // der laufende Refresh darf im Hintergrund zu Ende laufen oder fehlschlagen.
+  if (!force && inflight && inflightSig === sig) {
+    if (memo.data) return { ...memo.data, cached:true, staleWhileRefresh:true, cacheAgeMs:Date.now()-memo.ts };
+    const persisted = await readPersistedCryptoScan(env, sig);
+    if (persisted) return { ...persisted, staleWhileRefresh:true };
+  }
+  if (force && inflight) {
+    // Kein await auf den alten Request: Force muss einen unabhängigen Neuversuch erlauben.
+    inflight = null; inflightSig = '';
   }
 
   inflightSig = sig;
@@ -826,6 +845,12 @@ async function getSnapshot(env, opts, force) {
       return data;
     } catch (e) {
       setApiState('crypto', classifyError(e), e?.message);
+      // Fail-open nur für die ANZEIGE des letzten guten Datensatzes, niemals für
+      // BUY-Freigaben: alte Daten werden als stale/cached markiert und das Frontend
+      // kann damit keine frische grüne Freigabe erzeugen.
+      if (memo.data) return { ...memo.data, cached:true, stale:true, upstreamError:String(e?.message||e), cacheAgeMs:Date.now()-memo.ts };
+      const persisted = await readPersistedCryptoScan(env, sig);
+      if (persisted) return { ...persisted, stale:true, upstreamError:String(e?.message||e) };
       throw e;
     } finally { inflight = null; }
   })();

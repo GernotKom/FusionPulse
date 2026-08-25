@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.3.5 — Frontend
+   FusionPulse v3.3.6 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -13,7 +13,7 @@ const FP_VERSION = (typeof self !== 'undefined' && self.FP_VERSION) || '0.0.0';
 
 
 /* ---------------------------------------------------- Netzwerk-Stabilität */
-const NET_TIMEOUT_MS = 15_000;
+const NET_TIMEOUT_MS = 12_000;
 let lastSuccessfulScanTs = 0;
 let scanStartedTs = 0;
 let reconnectAttempt = 0;
@@ -598,7 +598,10 @@ async function scan(force = false) {
 
     rows = data.rows || [];
     meta = data;
-    setSys('#sysCrypto', 'ok', `${data.deepCount} von ${data.universe} EUR-Paaren tief analysiert`);
+    const cryptoStale = !!(data.stale || data.staleWhileRefresh);
+    setSys('#sysCrypto', cryptoStale ? 'warn' : 'ok', cryptoStale
+      ? `Letzter guter Krypto-Datensatz wird angezeigt · ${data.upstreamError || 'Live-Refresh läuft'}`
+      : `${data.deepCount} von ${data.universe} EUR-Paaren tief analysiert`);
     if (data.version && data.version !== FP_VERSION) {
       showUpdateBar(`Neue FusionPulse-Version verfügbar – neu laden (Oberfläche v${FP_VERSION}, Server v${data.version})`);
     }
@@ -606,7 +609,8 @@ async function scan(force = false) {
     render();
 
     const shown = Math.min(S.coinCount, visible().length);
-    $('#status').textContent = `${data.warmStart ? 'Cron-Cache' : data.cached ? 'Cache' : 'Live'} · ${data.deepCount} gescannt / ${shown} angezeigt von ${data.universe} · ${data.requests ?? data.subrequests ?? '–'} API-Unterabfragen · ${Math.round(performance.now() - t0)} ms`;
+    const sourceLabel = cryptoStale ? 'Letzter guter Stand · Reconnect läuft' : (data.warmStart ? 'Cron-Cache' : data.cached ? 'Cache' : 'Live');
+    $('#status').textContent = `${sourceLabel} · ${data.deepCount} gescannt / ${shown} angezeigt von ${data.universe} · ${data.requests ?? data.subrequests ?? '–'} API-Unterabfragen · ${Math.round(performance.now() - t0)} ms`;
     $('#status').title = 'Live/Cache = Datenquelle des letzten Scans · „gescannt“ = tief analysierte Coins, „angezeigt“ = Zeilen in dieser Liste (Einstellungen) · API-Unterabfragen = Bitpanda-Unterabfragen innerhalb dieses Scans, NICHT dein Cloudflare-Tagesverbrauch (Eigenzählung je Worker-Instanz) · ms = Dauer des Scans.';
     $('#status').dataset.state = 'ok';
     lastSuccessfulScanTs = Date.now(); reconnectAttempt = 0;
