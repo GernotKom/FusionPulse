@@ -1,3 +1,30 @@
+# FusionPulse Release Notes — v3.4.3
+
+## Situation Engine — frühere, bessere Opportunitätenerkennung
+- Neuer Large-Cap Situation Radar erkennt frische Zustandswechsel: Opening Drive, Breakout Pressure, Early Acceleration, Reversal/Reclaim, Volumenpuls, Nähe zum Tageshoch und enger werdenden Spread. Ein schon stark gelaufener Titel ohne neue Beschleunigung wird bewusst abgewertet.
+- Neue Deep Situation Engine bewertet Breakout Start, Squeeze Release, VWAP-/EMA21-Reclaim, Pullback Hold, 5m-vs-15m-Beschleunigung, RVOL, VWAP-Lage und Overextension.
+- `situationScore`, `situationType` und `situationReasons` dienen ausschließlich Discovery, Reihenfolge und Erklärung. Sie erhöhen **nicht** den BUY-Score und umgehen weder Netto-CRV noch Freshness/Marktphase/Sizing.
+- Re-Check-Queue und Vorwarn-/Reifeanzeige sehen beginnende Situationen früher, ohne BUY-Schwellen zu lockern.
+
+## Aktien-Freshness / Refresh-Stabilität
+- Eigene Freshness-Ampel für Situation Radar, Opening Momentum und Extended Hours: Grün <3 Min., Gelb 3–5 Min., Orange 5–10 Min., Rot ab 10 Min.
+- Ampel basiert auf tatsächlich empfangenen Daten, nicht auf dem Zeitpunkt eines Klicks oder gestarteten Requests, und altert automatisch auch ohne neue Antwort.
+- Während Premarket/Opening/Regular startet die PWA ab >3 Min. altem Aktien-Snapshot einen gedrosselten echten Recovery-Scan; damit soll ein 10–12-Minuten-Stillstand nicht mehr still toleriert werden.
+- Force-Refresh hat längeren Timeout; ein Refresh ohne neue Deep-Daten wird nicht mehr als normaler grüner Erfolg dargestellt.
+
+## Sichtbare Analysemethoden
+- Methodenanzeige ist jetzt permanent in der unteren SIGNAL-INFO-Fußleiste sichtbar und zusätzlich direkt im FokusScope.
+- Sie zeigt Kernmethoden (Situation Engine, ATR, CRV/Execution, Spread/Liquidität) sowie die aktivierten Komponenten.
+- Korrektur zu v3.4.2: Dort existierte zwar ein statischer Methodenbereich am Seitenende, war im tatsächlichen Fokus-Workflow aber nicht dauerhaft sichtbar.
+
+## Safety
+- Large-Cap-only automatische Discovery bleibt bestehen.
+- Fehlende/schlechtere Daten verbessern kein Setup.
+- BUY-/CRV-/Sizing-/Marktphasen-Gates unverändert.
+- `npm run check` und erweiterte Safety-Regression bestehen.
+
+---
+
 # FusionPulse Release Notes — v3.4.2
 
 ## Refresh, FokusScope und Analyseanzeige

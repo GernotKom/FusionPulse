@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.4.2</title>
+<title>FusionPulse 3.4.3</title>
 </head>
 <body>
 
@@ -61,7 +61,7 @@
   <button id="scan" class="primary" title="Lädt sofort den neuesten verfügbaren Stand für Krypto, Aktien, Opening Momentum, Crowd und Learning. Der schwere Whole-Market-/Deep-Scan bleibt CPU-schonend serverseitig und wird nicht parallel aus dem Browser gestartet.">↻</button>
   <button id="cog" title="Einstellungen">⚙</button>
 </header>
-<div id="signalBanner" class="signal-banner" aria-live="polite"><span class="signal-idle"><b>SIGNAL-INFO</b><span>Noch kein neues BUY-/Grün-Signal in dieser Sitzung.</span></span></div>
+<div id="signalBanner" class="signal-banner" aria-live="polite"><div id="signalContent" class="signal-content"><span class="signal-idle"><b>SIGNAL-INFO</b><span>Noch kein neues BUY-/Grün-Signal in dieser Sitzung.</span></span></div><div class="analysis-method-dock" title="Aktuell aktivierte Analyseverfahren. Anzeige verändert keine Gewichtung."><b>ANALYSE</b><span id="analysisMethodsDock">wird geladen…</span></div></div>
 
 <nav class="viewbar" aria-label="Schnellnavigation">
   <button data-jump="#focus" title="Springt zur kompakten Radar-/Trade-Ansicht">Radar</button>

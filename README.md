@@ -1,4 +1,13 @@
-# FusionPulse v3.4.2
+# FusionPulse v3.4.3
+
+
+## v3.4.3 Schwerpunkt
+- Large-Cap **Situation Engine** sucht frische Zustandswechsel statt nur bereits große Tagesgewinner.
+- Fokus/Deep Scan zeigt Situationstyp und -dynamik; Discovery bleibt 0 % direktes BUY-Gewicht.
+- Kategorie-Freshness: Grün <3, Gelb 3–5, Orange 5–10, Rot ab 10 Minuten.
+- Stale-Recovery während aktiver US-Session ab >3 Minuten altem Aktien-Snapshot.
+- Aktive Analysemethoden dauerhaft in der unteren Fußleiste und direkt im FokusScope sichtbar.
+- Alle bestehenden fail-closed BUY-/CRV-/Sizing-Sicherheitsregeln bleiben bestehen.
 
 ## v3.4.1 P0-Hotfix auf v3.4.0
 - Setzt die P0/P1-Kernbefunde des externen Audits minimal-invasiv um: Fokusbindung, Lookup-Race/Mismatch, Regime-Erklärung, Freshness-/Market-Gates, Timeouts, Poll-Stabilität und Cache-Freshness.

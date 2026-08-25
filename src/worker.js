@@ -1131,6 +1131,61 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
   const avgVol = mean(vs.slice(-36,-1)) || 1;
   const overheadVol = overhead.reduce((a,b)=>a+b.v,0) / Math.max(1,overhead.length) / avgVol;
   const liquidityVacuum = clamp(100 - overheadVol*45 - overhead.length*2.2, 0, 100);
+
+  // v3.4.3 Deep Situation Engine -------------------------------------------------
+  // Ziel: fruehe, klar benennbare Markt-Situationen erkennen, OHNE den BUY-Score
+  // anzuheben. Die Situation steuert nur Discovery-Reihenfolge/Erklaerung.
+  const priorBars=bars.slice(-13,-1);
+  const priorHigh=priorBars.length?Math.max(...priorBars.map(b=>b.h).filter(Number.isFinite)):null;
+  const priorLow=priorBars.length?Math.min(...priorBars.map(b=>b.l).filter(Number.isFinite)):null;
+  const triggerDistancePct=priorHigh>0?((priorHigh/last.c)-1)*100:null;
+  const brokePriorHigh=priorHigh>0&&last.c>=priorHigh*1.0005;
+  const nearBreakout=triggerDistancePct!=null&&triggerDistancePct>=-0.4&&triggerDistancePct<=0.7;
+  const prevEma9=emaN(cs.slice(-31,-1),9), prevEma21=emaN(cs.slice(-41,-1),21);
+  let ppv=0,pvv=0;
+  for(const b of bars.slice(-27,-1)){const tp=(b.h+b.l+b.c)/3;ppv+=tp*b.v;pvv+=b.v;}
+  const prevVwap=pvv>0?ppv/pvv:null;
+  const reclaimVwap=volumeKnown&&prevVwap>0&&prev.c<prevVwap&&last.c>=vwap;
+  const reclaimEma21=Number.isFinite(prevEma21)&&prev.c<=prevEma21&&last.c>ema21;
+  const pullbackHold=last.c>ema21&&Math.min(...bars.slice(-4).map(b=>b.l))<=ema21*1.004&&ret5>0;
+  const accel5v15=ret5-ret15/3;
+  const priorRanges=bars.slice(-9,-1).map(b=>Math.max(0,b.h-b.l)).filter(Number.isFinite);
+  const priorRangeMean=mean(priorRanges)||0;
+  const currentRange=Math.max(0,last.h-last.l);
+  const rangeExpansion=priorRangeMean>0?currentRange/priorRangeMean:null;
+  const preWindow=bars.slice(-8,-1);
+  const preRangePct=preWindow.length?((Math.max(...preWindow.map(b=>b.h))-Math.min(...preWindow.map(b=>b.l)))/last.c)*100:null;
+  const squeezeRelease=preRangePct!=null&&atr>0&&preRangePct<Math.max(0.8,(atr/last.c*100)*2.1)&&brokePriorHigh&&rangeExpansion!=null&&rangeExpansion>=1.25;
+  const extensionAtr=atr>0?(last.c-ema21)/atr:null;
+  const overextended=extensionAtr!=null&&extensionAtr>3.0;
+
+  let situationType='WATCH';
+  const situationReasons=[];
+  if(squeezeRelease){situationType='SQUEEZE RELEASE';situationReasons.push('Kompression loest sich am 60-Min-Hoch');}
+  else if(brokePriorHigh&&accel5v15>0.05){situationType='BREAKOUT START';situationReasons.push('frischer Ausbruch ueber 60-Min-Hoch');}
+  else if(reclaimVwap||reclaimEma21){situationType='RECLAIM';situationReasons.push(reclaimVwap?'VWAP zurueckerobert':'EMA21 zurueckerobert');}
+  else if(pullbackHold){situationType='PULLBACK HOLD';situationReasons.push('Pullback haelt EMA21 und dreht');}
+  else if(nearBreakout&&accel5v15>0.04){situationType='BREAKOUT PRESSURE';situationReasons.push('Triggerzone nahe und Momentum zieht an');}
+  else if(accel5v15>0.10&&ret5>0){situationType='ACCELERATION';situationReasons.push('5-Min-Momentum beschleunigt gegen 15-Min-Basis');}
+  if(relVolScore!=null&&relVolScore>=1.4)situationReasons.push(`RVOL ${relVolScore.toFixed(1)}x`);
+  if(volumeKnown&&last.c>=vwap)situationReasons.push('ueber VWAP');
+  if(liquidityVacuum>=70)situationReasons.push('wenig Overhead-Aktivitaet');
+  if(overextended)situationReasons.push('bereits >3 ATR ueber EMA21');
+
+  let situationScore=0;
+  situationScore += brokePriorHigh?24:nearBreakout?16:0;
+  situationScore += squeezeRelease?16:0;
+  situationScore += (reclaimVwap||reclaimEma21)?14:0;
+  situationScore += pullbackHold?12:0;
+  situationScore += Math.min(14,Math.max(0,accel5v15)*45);
+  situationScore += relVolScore==null?-8:Math.min(14,Math.max(0,relVolScore-0.8)*12);
+  situationScore += volumeKnown&&last.c>=vwap?8:-4;
+  situationScore += ema9>ema21?7:-3;
+  situationScore += Math.min(8,Math.max(0,liquidityVacuum-50)*0.16);
+  if(overextended)situationScore-=18;
+  if(!volumeKnown)situationScore=Math.min(situationScore,42);
+  situationScore=+clamp(situationScore,0,100).toFixed(0);
+
   const grossCRV = (tp2 - entry) / risk;
   const costPct = 0.18;                                   // Broker + Spread, konservativ
   const netCRV = +Math.max(0, grossCRV - (costPct / 100 * entry / risk)).toFixed(1);
@@ -1166,6 +1221,11 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
     ret5: +ret5.toFixed(2), ret15: +ret15.toFixed(2), ret60: +ret60.toFixed(2),
     relVol: relVol == null ? null : +relVol.toFixed(2), volumeKnown, vwapUsd: vwap, aboveVwap: volumeKnown ? last.c >= vwap : null,
     liquidityVacuum: +liquidityVacuum.toFixed(0),
+    // Discovery-/Erklaerungsfelder; sie veraendern score/light/BUY NICHT.
+    situationType, situationScore, situationReasons:situationReasons.slice(0,4),
+    triggerUsd: priorHigh, triggerEur:e(priorHigh), triggerDistancePct:triggerDistancePct==null?null:+triggerDistancePct.toFixed(2),
+    breakout60m:brokePriorHigh, nearBreakout, reclaimVwap, reclaimEma21, pullbackHold, squeezeRelease,
+    accel5v15:+accel5v15.toFixed(2), rangeExpansion:rangeExpansion==null?null:+rangeExpansion.toFixed(2), overextended,
     updated: last.dt, feed: 'Twelve Data US', tradegate: false, marketPhase: usMarketPhase().key,
     fxUsdPerEur: usdPerEur || null, fxKnown: !!usdPerEur,
     // v3.1.0: Intraday-Verlauf aus den ohnehin geladenen 5-Minuten-Bars; keine Zusatz-API-Kosten.
@@ -2036,22 +2096,60 @@ function iexRadarQuote(x,prev=null){
   const speedPct=prevLast>0?(last/prevLast-1)*100:0;
   const volDelta=volume>=0&&prevVol>=0?Math.max(0,volume-prevVol):0;
   const spreadImprove=prev?.spreadPct!=null&&spreadPct!=null?Math.max(0,Number(prev.spreadPct)-spreadPct):0;
-  // Long-Opportunity-Radar: frische Aufwaertsbeschleunigung zaehlt staerker als ein bereits gelaufener Tagesmove.
-  // Ein negativer Tagesmove kann trotzdem nominiert werden, wenn gerade eine deutliche Reversal-Beschleunigung beginnt.
+  // v3.4.3 Situation Engine: Discovery sucht nicht mehr primaer nach bereits grossen
+  // Tagesgewinnern, sondern nach FRISCHEN Zustandswechseln. Alle Werte bleiben reine
+  // Nominierung (0 % BUY-Gewicht); fehlende Quote-/Volumendaten koennen den Rang nur senken.
   const activity=Number.isFinite(volume)&&volume>0?Math.min(7,Math.log10(volume+1)):0;
-  let score=Math.max(0,movePct)*0.85 + Math.max(0,speedPct)*9 + Math.max(0,openPct||0)*0.35 + Math.min(4,Math.max(0,rangePct||0)*0.35) + activity*0.45 + Math.min(3,spreadImprove*4);
-  if(movePct>8 && speedPct<0.05) score-=Math.min(4,(movePct-8)*0.25); // spaete Runner nicht blind bevorzugen
-  if(movePct<0 && speedPct<=0) score-=2;
-  if(spreadPct==null) score-=0.6; // fehlender Quote verbessert niemals
+  const gapPct=open>0?(open/prevClose-1)*100:null;
+  const rangePosition=high>low?(last-low)/(high-low):null;
+  const prevSpeed=Number(prev?.speedPct);
+  const accelPct=Number.isFinite(prevSpeed)?speedPct-prevSpeed:speedPct;
+  const volPulsePct=prevVol>0&&volume>=prevVol?(volume/prevVol-1)*100:null;
+  const nearHigh=rangePosition!=null&&rangePosition>=0.82;
+  const cleanSpread=spreadPct!=null&&spreadPct<=0.8;
+  const volumePulse=volPulsePct!=null&&volPulsePct>=2;
+  const freshAccel=speedPct>=0.10&&accelPct>=0.03;
+  const breakoutPressure=nearHigh&&speedPct>=0.06&&movePct>=0.4;
+  const openingDrive=gapPct!=null&&gapPct>=0.8&&openPct!=null&&openPct>=0.15&&speedPct>=0.04;
+  const reversalReclaim=movePct<0&&openPct!=null&&openPct>0&&speedPct>=0.10;
+  const quietToActive=Math.abs(movePct)<2.5&&speedPct>=0.16&&(volumePulse||activity>=5.5);
+
+  let situation='WATCH';
+  if(openingDrive) situation='OPENING DRIVE';
+  else if(breakoutPressure&&freshAccel) situation='BREAKOUT PRESSURE';
+  else if(reversalReclaim) situation='REVERSAL RECLAIM';
+  else if(quietToActive) situation='EARLY ACCELERATION';
+  else if(freshAccel) situation='ACCELERATION';
+  else if(breakoutPressure) situation='NEAR HIGH';
+
+  let situationScore=0;
+  situationScore += Math.min(28,Math.max(0,speedPct)*55);
+  situationScore += Math.min(14,Math.max(0,accelPct)*45);
+  situationScore += nearHigh?12:0;
+  situationScore += openingDrive?12:0;
+  situationScore += reversalReclaim?10:0;
+  situationScore += volumePulse?Math.min(12,4+Math.max(0,volPulsePct||0)*0.20):0;
+  situationScore += cleanSpread?8:(spreadPct==null?-6:Math.max(-8,6-spreadPct*5));
+  situationScore += Math.min(8,activity*1.1);
+  situationScore += Math.min(6,Math.max(0,spreadImprove)*8);
+  situationScore += Math.min(8,Math.max(0,movePct)*0.7);
+  if(movePct>7&&speedPct<0.05) situationScore-=Math.min(18,(movePct-7)*1.2);
+  if(rangePosition!=null&&rangePosition<0.35&&speedPct<=0) situationScore-=10;
+  if(spreadPct==null) situationScore-=6;
+
   const reasons=[];
-  if(speedPct>=0.35) reasons.push(`Beschleunigung +${speedPct.toFixed(2)} %`);
-  if(volDelta>0) reasons.push('Volumen zieht an');
+  if(openingDrive) reasons.push('Gap mit Follow-through');
+  if(breakoutPressure) reasons.push('nahe Tageshoch mit Druck');
+  if(freshAccel) reasons.push(`Beschleunigung +${speedPct.toFixed(2)} %`);
+  if(reversalReclaim) reasons.push('Reversal/Reclaim startet');
+  if(volumePulse) reasons.push('Volumenpuls');
   if(spreadImprove>=0.05) reasons.push('Spread wird enger');
-  if(movePct>=2) reasons.push(`Tagesstaerke +${movePct.toFixed(1)} %`);
-  if(movePct<0&&speedPct>=0.25) reasons.push('Reversal-Versuch');
+  if(!reasons.length&&movePct>=2) reasons.push(`Tagesstaerke +${movePct.toFixed(1)} %`);
   const ts=radarTs(x), ageMin=ts?Math.max(0,(Date.now()-ts)/60000):null;
   if(ageMin!=null && ageMin>30) return null;
-  return {symbol,last,prevClose,open:Number.isFinite(open)?open:null,high:Number.isFinite(high)?high:null,low:Number.isFinite(low)?low:null,volume:Number.isFinite(volume)?volume:null,movePct,openPct,rangePct,spreadPct,speedPct,volDelta,score:Math.max(0,score),reasons,ts,ageMin,source:'Tiingo IEX Radar',buyWeight:0};
+  if(ageMin!=null) situationScore-=Math.min(18,ageMin*0.7);
+  const score=Math.max(0,situationScore);
+  return {symbol,last,prevClose,open:Number.isFinite(open)?open:null,high:Number.isFinite(high)?high:null,low:Number.isFinite(low)?low:null,volume:Number.isFinite(volume)?volume:null,movePct,openPct,gapPct,rangePct,rangePosition,spreadPct,speedPct,accelPct,volDelta,volPulsePct,score,situationScore:score,situation,reasons,ts,ageMin,source:'Tiingo IEX Situation Radar',buyWeight:0};
 }
 async function readPersistedIexRadar(env){
   if(!env?.DB) return null;
@@ -2059,7 +2157,7 @@ async function readPersistedIexRadar(env){
 }
 async function persistIexRadar(env,data){
   if(!env?.DB||!data?.rows?.length)return;
-  try{await ensureD1Schema(env);const ts=Date.now(),payload=safeJson({ts,universe:data.universe,rows:data.rows.slice(0,120).map(r=>({symbol:r.symbol,last:r.last,prevClose:r.prevClose,open:r.open,high:r.high,low:r.low,volume:r.volume,spreadPct:r.spreadPct,movePct:r.movePct,openPct:r.openPct,rangePct:r.rangePct,speedPct:r.speedPct,volDelta:r.volDelta,score:r.score,reasons:r.reasons,ts:r.ts}))});await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`).bind('iex_radar:last',payload,ts).run();}catch(e){console.warn(JSON.stringify({event:'iex_radar_cache_write_failed',message:String(e?.message||e),ts:Date.now()}));}
+  try{await ensureD1Schema(env);const ts=Date.now(),payload=safeJson({ts,universe:data.universe,rows:data.rows.slice(0,120).map(r=>({symbol:r.symbol,last:r.last,prevClose:r.prevClose,open:r.open,high:r.high,low:r.low,volume:r.volume,spreadPct:r.spreadPct,movePct:r.movePct,openPct:r.openPct,gapPct:r.gapPct,rangePct:r.rangePct,rangePosition:r.rangePosition,speedPct:r.speedPct,accelPct:r.accelPct,volDelta:r.volDelta,volPulsePct:r.volPulsePct,score:r.score,situationScore:r.situationScore,situation:r.situation,reasons:r.reasons,ts:r.ts}))});await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`).bind('iex_radar:last',payload,ts).run();}catch(e){console.warn(JSON.stringify({event:'iex_radar_cache_write_failed',message:String(e?.message||e),ts:Date.now()}));}
 }
 
 // v3.3.3: Opening Momentum kann im Premarket bereits verifizierte marktweite
@@ -2075,6 +2173,7 @@ async function persistVerifiedOpeningRadar(env, rows){
       symbol:String(r.symbol||'').toUpperCase(), last:r.last??r.priceUsd??null,
       movePct:r.movePct??r.gapPct??null, speedPct:r.speedPct??r.ret5??null,
       spreadPct:r.spreadPct??null, volume:r.volume??null, score:r.score??r.momentumScore??0,
+      situationScore:r.situationScore??r.momentumScore??0, situation:r.situation||r.situationType||'OPENING MOMENTUM',
       reasons:Array.isArray(r.reasons)?r.reasons.slice(0,3):['Opening Momentum'],
       securityVerified:true, securityName:r.securityName||r.name||r.symbol,
       companyDescription:r.companyDescription||'', exchange:r.exchange||'', ts:r.ts||ts,
@@ -2177,10 +2276,10 @@ async function tiingoIexMarketRadar(env,limit=80,force=false){
   return tiingoIexRadarMemo;
 }
 function deepRecheckRank(r){
-  const score=Number(r?.score)||0,crv=Number(r?.netCRV)||0,rv=Number(r?.relVol)||0,ret15=Number(r?.ret15)||0,structure=Number(r?.structurePct)||0;
+  const score=Number(r?.score)||0,crv=Number(r?.netCRV)||0,rv=Number(r?.relVol)||0,ret15=Number(r?.ret15)||0,structure=Number(r?.structurePct)||0,sit=Number(r?.situationScore)||0;
   const ell=Number(r?.elliott)||0;
-  // v3.2.6: Elliott ist wieder die zentrale Strukturachse. Momentum/CRV/RVOL bestätigen, ersetzen sie aber nicht.
-  return ell*18 + score*6 + Math.min(26,Math.max(0,crv-1)*7) + Math.min(14,Math.max(0,rv-1)*5) + Math.min(10,Math.max(0,ret15)*1.5) + Math.min(12,Math.max(0,structure));
+  // v3.4.3: SituationScore priorisiert, WANN erneut hingesehen wird; Elliott/Qualitaet/CRV entscheiden weiterhin, OB ein Trade freigegeben werden kann.
+  return ell*18 + score*6 + Math.min(18,sit*0.18) + Math.min(26,Math.max(0,crv-1)*7) + Math.min(14,Math.max(0,rv-1)*5) + Math.min(10,Math.max(0,ret15)*1.5) + Math.min(12,Math.max(0,structure));
 }
 async function tiingoIexSeries(env,symbol){
   const start=new Date(Date.now()-36*60*60_000).toISOString().slice(0,10);
@@ -2348,10 +2447,13 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       const rm=radarMap.get(sym),bm=boatsMap.get(sym);
       if(rm){ row.discovery={type:'iex-radar',...rm,buyWeight:0}; row.securityVerified=rm.securityVerified===true; row.securityName=rm.securityName||row.name; row.companyDescription=rm.companyDescription||''; row.exchange=rm.exchange||''; }
       else if(bm){ row.discovery={type:'boats',...bm,buyWeight:0}; row.securityVerified=bm.securityVerified===true; row.securityName=bm.securityName||row.name; row.companyDescription=bm.companyDescription||''; row.exchange=bm.exchange||''; }
-      const q=Math.max(0,Math.min(10,Number(row.score)||0)),crv=Math.max(0,Number(row.netCRV)||0),rv=Math.max(0,Number(row.relVol)||0);
-      row.preSignalMaturity=Math.round(Math.max(0,Math.min(100,q/8*50 + Math.min(1,crv/3)*25 + Math.min(1,rv/1.8)*15 + (rm?.speedPct>0.2?10:0))));
-      row.whyNow=(rm?.reasons||[]).slice(0,3);
-      row.radarRank=Number(rm?.score)||0;
+      const q=Math.max(0,Math.min(10,Number(row.score)||0)),crv=Math.max(0,Number(row.netCRV)||0),rv=Math.max(0,Number(row.relVol)||0),sit=Math.max(0,Math.min(100,Number(row.situationScore)||0));
+      // Reife bleibt reine Vorwarnung: Situation kann frueh Aufmerksamkeit erzeugen,
+      // aber weder Score noch CRV noch BUY-Gates verbessern.
+      row.preSignalMaturity=Math.round(Math.max(0,Math.min(100,q/8*44 + Math.min(1,crv/3)*22 + Math.min(1,rv/1.8)*12 + sit*0.22)));
+      row.whyNow=[...(row.situationReasons||[]),...(rm?.reasons||[])].filter(Boolean).slice(0,4);
+      row.radarRank=Number(rm?.situationScore??rm?.score)||0;
+      row.radarSituation=rm?.situation||null;
       return row;
     }catch(e){console.warn(JSON.stringify({event:'tiingo_stock_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));return null;}
   })).filter(Boolean);
@@ -2368,7 +2470,7 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   }
   for(const r of fresh)safeCarry.set(r.symbol,r);
   // Hohe Radar-/Setup-Relevanz oben halten; Freshness-Gates bleiben unveraendert.
-  const rows=[...safeCarry.values()].sort((a,b)=>(Number(b.preSignalMaturity)||0)-(Number(a.preSignalMaturity)||0)||(Number(b.radarRank)||0)-(Number(a.radarRank)||0)||(Number(b.score)||0)-(Number(a.score)||0)).slice(0,100);
+  const rows=[...safeCarry.values()].sort((a,b)=>(Number(b.preSignalMaturity)||0)-(Number(a.preSignalMaturity)||0)||(Number(b.situationScore)||0)-(Number(a.situationScore)||0)||(Number(b.radarRank)||0)-(Number(a.radarRank)||0)||(Number(b.score)||0)-(Number(a.score)||0)).slice(0,100);
   stockMemo={ts:Date.now(),rows,cycle,sig}; setApiState('stocks',fresh.length?'ok':'stale',fresh.length?null:'Tiingo lieferte keine analysierbaren Bars');
   await persistStockScan(env,sig,cycle,rows,{provider:'Tiingo IEX',fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol),queue:{favorites:favPick,recheck:recheckPick,gainers:gainerPick,radar:radarPick,boats:boatsPick,explore},verifiedRadar:(radar.rows||[]).slice(0,20),verifiedBoats:(boats.rows||[]).slice(0,12)});
   return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:radar.universe||12000,universeLabel:`${radar.universe||'12.000+'} Tiingo/IEX`,scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:phase,queue:{favorites:favPick.length,recheck:recheckPick.length,gainers:gainerPick.length,radar:radarPick.length,boats:boatsPick.length,explore:explore.length},discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar.ts,universe:radar.universe,candidates:(radar.rows||[]).slice(0,20),gainers:openingGainers(radar.rows||[]),buyWeight:0},boats:{source:'Tiingo BOATS',ts:boats.ts,session:boats.session,candidates:(boats.rows||[]).slice(0,15),buyWeight:0}},version:APP_VERSION,note:'Tiingo Primary: Whole-Market IEX Radar + BOATS Discovery (beide 0 % BUY-Gewicht) -> adaptive 20er Deep-Scan-Queue -> IEX 5-Min Analyse. BUY-Gates unveraendert.'};

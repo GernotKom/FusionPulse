@@ -1,4 +1,14 @@
-# FusionPulse Improvement List — Stand v3.4.2
+# FusionPulse Improvement List — Stand v3.4.3
+
+
+## In v3.4.3 umgesetzt — Situation Engine / Freshness / sichtbare Methoden
+- **Neue Situation Engine für Aktien-Discovery:** Der Large-Cap-Radar priorisiert jetzt frische Zustandswechsel statt nur große Tagesbewegungen: Opening Drive, Breakout Pressure, Early Acceleration, Reversal/Reclaim, Volumenpuls, Nähe zum Tageshoch und Spread-Verbesserung. Bereits stark gelaufene Titel ohne neue Beschleunigung werden abgewertet. Discovery bleibt **0 % direktes BUY-Gewicht**.
+- **Deep Situation Engine im Fokus/Deep Scan:** Zusätzliche Erkennung von Breakout Start, Squeeze Release, VWAP-/EMA21-Reclaim, Pullback Hold und Beschleunigung 5m vs. 15m. `situationScore` steuert nur Priorisierung/Erklärung und verändert weder den bestehenden Qualitäts-Score noch BUY/CRV-Gates. Fehlendes Volumen deckelt die Situation-Bewertung fail-closed.
+- **Früher statt später finden:** Re-Check-Queue und Pre-Signal-Reife berücksichtigen die Situation-Dynamik, damit Titel mit beginnender Bewegung früher erneut tief geprüft werden; große, aber bereits auslaufende Tagesrunner werden nicht blind bevorzugt.
+- **Freshness pro Aktienkategorie:** Situation Radar, Opening Momentum und Extended Hours zeigen jeweils einen eigenen echten Datenstatus: Grün <3 Min., Gelb 3–5 Min., Orange 5–10 Min., Rot ab 10 Min. Ein Request/Klick setzt die Ampel nicht zurück; maßgeblich ist der Zeitstempel tatsächlich empfangener Daten. Die Farbe altert auch ohne neue API-Antwort automatisch.
+- **Stale-Recovery:** Während Premarket/Opening/Regular fordert die PWA bei >3 Min. altem Aktien-Snapshot selbstständig einen echten Recovery-Scan an (throttled), statt bei ausgefallenem Cron minutenlang nur Altwerte zu zeigen. Manueller Force-Refresh wartet länger auf echte Deep-Daten und meldet sichtbar, wenn keine neuen Daten angekommen sind.
+- **Analysemethoden wirklich sichtbar:** Das Methodenfeld sitzt jetzt permanent in der unteren Signal-Fußleiste und zusätzlich direkt im FokusScope. Angezeigt werden die tatsächlich verwendeten Kernmethoden inklusive Situation Engine, ATR, CRV/Execution, Spread/Liquidität plus aktivierte Analysekomponenten.
+- **FokusScope bleibt höchste Priorität:** Einzelaktien-Refresh, Live-/Freshness-Prüfung und Deep-Analyse bleiben bevorzugt; fehlende/schlechtere Daten können weiterhin keine Freigabe verbessern.
 
 
 ## In v3.4.2 umgesetzt — Refresh/FokusScope/Analysemethoden

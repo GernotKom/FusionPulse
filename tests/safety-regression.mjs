@@ -137,4 +137,17 @@ assert.match(workerText,/\.filter\(r=>largeCapRadarAllowed\(r\.symbol\)\)/,'Whol
 assert.match(workerText,/x=>x\?\.m\?\.tradableStock && largeCapRadarAllowed\(x\?\.r\?\.symbol\)/,'Verified radar candidates must still pass the large-cap gate');
 assert.match(workerText,/const OPENING_UNIVERSE = \[\.\.\.LARGE_CAP_RADAR_SYMBOLS\]/,'Opening Momentum base universe must be large-cap only');
 
+// v3.4.3 Situation Engine / freshness / visible methods guards
+assert.match(workerText,/v3\.4\.3 Situation Engine/,'Radar must explicitly use the v3.4.3 Situation Engine');
+assert.match(workerText,/situation='OPENING DRIVE'/,'Situation Engine must identify opening-drive transitions');
+assert.match(workerText,/situation='BREAKOUT PRESSURE'/,'Situation Engine must identify breakout pressure');
+assert.match(workerText,/situation='REVERSAL RECLAIM'/,'Situation Engine must identify reversal/reclaim states');
+assert.match(workerText,/source:'Tiingo IEX Situation Radar',buyWeight:0/,'Situation Radar must remain pure Discovery with 0 direct BUY weight');
+assert.match(workerText,/Discovery-\/Erklaerungsfelder; sie veraendern score\/light\/BUY NICHT/,'Deep Situation metadata must be explicitly isolated from BUY score/light');
+assert.ok(Number(noVolStock.situationScore)<=42,'Missing stock volume must cap Situation Score instead of improving Discovery');
+assert.match(index,/id="analysisMethodsDock"/,'Active analysis methods must be visible in the permanent bottom signal bar');
+assert.match(app,/ageMin<3\?'green':ageMin<5\?'yellow':ageMin<10\?'orange':'red'/,'Category freshness must use green <3, yellow 3-5, orange 5-10, red >=10 minutes');
+assert.match(app,/stockRecoveryNeeded\(\)/,'Stock polling must include stale-recovery logic');
+assert.match(app,/stockSnapshotAgeMs\(\)>=3\*60_000/,'Opening\/regular stock recovery must start after 3 minutes of stale data');
+
 console.log('✓ FusionPulse safety regressions: OK');
