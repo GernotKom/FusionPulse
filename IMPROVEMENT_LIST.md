@@ -1,5 +1,12 @@
 # FusionPulse Verbesserungsliste – kumulativ
 
+## Stand v3.5.6 — Pflicht-VL integriert, nichts still gestrichen
+- Die vollständige Statusmatrix befindet sich in `VL_STATUS_v3.5.6.md`.
+- Neu umgesetzt: deutlich größere Heatmap, vier direkte Quadrantenbeschriftungen, reale Positionseingabe (EUR/Tradegate + Stückzahl), sofortiger realer Tradeplan, Teilverkauf/Restposition sowie persistenter Verkaufsalarm mit Ton/grafischer Quittierung.
+- Bereits vorhandene P0/P1-Sicherheitsfunktionen (FokusScope-Priorität, echte Freshness, Fokus-/Global-Refresh, Methodenfeld, wirtschaftliche Gates, Attribution/Overfitting, Aladdin-Schicht) bleiben erhalten und werden nicht still als „neu“ umgedeutet.
+- Offene Punkte bleiben ausdrücklich offen in der Statusmatrix; insbesondere FusionPulse-Stop-Logik, Learning-Impact/Shadow, Extended-Hours-Zeitreihe und weitere P2/P3-Punkte.
+- `npm run check` ist grün; Live-UI-Smoke nach Deploy bleibt Pflicht vor „fertig“.
+
 ## In v3.5.3 umgesetzt — Claude-Audit A/B
 - **Claude Modus unverändert:** Die vier SHA-256-Locks für Claude-Aktien/Krypto sowie Client-Konstanten/Overlay bleiben unverändert und werden durch `npm run check` geprüft.
 - **Audit A repariert – Strukturziel vom kurzen Triggerfenster entkoppelt:** Die FusionPulse-Zielprojektion nutzt nun ein unabhängiges **36-Bar-Swingfenster** (letzte 4 Bars ausgeblendet), statt das kurze 12-Bar-`priorHigh` als alleinige Zielreferenz zu verwenden. Ein laufender Breakout verliert damit nicht mehr automatisch seinen Zielraum, nur weil der Kurs das kurze vorherige Hoch bereits überschritten hat.

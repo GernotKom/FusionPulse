@@ -299,3 +299,18 @@ console.log('✓ FusionPulse v3.5.4 attribution/overfitting-guard regressions: O
 }
 
 console.log('✓ FusionPulse v3.5.5 aladdin market-intelligence regressions: OK');
+
+// v3.5.6 VL-Integration: Heatmap/Position/Alarm. Claude/Aladdin-Methodik bleibt unberuehrt.
+{
+  assert.match(app,/STARK · ATTRAKTIV/,'Heatmap muss den attraktiven Quadranten direkt beschriften');
+  assert.match(app,/FRÜH · INTERESSANT/,'Heatmap muss den fruehen Quadranten direkt beschriften');
+  assert.match(app,/ÜBERDEHNT · SPÄT/,'Heatmap muss den spaeten Quadranten direkt beschriften');
+  assert.match(app,/SCHWACH · UNINTERESSANT/,'Heatmap muss den schwachen Quadranten direkt beschriften');
+  assert.match(app,/const POSITION_STORE_KEY='fp\.stockPositions\.v1'/,'Reale Positionen muessen persistent verwaltet werden');
+  assert.match(app,/function positionMetrics\(r,p\)/,'Reale Ausfuehrung muss einen eigenen Tradeplan berechnen');
+  assert.match(app,/technische Marken werden nicht zur CRV-Rettung verschoben/,'Positions-UI muss explizit verhindern, dass SL\/TP zur CRV-Rettung verschoben werden');
+  assert.match(app,/function monitorPosition\(r\)/,'Aktive Position muss bei neuen Fokusdaten ueberwacht werden');
+  assert.match(app,/FusionPulse führt keinen Verkauf automatisch aus/,'Alarm muss Warnung und automatische Verkaufsaktion klar trennen');
+  assert.match(app,/Teilverkauf buchen/,'Restposition nach TP1 muss dokumentierbar sein');
+}
+console.log('✓ FusionPulse v3.5.6 VL heatmap/position/alarm regressions: OK');

@@ -1,6 +1,6 @@
-# FusionPulse v3.5.5
+# FusionPulse v3.5.6
 
-**Aktueller Stand:** v3.5.3 baut auf v3.5.2 auf und repariert ausschließlich die beiden im externen Claude-Audit gefundenen Punkte A/B im **normalen FusionPulse-Aktienmodus**. Der Claude-Modus bleibt methodisch unverändert und durch SHA-256-Regression geschützt.
+**Aktueller Stand:** v3.5.6 integriert die kumulative Pflicht-VL in die aktuelle v3.5.5-Arbeitsbasis, ohne Claude- oder Aladdin-Bewertungsmethodik zu verändern. Neu im FokusScope sind reale Positionsübernahme (Kaufkurs EUR/Tradegate + Stückzahl), sofortige SL/TP1/TP2-/Netto-CRV-/€-Berechnung, Teilverkauf/Restposition und persistente Verkaufsalarme. Die Aktien-Heatmap ist deutlich größer, besitzt direkt beschriftete Quadranten und behält Trails/Dynamik. Bereits vorhandene Refresh-/Freshness-/Methoden-/Learning-/Aladdin-Schichten bleiben erhalten und werden durch Safety-Regressionen geschützt. Vor Produktivfreigabe bleibt der UI-Smoke-Test nach Deployment verpflichtend.
 
 - Zielprojektion: unabhängiges 36-Bar-Swingfenster statt kurzer 12-Bar-Triggerreferenz.
 - Wirtschaftliches Gate: risikobudget-kalibriert statt Notional-/75-EUR-Falle.

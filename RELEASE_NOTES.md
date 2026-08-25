@@ -1,3 +1,22 @@
+# FusionPulse v3.5.6 · kumulative VL-Integration
+
+## Neu umgesetzt
+- **Aktien-Heatmap deutlich größer** und direkt im Diagramm mit vier verständlichen Quadranten beschriftet: „FRÜH · INTERESSANT“, „STARK · ATTRAKTIV“, „SCHWACH · UNINTERESSANT“, „ÜBERDEHNT · SPÄT“. Die vorhandenen Trails bleiben erhalten.
+- **Reale Position im FokusScope:** Kaufkurs in EUR/Tradegate und Stückzahl können nach dem Kauf übernommen und lokal persistent gespeichert werden.
+- **Realer Tradeplan:** Investiertes Kapital, unveränderter technischer SL, TP1, TP2, geschätzter €-Verlust am SL, €-Gewinn bei TP1/TP2, unrealisiertes Ergebnis und Netto-CRV aus der realen Ausführung werden sofort berechnet. Technische Marken werden nicht verschoben, nur damit CRV oder Ergebnis besser aussehen.
+- **Teilverkauf / Restposition:** Teilverkäufe können in Stück gebucht werden; verbleibende Reststückzahl bleibt sichtbar.
+- **Verkaufsüberwachung:** aktive Fokusposition wird bei neuen Daten gegen SL-Gefahr/SL, TP1 und TP2 geprüft. Alarm ist hörbar (wenn Ton aktiviert), grafisch persistent und muss bestätigt werden. Die UI stellt ausdrücklich klar: Warnung/Alarm, keine automatische Verkaufsorder.
+- **VL als Pflichtbestandteil:** neue `VL_STATUS_v3.5.6.md` und aktualisierte kumulative `IMPROVEMENT_LIST.md`; keine stillen Auslassungen.
+- **Regressionen:** zusätzliche v3.5.6-Guards für Heatmap-Quadranten, Positionspersistenz, reale Berechnung, Teilverkauf und Alarm.
+
+## Erhalten / geschützt
+- Claude-Modus methodisch unverändert; bestehende SHA-256-Locks müssen identisch bleiben.
+- v3.5.5 Aladdin-Style Market Intelligence bleibt additive Empfehlungsschicht und verändert keinen Claude-/FusionPulse-Score.
+- Freshness, FokusScope-Priorität, Einzel-/Global-Refresh, Methodenfeld, Learning/Attribution und wirtschaftliche Gates bleiben bestehen.
+
+## Abnahmehinweis
+`npm run check` ist lokal grün. Ein Release gilt trotzdem erst nach dem verpflichtenden **UI-Smoke-Test im deployten System** als vollständig abgenommen (echte Datenzeit, Refresh, Fokusposition/Alarm, Heatmap-Bewegung, Learning/TWIN, Planleiste).
+
 # FusionPulse v3.5.5 · Modul 1: Aladdin-Style Market Intelligence
 
 ## Die Idee
