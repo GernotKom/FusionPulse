@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.3.9 — Frontend
+   FusionPulse v3.4.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -114,12 +114,12 @@ function rememberStockRows(rows){
   try{localStorage.setItem(STOCK_LAST_ROWS_KEY,JSON.stringify(vals));}catch{}
 }
 function mergeFavoriteRows(rows){
-  // Current server rows are authoritative for Discovery. A frontend last-row cache
-  // may only fill a missing FAVORITE/DEPOT row; it must never repopulate old Discovery.
+  // Server rows are authoritative. Cache may only preserve a missing favorite OR
+  // the explicitly focused stock; never silently replace the requested ticker.
   const m=new Map((rows||[]).filter(r=>r?.symbol&&uiStockRowAllowed(r)).map(r=>[String(r.symbol).toUpperCase(),r]));
   for(const [sym,old] of stockLastRows){
-    if(!isFavStock(sym) || !old || !uiStockRowAllowed(old) || m.has(sym)) continue;
-    m.set(sym,{...old,_staleLast:true,_staleFavorite:true});
+    if((!isFavStock(sym) && sym!==String(focusStock||'').toUpperCase()) || !old || !uiStockRowAllowed(old) || m.has(sym)) continue;
+    m.set(sym,{...old,_staleLast:true,_staleFavorite:isFavStock(sym)});
   }
   return [...m.values()];
 }
@@ -140,6 +140,7 @@ let health = {};
 let quotaShownFor = '';     // verhindert Dauer-Popups für dieselbe Lage
 let stockSearchBusy = false;
 let stockSearchLastTs = 0;
+let stockLookupSeq = 0;
 let openingRows = [];
 let openingMeta = {};
 let openingTimer = null;
@@ -219,6 +220,7 @@ function stockFreshness(r){
   return {key:'cached',label:'ANGEZEIGT / NICHT DIESE RUNDE'};
 }
 const stockUpdateLabel = (r) => {const f=stockFreshness(r);return `${f.label} · Abfrage ${clock(stockMeta?.ts)} · Daten ${r?.updated||'–'}`;};
+const regimeExplanation = () => $('#regime')?.dataset.tip || 'Marktregime noch nicht verfügbar.';
 
 const isMuted = (pair) => (S.mutedPairs || []).includes(pair);
 const isStockMuted = (s) => (S.mutedStocks || []).includes(s);
@@ -274,7 +276,7 @@ function stockTradeability(r) {
   const netProfit = Number(sz?.planNet ?? 0);
   const netCrv = Number(sz?.planCrvAfterCosts ?? r.netCRV ?? 0);
   const currentPhase = stockMeta?.market?.key || r.marketPhase;
-  const marketOk = !currentPhase || ['regular','opening'].includes(currentPhase);
+  const marketOk = !!currentPhase && ['regular','opening'].includes(currentPhase);
   const ok = marketOk && tp2Pct >= Number(S.minTp2PctStock || 0)
     && netProfit >= Math.max(Number(S.minNetProfitStock || 0), OPPORTUNITY_MIN_NET_EUR)
     && netCrv >= Number(S.minCrvStock || 3);
@@ -282,7 +284,9 @@ function stockTradeability(r) {
 }
 const stockLevel = (r) => {
   const t = stockTradeability(r);
-  return (r.light === 'green' && r.score >= 8 && t.ok) ? 3
+  const fresh = stockFreshness(r);
+  // Safety: missing/stale data can never promote a row to BUY.
+  return (r.light === 'green' && r.score >= 8 && t.ok && fresh.key === 'live') ? 3
     : r.light === 'green' ? 2 : r.light === 'yellow' ? 1 : 0;
 };
 
@@ -826,7 +830,7 @@ function stockHeatmap(shown) {
     pts.map(({r,x,y,rad})=>`<g class="dot light-${r.light} ${stockLevel(r)===3?'buy-ready':''}" data-openstock="${esc(r.symbol)}" transform="translate(${Math.max(10,Math.min(190,x)).toFixed(1)} ${Math.max(10,Math.min(190,y)).toFixed(1)})"><circle class="hit" r="${rad+7}"/><circle class="core" r="${rad}"/><text x="0" y="2.2">${esc(r.symbol.slice(0,5))}</text><title>${esc(r.name)} · Score ${num(r.score,1)} · CRV ${num(r.netCRV,1)}:1 · RVOL ${r.relVol==null?'n.v.':num(r.relVol,1)} · Klick: Aktie öffnen</title></g>`).join('');
   svg.querySelectorAll('[data-openstock]').forEach(dot=>dot.addEventListener('click',async()=>{
     focusStock=dot.dataset.openstock||''; renderStocks();
-    const found=stockRows.some(r=>r.symbol===focusStock); if(!found){const q=$('#stockQ'); if(q){const old=q.value;q.value=focusStock;await searchStockNow();q.value=old;}}
+    const found=stockRows.some(r=>r.symbol===focusStock); if(!found) await searchStockNow(focusStock);
     $('#stockFocus')?.scrollIntoView({behavior:'smooth',block:'start'});
   }));
 }
@@ -837,7 +841,7 @@ function renderDepotStrip() {
   if(!favs.length){el.innerHTML='<span><b>★ Favoriten / Depot</b> · noch leer — Stern bei einer Aktie antippen.</span>';return;}
   el.innerHTML=`<b>★ Favoriten / Depot (${favs.length})</b>`+favs.map(symb=>`<button class="depotchip" draggable="true" data-depot="${esc(symb)}" title="Ziehen zum Neuordnen · Klick öffnet ${esc(symb)}"><span class="dragmark" aria-hidden="true">⋮⋮</span>${esc(symb)}</button>`).join('');
   el.querySelectorAll('[data-depot]').forEach(b=>{
-    b.onclick=async()=>{focusStock=b.dataset.depot;const q=$('#stockQ');if(q)q.value='';renderStocks();if(!stockRows.some(r=>r.symbol===focusStock)){if(q)q.value=focusStock;await searchStockNow();if(q)q.value='';renderStocks();}};
+    b.onclick=async()=>{focusStock=b.dataset.depot;const q=$('#stockQ');if(q)q.value='';renderStocks();if(!stockRows.some(r=>r.symbol===focusStock)){await searchStockNow(focusStock);renderStocks();}};
     b.addEventListener('dragstart',e=>{e.dataTransfer.setData('text/plain',b.dataset.depot);e.dataTransfer.effectAllowed='move';b.classList.add('dragging')});
     b.addEventListener('dragend',()=>b.classList.remove('dragging'));
     b.addEventListener('dragover',e=>{e.preventDefault();e.dataTransfer.dropEffect='move'});
@@ -1000,7 +1004,7 @@ function renderLearningStatus(){
   el.dataset.state=learningData?.configured===false?'warn':learningData?.state==='ok'?'ok':'busy';
   el.title=learningData?.configured===false
     ? 'Cloudflare D1 ist noch nicht als Binding DB verbunden. Bis dahin bleibt lokaler Browser-Speicher nur Fallback.'
-    : `Serverseitiges Learning in Cloudflare D1. Browserdaten können gelöscht werden, ohne diese ${Number(learningData?.stats?.snapshots||0)} Snapshots zu verlieren.`;
+    : learningData?.state==='error' ? `Learning-Fehler: ${learningData?.error||'unbekannter Fehler'}. Betrifft die Lern-/Historienanzeige, nicht automatisch die Provider-Verbindung oder Tradingregeln.` : `Serverseitiges Learning in Cloudflare D1. Browserdaten können gelöscht werden, ohne diese ${Number(learningData?.stats?.snapshots||0)} Snapshots zu verlieren.`;
 }
 function mergeServerHistories(){
   for(const r of stockRows){const h=learningStock.get(r.symbol)?.history;if(Array.isArray(h)&&h.length&&h.some(x=>Number(x.executability)>0))r._history=h;}
@@ -1013,7 +1017,7 @@ async function loadLearning(){
   const coins=[...new Set([...(S.favoritePairs||[]),...rows.slice(0,20).map(r=>r.pair)])].slice(0,30);
   try{
     const q=new URLSearchParams(); if(stocks.length)q.set('stocks',stocks.join(','));if(coins.length)q.set('coins',coins.join(','));if(S.token)q.set('t',S.token);
-    const r=await fetch('/api/learning?'+q,{cache:'no-store'});const d=await r.json();if(req!==learningReqSeq)return;learningData=d||{};
+    const r=await fetchWithTimeout('/api/learning?'+q,{cache:'no-store'},10_000);const d=await r.json();if(req!==learningReqSeq)return;learningData=d||{};
     learningStock=new Map(Object.entries(d.stocks||{}));learningCoin=new Map(Object.entries(d.coins||{}));
     mergeServerHistories();renderLearningStatus();renderLearningReport();render();renderStocks();
   }catch(e){learningData={configured:true,state:'error',error:String(e.message||e)};renderLearningStatus();}
@@ -1097,8 +1101,8 @@ function renderOpeningPanel() {
   if(openingMeta.configured===false){el.innerHTML='<b>🚀 Opening Momentum</b><span>Alpaca noch nicht verbunden. Benötigt zwei Cloudflare-Secrets: <code>ALPACA_API_KEY_ID</code> und <code>ALPACA_API_SECRET_KEY</code>.</span>';return;}
   const phase=openingMeta.phaseLabel||'Status wird geladen';
   const top=openingRows.slice(0,5);
-  el.innerHTML=`<div class="ophead"><b>🚀 Opening Momentum</b><span title="${esc(openingMeta.phaseHelp||'')} ">${esc(phase)}</span><small title="${esc(openingMeta.limitations||'Alpaca Marktdatenfeed')}">Alpaca · ${esc(openingMeta.feed||'IEX')} · ${Number(openingMeta.radarCandidates||0)} Radar · ${esc(openingMeta.radarSource||'warte')}</small></div>`+
-    (top.length?`<div class="opgrid">${top.map(r=>`<button type="button" class="opcard ${r.light} ${Number(r.ret5)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="${esc(r.symbol)} im Aktienradar öffnen. Momentum-Score kombiniert Gap, Volumenbeschleunigung, kurzfristige Kursdynamik und Premarket-/Opening-Level. Kein BUY allein."><b>${esc(r.symbol)}${r.origin==='favorite'?' ★':r.origin==='radar'?' · RADAR':''}</b><span class="trend-pct ${Number(r.gapPct)>=0?'up':'down'}">${r.gapPct>=0?'+':''}${num(r.gapPct,1)}% Gap</span><span>Mom ${num(r.momentumScore,1)}</span><span class="trend-pct ${Number(r.ret5)>=0?'up':'down'}" title="Speed = kurzfristige Kursänderung der letzten verfügbaren 5-Minuten-Periode gegenüber der vorherigen Periode. Positiv = Beschleunigung nach oben, negativ = Abschwächung/Rückgang, 0 % = kaum Veränderung. Kontextwert, kein eigenständiges BUY-Signal.">Speed ${Number(r.ret5)>=0?'+':''}${num(r.ret5,2)}%</span><span>RV ${r.relVol==null?'n.v.':num(r.relVol,1)+'×'}</span><span title="Elliott/Fibonacci-Strukturprojektion: grober möglicher Bewegungsraum aus aktuellem Impuls und 1,618-Projektion; kein garantiertes Kursziel.">Struktur ${num(r.structurePct,1)}%</span><em>${esc(r.phaseAction)}</em></button>`).join('')}</div>`:`<span class="hint">Noch keine verwertbaren Live-Daten im aktuellen ${esc(openingMeta.feed||'Alpaca')}-Zeitfenster.</span>`);
+  el.innerHTML=`<div class="ophead"><b>🚀 Opening Momentum</b><span title="${esc(openingMeta.phaseHelp||'')} ">${esc(phase)}</span><small title="${esc(openingMeta.limitations||'Alpaca Marktdatenfeed')}">Alpaca · ${esc(openingMeta.feed||'IEX')} · Update ${clock(openingMeta.ts)} · Intervall 60 s</small></div>`+
+    (top.length?`<div class="opgrid">${top.map(r=>`<button type="button" class="opcard ${r.light} ${Number(r.ret5)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="${esc(r.symbol)} im Aktienradar öffnen. Momentum-Score kombiniert Gap, Volumenbeschleunigung, kurzfristige Kursdynamik und Premarket-/Opening-Level. Kein BUY allein."><b>${esc(r.symbol)}${r.origin==='favorite'?' ★':''}</b><span class="trend-pct ${Number(r.gapPct)>=0?'up':'down'}">${r.gapPct>=0?'+':''}${num(r.gapPct,1)}% Gap</span><span>Mom ${num(r.momentumScore,1)}</span><span class="trend-pct ${Number(r.ret5)>=0?'up':'down'}" title="Speed = kurzfristige Kursänderung der letzten verfügbaren 5-Minuten-Periode gegenüber der vorherigen Periode. Positiv = Beschleunigung nach oben, negativ = Abschwächung/Rückgang, 0 % = kaum Veränderung. Kontextwert, kein eigenständiges BUY-Signal.">Speed ${Number(r.ret5)>=0?'+':''}${num(r.ret5,2)}%</span><span>RV ${r.relVol==null?'n.v.':num(r.relVol,1)+'×'}</span><span title="Elliott/Fibonacci-Strukturprojektion: grober möglicher Bewegungsraum aus aktuellem Impuls und 1,618-Projektion; kein garantiertes Kursziel.">Struktur ${num(r.structurePct,1)}%</span><em>${esc(r.phaseAction)}</em></button>`).join('')}</div>`:`<span class="hint">Noch keine verwertbaren Live-Daten im aktuellen ${esc(openingMeta.feed||'Alpaca')}-Zeitfenster.</span>`);
   el.querySelectorAll('[data-openstock]').forEach(btn=>btn.addEventListener('click',()=>openStockFromDiscovery(btn.dataset.openstock)));
 }
 
@@ -1173,9 +1177,10 @@ function renderStocks() {
   const top=focusedRow||(!focusStock?shown[0]:null);
   if(topBox){if(!top)topBox.innerHTML=search?`<div class="stockfocus-empty">Keine geladene Aktie passend zu „${esc(search)}“. Enter oder 🔎 lädt den Titel direkt.</div>`:(filter==='favorites'?'<div class="stockfocus-empty">Noch keine Aktien-Favoriten. Mit ☆ neben einem Titel hinzufügen.</div>':'');else{
     const sz=stockSizing(top), buy=stockLevel(top)===3, tr=stockTradeability(top), opp=stockOpportunity(top), qm=focusQuoteMeta(top); const struct=Number(top.structurePct||0);
-    topBox.innerHTML=`<div class="stockfocus-card ${top.light}${buy?' buy':''}"><div class="sf-focus-main"><div class="sf-title"><div><small>AUSGEWÄHLTE AKTIE · ${esc(top.symbol)}</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button><b>${esc(top.symbol)}</b><a class="gfinance focus-link" href="${googleFinanceUrl(top)}" target="_blank" rel="noopener" title="${esc(top.symbol)} in Google Finance in einem neuen Tab öffnen">Google Finance ↗</a></h3><div class="focus-livebar ${qm.cls}"><b>${qm.label}</b><span>Kurs ${focusDisplayPrice(top)}</span><span>Abfrage ${qm.when}</span><span>${esc(qm.src+qm.scope)}</span>${qm.age!=null?`<span>${qm.age}s alt</span>`:''}</div><span class="company-name" title="Vollständiger Firmenname. Warum sinnvoll? Der Ticker allein kann leicht mit ähnlich benannten Wertpapieren verwechselt werden.">${esc((top.securityName&&top.securityName!==top.symbol)?top.securityName:(top.name&&top.name!==top.symbol?top.name:'Firmenname wird noch geladen'))}</span><small class="company-focus" title="Kurzbeschreibung des operativen Fokus aus den verfügbaren Unternehmens-Metadaten. Warum sinnvoll? Sie hilft einzuordnen, wodurch die Aktie wirtschaftlich bewegt werden kann.">${esc((top.companyDescription||'').slice(0,220)||((top.sector&&top.sector!=='Discovery')?top.sector:'Unternehmensfokus noch nicht verifiziert'))}${(!top.companyDescription||!/candidate|program|pipeline|therapy|therapeutic|device|platform|drug/i.test(top.companyDescription))?' · Lead Program/Candidate nicht verifiziert':''}</small><small class="company-exchange" title="Primäres Listing laut verfügbaren Metadaten. Warum sinnvoll? Die Hauptbörse hilft bei Handelszeiten, Liquidität und Dateninterpretation. Höchstes aktuelles Volumen wird nur behauptet, wenn es tatsächlich gemessen werden kann.">Börse: ${esc(top.exchange||'n.v.')}</small><span>${esc(top.sector)} · Score ${num(top.score,1)}${top.preSignalMaturity!=null?' · Reife '+Math.round(top.preSignalMaturity)+'%':''}</span></div><strong>${buy?'🟢 BUY':VERDICT_ICON[top.light]+' '+esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${focusDisplayPrice(top)}</b><small>${qm.ok?' Live-Quote':' Analyse-/Fallbackpreis'}</small></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span>Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Netto-CRV = realistischer Nettogewinn im Verhältnis zum Verlustrisiko nach geschätzten Kosten, Spread und Slippage. Beispiel 3 : 1 bedeutet drei Einheiten möglicher Nettogewinn je einer Einheit Risiko. Ein BUY benötigt mindestens deine eingestellte CRV-Grenze.">Netto-CRV <b>${num(sz?.planCrvAfterCosts ?? top.netCRV,1)} : 1${Number(sz?.planCrvAfterCosts ?? top.netCRV)<Number(S.minCrvStock||3)?' · zu niedrig':''}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Strukturpotenzial = geschätzter technisch plausibler Kursweg bis zum nächsten relevanten Widerstand/Ziel aus Chart-, Elliott-/Fibonacci- und Marktstruktur. Das ist kein erwarteter Gewinn und allein kein Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}${crowdConfirmGauge(top)}</span></div><div class="opportunity-watch ${opp.ready?'ready':'waiting'}"><b>${buy?'BUY FREIGEGEBEN':opp.label}</b><span>${opp.why?esc(opp.why):(opp.reasons.length?esc(opp.reasons.join(' · ')):'Wartet auf Qualität, CRV, Kursweg und wirtschaftlich relevantes Gewinnpotenzial.')}</span></div><div class="intraday-chart" title="Kursverlauf. Intraday nutzt 5-Minuten-/IEX-Daten; längere Zeiträume werden passend aggregiert nachgeladen. Warum sinnvoll? Elliott-Strukturen sehen auf verschiedenen Zeitebenen unterschiedlich aus; der längere Chart liefert Kontext, aber kein BUY allein."><span>Chart · <select id="stockChartRange" title="Zeitraum wählen. Warum sinnvoll? Kurz zeigt Entry-Struktur, lang zeigt den übergeordneten Elliott-/Trend-Kontext.">${['5','10','30','60','120','180','240','300','1T','5T','1Wo','3Mo','6Mo','12Mo'].map(m=>`<option value="${m}"${String(m)===String(stockChartMinutes)?' selected':''}>${/^\d+$/.test(m)?m+' min':m}</option>`).join('')}</select></span>${spark((stockChartCache.get(top.symbol+'|'+stockChartMinutes)?.rows?.map(x=>x.c)||(top.intraday||[]).slice(-Math.max(1,Math.ceil((Number(stockChartMinutes)||120)/5)))),420,76)}</div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<div class="stock-interpret"><b>Was hat sich geändert? · Interpretation</b><span>${top.whyNow?.length?`Warum jetzt? ${esc(top.whyNow.join(' · '))} · `:''}${esc(stockInterpretation(top))}</span><small>Radar/Crowd/Search dienen nur der Discovery · 0 % BUY-Gewicht</small></div><small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} BUY: Score ≥8, CRV ≥${num(S.minCrvStock,1)}:1, Plan netto ≥${eur(Math.max(Number(S.minNetProfitStock||0),OPPORTUNITY_MIN_NET_EUR),0)}, Kursweg ≥${num(S.minTp2PctStock,1)}%.</small></div>${stockLadder(top)}</div>`;
+    topBox.innerHTML=`<div class="stockfocus-card ${top.light}${buy?' buy':''}"><div class="sf-focus-main"><div class="sf-title"><div><small>AUSGEWÄHLTE AKTIE · ${esc(top.symbol)}</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button><b>${esc(top.symbol)}</b><a class="gfinance focus-link" href="${googleFinanceUrl(top)}" target="_blank" rel="noopener" title="${esc(top.symbol)} in Google Finance in einem neuen Tab öffnen">Google Finance ↗</a></h3><div class="focus-livebar ${qm.cls}"><b>${qm.label}</b><span>Kurs ${focusDisplayPrice(top)}</span><span>Quote ${qm.when}</span><span>${esc(qm.src+qm.scope)}</span>${qm.age!=null?`<span>${qm.age}s alt</span>`:''}<span>${esc(stockUpdateLabel(top))}</span><button type="button" id="stockFocusRefresh" title="Diese Aktie neu abfragen; der autonome Whole-Market-Scan bleibt serverseitig.">↻ Aktie</button></div><span class="company-name" title="Vollständiger Firmenname. Warum sinnvoll? Der Ticker allein kann leicht mit ähnlich benannten Wertpapieren verwechselt werden.">${esc((top.securityName&&top.securityName!==top.symbol)?top.securityName:(top.name&&top.name!==top.symbol?top.name:'Firmenname wird noch geladen'))}</span><small class="company-focus" title="Kurzbeschreibung des operativen Fokus aus den verfügbaren Unternehmens-Metadaten. Warum sinnvoll? Sie hilft einzuordnen, wodurch die Aktie wirtschaftlich bewegt werden kann.">${esc((top.companyDescription||'').slice(0,220)||((top.sector&&top.sector!=='Discovery')?top.sector:'Unternehmensfokus noch nicht verifiziert'))}${(!top.companyDescription||!/candidate|program|pipeline|therapy|therapeutic|device|platform|drug/i.test(top.companyDescription))?' · Lead Program/Candidate nicht verifiziert':''}</small><small class="company-exchange" title="Primäres Listing laut verfügbaren Metadaten. Warum sinnvoll? Die Hauptbörse hilft bei Handelszeiten, Liquidität und Dateninterpretation. Höchstes aktuelles Volumen wird nur behauptet, wenn es tatsächlich gemessen werden kann.">Börse: ${esc(top.exchange||'n.v.')}</small><span>${esc(top.sector)} · Score ${num(top.score,1)}${top.preSignalMaturity!=null?' · Reife '+Math.round(top.preSignalMaturity)+'%':''}</span></div><strong>${buy?'🟢 BUY':VERDICT_ICON[top.light]+' '+esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${focusDisplayPrice(top)}</b><small>${qm.ok?' Live-Quote':' Analyse-/Fallbackpreis'}</small></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span>Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Netto-CRV = realistischer Nettogewinn im Verhältnis zum Verlustrisiko nach geschätzten Kosten, Spread und Slippage. Beispiel 3 : 1 bedeutet drei Einheiten möglicher Nettogewinn je einer Einheit Risiko. Ein BUY benötigt mindestens deine eingestellte CRV-Grenze.">Netto-CRV <b>${num(sz?.planCrvAfterCosts ?? top.netCRV,1)} : 1${Number(sz?.planCrvAfterCosts ?? top.netCRV)<Number(S.minCrvStock||3)?' · zu niedrig':''}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Strukturpotenzial = geschätzter technisch plausibler Kursweg bis zum nächsten relevanten Widerstand/Ziel aus Chart-, Elliott-/Fibonacci- und Marktstruktur. Das ist kein erwarteter Gewinn und allein kein Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}${crowdConfirmGauge(top)}</span></div><div class="opportunity-watch ${opp.ready?'ready':'waiting'}"><b>${buy?'BUY FREIGEGEBEN':opp.label}</b><span>${opp.why?esc(opp.why):(opp.reasons.length?esc(opp.reasons.join(' · ')):'Wartet auf Qualität, CRV, Kursweg und wirtschaftlich relevantes Gewinnpotenzial.')}</span></div><div class="intraday-chart" title="Kursverlauf. Intraday nutzt 5-Minuten-/IEX-Daten; längere Zeiträume werden passend aggregiert nachgeladen. Warum sinnvoll? Elliott-Strukturen sehen auf verschiedenen Zeitebenen unterschiedlich aus; der längere Chart liefert Kontext, aber kein BUY allein."><span>Chart · <select id="stockChartRange" title="Zeitraum wählen. Warum sinnvoll? Kurz zeigt Entry-Struktur, lang zeigt den übergeordneten Elliott-/Trend-Kontext.">${['5','10','30','60','120','180','240','300','1T','5T','1Wo','3Mo','6Mo','12Mo'].map(m=>`<option value="${m}"${String(m)===String(stockChartMinutes)?' selected':''}>${/^\d+$/.test(m)?m+' min':m}</option>`).join('')}</select></span>${spark((stockChartCache.get(top.symbol+'|'+stockChartMinutes)?.rows?.map(x=>x.c)||(top.intraday||[]).slice(-Math.max(1,Math.ceil((Number(stockChartMinutes)||120)/5)))),420,76)}</div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<div class="stock-interpret"><b>Was hat sich geändert? · Interpretation</b><span>${top.whyNow?.length?`Warum jetzt? ${esc(top.whyNow.join(' · '))} · `:''}${esc(stockInterpretation(top))}</span><small>Radar/Crowd/Search dienen nur der Discovery · 0 % BUY-Gewicht</small></div><small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} BUY: Score ≥8, CRV ≥${num(S.minCrvStock,1)}:1, Plan netto ≥${eur(Math.max(Number(S.minNetProfitStock||0),OPPORTUNITY_MIN_NET_EUR),0)}, Kursweg ≥${num(S.minTp2PctStock,1)}%.</small></div>${stockLadder(top)}</div>`;
     topBox.querySelector('[data-favstock]')?.addEventListener('click',e=>toggleStockFavorite(top.symbol,e));
-    topBox.querySelector('#stockChartRange')?.addEventListener('change',async e=>{stockChartMinutes=String(e.target.value||'120');const k=top.symbol+'|'+stockChartMinutes;if(!stockChartCache.has(k)){try{const q=new URLSearchParams({symbol:top.symbol,range:stockChartMinutes});if(S.token)q.set('t',S.token);const rr=await fetch('/api/stock-chart?'+q,{cache:'no-store'});const dd=await rr.json();if(dd?.rows?.length)stockChartCache.set(k,dd);}catch{}}renderStocks();});
+    topBox.querySelector('#stockChartRange')?.addEventListener('change',async e=>{stockChartMinutes=String(e.target.value||'120');const k=top.symbol+'|'+stockChartMinutes,hit=stockChartCache.get(k);if(!hit||Date.now()-Number(hit.ts||0)>120_000){try{const q=new URLSearchParams({symbol:top.symbol,range:stockChartMinutes});if(S.token)q.set('t',S.token);const rr=await fetchWithTimeout('/api/stock-chart?'+q,{cache:'no-store'},10_000);const dd=await rr.json();if(dd?.rows?.length)stockChartCache.set(k,{...dd,ts:Date.now()});}catch{}}renderStocks();});
+    topBox.querySelector('#stockFocusRefresh')?.addEventListener('click',async()=>{await searchStockNow(top.symbol);renderStocks();});
   }}
   const groups=new Map();
   if(filter==='favorites') groups.set('★ Favoritendepot',shown);
@@ -1320,11 +1325,12 @@ async function previewStockSearchLive(){
   preview.querySelectorAll('[data-suggeststock]').forEach(b=>b.addEventListener('click',()=>{input.value=b.dataset.suggeststock||'';searchStockNow();}));
 }
 
-async function searchStockNow() {
+async function searchStockNow(symbolOverride='') {
   const input=$('#stockQ'), preview=$('#stockSearchPreview');
-  const raw = (input?.value || '').trim();
-  if (!raw || stockSearchBusy || Date.now()-stockSearchLastTs<800) return;
-  stockSearchLastTs=Date.now();
+  const raw = String(symbolOverride || input?.value || '').trim();
+  if (!raw || (!symbolOverride && (stockSearchBusy || Date.now()-stockSearchLastTs<800))) return;
+  const req=++stockLookupSeq;
+  if(!symbolOverride) stockSearchLastTs=Date.now();
   const showPreview=(row,msg='gefunden')=>{
     if(!preview)return;
     preview.innerHTML=`<button type="button" data-previewstock="${esc(row.symbol)}">✓ ${esc(row.symbol)} · ${esc(row.securityName||row.name||'Aktie')} ${esc(msg)}</button>`;
@@ -1337,7 +1343,11 @@ async function searchStockNow() {
   try {
     const q = new URLSearchParams({ lookup: raw, comp: S.components.join(','), minCrv: S.minCrvStock }); if (S.token) q.set('t', S.token);
     const res = await fetchWithTimeout('/api/stocks?' + q, { cache: 'no-store' }, 12_000); const data = await res.json();
-    stockMeta = { ...stockMeta, ...data, refreshedSymbols:[data.row?.symbol].filter(Boolean), ts:Date.now() };
+    if(req!==stockLookupSeq)return;
+    const requested=/^[A-Z0-9.\-]{1,12}$/i.test(raw)?raw.toUpperCase():null;
+    const returned=String(data.row?.symbol||'').toUpperCase();
+    if(requested && returned && returned!==requested) throw new Error(`Ticker-Mismatch: angefordert ${requested}, erhalten ${returned}`);
+    stockMeta = { ...stockMeta, ...data, refreshedSymbols:data.cached?[]:[data.row?.symbol].filter(Boolean), ts:data.cached?(data.ts||stockMeta.ts):(data.ts||Date.now()) };
     if (data.row) { const m = new Map(stockRows.map((r) => [r.symbol, r])); m.set(data.row.symbol, data.row); stockRows = [...m.values()]; rememberStockRows([data.row]); stockRows=mergeFavoriteRows(stockRows); focusStock=data.row.symbol; }
     renderQuota(data.quota); checkQuotaPopup(data.quota, data.state);
     if (!res.ok || data.notFound) { if (st) { st.textContent = data.notFound ? 'Nicht gefunden' : 'Suche fehlgeschlagen'; st.className = 'badge warn'; st.title = data.error || 'Bitte Ticker versuchen.'; } if(preview)preview.textContent=data.error||'Kein Treffer gefunden.'; }
@@ -1352,7 +1362,7 @@ async function scanOpeningMomentum(force = false) {
   try {
     const q = new URLSearchParams({favorites:(S.favoriteStocks||[]).join(',')}); if (S.token) q.set('t', S.token); if (force) q.set('force','1');
     const res = await fetchWithTimeout('/api/opening?' + q, { cache: 'no-store' }, 10_000);
-    const data = await res.json(); if(req!==openingReqSeq)return; openingMeta = data; openingRows = data.rows || []; renderOpeningPanel(); renderStocks(); loadCrowd(false);
+    const data = await res.json(); if(req!==openingReqSeq)return; openingMeta = data; openingRows = data.rows || []; renderOpeningPanel(); renderStocks();
   } catch (e) { openingMeta = { state:'error', phaseLabel:'Alpaca nicht erreichbar', phaseHelp:String(e.message||e) }; renderOpeningPanel(); }
 }
 function setStockPoll() {
@@ -1364,15 +1374,15 @@ function setStockPoll() {
     const incomplete = Number.isFinite(universe) ? stockRows.length < universe : true;
     const delay = primaryTiingo ? 2 * 60_000 : (incomplete ? 65_000 : 5 * 60_000);
     stockTimer = setTimeout(async () => {
-      if (document.visibilityState === 'visible') await scanStocks(false);
-      scheduleStockPoll();
+      try { if (document.visibilityState === 'visible') await scanStocks(false); }
+      finally { scheduleStockPoll(); }
     }, delay);
   };
   scheduleStockPoll();
   clearInterval(openingTimer);
   openingTimer = setInterval(() => { if (document.visibilityState === 'visible') scanOpeningMomentum(false); }, 60_000);
   clearInterval(experimentalTimer); experimentalTimer=setInterval(()=>{if(document.visibilityState==='visible')loadExperimental(false);},15*60_000);
-  clearInterval(crowdTimer); crowdTimer=setInterval(()=>{if(document.visibilityState==='visible')loadCrowd(false);},60*60_000);
+  clearInterval(crowdTimer); crowdTimer=setInterval(()=>{if(document.visibilityState==='visible')loadCrowd(false);},20*60_000);
 }
 
 /* ------------------------------------------------- Reifezeit + Alarmierung
@@ -2024,8 +2034,9 @@ if ('serviceWorker' in navigator) {
     if (e.data?.type === 'FP_ACTIVATED' && e.data.version !== FP_VERSION) showUpdateBar();
   });
   let reloaded = false;
+  const hadController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (reloaded) return; reloaded = true; location.reload();
+    if (!hadController || reloaded) return; reloaded = true; location.reload();
   });
 }
 

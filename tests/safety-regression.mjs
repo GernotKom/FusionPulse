@@ -85,7 +85,6 @@ assert.match(workerText,/tradableStock:Boolean\(active&&!nonCommon\)/,'Only acti
 assert.match(workerText,/Metadaten(?:prüfung|pruefung) fehlgeschlagen/,'Metadata failure must fail closed instead of admitting an unknown instrument');
 assert.match(workerText,/\/tiingo\/daily\/\$\{encodeURIComponent\(sym\)\}/,'Common-stock validation must use stable Tiingo EOD metadata');
 
-console.log('✓ FusionPulse safety regressions: OK');
 
 // v3.2.6 Elliott-first / Market-Gainer guards
 assert.match(workerText,/const ell=Number\(r\?\.elliott\)\|\|0/,'Deep recheck ranking must explicitly include Elliott structure');
@@ -110,10 +109,24 @@ assert.match(workerText,/const staleRows=stripKnownNonCommon\(stockMemo\.rows\|\
 // v3.2.8 browser cache regression: stale Discovery must never bypass the Worker ETF gate.
 assert.match(app,/const STOCK_LAST_ROWS_KEY='fp\.stockLastRows\.v2'/,'Browser stock cache must use a new generation');
 assert.match(app,/localStorage\.removeItem\(LEGACY_STOCK_LAST_ROWS_KEY\)/,'Legacy v1 stock cache must be purged');
-assert.match(app,/if\(!isFavStock\(sym\) \|\| !old \|\| !uiStockRowAllowed\(old\) \|\| m\.has\(sym\)\) continue/,'Cached fallback rows must be restricted to favorites and sanitized');
+assert.match(app,/sym!==String\(focusStock\|\|''\)\.toUpperCase\(\)/,'Cached fallback may preserve only the explicitly focused non-favorite stock');
+assert.match(app,/!uiStockRowAllowed\(old\) \|\| m\.has\(sym\)/,'Cached fallback rows must remain sanitized');
 assert.match(app,/UI_NON_COMMON_SYMBOL_DENY=new Set\(\['CRWU','AXTU'\]\)/,'Frontend defensive deny-set must block known polluted ETF symbols');
 
 // v3.3.8 discovery-focus regression guards
 assert.match(app,/qm=focusQuoteMeta\(top\)/,'Selected-stock focus must define quote metadata before rendering the live bar');
 assert.match(app,/stockfocus-loading/,'Discovery click must show the selected ticker immediately while deep analysis loads');
 assert.match(app,/Speed = kurzfristige Kursänderung der letzten verfügbaren 5-Minuten-Periode/,'Opening Momentum must explain and display Speed');
+
+// v3.4.0 audit regression guards
+assert.match(app,/const marketOk = !!currentPhase/,'Missing market phase must fail closed');
+assert.match(app,/fresh\.key === 'live'/,'Stock BUY level must require live freshness');
+assert.match(app,/const regimeExplanation =/,'Regime explanation must be defined');
+assert.match(app,/let stockLookupSeq = 0/,'Stock lookup needs a sequence guard');
+assert.match(app,/if\(req!==stockLookupSeq\)return/,'Late stock lookup responses must be ignored');
+assert.match(app,/stockFocusRefresh/,'Focus window must offer per-stock refresh');
+assert.match(app,/Date\.now\(\)-Number\(hit\.ts\|\|0\)>120_000/,'Chart cache needs TTL');
+assert.match(workerText,/if\(ageMin!=null && ageMin>30\) return null/,'Old radar quotes must be filtered');
+assert.match(workerText,/signal: AbortSignal\.timeout\(20_000\)/,'Provider fetches need timeouts');
+
+console.log('✓ FusionPulse safety regressions: OK');

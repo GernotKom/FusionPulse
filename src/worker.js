@@ -1,7 +1,7 @@
 import { APP_VERSION } from './version.js';
 
 /* ============================================================================
-   FusionPulse v3.3.8 — Cloudflare Worker
+   FusionPulse v3.4.0 — Cloudflare Worker
    Momentum- & Einstiegszonen-Scanner für Bitpanda Fusion (EUR-Paare)
 
    Design-Prinzipien:
@@ -1133,7 +1133,7 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
   const verdict = light === 'green' ? 'Kauf-Setup' : light === 'yellow' ? 'Beobachten' : 'Kein Trade';
   const setup = ema9 > ema21 && ret15 > 0 ? 'Trend / Momentum'
     : last.c > ema21 ? 'Pullback über EMA21'
-    : last.c >= vwap ? 'Über VWAP, aber ohne Trend' : 'Unter EMA21 – Schwäche';
+    : volumeKnown && last.c >= vwap ? 'Über VWAP, aber ohne Trend' : volumeKnown ? 'Unter EMA21 – Schwäche' : 'VWAP n. v. – Volumenbasis fehlt';
   const trend = ema9 > ema21 ? 'aufwärts' : ema9 < ema21 ? 'abwärts' : 'seitwärts';
 
   return {
@@ -1169,7 +1169,7 @@ async function twelveJSON(path, params, key, creditsSpent = 1, env = null) {
   const u = new URL('https://api.twelvedata.com/' + path);
   for (const [k, v] of Object.entries(params)) if (v != null) u.searchParams.set(k, v);
   u.searchParams.set('apikey', key);
-  const r = await fetch(u);
+  const r = await fetch(u,{signal:AbortSignal.timeout(20_000)});
   await noteQuota(env, r, creditsSpent);
   const j = await r.json();
   if (!r.ok || j?.status === 'error') {
@@ -1368,7 +1368,7 @@ function alpacaFeed(env){
 function alpacaFeedLabel(env){ return alpacaFeed(env) === 'sip' ? 'SIP (All US Exchanges)' : 'IEX (Free)'; }
 async function alpacaJSON(path, params, env){
   const u=new URL('https://data.alpaca.markets'+path); for(const [k,v] of Object.entries(params||{})) if(v!=null)u.searchParams.set(k,v);
-  const r=await fetch(u,{headers:{'APCA-API-KEY-ID':env.ALPACA_API_KEY_ID,'APCA-API-SECRET-KEY':env.ALPACA_API_SECRET_KEY,accept:'application/json'}});
+  const r=await fetch(u,{headers:{'APCA-API-KEY-ID':env.ALPACA_API_KEY_ID,'APCA-API-SECRET-KEY':env.ALPACA_API_SECRET_KEY,accept:'application/json'},signal:AbortSignal.timeout(20_000)});
   if(r.status===429) throw new Error('Alpaca Rate-Limit (429)');
   if(!r.ok) throw new Error(`Alpaca ${r.status}: ${(await r.text()).slice(0,180)}`);
   return r.json();
@@ -1401,7 +1401,7 @@ function momentumFromAlpaca(symbol, snap, bars=[]){
   const light=momentumScore>=8?'green':momentumScore>=6.5?'yellow':'red';
   const actionable=['opening','regular'].includes(phase.key)&&momentumScore>=8;
   const phaseAction=['premarket-early','premarket'].includes(phase.key)?(momentumScore>=7.5?'VORBEREITEN':'beobachten'):actionable?'Opening-Bestätigung prüfen':phase.key==='closed'?'Vorbereitung':'beobachten';
-  return {symbol,priceUsd:latest,gapPct:r1(gapPct),ret5:r1(ret5),ret15:r1(ret15),ret60:r1(ret60),relVol:r1(relVol),momentumScore,preHigh,preLow,openingHigh,breakPremarketHigh:!!(preHigh&&latest>preHigh),structurePct,structureTargetUsd:r2(latest*(1+structurePct/100)),light,phaseAction,marketPhase:phase.key,updated:snap.minuteBar?.t||snap.latestTrade?.t||null};
+  return {symbol,priceUsd:latest,gapPct:r1(gapPct),ret5:r1(ret5),ret15:r1(ret15),ret60:r1(ret60),relVol:r1(relVol),momentumScore,preHigh,preLow,openingHigh,breakPremarketHigh:!!(preHigh&&latest>preHigh),structurePct,structureTargetUsd:r2(latest*(1+structurePct/100)),light,phaseAction,marketPhase:phase.key,updated:snap.minuteBar?.t||snap.latestTrade?.t||snap.dailyBar?.t||null,priceSource};
 }
 async function openingMomentum(env, force=false, favoriteSymbols=[]){
   const phase=usMarketPhase();
@@ -1467,7 +1467,7 @@ let experimentalMemo={ts:0,data:null};
 let crowdMemo={ts:0,key:'',data:null};
 function star5(x){return Math.max(1,Math.min(5,Math.round(Number(x)||1)));}
 async function fetchJSONPublic(url){
-  const r=await fetch(url,{headers:{accept:'application/json','user-agent':`FusionPulse/${APP_VERSION}`}});
+  const r=await fetch(url,{headers:{accept:'application/json','user-agent':`FusionPulse/${APP_VERSION}`},signal:AbortSignal.timeout(20_000)});
   if(!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -1896,6 +1896,7 @@ async function tiingoFetch(env, path) {
   if (!env.TIINGO_API_TOKEN) throw new Error('TIINGO_API_TOKEN fehlt');
   const res = await fetch(`https://api.tiingo.com${path}`, {
     headers: { accept: 'application/json', authorization: `Token ${env.TIINGO_API_TOKEN}` },
+    signal: AbortSignal.timeout(20_000),
   });
   if (res.status === 429) throw new Error('Tiingo Rate-Limit (429)');
   if (!res.ok) throw new Error(`Tiingo ${res.status}: ${(await res.text()).slice(0,180)}`);
@@ -2033,6 +2034,7 @@ function iexRadarQuote(x,prev=null){
   if(movePct>=2) reasons.push(`Tagesstaerke +${movePct.toFixed(1)} %`);
   if(movePct<0&&speedPct>=0.25) reasons.push('Reversal-Versuch');
   const ts=radarTs(x), ageMin=ts?Math.max(0,(Date.now()-ts)/60000):null;
+  if(ageMin!=null && ageMin>30) return null;
   return {symbol,last,prevClose,open:Number.isFinite(open)?open:null,high:Number.isFinite(high)?high:null,low:Number.isFinite(low)?low:null,volume:Number.isFinite(volume)?volume:null,movePct,openPct,rangePct,spreadPct,speedPct,volDelta,score:Math.max(0,score),reasons,ts,ageMin,source:'Tiingo IEX Radar',buyWeight:0};
 }
 async function readPersistedIexRadar(env){
@@ -2246,7 +2248,7 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
     if(cleanMemo.length!==stockMemo.rows.length) stockMemo={...stockMemo,rows:cleanMemo};
     const memoRadar=verifiedCommonOnly(tiingoIexRadarMemo.rows||[]).slice(0,20);
     const memoBoats=verifiedCommonOnly(tiingoDiscoveryMemo.rows||[]).slice(0,15);
-    return {configured:true,state:'ok',cached:true,rows:cleanMemo,ts:stockMemo.ts,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:cleanMemo.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified cache only',ts:tiingoIexRadarMemo.ts,candidates:memoRadar,gainers:openingGainers(memoRadar),buyWeight:0},boats:{...tiingoDiscoveryMemo,rows:memoBoats,candidates:memoBoats,buyWeight:0}},version:APP_VERSION};
+    return {configured:true,state:'ok',cached:true,rows:cleanMemo,ts:stockMemo.ts,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:cleanMemo.length,updatedThisCycle:0,refreshedSymbols:Array.isArray(stockMemo.refreshedSymbols)?stockMemo.refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified cache only',ts:tiingoIexRadarMemo.ts,candidates:memoRadar,gainers:openingGainers(memoRadar),buyWeight:0},boats:{...tiingoDiscoveryMemo,rows:memoBoats,candidates:memoBoats,buyWeight:0}},version:APP_VERSION};
   }
 
   // Browser/PWA darf den autonomen Markt-Scan nicht mehr selbst starten.
@@ -2265,9 +2267,9 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       const allowed=new Set([...verifiedRadar,...verifiedBoats].map(x=>String(x.symbol||'').toUpperCase()));
       const catalogSet=new Set(STOCK_SEARCH_CATALOG.map(x=>x[1]));
       const cleanRows=(persisted.rows||[]).filter(r=>{const sym=String(r?.symbol||'').toUpperCase();return !NON_COMMON_SYMBOL_DENY.has(sym) && !NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''}`) && (catalogSet.has(sym)||favs.includes(sym)||allowed.has(sym));});
-      stockMemo={ts:persisted.ts,rows:cleanRows,cycle:persisted.cycle,sig:persisted.sig};
+      stockMemo={ts:persisted.ts,rows:cleanRows,cycle:persisted.cycle,sig:persisted.sig,refreshedSymbols:Array.isArray(persisted.meta?.refreshedSymbols)?persisted.meta.refreshedSymbols:[]};
       const radar=await readPersistedIexRadar(env);
-      return {configured:true,state:'ok',cached:true,persistent:true,rows:cleanRows,ts:persisted.ts,cycle:persisted.cycle,universe:radar?.universe||12000,universeLabel:`${radar?.universe||'12.000+'} Tiingo/IEX`,scanned:cleanRows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified',ts:persisted.ts||0,candidates:verifiedRadar,gainers:openingGainers(verifiedRadar),buyWeight:0},boats:{source:'Tiingo BOATS · verified',ts:persisted.ts||0,candidates:verifiedBoats,buyWeight:0}},version:APP_VERSION,note:'Server-Cache: autonomer Cron-Radar/Deep-Scan; PWA startet keinen Doppel-Scan. Nur verifizierte Common Stocks werden an die UI gereicht.'};
+      return {configured:true,state:'ok',cached:true,persistent:true,rows:cleanRows,ts:persisted.ts,cycle:persisted.cycle,universe:radar?.universe||12000,universeLabel:`${radar?.universe||'12.000+'} Tiingo/IEX`,scanned:cleanRows.length,updatedThisCycle:0,refreshedSymbols:Array.isArray(persisted.meta?.refreshedSymbols)?persisted.meta.refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified',ts:persisted.ts||0,candidates:verifiedRadar,gainers:openingGainers(verifiedRadar),buyWeight:0},boats:{source:'Tiingo BOATS · verified',ts:persisted.ts||0,candidates:verifiedBoats,buyWeight:0}},version:APP_VERSION,note:'Server-Cache: autonomer Cron-Radar/Deep-Scan; PWA startet keinen Doppel-Scan. Nur verifizierte Common Stocks werden an die UI gereicht.'};
     }
     const staleRows=stripKnownNonCommon(stockMemo.rows||[]);
     return {configured:true,state:'stale',cached:true,rows:staleRows,ts:stockMemo.ts||0,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:staleRows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:tiingoIexRadarMemo.ts,candidates:(tiingoIexRadarMemo.rows||[]).slice(0,20),buyWeight:0},boats:tiingoDiscoveryMemo},version:APP_VERSION,note:'Warte auf ersten serverseitigen Cron-Batch.'};

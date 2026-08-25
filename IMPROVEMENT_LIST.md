@@ -1,72 +1,44 @@
-# FusionPulse Improvement List — Stand v3.3.8
+# FusionPulse Improvement List — Stand v3.4.0
 
-## In v3.3.8 umgesetzt
-- P0 Regression: Radar-/Momentum-/Extended-Hours-Klick öffnet wieder das große Aktien-Fokusfenster; fehlende Quote-Metadaten-Initialisierung behoben.
-- Fokusfenster zeigt ausgewählten Ticker sofort als Ladezustand, bevor Deep-Analyse/Live-Quote abgeschlossen sind.
-- Speed zusätzlich in Opening Momentum, inklusive grün/rot-Darstellung und verständlichem Mouseover; kein eigenständiges BUY-Signal.
-- Weiter offen: Aktienchart mit echter Premarket-/After-Hours-Zeitreihe, Previous Close und Gap-Referenz.
+## In v3.4.0 umgesetzt — Audit + VL
+- P0 Fokusbindung: Radar/Momentum/Extended/Suche dürfen niemals still auf ersten/vorherigen Ticker zurückfallen; aktiver Fokus wird über Polls erhalten.
+- P0 Lookup-Race/Mismatch: eigener Sequenz-Guard; kein Suchfeld als Transportkanal; Ticker-Mismatch fail-closed.
+- P0 `regimeExplanation()` repariert; Risk-On/Off/VWAP-Mouseover wieder funktionsfähig, kein falscher Learning-Fehler als Kollateralschaden.
+- P0 BUY-Freshness fail-closed: BUY nur bei `live` und bekannter Opening/Regular-Marktphase; fehlende/schlechtere Daten verbessern nie ein Setup.
+- P0 Tiingo-Freshness: persistierte `refreshedSymbols` im Clientpfad durchgereicht.
+- Fokusfenster: Quote/Freshness/Abfragezeit sichtbar + Refreshbutton nur für die Einzelaktie.
+- Provider-/Frontend-Timeouts ergänzt; Aktien-Poll wird auch nach Fehler/Timeout wieder geplant.
+- Crowd nicht mehr minütlich durch Opening Momentum; 20-Minuten-Zyklus.
+- Chart-Cache TTL 120 s.
+- Radar-Quote >30 min wird verworfen; Alpaca-Preisquelle intern gekennzeichnet.
+- Fokus-Sprung unter Sticky Header korrigiert.
+- VWAP-Text bei fehlender Volumenbasis korrekt „n. v.“.
+- Service-Worker: kein unnötiger Reload beim ersten Claim.
+- Opening Momentum: redundantes `· RADAR` entfernt; Updatezeit + 60-s-Intervall im Header.
+- Learning-Fehler erklärt ausdrücklich Learning/D1 statt pauschal Verbindung.
+- Safety-Regression um Audit-Guards erweitert.
 
+## Bereits aus v3.3.x erhalten
+- Whole-Market Radar unabhängig von Favoriten; Discovery 0 % BUY-Gewicht.
+- Speed in Radar und Opening Momentum mit Mouseover; kein eigenständiges BUY-Signal.
+- Google-Finance-Link im Aktienfokus.
+- Netto-CRV, Strukturpotenzial und wirtschaftlich relevantes Mindest-Netto-Potenzial im Fokus.
+- Unternehmensbeschreibung/Lead Program nur bei verifizierbarer Datenbasis.
+- Chart-Zeiträume 5/10/30/60/120/180/240/300 min, 1T/5T/1Wo/3Mo/6Mo/12Mo auswählbar.
+- Tiingo IEX Primary / Twelve Data Fallback dynamisch beschriftet.
 
-## In v3.3.7 weiterhin enthalten / umgesetzt
-
-- Radar → Deep Scan: marktweite Kandidaten vor Cache-Rechecks priorisiert; verifizierte Nicht-Favoriten bleiben zwischen Zyklen sichtbar.
-- Radar-/Opening-/Extended-Hours-Karten laden beim Klick fehlende Deep-Analyse direkt und öffnen anschließend das große Aktienfenster.
-
-## In v3.3.3 zusätzlich umgesetzt
-- Whole-Market-Radar-Fallback aus verifizierten Opening-Radar-Kandidaten; persistente Übergabe an den autonomen Deep Scan.
-- Favoritenrotation im Deep Scan, damit nicht dauerhaft nur die ersten zwei Favoriten frisch gerechnet werden.
-- Health-Ampel an persistente echte Provider-/Freshness-Bestätigungen gekoppelt; Tooltip erklärt Grau/Blinken und alle Farben.
-- Google Finance öffnet bei bekanntem Primary Listing direkt den aktuell ausgewählten Ticker.
-
-## In v3.3.2 umgesetzt
-- Whole-Market-Radar sichtbar auch ohne +2-%-Gainer-Schwelle; Favoriten klar getrennt markiert.
-- Opening Momentum erhält robusten persistenten Radar-Fallback und zeigt Herkunft (RADAR/Favorit).
-- Aktiensuche mit Live-Treffervorschau während der Eingabe; Return lädt die vollständige Analyse.
-- „Alle Aktien“ sprachlich zu „Alle analysierten Aktien“ präzisiert.
-
-
-## In v3.3.2 umgesetzt
-- Opening Momentum an verifizierte Whole-Market-Radar-Kandidaten angebunden; statischer Basiskatalog nur noch Ergänzung/Fallback.
-- Aktien-Suchfeld heller; X zum Löschen; Treffer-Preview; Suchtext nach erfolgreicher Suche automatisch leeren.
-- Persistente Signal-Herkunft im Footer mit AKTIE/COIN, Ticker, Signalart, Uhrzeit und Quittierung.
-- Einheitliche Funktionalitätsampel: Grün = stabil/kein Handlungsbedarf, Gelb = funktioniert mit kleiner Einschränkung, Orange = beobachten/zeitnah prüfen, Rot = konkreter Handlungsbedarf.
-- Klar beschriftete Quellenstatus für Krypto, Aktien, Tiingo und Cloudflare statt kryptischer Punkte/T.
-- Opening-/Momentum-Karten: Kursrichtung grün/rot schneller erkennbar.
-- Direkter Google-Finance-Link bei Aktien, öffnet separat.
-- Refresh-Tooltip präzisiert: PWA lädt neuesten Stand; schwerer Markt-/Deep-Scan bleibt serverseitig.
-
-## Live-Test vor externem Audit
-- Header/Funktionalitätsampel inkl. verständlichem Handlungsbedarf.
-- Aktien/Krypto stabil; Whole-Market-Kandidaten sichtbar; keine ETF-Leaks.
-- Opening Momentum zeigt auch automatisch nominierte Nicht-Favoriten.
-- Signalton lässt sich eindeutig einem persistent sichtbaren Aktien-/Coin-Signal zuordnen.
-- Nachtbericht, Extended Hours, Crowd und längere Charts prüfen.
-- Cloudflare Logs auf wiederholte `exceededCpu`-Ereignisse prüfen.
-- Erst bei stabilem RC den nächsten Claude/Opus-Audit durchführen.
-
-## Weiter offen
-- Shooting/Short-Radar separat und erst nach externem Audit produktivieren.
-- Learning-Bericht um „Was wurde verpasst?“ erweitern.
-- Liquideste Börse nur mit echten Venue-Volumendaten anzeigen.
-- Cloudflare-Kosten-/Upgrade-Empfehlung nur bei tatsächlich gemessener Nähe zu Limits oder wiederholten CPU-Problemen.
-
-- Momentum-/Opening-/Extended-Hours-Prozentwerte selbst grün/rot; Karten zusätzlich dezent richtungsabhängig hinterlegt.
-- Hauptreihenfolge: Aktien als erster Block, Krypto als zweiter Block. Im Krypto-Bereich zuerst Coin-Tabelle, danach großes Coin-Fokusfenster.
-- Google-Finance-Link im großen Aktien-Detailfenster prominent und eindeutig beschriftet; öffnet in neuem Tab.
-
-
-## VL nach v3.3.7
-- Aktienchart: Premarket/After Hours als echte Zeitreihe darstellen, Previous Close und Gap-% sichtbar machen, Sessions optisch trennen; keine künstliche Linie über Datenlücken.
-
-## In v3.3.7 umgesetzt
-- P0: hängende Krypto-Upstream-Requests vom PWA-Lebenszyklus entkoppelt.
-- Worker-Upstream-Timeout, stale-while-refresh und sofortiger letzter guter Snapshot statt globalem Feed-Hänger.
-- Manueller Refresh kann unabhängig von altem Inflight-Zustand neu ansetzen.
-- Header/Status kennzeichnet veraltete Cache-Daten explizit; keine grüne Freshness-Anzeige bei Stale-Daten.
-
-## v3.3.9 umgesetzt
-- Fokusfenster: prominente Netto-CRV-Kachel + verständlicher Tooltip.
-- Strukturpotenzial: verständlicher Tooltip und klare Abgrenzung zum erwarteten Gewinn.
-- Unternehmensbeschreibung: Lead Program/Candidate nur bei verifizierbarer Datenbasis; sonst explizit „nicht verifiziert“.
-
-- [x] **P0 v3.3.9:** Radar-/Momentum-Klick darf im Fokusfenster niemals auf PMI/ersten sichtbaren Titel zurückfallen; Fokus strikt an angeklickten Ticker binden und Ticker-Mismatch aus API fail-closed behandeln.
+## Weiter offen / nächste VL
+- **Heatmap Aktien:** Kugeln sollen sich mit neuen Analysen sichtbar dynamisch bewegen; Trails/Positionierung und Lesbarkeit verbessern. Premarket kann naturgemäß weniger dynamisch sein, darf aber nicht wie eingefroren wirken.
+- **Aktienchart Extended Hours:** echte Premarket-/After-Hours-Zeitreihe, Previous Close und Gap-%; Sessions optisch trennen; keine künstliche Linie über Datenlücken.
+- **Header-Zähler:** grün/gelb/rot eindeutig nach Aktien und Coins differenzieren; aktueller Sammelzähler ist missverständlich.
+- **Aktien-Status oben vs Aktienfeed-Premarket:** doppelte/ähnliche Statusanzeigen zusammenführen oder klar in „Systemverbindung“ vs „Marktdatenphase“ trennen; jeweils letzte Abfrage und Intervall anzeigen.
+- **Twelve Data Kontingent:** „Kontingent unbekannt“ nicht als scheinbaren Fehler darstellen; bei fehlenden Providerheadern klar „Restkontingent vom Anbieter nicht geliefert“ und nur belastbare Eigenzählung zeigen.
+- **Signal-/Planleiste unten:** nur bei echtem aktiven Plan/BUY-Signal anzeigen; niemals zufälligen/zuletzt selektierten Coin (z. B. PUMP) dauerhaft wie Empfehlung darstellen. Eindeutig „AKTIVER KRYPTO-PLAN“/„AKTIVER AKTIEN-PLAN“ beschriften.
+- **Discovery-Beschreibung:** fachlicher Kontext präzisieren, z. B. Biotech-Discovery und Lead Candidate + Indikation nur wenn verifiziert.
+- **Elliott/Struktur:** 30–180-min-Kontext für Intraday-Setups gezielt evaluieren; längere Ebene als Kontext, nicht als automatische Verbesserung. Keine Änderung der BUY-Schwellen ohne separaten Test.
+- **Gewinnrelevanz:** grünes Setup darf nicht mit wirtschaftlich irrelevanter absoluter Gewinnchance erscheinen; bestehende Netto-Potenzial-/CRV-Gates weiter regressionsfest halten.
+- **Risk/VWAP:** Mouseover nach Live-Deploy explizit prüfen (Audit-Fix ist im Code); Begriff „% über VWAP“ muss klar sagen, welche Grundgesamtheit gemeint ist.
+- **Shooting/Short-Radar:** separat, erst nach stabiler Long-Version und externem Audit.
+- **Learning-Bericht:** „Was wurde verpasst?“ ergänzen.
+- **Liquideste Börse:** nur mit echten Venue-Volumendaten behaupten.
+- **Cloudflare Kosten/Upgrade:** nur bei gemessener Nähe zu Limits oder wiederholten CPU-Problemen empfehlen.

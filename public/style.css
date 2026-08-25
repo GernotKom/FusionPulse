@@ -685,3 +685,7 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 
 /* v3.3.8: discovery click must show a focus target immediately */
 .stockfocus-loading{display:flex;flex-direction:column;gap:8px;min-height:150px;padding:18px}.stockfocus-loading h3{margin:0;font-size:1.55rem}.stockfocus-loading span{color:var(--muted,#93a4bd);max-width:720px}
+
+/* v3.4.0: Fokusziel bleibt unter Sticky Header + Viewbar vollständig sichtbar. */
+.stockfocus{scroll-margin-top:118px}
+.focus-livebar button{margin-left:auto;padding:3px 7px;border-radius:7px;font-size:9px}

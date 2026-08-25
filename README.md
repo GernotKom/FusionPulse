@@ -1,10 +1,10 @@
-# FusionPulse v3.3.9
+# FusionPulse v3.4.0
 
-## v3.3.9 P0 Discovery-Fokus Hotfix
-- Behebt die v3.3.7-Regression, durch die ein Klick auf Whole-Market Radar / Opening Momentum / Extended Hours das große Aktien-Fokusfenster nicht mehr renderte. Ursache war fehlende Initialisierung der Quote-Metadaten (`qm`) im Fokus-Renderer.
-- Der ausgewählte Ticker erscheint jetzt sofort im großen Fokusfenster, auch während Deep-Analyse bzw. Live-Quote noch laden. Ein langsamer Alpaca-/Quote-Pfad darf die sichtbare Auswahl nicht blockieren.
-- Opening Momentum zeigt nun ebenfalls den Speed-Wert mit derselben grün/rot-Logik und verständlichem Mouseover wie der Whole-Market Radar.
-- BUY-/CRV-/Freshness-/Common-Stock-Safety unverändert.
+## v3.4.0 Audit-/VL-Stabilitätsrelease
+- Setzt die P0/P1-Kernbefunde des externen Audits minimal-invasiv um: Fokusbindung, Lookup-Race/Mismatch, Regime-Erklärung, Freshness-/Market-Gates, Timeouts, Poll-Stabilität und Cache-Freshness.
+- Integriert die aktuelle VL: Einzelaktien-Refresh, Opening-Momentum-Status/Speed, Sticky-Fokus, Learning-Erklärung und klare Freshness-Anzeige.
+- Tradingregeln, CRV-Berechnung und Schwellenwerte bleiben unverändert; fehlende oder schlechtere Daten dürfen ein Setup niemals verbessern.
+- Offene UX-/Analyseideen bleiben ausdrücklich in `IMPROVEMENT_LIST.md` statt ungeprüft in dieses Stabilitätsrelease zu rutschen.
 
 
 FusionPulse ist ein autonomer Momentum- und Opportunity-Waechter fuer Krypto und liquide US-Aktien. Ziel ist nicht moeglichst viele Signale, sondern wenige, wirtschaftlich relevante A-Setups: App starten, laufen lassen und nur dann aufmerksam werden, wenn Datenqualitaet, Handelbarkeit, CRV und realistisches absolutes Gewinnpotenzial zusammenpassen.
