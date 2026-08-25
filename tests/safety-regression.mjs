@@ -150,4 +150,29 @@ assert.match(app,/ageMin<3\?'green':ageMin<5\?'yellow':ageMin<10\?'orange':'red'
 assert.match(app,/stockRecoveryNeeded\(\)/,'Stock polling must include stale-recovery logic');
 assert.match(app,/stockSnapshotAgeMs\(\)>=3\*60_000/,'Opening\/regular stock recovery must start after 3 minutes of stale data');
 
+// v3.5.0 Claude-Modus: additive Parallelbewertung mit erhaltenen Fail-Closed-Regeln
+{
+  // Jede analysierte Zeile muss ein claude-Objekt tragen (Server rechnet immer, Client schaltet nur um).
+  assert.ok(fullCoin?.claude && typeof fullCoin.claude.light==='string','Coin-Analyse muss claude-Bewertung liefern');
+  const stFull=analyseStock('TST','Test',stockSrc(true),1.08,undefined,3);
+  assert.ok(stFull?.claude && typeof stFull.claude.light==='string','Aktien-Analyse muss claude-Bewertung liefern');
+  // Fail-closed bleibt: ohne Orderbuch darf auch der Claude-Modus niemals grün werden.
+  assert.notEqual(noBook?.claude?.light,'green','Claude-Modus: fehlendes Orderbuch darf kein Grün erzeugen');
+  // Fail-closed bleibt: ohne Volumenbasis darf der Claude-Modus bei Aktien niemals grün werden.
+  const stNoVol=analyseStock('TST','Test',stockSrc(false),1.08,undefined,3);
+  assert.notEqual(stNoVol?.claude?.light,'green','Claude-Modus: fehlendes Aktienvolumen darf kein Grün erzeugen');
+  // Erwartungswert muss ausgewiesen und endlich sein — kein NaN in die UI.
+  assert.ok(Number.isFinite(Number(stFull.claude.expectancyR)),'Claude-Erwartungswert (Aktie) muss endlich sein');
+  assert.ok(Number.isFinite(Number(fullCoin.claude.expectancyR)),'Claude-Erwartungswert (Coin) muss endlich sein');
+  // Legacy-Werte bleiben durch die Zusatzberechnung unangetastet (Server liefert beide).
+  assert.ok(['red','yellow','green'].includes(stFull.light),'Legacy-Ampel muss weiterhin vorhanden sein');
+  // Client: Umschaltung, Overlay und Gate-Konstanten muessen existieren.
+  assert.match(app,/const CLAUDE_MIN_CRV_STOCK = 1\.6/,'Claude-Aktien-CRV-Gate muss definiert sein');
+  assert.match(app,/const CLAUDE_MIN_CRV_COIN = 1\.4/,'Claude-Coin-CRV-Gate muss definiert sein');
+  assert.match(app,/function claudeOverlayRow/,'Claude-Overlay muss existieren');
+  assert.match(app,/r\.fpBase/,'Claude-Overlay muss Originalwerte reversibel sichern');
+  assert.match(app,/S\.claudeMode && r\.claude/,'Claude-Gates duerfen nur mit vorhandener claude-Bewertung greifen');
+  assert.match(index,/id="sClaudeMode"/,'Settings muessen den Claude-Modus-Schalter enthalten');
+}
+
 console.log('✓ FusionPulse safety regressions: OK');

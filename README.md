@@ -1,4 +1,11 @@
-# FusionPulse v3.4.3
+# FusionPulse v3.5.0
+
+## v3.5.0 Schwerpunkt · Claude Modus
+- Neuer Schalter **🤖 Claude Modus** (Einstellungen → Analyseverfahren): Erwartungswert-basierte Bewertung mit Struktur-Zielen statt der strukturell unerreichbaren Legacy-Gates (Plan-CRV ≥ 3:1 bei rechnerischem Maximum 2,525R; 350-€-Schwelle über dem eigenen Risikobudget).
+- Serverseitig parallele `claude`-Bewertung je Aktie/Coin; Client-Umschaltung reversibel, ohne API-Mehrkosten. Details in RELEASE_NOTES.md.
+- Alle Fail-Closed-Sicherheitsregeln (Volumen, Orderbuch, Freshness) bleiben in beiden Modi unverändert aktiv.
+
+# FusionPulse v3.5.0
 
 
 ## v3.4.3 Schwerpunkt

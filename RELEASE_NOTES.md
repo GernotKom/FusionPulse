@@ -1,3 +1,22 @@
+# FusionPulse v3.5.0 · Claude Modus
+
+## Kernbefund des Audits (warum nie ein BUY erschien)
+1. **Aktien, mathematisch unerfüllbar:** Der 50/50-Plan (TP1 = 1,7R, TP2 = 3,35R) hat brutto maximal **2,525R**. Das Gate `planCrvAfterCosts >= 3,0` konnte daher **niemals** erfüllt werden – unabhängig vom Markt.
+2. **Aktien, zweites unerfüllbares Gate:** Bei Default-Risikobudget (5.000 € × 0,75 % = 37,50 €) endet der maximale Plan nach Fixkosten (3 × 10,75 €), Friction und 27,5 % KESt bei **~43 € netto**. Gate: ≥ 350 €. Faktor 8 daneben.
+3. **Score-Falle:** `score >= 8` bei theoretischem Komponenten-Maximum von 8,74 verlangte ~92 % des Bestwerts gleichzeitig.
+4. **Krypto:** `netCRV = (2,2r − c)/(r + c) >= 2,0` erfordert costRatio r/c ≥ **15**; der Code begrenzt den Stop aber auf 2,6 ATR und verlangt nur ≥ 2,5 – bei realen Bitpanda-Kosten praktisch unerreichbar (außer seltene weite Strukturziele), kombiniert mit ~10 weiteren UND-Bedingungen.
+
+## Claude Modus (additiv, Schalter in Einstellungen → Analyseverfahren)
+- Serverseitig wird **immer** eine parallele `claude`-Bewertung je Zeile berechnet; der Schalter ist eine reine Client-Umschaltung ohne zusätzliche API-Kosten. Legacy bleibt vollständig erhalten und rückschaltbar (`r.fpBase`-Overlay).
+- **Aktien:** TP2 aus Elliott/Fibonacci-**Strukturziel** (gedeckelt 6R) statt konstantem 3,35R; Score rekalibriert inkl. Situation Engine (20 %) und Liquidity Vacuum (12 %); Gates: Score ≥ 7, Netto-CRV ≥ 1,8, RVOL ≥ 1,3, kein WATCH-Zustand, nicht > 3 ATR überdehnt, Kursweg ≥ 3× Kosten.
+- **Krypto:** erreichbare, kostenehrliche Gates (Netto-CRV ≥ 1,4, costRatio ≥ 3,2, Qualität ≥ 6,6) statt des unerreichbaren 2,0-CRV.
+- **Erwartungswert-Gate** (beide): Drei-Ausgänge-Modell mit Breakeven-Stop nach TP1: EV = p1·0,5·R1 + p1·p2·0,5·R2 − (1−p1)·1 − 1,2·Kosten/R. Aktien ≥ +0,15R, Krypto ≥ +0,10R. p1/p2 sind konservative Heuristik-Startwerte und über D1-Outcomes kalibrierbar.
+- **Wirtschaftliche Mindestgröße** skaliert am Risikobudget (Plan netto ≥ max(120 €, 1,2 × Risiko/Trade)) statt fixer 350 €, die das eigene Sizing nie erreichen konnte.
+- **Alle Fail-Closed-Regeln bleiben:** ohne Volumen kein Aktien-Grün, ohne Orderbuch kein Coin-Grün, Stale-Daten blocken weiterhin. Neue Regression-Tests sichern das ab.
+
+## Trade-Management-Konvention im Claude Modus
+Nach TP1 (50 % Teilverkauf) Stop auf Breakeven ziehen – der EV rechnet exakt mit dieser Regel.
+
 # FusionPulse Release Notes — v3.4.3
 
 ## Situation Engine — frühere, bessere Opportunitätenerkennung

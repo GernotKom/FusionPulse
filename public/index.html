@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.4.3</title>
+<title>FusionPulse 3.5.0</title>
 </head>
 <body>
 
@@ -222,6 +222,9 @@
     <button id="sCompAll">Alle aktivieren</button>
     <button id="sCompElliott">Nur Elliott-Wellen</button>
   </div>
+  <label class="row" title="Ersetzt die strukturell unerreichbaren Legacy-Gates (Plan-CRV ≥ 3:1 bei rechnerischem Maximum 2,525R sowie fixe 350-€-Schwelle über dem eigenen Risikobudget) durch eine konsistente Bewertung: Elliott/Fibonacci-Strukturziele als TP2, erreichbare Netto-CRV-Schwellen (Aktien ≥ 1,6:1 Plan, Krypto ≥ 1,4:1), expliziter Erwartungswert in R und wirtschaftliche Mindestgröße relativ zum Risikobudget (≥ 1,2R netto). Situation Engine und Liquidity Vacuum fließen in den Claude-Score ein. Alle Fail-Closed-Datenqualitätsregeln (fehlendes Volumen/Orderbuch, Stale-Daten) bleiben unverändert aktiv. Reine Client-Umschaltung ohne zusätzliche API-Kosten."><input id="sClaudeMode" type="checkbox"> 🤖 Claude Modus (Erwartungswert-Analyse statt Legacy-Gates)</label>
+  <p class="hint">Der Claude Modus bewertet Setups über Erwartungswert (Trefferannahme × Netto-Plan-R) mit Struktur-Zielen statt fixer R-Vielfacher. Legacy-Analyse bleibt vollständig erhalten und ist jederzeit rückschaltbar.</p>
+
   <label>Analysemodus<select id="sMode">
     <option value="composite">Kombiniert (empfohlen)</option>
     <option value="elliott">Nur Elliott-Wellen-Heuristik</option>

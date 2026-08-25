@@ -533,12 +533,53 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
   if (setupFit < 7) blockers.push('kein klares Setup');
   if (modeScore < 7.0) blockers.push(`Score ${r1(modeScore)}`);
 
+  // ---- v3.5.0 CLAUDE-MODUS (additiv) ---------------------------------------
+  // Befund: netCRV = (2,2r - c)/(r + c) erreicht 2,0 erst ab costRatio r/c >= 15;
+  // der Code selbst limitiert den Stop aber auf max. 2,6 ATR und verlangt nur
+  // costRatio >= 2,5 -> "gruen" war bei realen Bitpanda-Kosten praktisch
+  // unerreichbar (ausser bei seltenen weiten Strukturzielen). Der Claude-Modus
+  // nutzt erreichbare, aber weiterhin kostenehrliche Gates plus Erwartungswert.
+  // Sicherheitsinvarianten bleiben: ohne Orderbuch niemals gruen.
+  const claude = (() => {
+    // Drei-Ausgaenge-EV (Management: nach TP1 Stop -> Breakeven), Kosten 1,2x je Einheit Risiko.
+    const p1 = Math.max(0.40, Math.min(0.66,
+      0.44 + (modeQuality - 5) * 0.045 + (setupFit - 5) * 0.02 - Math.max(0, exhaustion - 5) * 0.02));
+    const p2 = Math.max(0.35, Math.min(0.55, 0.42 + (modeQuality - 6) * 0.02));
+    const R1 = (tp1 - entry) / riskPerUnit, R2 = (tp2 - entry) / riskPerUnit;
+    const costR = (cost / riskPerUnit) * 1.2;
+    const cHit = p1;
+    const cNetPlanR = ((0.5 * (tp1 - entry) + 0.5 * (tp2 - entry)) - cost) / (riskPerUnit + cost);
+    const cExpectancyR = +((p1 * 0.5 * R1 + p1 * p2 * 0.5 * R2 - (1 - p1) * 1 - costR)).toFixed(2);
+    const setupOk = mode === 'elliott' ? elliott >= 6.6 : setupFit >= 6.5;
+    const cGreen = viable && bookKnown && (spread == null || spread <= 0.0035)
+      && liquidity >= 5.5 && exhaustion < 7 && costRatio >= 3.2 && netCRV >= 1.4
+      && modeQuality >= 6.6 && executability >= 6.0 && setupOk && cExpectancyR >= 0.10;
+    const cYellow = !cGreen && viable && (modeQuality >= 5.6 || premove >= 6.8);
+    const cBlockers = [];
+    if (!bookKnown) cBlockers.push('Orderbuch ungeprueft (fail-closed)');
+    if (spread != null && spread > 0.0035) cBlockers.push(`Spread ${(spread * 100).toFixed(2)} %`);
+    if (bookKnown && liquidity < 5.5) cBlockers.push('duenne Tiefe');
+    if (costRatio < 3.2) cBlockers.push(`Stop nur ${r1(costRatio)}x Kosten (< 3,2x)`);
+    if (netCRV < 1.4) cBlockers.push(`Netto-CRV ${r2(netCRV)}:1 < 1,4:1`);
+    if (modeQuality < 6.6) cBlockers.push(`Qualitaet ${r1(modeQuality)} < 6,6`);
+    if (!setupOk) cBlockers.push('kein klares Setup-Muster');
+    if (exhaustion >= 7) cBlockers.push('ueberdehnt');
+    if (cExpectancyR < 0.10) cBlockers.push(`Erwartungswert ${cExpectancyR}R < +0,10R`);
+    return {
+      light: cGreen ? 'green' : cYellow ? 'yellow' : 'red',
+      score: r1(modeScore), netCRV: r2(netCRV),
+      planR: r2(cNetPlanR), hitPct: Math.round(cHit * 100), expectancyR: cExpectancyR,
+      blockers: cBlockers.slice(0, 5),
+    };
+  })();
+
   // Sparkline: letzte 48 Closes normalisiert 0..100
   const sp = cl.slice(-48);
   const spLo = minOf(sp), spHi = maxOf(sp);
   const spark = sp.map((c) => Math.round(spHi > spLo ? ((c - spLo) / (spHi - spLo)) * 100 : 50));
 
   return {
+    claude,
     pair, light, score: r1(modeScore), premove: r1(premove), regime, setup, orderType,
     quality: r1(modeQuality), executability: r1(executability), quadrant, analysisMode: mode,
     components: [...on], blockers,
@@ -1205,7 +1246,73 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
     : volumeKnown && last.c >= vwap ? 'Über VWAP, aber ohne Trend' : volumeKnown ? 'Unter EMA21 – Schwäche' : 'VWAP n. v. – Volumenbasis fehlt';
   const trend = ema9 > ema21 ? 'aufwärts' : ema9 < ema21 ? 'abwärts' : 'seitwärts';
 
+  // ---- v3.5.0 CLAUDE-MODUS (additiv, verändert Legacy-Werte NICHT) ----------
+  // Befund: Der Legacy-50/50-Plan hat brutto maximal 0,5*1,7R + 0,5*3,35R =
+  // 2,525R; das Client-Gate verlangt Plan-CRV >= 3:1 netto -> BUY war
+  // strukturell unerreichbar. Ebenso: score>=8 bei theoretischem Maximum 8,74.
+  // Der Claude-Modus bewertet stattdessen (a) Struktur-Ziele statt konstantem
+  // 3,35R-Vielfachen, (b) mathematisch erreichbare Netto-CRV-Gates und
+  // (c) einen expliziten Erwartungswert in R. Alle Fail-Closed-Datenregeln
+  // (volumeKnown, Freshness, keine Aufwertung durch fehlende Daten) gelten weiter.
+  const claude = (() => {
+    const cCost = (costPct / 100) * entry;                 // Reibung je Einheit
+    const structUp = swingTarget - entry;                  // Elliott/Fib-Strukturziel
+    const cTp2 = structUp >= 2.0 * risk
+      ? Math.min(swingTarget, entry + 6 * risk)            // Struktur, gedeckelt bei 6R
+      : entry + 2.5 * risk;                                // sonst konservatives R-Ziel
+    const cTp2Pct = (cTp2 / entry - 1) * 100;
+    const cNetCRV = +(((cTp2 - entry) - cCost) / (risk + cCost)).toFixed(2);
+    const cPlanR = 0.5 * ((tp1 - entry) / risk) + 0.5 * ((cTp2 - entry) / risk);
+    const situ10 = situationScore / 10;
+    const cScore = +clamp(weighted([
+      ['ema21', trendScore, 0.20],
+      ['mtf', momoScore, 0.20],
+      ['volume', volScore, 0.16],
+      ['vwap', vwapScore, 0.12],
+      [null, situ10, 0.20],                                // Situation Engine zaehlt hier
+      [null, liquidityVacuum / 10, 0.12],                  // Overhead-freie Preiszone
+    ], on) - (overextended ? 1.2 : 0)).toFixed(1);
+    // Erwartungswert als Drei-Ausgaenge-Modell (Management: nach TP1 Stop -> Breakeven):
+    //   (1) Stop vor TP1: -1R mit (1-p1)
+    //   (2) TP1 erreicht, Rest auf Breakeven ausgestoppt: +0.5*R1 mit p1*(1-p2)
+    //   (3) TP1 und TP2: +0.5*R1 + 0.5*R2 mit p1*p2
+    // Kosten einmal je Einheit Risiko, Aufschlag 1,2x fuer Teil-Exits.
+    // Heuristische Startwerte; ueber D1-Outcomes kalibrierbar.
+    const p1 = Math.max(0.38, Math.min(0.62, 0.40 + (cScore - 5) * 0.04 + situ10 * 0.012));
+    const p2 = Math.max(0.35, Math.min(0.55, 0.42 + (cScore - 6) * 0.02));
+    const R1 = (tp1 - entry) / risk, R2 = (cTp2 - entry) / risk;
+    const costR = (cCost / risk) * 1.2;
+    const cHit = p1; // ausgewiesene Trefferannahme = P(TP1)
+    const cExpectancyR = +((p1 * 0.5 * R1 + p1 * p2 * 0.5 * R2 - (1 - p1) * 1 - costR)).toFixed(2);
+    const frictionOk = cTp2Pct >= Math.max(0.6, costPct * 3); // Weg muss 3x Kosten decken
+    const cBlockers = [];
+    if (!volumeKnown) cBlockers.push('Volumenbasis fehlt (fail-closed)');
+    if (relVol == null) cBlockers.push('RVOL nicht messbar');
+    else if (relVol < 1.3) cBlockers.push(`RVOL ${relVol.toFixed(1)}x < 1,3x`);
+    if (cScore < 7) cBlockers.push(`Claude-Score ${cScore} < 7`);
+    if (cNetCRV < 1.8) cBlockers.push(`Netto-CRV ${cNetCRV}:1 < 1,8:1`);
+    if (!frictionOk) cBlockers.push(`Kursweg ${cTp2Pct.toFixed(2)} % deckt 3x Kosten nicht`);
+    if (situationType === 'WATCH') cBlockers.push('kein aktives Situationsmuster');
+    if (overextended) cBlockers.push('>3 ATR ueber EMA21 ueberdehnt');
+    if (cExpectancyR < 0.15) cBlockers.push(`Erwartungswert ${cExpectancyR}R < +0,15R`);
+    const cGreen = volumeKnown && relVol != null && relVol >= 1.3 && cScore >= 7
+      && cNetCRV >= 1.8 && frictionOk && situationType !== 'WATCH' && !overextended
+      && cExpectancyR >= 0.15;
+    const cYellow = !cGreen && volumeKnown && cScore >= 5.8 && cNetCRV >= 1.2;
+    return {
+      light: cGreen ? 'green' : cYellow ? 'yellow' : 'red',
+      score: cScore, netCRV: cNetCRV,
+      tp2Usd: cTp2, tp2Eur: e(cTp2), tp2Pct: +cTp2Pct.toFixed(2),
+      tp2Source: structUp >= 2.0 * risk ? 'Struktur (Elliott/Fib 1,618)' : '2,5 R',
+      planR: +cPlanR.toFixed(2), hitPct: Math.round(cHit * 100),
+      expectancyR: cExpectancyR,
+      verdict: cGreen ? 'Kauf-Setup · Claude' : cYellow ? 'Beobachten · Claude' : 'Kein Trade · Claude',
+      blockers: cBlockers.slice(0, 5),
+    };
+  })();
+
   return {
+    claude,
     symbol, sector, name: src?.meta?.name || STOCK_NAMES[symbol] || symbol,
     exchange: src?.meta?.exchange || 'US', currency: src?.meta?.currency || 'USD',
     score, executability, light, verdict, setup, trend,
