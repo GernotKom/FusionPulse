@@ -1,4 +1,4 @@
-# FusionPulse v3.5.3
+# FusionPulse v3.5.4
 
 **Aktueller Stand:** v3.5.3 baut auf v3.5.2 auf und repariert ausschließlich die beiden im externen Claude-Audit gefundenen Punkte A/B im **normalen FusionPulse-Aktienmodus**. Der Claude-Modus bleibt methodisch unverändert und durch SHA-256-Regression geschützt.
 

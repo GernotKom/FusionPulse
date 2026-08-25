@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.5.3 — Frontend
+   FusionPulse v3.5.4 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1105,7 +1105,38 @@ async function loadLearning(){
     mergeServerHistories();renderLearningStatus();renderLearningReport();render();renderStocks();
   }catch(e){learningData={configured:true,state:'error',error:String(e.message||e)};renderLearningStatus();}
 }
-function setLearningPoll(){clearInterval(learningTimer);learningTimer=setInterval(()=>{if(document.visibilityState==='visible')loadLearning();},120_000);}
+function setLearningPoll(){clearInterval(learningTimer);learningTimer=setInterval(()=>{if(document.visibilityState==='visible'){loadLearning();loadAttribution();}},120_000);}
+
+/* Modul 0 UI: Attribution & Overfitting-Guard. Reine Anzeige der serverseitigen
+   Auswertung; sie triggert keine Score-Aenderung, nur Empfehlungen. */
+let attributionData={};
+async function loadAttribution(){
+  try{
+    const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
+    const r=await fetchWithTimeout('/api/attribution?'+q,{cache:'no-store'},10_000);
+    attributionData=await r.json()||{};
+  }catch(e){ attributionData={configured:true,state:'error',error:String(e.message||e)}; }
+  renderAttribution();
+}
+function attrBadge(v){
+  return v==='overfit'?'🟥 Overfit':v==='disable'?'🟧 Abschalten?':v==='weak-watch'?'🟨 Schwach·beobachten':v==='keep'?'🟩 Edge hält':'⬜ Sammelt';
+}
+function renderAttribution(){
+  const el=$('#attributionReport'); if(!el)return;
+  const d=attributionData||{};
+  if(d.configured===false){ el.innerHTML=`<b>🔬 Selbstauswertung (Modul 0)</b> <small>D1 nicht verbunden – noch keine Attribution möglich.</small>`; return; }
+  if(d.state==='error'){ el.innerHTML=`<b>🔬 Selbstauswertung (Modul 0)</b> <small class="err">Fehler: ${esc(d.error||'unbekannt')}</small>`; return; }
+  const buckets=Array.isArray(d.buckets)?d.buckets:[];
+  const recs=Array.isArray(d.disableRecommendations)?d.disableRecommendations:[];
+  const rows=buckets.slice(0,10).map(b=>{
+    const oos=b.oos?`${b.oos.pct}% <em>(Wilson ${b.oos.wilson}%, n=${b.oosN})</em>`:'–';
+    const ins=b.inSample?`${b.inSample.pct}%`:'–';
+    return `<tr class="attr-${b.verdict?.status||'sammelt'}"><td>${esc(b.key)}</td><td>${b.n}</td><td>${ins}</td><td>${oos}</td><td title="${esc(b.verdict?.reason||'')}">${attrBadge(b.verdict?.status)}</td></tr>`;
+  }).join('');
+  el.innerHTML=`<b>🔬 Selbstauswertung · Modul 0</b> <small>ehrliche Out-of-Sample-Bilanz je Setup · Empfehlungen, keine Auto-Abschaltung · verändert keinen Score</small>`+
+    (buckets.length?`<div class="attr-wrap"><table class="attr-table"><thead><tr><th>Setup</th><th>n</th><th>In-Sample</th><th>Out-of-Sample</th><th>Wächter</th></tr></thead><tbody>${rows}</tbody></table></div>`:`<span class="hint">Noch keine ausgewerteten Setups im ${d.horizonDays||21}-Tage-Fenster. Der Wächter urteilt erst ab ${d.guard?.MIN_SAMPLE||20} Episoden je Setup.</span>`)+
+    (recs.length?`<div class="attr-recs"><b>⚠ Abschalt-Empfehlungen (${recs.length})</b>${recs.map(r=>`<span title="${esc(r.reason)}">${esc(r.setup)}: ${r.status}</span>`).join('')}<small>Diese Empfehlungen basieren auf Out-of-Sample-Evidenz mit Mehrfachtest-Korrektur (${d.multiTestPenalty||0} pp strenger). Du entscheidest, nicht die App.</small></div>`:`<small>Keine Abschalt-Empfehlung – kein Setup ist out-of-sample klar durchgefallen.</small>`);
+}
 
 function renderExperimental(){
   const el=$('#experimentalPanel'); if(!el) return;
@@ -2114,7 +2145,7 @@ $('#scan').onclick = async () => {
   // v3.4.2: manueller blauer Refresh bedeutet ECHTE Aktualisierung. FokusScope zuerst,
   // danach der gesamte Aktien-Snapshot; alte Cache-Daten duerfen nicht als Refresh gelten.
   if(focusStock) await searchStockNow(focusStock,true);
-  await Promise.allSettled([scan(true), scanStocks(true), scanOpeningMomentum(true), loadExperimental(true), loadCrowd(true), loadLearning(), loadHealth()]);
+  await Promise.allSettled([scan(true), scanStocks(true), scanOpeningMomentum(true), loadExperimental(true), loadCrowd(true), loadLearning(), loadAttribution(), loadHealth()]);
 };
 $('#sound').onclick = () => {
   S.sound = !S.sound; saveSettings();
@@ -2242,6 +2273,7 @@ scanOpeningMomentum(false);
 loadExperimental(false);
 loadCrowd(false);
 loadLearning();
+loadAttribution();
 setPoll(S.interval);
 setStockPoll();
 setHealthPoll();

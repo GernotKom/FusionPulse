@@ -250,3 +250,25 @@ console.log('✓ FusionPulse v3.5.1 deep-scan/quota regressions: OK');
 
 console.log('✓ FusionPulse v3.5.3 adaptive/target/economic regressions: OK');
 
+// v3.5.4 Modul 0: Attribution & Overfitting-Guard. Reine Auswertung, veraendert keinen Score.
+{
+  // Statische Vertragspruefungen: die Sicherheitslogik des Guards muss erhalten bleiben.
+  assert.match(workerText,/MODUL 0 · CLAUDE ATTRIBUTION & OVERFITTING GUARD/,'Attribution-Guard-Modul muss vorhanden sein');
+  assert.match(workerText,/function wilsonLower\(wins, n\)/,'Wilson-Untergrenze muss fuer ehrliche Kleinstichproben verwendet werden');
+  assert.match(workerText,/function collapseEpisodes\(rows\)/,'Snapshots derselben Bewegung muessen zu einer Episode kollabieren (keine Mehrfachzaehlung)');
+  assert.match(workerText,/OOS_CONFIDENT: 15/,'Abschaltung darf erst ab ausreichender OOS-Groesse erlaubt sein');
+  assert.match(workerText,/pointWeak && wilsonWeak && b\.oosN>=ATTR\.OOS_CONFIDENT/,'Disable erfordert schwachen Punkt UND schwaches Wilson UND genug OOS-Evidenz');
+  assert.match(workerText,/status:'overfit'/,'Overfitting-Status muss existieren');
+  assert.match(workerText,/Reine Auswertung aufgeloester Outcomes/,'Guard muss als reine Auswertungsschicht dokumentiert sein');
+  assert.match(workerText,/url\.pathname === '\/api\/attribution'/,'Attribution-Route muss existieren');
+  // Der Guard darf keinen Score/Light/BUY veraendern: er referenziert analyseStock/analyse NICHT.
+  const attrBlock=workerText.slice(workerText.indexOf('MODUL 0 · CLAUDE ATTRIBUTION'),workerText.indexOf('async function learningPayload'));
+  assert.ok(!/analyseStock\(|\.claude\.|\.fusion\./.test(attrBlock),'Guard darf die Bewertungslogik nicht beruehren (reine Nachbetrachtung)');
+
+  // Verhaltenspruefung der Wilson-Untergrenze: 3/4 darf NICHT als starker Edge gelten.
+  const wl=(w,n)=>{const z=1.96,p=w/n,d=1+z*z/n,c=p+z*z/(2*n),mgn=z*Math.sqrt((p*(1-p)+z*z/(4*n))/n);return Math.max(0,(c-mgn)/d);};
+  assert.ok(wl(3,4)<0.5,'Wilson: 3 von 4 Treffern darf keine >=50%-Sicherheit vortaeuschen');
+  assert.ok(wl(30,40)>wl(3,4),'Wilson: groessere Stichprobe mit gleicher Quote muss mehr Vertrauen ergeben');
+}
+
+console.log('✓ FusionPulse v3.5.4 attribution/overfitting-guard regressions: OK');

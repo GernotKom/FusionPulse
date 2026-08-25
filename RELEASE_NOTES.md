@@ -1,3 +1,28 @@
+# FusionPulse v3.5.4 · Modul 0: Selbstauswertung & Overfitting-Wächter
+
+## Was neu ist
+Erster Baustein des selbst-trackenden Claude-Ökosystems. Die App wertet ab jetzt **ehrlich aus, welche Setups tatsächlich einen Vorteil hatten** – statt es zu behaupten. Sichtbar im Tab „Lab / Learning".
+
+Wichtig: Modul 0 ist eine **reine Auswertungs- und Empfehlungsschicht**. Es verändert weder den Claude-Score noch den FusionPulse-Score noch irgendein BUY-Gate. Es liest ausschließlich bereits aufgelöste Outcomes aus `market_snapshots` (max_pct/min_pct/success_ts) – kein Repainting, keine neue Datenerhebung.
+
+## Der Overfitting-Wächter (das eigentliche Herzstück)
+Drei eingebaute Schutzmechanismen gegen Selbstbetrug, weil „die App verbessert sich täglich selbst" ohne diese Wächter garantiert auf Rauschen optimiert:
+
+1. **Mindest-Stichprobe (20 Episoden/Setup):** Darunter gibt es KEIN Urteil, nur „sammelt noch". Kein Algorithmus kann aus 5 Trades Edge von Zufall unterscheiden.
+2. **Out-of-Sample-Split (30 %):** Der Edge wird an älteren Trades geschätzt und an den jüngsten, NICHT zum Schätzen benutzten Trades geprüft. Bricht die Trefferquote out-of-sample ein → Overfitting-Flag.
+3. **Mehrfachtest-Korrektur (Bonferroni-artig):** Wer viele Setups parallel testet, findet zufällig eines, das gut aussieht. Der Wächter hebt die Schwelle entsprechend an.
+
+Zusätzlich: **Wilson-Untergrenze** statt naiver Trefferquote – „3 von 4" (75 %) wird korrekt als schwache Evidenz behandelt, nicht als starker Edge.
+
+## Kalibrierung gegen False Positives (im Bau selbst gefunden)
+Beim Funktionsnachweis fiel auf, dass eine zu strenge Wilson-Schwelle bei kleinen Out-of-Sample-Stichproben **echte Gewinner fälschlich zur Abschaltung empfahl**. Ein Wächter, der gute Setups köpft, ist genauso schädlich wie einer, der schlechte durchlässt. Korrigiert: Abschaltung wird nur empfohlen, wenn (a) Punktschätzung UND Wilson-Untergrenze schwach sind UND (b) mindestens 15 Out-of-Sample-Episoden vorliegen. Sonst „schwach · beobachten" statt vorschneller Abschaltung. Ein synthetischer Beweis mit vier konstruierten Setups (echter Edge / Overfit-Falle / zu-klein / klarer Verlierer) bestätigt jetzt korrekte Einordnung aller vier.
+
+## Empfehlung, nicht Automatik
+Der Wächter gibt **Abschalt-Empfehlungen**, schaltet aber nichts selbst ab. Du entscheidest und siehst, warum. Das ist die einzige Version von „selbst-verbessernd", die tatsächlich funktioniert statt sich selbst zu betrügen.
+
+## Unverändert
+Claude-Modus (alle vier SHA-256-Blöcke verifiziert identisch), FusionPulse Adaptiv, Deep-Scan-Regler, Tiingo-Kontingent. Neue Route: `/api/attribution`.
+
 # FusionPulse v3.5.3 · Claude-Audit A/B
 
 ## Kernfixes

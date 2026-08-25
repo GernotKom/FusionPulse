@@ -707,3 +707,15 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 .situation-tag{display:inline-block;width:max-content;padding:2px 6px;border:1px solid var(--line2);border-radius:999px;font-size:8.5px;font-weight:800;letter-spacing:.03em;color:var(--accent);background:var(--panel2)}
 @media(max-width:760px){.freshness-chip{width:max-content;margin-left:0}}
 .analysis-inline{display:block;margin:5px 0 2px;padding:5px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel2);color:var(--dim);font-size:9px;line-height:1.35}.analysis-inline b{color:var(--accent)}
+
+/* Modul 0: Attribution & Overfitting-Guard */
+.attr-wrap{overflow-x:auto;margin:.5rem 0}
+.attr-table{width:100%;border-collapse:collapse;font-size:.82rem}
+.attr-table th,.attr-table td{text-align:left;padding:.3rem .5rem;border-bottom:1px solid var(--line,#2a2a2a)}
+.attr-table em{opacity:.65;font-style:normal;font-size:.9em}
+.attr-table tr.attr-overfit td{background:rgba(220,60,60,.12)}
+.attr-table tr.attr-disable td{background:rgba(230,140,50,.12)}
+.attr-table tr.attr-keep td{background:rgba(60,200,120,.10)}
+.attr-recs{margin-top:.5rem;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}
+.attr-recs span{background:rgba(230,140,50,.18);border-radius:.4rem;padding:.15rem .5rem;font-size:.8rem}
+.attr-recs small{flex-basis:100%;opacity:.7}

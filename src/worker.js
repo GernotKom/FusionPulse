@@ -2176,6 +2176,150 @@ async function d1History(env, symbol, assetType){
   for(const x of rows) bins.set(Math.floor(Number(x.ts)/(15*60_000)),{ts:Number(x.ts),quality:Number(x.score)||0,executability:Number(x.executability)||0,light:x.light||'red',crv:Number(x.crv)||0,price:Number(x.price)||0});
   return [...bins.values()].slice(-8);
 }
+
+/* ============================================================================
+   MODUL 0 · CLAUDE ATTRIBUTION & OVERFITTING GUARD (v3.5.4, additiv)
+   ----------------------------------------------------------------------------
+   Zweck: ehrlich messen, welche Setups/Lifecycle-Zustaende tatsaechlich einen
+   Vorteil hatten, statt es zu behaupten. Der Guard verhindert dabei drei
+   klassische Selbstbetrugsfehler, die genau bei "die App verbessert sich
+   taeglich selbst" auftreten:
+
+   (1) Zu wenig Daten: Unter MIN_SAMPLE Trades gibt es KEIN Urteil, nur
+       "sammelt noch". Kein Algorithmus kann aus 5 Trades Edge von Zufall
+       unterscheiden. Ohne dieses Tor wuerde die App auf Rauschen optimieren.
+   (2) In-Sample-Illusion: Der Edge wird an aelteren Trades geschaetzt und an
+       den juengsten, NICHT zum Schaetzen benutzten Trades geprueft
+       (Out-of-Sample). Bricht OOS gegenueber In-Sample ein -> Overfitting-Flag.
+   (3) Mehrfachtest-Problem: Wer 8 Setups testet, findet zufaellig eines, das
+       gut aussieht. Der Guard rechnet die Anzahl paralleler Tests heraus
+       (Bonferroni-artige Schwellenanhebung) statt naiv das beste zu feiern.
+
+   Wichtig: Der Guard gibt ABSCHALT-EMPFEHLUNGEN, keine automatische Abschaltung.
+   Der Mensch bestaetigt. Er veraendert NICHTS am Claude- oder FusionPulse-Score;
+   er ist eine reine Auswertungs-/Empfehlungsschicht ueber bereits vorhandenen,
+   in market_snapshots aufgeloesten Outcomes (max_pct/min_pct/success_ts).
+   Datenquelle sind ausschliesslich resolved Snapshots -> kein Repainting.
+   ============================================================================ */
+const ATTR = {
+  MIN_SAMPLE: 20,        // unter dieser Trade-Zahl je Bucket: kein Urteil
+  OOS_FRACTION: 0.30,    // juengste 30 % der Episoden sind Out-of-Sample
+  OOS_MIN: 6,            // aber mindestens so viele OOS-Episoden noetig
+  OOS_CONFIDENT: 15,     // erst ab so vielen OOS-Episoden ist "disable" erlaubt;
+                         //   darunter nur "beobachten", weil die Wilson-Untergrenze
+                         //   bei kleinem n selbst echte Gewinner erschlagen wuerde.
+  WIN_PCT: 5,            // max_pct >= 5 % zaehlt als Treffer (wie bestehende Logik)
+  STOP_PCT: -1.5,        // min_pct <= -1,5 % zaehlt als ausgestoppt
+  DISABLE_POINT: 40,     // OOS-Punktschaetzung < 40 % UND
+  DISABLE_WILSON: 33,    //   Wilson-Untergrenze < 33 % -> erst dann Abschalt-Empfehlung.
+                         //   Zwei Kriterien verhindern, dass Stichprobenrauschen allein
+                         //   (breites Konfidenzintervall) einen echten Edge abschaltet.
+  OVERFIT_DROP: 20,      // In-Sample - OOS >= 20 Prozentpunkte -> Overfit-Flag
+  HISTORY_MS: 21*24*60*60_000, // Bewertungsfenster: 3 Wochen
+};
+// Wilson-Score-Untergrenze (95 %): ehrliche Trefferquote bei kleiner Stichprobe.
+// Verhindert, dass "3 von 4" (75 %) als starker Edge missverstanden wird.
+function wilsonLower(wins, n){
+  if(n<=0) return 0;
+  const z=1.96, p=wins/n;
+  const denom=1+z*z/n;
+  const centre=p+z*z/(2*n);
+  const margin=z*Math.sqrt((p*(1-p)+z*z/(4*n))/n);
+  return Math.max(0,(centre-margin)/denom);
+}
+/** Eine Episode je Symbol+Tag+Bucket-Gruppe: verhindert, dass 5-Minuten-
+ *  Snapshots derselben Bewegung als unabhaengige Trades mehrfach zaehlen. */
+function collapseEpisodes(rows){
+  const byEp=new Map();
+  for(const r of rows){
+    const day=r.ts?new Date(Number(r.ts)).toISOString().slice(0,10):'?';
+    const key=`${r.symbol}:${day}`;
+    const prev=byEp.get(key);
+    // beste (frueheste) Momentaufnahme der Episode behalten
+    if(!prev||Number(r.ts)<Number(prev.ts)) byEp.set(key,r);
+  }
+  return [...byEp.values()].sort((a,b)=>Number(a.ts)-Number(b.ts));
+}
+function bucketStats(episodes){
+  const n=episodes.length;
+  if(!n) return {n:0};
+  const splitAt=Math.max(1,Math.floor(n*(1-ATTR.OOS_FRACTION)));
+  const inSample=episodes.slice(0,splitAt);
+  const oos=episodes.slice(splitAt);
+  const winRate=(arr)=>{ if(!arr.length) return null; const w=arr.filter(x=>Number(x.max_pct)>=ATTR.WIN_PCT).length; return {w,n:arr.length,pct:Math.round(w/arr.length*100),wilson:Math.round(wilsonLower(w,arr.length)*100)}; };
+  const stopRate=(arr)=>arr.length?Math.round(arr.filter(x=>Number(x.min_pct)<=ATTR.STOP_PCT).length/arr.length*100):null;
+  const medianMax=(arr)=>{ if(!arr.length) return 0; const s=arr.map(x=>Number(x.max_pct)||0).sort((a,b)=>a-b); return r1(s[Math.floor(s.length/2)]); };
+  return {
+    n, inSampleN:inSample.length, oosN:oos.length,
+    all:winRate(episodes), inSample:winRate(inSample), oos:winRate(oos),
+    stopRateAll:stopRate(episodes), medianMaxAll:medianMax(episodes),
+  };
+}
+/** Kernauswertung: gruppiert resolved Snapshots nach Setup und Lifecycle,
+ *  liefert je Bucket eine ehrliche Bewertung inkl. Guard-Verdikt. */
+async function claudeAttribution(env){
+  if(!env?.DB) return {configured:false,state:'nodb',version:APP_VERSION};
+  await ensureD1Schema(env);
+  const since=Date.now()-ATTR.HISTORY_MS;
+  // Nur aufgeloeste Aktien-Snapshots mit bekanntem Ergebnis. payload traegt das Setup.
+  const rows=(await env.DB.prepare(
+    `SELECT symbol,ts,max_pct,min_pct,success_ts,light,score,crv,payload
+     FROM market_snapshots
+     WHERE asset_type='stock' AND source IN ('Twelve Data','Tiingo IEX')
+       AND resolved_ts IS NOT NULL AND ts>=? ORDER BY ts ASC LIMIT 8000`
+  ).bind(since).all()).results||[];
+  // Nach Setup gruppieren (aus payload). Fallback 'unklassifiziert'.
+  const bySetup=new Map();
+  for(const r of rows){
+    let setup='unklassifiziert';
+    try{ const p=JSON.parse(r.payload||'{}'); if(p.setup) setup=String(p.setup); }catch{}
+    (bySetup.get(setup)??bySetup.set(setup,[]).get(setup)).push(r);
+  }
+  const buckets=[];
+  for(const [setup,rs] of bySetup){
+    const episodes=collapseEpisodes(rs);
+    const st=bucketStats(episodes);
+    buckets.push({ key:setup, ...st });
+  }
+  // Mehrfachtestkorrektur: je mehr Buckets mit ausreichender Stichprobe parallel
+  // geprueft werden, desto strenger die Edge-Schwelle (Bonferroni-artig auf die
+  // Wilson-Untergrenze). So wird nicht zufaellig das beste von vielen gefeiert.
+  const testable=buckets.filter(b=>b.n>=ATTR.MIN_SAMPLE);
+  const m=Math.max(1,testable.length);
+  const bonferroniBump=Math.min(8,Math.round((1-1/Math.sqrt(m))*12)); // 0..~8 Punkte strenger auf die Punktschaetzung
+  const verdictFor=(b)=>{
+    if(b.n<ATTR.MIN_SAMPLE) return {status:'sammelt',reason:`${b.n}/${ATTR.MIN_SAMPLE} Episoden – zu wenig fuer ein Urteil`};
+    if(!b.oos||b.oosN<ATTR.OOS_MIN) return {status:'sammelt',reason:`Out-of-Sample zu klein (${b.oosN}/${ATTR.OOS_MIN})`};
+    const inP=b.inSample?.pct??0, oosP=b.oos?.pct??0, oosWilson=b.oos?.wilson??0;
+    const drop=inP-oosP;
+    // Overfitting bleibt der schaerfste Befund: gute Vergangenheit, die out-of-sample bricht.
+    if(drop>=ATTR.OVERFIT_DROP && oosP < inP) return {status:'overfit',reason:`In-Sample ${inP}% bricht auf ${oosP}% ein (Δ${drop}pp) – Overfitting-Verdacht`};
+    const pointWeak = oosP < (ATTR.DISABLE_POINT + bonferroniBump);
+    const wilsonWeak = oosWilson < ATTR.DISABLE_WILSON;
+    // Abschaltung nur, wenn BEIDE Kriterien schwach sind UND genug OOS-Evidenz vorliegt.
+    // Sonst wuerde ein breites Konfidenzintervall (kleines n) echte Gewinner faelschlich toeten.
+    if(pointWeak && wilsonWeak && b.oosN>=ATTR.OOS_CONFIDENT)
+      return {status:'disable',reason:`OOS ${oosP}% (Wilson ${oosWilson}%) unter Schwelle ${ATTR.DISABLE_POINT+bonferroniBump}%/${ATTR.DISABLE_WILSON}% bei n=${b.oosN} – Abschaltung empfohlen`};
+    if(pointWeak && wilsonWeak)
+      return {status:'weak-watch',reason:`OOS schwach (${oosP}%, Wilson ${oosWilson}%), aber nur ${b.oosN} OOS-Episoden – erst mehr Daten, dann Entscheidung`};
+    if(pointWeak)
+      return {status:'weak-watch',reason:`OOS-Punktschaetzung ${oosP}% grenzwertig, Wilson ${oosWilson}% aber tragfaehig – beobachten`};
+    return {status:'keep',reason:`OOS ${oosP}% (Wilson ${oosWilson}%) haelt In-Sample ${inP}% stand`};
+  };
+  const evaluated=buckets.map(b=>({...b,verdict:verdictFor(b)}))
+    .sort((a,b)=>(b.oos?.wilson??-1)-(a.oos?.wilson??-1)||b.n-a.n);
+  const disableRecs=evaluated.filter(b=>b.verdict.status==='disable'||b.verdict.status==='overfit')
+    .map(b=>({setup:b.key,status:b.verdict.status,reason:b.verdict.reason,n:b.n,oosWilson:b.oos?.wilson??null}));
+  return {
+    configured:true, state:'ok', version:APP_VERSION,
+    horizonDays:Math.round(ATTR.HISTORY_MS/86400000),
+    totalEpisodes:rows.length, testableSetups:testable.length,
+    multiTestPenalty:bonferroniBump, guard:ATTR,
+    buckets:evaluated, disableRecommendations:disableRecs,
+    note:'Reine Auswertung aufgeloester Outcomes. Empfehlungen, keine Auto-Abschaltung. Veraendert keinen Score.',
+  };
+}
+
 async function learningPayload(env, stocks=[], coins=[]){
   if(!env.DB)return {configured:false,state:'nodb',message:'D1-Binding DB fehlt',version:APP_VERSION};
   await ensureD1Schema(env);
@@ -2937,6 +3081,12 @@ export default {
         const coins=(url.searchParams.get('coins')||'').split(',').map(x=>x.trim().toUpperCase()).filter(Boolean);
         return json(await learningPayload(env,stocks,coins),200,{ 'cache-control':'no-store' });
       } catch(e) { return json({configured:!!env.DB,state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    // Modul 0: Attribution & Overfitting-Guard. Reine Auswertung, veraendert keinen Score.
+    if (url.pathname === '/api/attribution') {
+      try { return json(await claudeAttribution(env),200,{ 'cache-control':'no-store' }); }
+      catch(e) { return json({configured:!!env.DB,state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
     }
 
     if (url.pathname === '/api/experimental') {
