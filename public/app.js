@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.5.1 — Frontend
+   FusionPulse v3.5.2 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -73,19 +73,32 @@ const DEFAULTS = {
   equity: 5000, riskPct: 0.75, interval: 20000, deep: 20,
   sound: true, token: '', watch: 'BTC-EUR,ETH-EUR,SOL-EUR', minQ: 0, onlyZone: false,
   theme: 'dark', taxPct: 27.5, analysisMode: 'composite', coinCount: 12, stockCount: 12,
-  maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0, minNetProfitStock: 350, minTp2PctStock: 2.0,
+  maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0, minNetProfitStock: 75, minTp2PctStock: 2.0,
   claudeMode: false, stockDeep: 20,
   mutedPairs: [], mutedStocks: [], favoritePairs: [], favoriteStocks: [], stockOrder: [], components: [...ALL_COMPONENTS], stockSound: true,
 };
 const storedSettings = (() => { try { return JSON.parse(localStorage.getItem('fp.settings') || '{}'); } catch { return {}; } })();
 const S = { ...DEFAULTS, ...storedSettings };
+// v3.5.2 settings migration: 350 EUR war der alte, mathematisch unerreichbare Default.
+// Nur der exakte alte Default wird migriert; bewusst individuell gesetzte Werte bleiben unangetastet.
+let settingsMigrated352=false;
+if(Number(storedSettings.minNetProfitStock)===350 && !storedSettings.fusionAdaptive352){S.minNetProfitStock=75;S.fusionAdaptive352=true;settingsMigrated352=true;}
 // Flatex AT / Tradegate cost model (v3.0.4): public base fee + minimum venue cost
 // per execution. Spread/slippage cannot be known from the Twelve Data candle feed,
 // therefore a separate conservative execution reserve is shown as an estimate.
 const STOCK_ORDER_FIXED_EUR = 10.75; // conservative v3.0.4 estimate for typical 5k–10k executions: 9.90 € flatex example + 0.85 € Tradegate min. external cost
 const STOCK_EXECUTION_FRICTION_PCT = 0.06; // estimated round-trip spread/slippage reserve, not a live Tradegate quote
-const OPPORTUNITY_MIN_NET_EUR = 350; // wirtschaftlich relevante Untergrenze bei ~10k Referenzeinsatz
+const OPPORTUNITY_MIN_NET_EUR = 75; // FusionPulse Adaptiv: absolute Untergrenze; zusaetzlich relativ zur realen Positionsgroesse
 const OPPORTUNITY_HIGH_NET_EUR = 500; // priorisierte High-Opportunity, keine Erfolgswahrscheinlichkeit
+
+const FUSION_MIN_SCORE_STOCK = 7.2;
+const FUSION_MIN_PLAN_EFFICIENCY = 0.85; // 50/50-Plan nach Fixkosten muss mindestens 0,85R liefern; NICHT mit Struktur-CRV verwechseln
+const FUSION_MIN_NET_NOTIONAL_PCT = 1.25; // 10.000 EUR Einsatz -> mindestens 125 EUR netto
+const fusionMinNetEur = (sz) => Math.max(
+  Number(S.minNetProfitStock||0),
+  OPPORTUNITY_MIN_NET_EUR,
+  Number(sz?.notional||0) * (FUSION_MIN_NET_NOTIONAL_PCT/100),
+);
 
 /* ---- v3.5.0 Claude Modus --------------------------------------------------
    Legacy-Befund: Der 50/50-Plan (TP1=1,7R / TP2=3,35R) hat brutto max. 2,525R,
@@ -105,6 +118,7 @@ if (!Array.isArray(S.components) || !S.components.length) S.components = [...ALL
 S.components = S.components.filter((c) => ALL_COMPONENTS.includes(c));
 if (!S.components.length) S.components = [...ALL_COMPONENTS];
 const saveSettings = () => { try { localStorage.setItem('fp.settings', JSON.stringify(S)); } catch {} };
+if(settingsMigrated352) saveSettings();
 
 let rows = [];
 let meta = {};
@@ -311,25 +325,29 @@ function buyReady(r) {
 const coinLevel = (r) => (buyReady(r) ? 3 : r.light === 'green' ? 2 : r.light === 'yellow' ? 1 : 0);
 function stockTradeability(r) {
   const claude = !!(S.claudeMode && r.claude);
-  const sz = stockSizing(r); // im Claude-Modus rechnet sizing bereits mit dem Struktur-TP2 (Overlay)
+  const sz = stockSizing(r); // Claude-Zweig bleibt unveraendert: Overlay liefert dessen Struktur-TP2.
   const tp2Pct = Number(r.tp2Pct ?? (r.entryUsd ? ((r.tp2Usd / r.entryUsd - 1) * 100) : 0));
   const netProfit = Number(sz?.planNet ?? 0);
-  const netCrv = Number(sz?.planCrvAfterCosts ?? r.netCRV ?? 0);
+  const planEfficiency = Number(sz?.planCrvAfterCosts ?? 0);
+  const structuralCrv = Number(r.netCRV ?? 0);
+  const gateCrv = claude ? planEfficiency : structuralCrv;
   const currentPhase = stockMeta?.market?.key || r.marketPhase;
   const marketOk = !!currentPhase && ['regular','opening'].includes(currentPhase);
   const riskEur = S.equity * (S.riskPct / 100);
-  const minNet = claude ? claudeMinNetEur(riskEur) : Math.max(Number(S.minNetProfitStock || 0), OPPORTUNITY_MIN_NET_EUR);
+  const minNet = claude ? claudeMinNetEur(riskEur) : fusionMinNetEur(sz);
   const minCrv = claude ? CLAUDE_MIN_CRV_STOCK : Number(S.minCrvStock || 3);
   const minTp2 = claude ? Math.max(Number(S.minTp2PctStock || 0), 0.6) : Number(S.minTp2PctStock || 0);
+  const planOk = claude ? true : planEfficiency >= FUSION_MIN_PLAN_EFFICIENCY;
   const ok = marketOk && tp2Pct >= minTp2
     && netProfit >= minNet
-    && netCrv >= minCrv;
-  return { ok, tp2Pct, netProfit, netCrv, marketOk, minNet, minCrv, claude };
+    && gateCrv >= minCrv
+    && planOk;
+  return { ok, tp2Pct, netProfit, netCrv:gateCrv, structuralCrv, planEfficiency, planOk, marketOk, minNet, minCrv, minPlanEfficiency:FUSION_MIN_PLAN_EFFICIENCY, claude };
 }
 const stockLevel = (r) => {
   const t = stockTradeability(r);
   const fresh = stockFreshness(r);
-  const minScore = (S.claudeMode && r.claude) ? CLAUDE_MIN_SCORE_STOCK : 8;
+  const minScore = (S.claudeMode && r.claude) ? CLAUDE_MIN_SCORE_STOCK : FUSION_MIN_SCORE_STOCK;
   // Safety: missing/stale data can never promote a row to BUY.
   return (r.light === 'green' && r.score >= minScore && t.ok && fresh.key === 'live') ? 3
     : r.light === 'green' ? 2 : r.light === 'yellow' ? 1 : 0;
@@ -692,27 +710,29 @@ function stockOpportunity(r){
   const phase=stockMeta?.market?.key||r.marketPhase||'closed';
   const opportunityPhase=['premarket-early','premarket','opening','regular'].includes(phase);
   const claude=!!(S.claudeMode&&r.claude);
-  const net=Number(sz?.planNet||0), crv=Number(sz?.planCrvAfterCosts||0), tp2=Number(tr.tp2Pct||0), score=Number(r.score||0);
+  const net=Number(sz?.planNet||0), crv=Number(tr.netCrv||0), planEff=Number(tr.planEfficiency||0), tp2=Number(tr.tp2Pct||0), score=Number(r.score||0);
   const riskEur=S.equity*(S.riskPct/100);
-  const minNet=claude?claudeMinNetEur(riskEur):Math.max(Number(S.minNetProfitStock||0),OPPORTUNITY_MIN_NET_EUR);
+  const minNet=claude?claudeMinNetEur(riskEur):fusionMinNetEur(sz);
   const minCrv=claude?CLAUDE_MIN_CRV_STOCK:Number(S.minCrvStock||3);
-  const minScore=claude?CLAUDE_MIN_SCORE_STOCK:8;
+  const minScore=claude?CLAUDE_MIN_SCORE_STOCK:FUSION_MIN_SCORE_STOCK;
   const minTp2=claude?Math.max(Number(S.minTp2PctStock||0),0.6):Number(S.minTp2PctStock||2);
-  const ignoreBelow=claude?minNet*0.5:200;
+  const ignoreBelow=claude?minNet*0.5:Math.max(50,minNet*0.6);
   const reasons=[];
   if(score>=minScore) reasons.push(`Score ${num(score,1)}/10`);
-  if(crv>=minCrv) reasons.push(`Netto-CRV ${num(crv,1)}:1`);
+  if(crv>=minCrv) reasons.push(`${claude?'Plan-CRV':'Struktur-CRV'} ${num(crv,1)}:1`);
+  if(!claude&&planEff>=FUSION_MIN_PLAN_EFFICIENCY) reasons.push(`Plan-Effizienz ${num(planEff,1)}:1`);
   if(net>=minNet) reasons.push(`Plan netto ${eur(net,0)}`);
   if(Number(r.relVol||0)>=1.5) reasons.push(`RVOL ${num(r.relVol,1)}×`);
   if(claude&&Number.isFinite(Number(r.claude.expectancyR))) reasons.push(`EV ${num(r.claude.expectancyR,2)}R`);
-  const ready=r.light==='green'&&score>=minScore&&f.key==='live'&&opportunityPhase&&crv>=minCrv&&net>=minNet&&tp2>=minTp2;
+  const ready=r.light==='green'&&score>=minScore&&f.key==='live'&&opportunityPhase&&tr.ok&&crv>=minCrv&&net>=minNet&&tp2>=minTp2;
   const tier=ready?(net>=(claude?minNet*2:OPPORTUNITY_HIGH_NET_EUR)?'high':'opportunity'):(net>0&&net<ignoreBelow?'ignore':'watch');
   const cTag=claude?' · CLAUDE':'';
   const label=(tier==='high'?'HIGH OPPORTUNITY':tier==='opportunity'?'OPPORTUNITY':tier==='ignore'?'UNINTERESSANT':'NOCH KEINE OPPORTUNITY')+cTag;
   let why='';
   if(net>0&&net<ignoreBelow) why=`Nur ${eur(net,0)} realistisches Netto-Potenzial – für Aufwand/Risiko zu klein.`;
   else if(net>0&&net<minNet) why=`Netto-Potenzial ${eur(net,0)} liegt unter der Opportunity-Schwelle ${eur(minNet,0)}.`;
-  else if(crv<minCrv) why=`CRV ${num(crv,1)}:1 liegt unter ${num(minCrv,1)}:1.`;
+  else if(crv<minCrv) why=`${claude?'Plan-CRV':'Struktur-CRV'} ${num(crv,1)}:1 liegt unter ${num(minCrv,1)}:1.`;
+  else if(!claude&&planEff<FUSION_MIN_PLAN_EFFICIENCY) why=`50/50-Plan nach Kosten nur ${num(planEff,2)}:1; Minimum ${num(FUSION_MIN_PLAN_EFFICIENCY,2)}:1.`;
   else if(tp2<minTp2) why=`Verbleibender realistischer Kursweg bis TP2 nur ${num(tp2,1)}%.`;
   else if(f.key!=='live') why='Daten sind nicht live – keine Opportunity-Freigabe.';
   else if(!opportunityPhase) why='Marktphase ist für eine Opportunity-Freigabe nicht aktiv.';
@@ -826,7 +846,8 @@ function stockPeek(r) {
       ${t('Branche', 'Sektor-Zuordnung innerhalb des Aktien-Universums.', esc(r.sector))}
       ${t('Kurs', 'Letzter Kurs aus dem aktiven US-5-Minuten-Marktdatenfeed.', stockPx(r.priceUsd, r.priceEur))}
       ${t('Score', 'Gesamtbewertung von 0–10 aus den aktivierten Analyseverfahren. Höher = mehr Verfahren bestätigen dasselbe Bild.', num(r.score, 1))}
-      ${t('Netto-CRV Tradeplan', 'CRV des tatsächlichen 50/50-Tradeplans nach geschätzten Flatex/Tradegate-Ausführungskosten. Spread/Slippage sind mangels Live-Tradegate-Bid/Ask nur als Reserve geschätzt.', sz ? `${num(sz.planCrvAfterCosts, 2)} : 1` : `${num(r.netCRV, 1)} : 1`)}
+      ${t(S.claudeMode?'Netto-CRV Tradeplan':'Struktur-CRV netto', S.claudeMode?'CRV des tatsächlichen 50/50-Tradeplans nach geschätzten Flatex/Tradegate-Ausführungskosten.':'CRV bis zum am Markt gemessenen Strukturziel. Im FusionPulse-Modus wird dieses 3:1-Kriterium bewusst NICHT mit dem 50/50-Teilverkaufsplan vermischt.', S.claudeMode?(sz?`${num(sz.planCrvAfterCosts,2)} : 1`:`${num(r.netCRV,1)} : 1`):`${num(r.netCRV,2)} : 1`)}
+      ${t('50/50-Plan-Effizienz', 'Realer Standardplan nach geschätzten Fixkosten/Spread/Slippage im Verhältnis zum Stop-Pfad. Das ist eine eigene Kennzahl und muss im FusionPulse-Modus nicht 3:1 erreichen.', sz?`${num(sz.planCrvAfterCosts,2)} : 1`:'–')}
       ${t('Setup', 'Erkanntes Kursmuster aus EMA-Staffelung, VWAP-Lage und kurzfristigem Momentum.', esc(r.setup))}
       ${t('Trend', 'Richtung der EMA9 gegenüber der EMA21. EMA = exponentieller gleitender Durchschnitt.', esc(r.trend))}
       ${t('Entry-Zone', 'Preisbereich, in dem der geplante Kauf sinnvoll wird. Enger als ein Punkt, damit ein Tick keinen Trade zerstört.', stockPx(r.zoneLowUsd, r.zoneLowEur) + ' – ' + stockPx(r.zoneHighUsd, r.zoneHighEur))}
@@ -1184,7 +1205,7 @@ function renderMarketGainers(){
     }
     el.innerHTML=`<div class="ophead"><b>📡 Situation Radar</b><small>0 % BUY-Gewicht · Elliott-first</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div><span class="hint">Noch keine verifizierten marktweiten Radar-Kandidaten. Favoriten sind davon getrennt.</span>`;return;
   }
-  el.innerHTML=`<div class="ophead"><b>📡 Situation Radar</b><span>${radar.length} verifizierte Large-Cap-Kandidaten · Zustandswechsel statt nur Tagesgewinner</span><small>Discovery · 0 % BUY-Gewicht</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div><div class="opgrid">${radar.map(r=>`<button type="button" class="opcard ${Number(r.movePct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="Situation-Radar: priorisiert frische Beschleunigung, Breakout-Druck, Opening-Drive, Reclaim, Volumenpuls und Spread-Qualität. Erst Deep-Analyse/Elliott/CRV kann BUY freigeben."><b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b><span class="situation-tag">${esc(r.situation||'WATCH')}</span><span class="trend-pct ${Number(r.movePct)>=0?'up':'down'}">${Number(r.movePct)>=0?'+':''}${num(r.movePct,1)}% Tag</span><span class="${r.speedPct!=null?'trend-pct '+(Number(r.speedPct)>=0?'up':'down'):''}">${r.speedPct!=null?'Speed '+(Number(r.speedPct)>=0?'+':'')+num(r.speedPct,2)+'%':'Situation '+num(r.situationScore??r.score,0)}</span><span>${r.spreadPct!=null?'Spread '+num(r.spreadPct,2)+'%':'Spread n.v.'}</span><em>${gainers.some(x=>x.symbol===r.symbol)?'Gainer · Deep Check':'Situation · Deep Check'}</em></button>`).join('')}</div>`;
+  el.innerHTML=`<div class="ophead"><b>📡 Situation Radar</b><span>${radar.length} verifizierte Large-Cap-Kandidaten · Zustandswechsel statt nur Tagesgewinner</span><small>Discovery · 0 % BUY-Gewicht</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div><div class="opgrid">${radar.map(r=>`<button type="button" class="opcard ${Number(r.movePct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="Situation-Radar: priorisiert frische Beschleunigung, Breakout-Druck, Opening-Drive, Reclaim, Volumenpuls und Spread-Qualität. Erst Deep-Analyse/Elliott/CRV kann BUY freigeben."><b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b><span class="situation-tag">${esc(r.lifecycle&&r.lifecycle!=='WATCH'?r.lifecycle+' · ':'')}${esc(r.situation||'WATCH')}</span><span class="trend-pct ${Number(r.movePct)>=0?'up':'down'}">${Number(r.movePct)>=0?'+':''}${num(r.movePct,1)}% Tag</span><span class="${r.speedPct!=null?'trend-pct '+(Number(r.speedPct)>=0?'up':'down'):''}">${r.speedPct!=null?'Speed '+(Number(r.speedPct)>=0?'+':'')+num(r.speedPct,2)+'%':'Situation '+num(r.situationScore??r.score,0)}</span><span>${r.spreadPct!=null?'Spread '+num(r.spreadPct,2)+'%':'Spread n.v.'}</span><em>${gainers.some(x=>x.symbol===r.symbol)?'Gainer · Deep Check':'Situation · Deep Check'}</em></button>`).join('')}</div>`;
   el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
 }
 
@@ -1243,7 +1264,7 @@ function renderStocks() {
   const top=focusedRow||(!focusStock?shown[0]:null);
   if(topBox){if(!top)topBox.innerHTML=search?`<div class="stockfocus-empty">Keine geladene Aktie passend zu „${esc(search)}“. Enter oder 🔎 lädt den Titel direkt.</div>`:(filter==='favorites'?'<div class="stockfocus-empty">Noch keine Aktien-Favoriten. Mit ☆ neben einem Titel hinzufügen.</div>':'');else{
     const sz=stockSizing(top), buy=stockLevel(top)===3, tr=stockTradeability(top), opp=stockOpportunity(top), qm=focusQuoteMeta(top); const struct=Number(top.structurePct||0);
-    topBox.innerHTML=`<div class="stockfocus-card ${top.light}${buy?' buy':''}"><div class="sf-focus-main"><div class="sf-title"><div><small>AUSGEWÄHLTE AKTIE · ${esc(top.symbol)}</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button><b>${esc(top.symbol)}</b><a class="gfinance focus-link" href="${googleFinanceUrl(top)}" target="_blank" rel="noopener" title="${esc(top.symbol)} in Google Finance in einem neuen Tab öffnen">Google Finance ↗</a></h3><div class="focus-livebar ${qm.cls}"><b>${qm.label}</b><span>Kurs ${focusDisplayPrice(top)}</span><span>Quote ${qm.when}</span><span>${esc(qm.src+qm.scope)}</span>${qm.age!=null?`<span>${qm.age}s alt</span>`:''}<span>${esc(stockUpdateLabel(top))}</span><button type="button" id="stockFocusRefresh" title="Diese Aktie neu abfragen; der autonome Whole-Market-Scan bleibt serverseitig.">↻ Aktie</button></div><span class="company-name" title="Vollständiger Firmenname. Warum sinnvoll? Der Ticker allein kann leicht mit ähnlich benannten Wertpapieren verwechselt werden.">${esc((top.securityName&&top.securityName!==top.symbol)?top.securityName:(top.name&&top.name!==top.symbol?top.name:'Firmenname wird noch geladen'))}</span><small class="company-focus" title="Kurzbeschreibung des operativen Fokus aus den verfügbaren Unternehmens-Metadaten. Warum sinnvoll? Sie hilft einzuordnen, wodurch die Aktie wirtschaftlich bewegt werden kann.">${esc((top.companyDescription||'').slice(0,220)||((top.sector&&top.sector!=='Discovery')?top.sector:'Unternehmensfokus noch nicht verifiziert'))}${(!top.companyDescription||!/candidate|program|pipeline|therapy|therapeutic|device|platform|drug/i.test(top.companyDescription))?' · Lead Program/Candidate nicht verifiziert':''}</small><small class="company-exchange" title="Primäres Listing laut verfügbaren Metadaten. Warum sinnvoll? Die Hauptbörse hilft bei Handelszeiten, Liquidität und Dateninterpretation. Höchstes aktuelles Volumen wird nur behauptet, wenn es tatsächlich gemessen werden kann.">Börse: ${esc(top.exchange||'n.v.')}</small><small class="analysis-inline" title="Tatsächlich aktive Analyse-/Sicherheitsmethoden. Situation Engine priorisiert nur Kandidaten und verändert BUY nicht."><b>Analyse:</b> ${esc(analysisMethodsText())}</small><span>${esc(top.sector)} · Score ${num(top.score,1)}${top.preSignalMaturity!=null?' · Reife '+Math.round(top.preSignalMaturity)+'%':''}${top.situationType?` · Situation ${esc(top.situationType)} ${Math.round(Number(top.situationScore)||0)}/100`:''}</span></div><strong>${buy?'🟢 BUY':VERDICT_ICON[top.light]+' '+esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${focusDisplayPrice(top)}</b><small>${qm.ok?' Live-Quote':' Analyse-/Fallbackpreis'}</small></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span>Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Netto-CRV = realistischer Nettogewinn im Verhältnis zum Verlustrisiko nach geschätzten Kosten, Spread und Slippage. Beispiel 3 : 1 bedeutet drei Einheiten möglicher Nettogewinn je einer Einheit Risiko. Ein BUY benötigt mindestens deine eingestellte CRV-Grenze.">Netto-CRV <b>${num(sz?.planCrvAfterCosts ?? top.netCRV,1)} : 1${Number(sz?.planCrvAfterCosts ?? top.netCRV)<Number(S.minCrvStock||3)?' · zu niedrig':''}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Strukturpotenzial = geschätzter technisch plausibler Kursweg bis zum nächsten relevanten Widerstand/Ziel aus Chart-, Elliott-/Fibonacci- und Marktstruktur. Das ist kein erwarteter Gewinn und allein kein Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}${crowdConfirmGauge(top)}</span></div><div class="opportunity-watch ${opp.ready?'ready':'waiting'}"><b>${buy?'BUY FREIGEGEBEN':opp.label}</b><span>${opp.why?esc(opp.why):(opp.reasons.length?esc(opp.reasons.join(' · ')):'Wartet auf Qualität, CRV, Kursweg und wirtschaftlich relevantes Gewinnpotenzial.')}</span></div><div class="intraday-chart" title="Kursverlauf. Intraday nutzt 5-Minuten-/IEX-Daten; längere Zeiträume werden passend aggregiert nachgeladen. Warum sinnvoll? Elliott-Strukturen sehen auf verschiedenen Zeitebenen unterschiedlich aus; der längere Chart liefert Kontext, aber kein BUY allein."><span>Chart · <select id="stockChartRange" title="Zeitraum wählen. Warum sinnvoll? Kurz zeigt Entry-Struktur, lang zeigt den übergeordneten Elliott-/Trend-Kontext.">${['5','10','30','60','120','180','240','300','1T','5T','1Wo','3Mo','6Mo','12Mo'].map(m=>`<option value="${m}"${String(m)===String(stockChartMinutes)?' selected':''}>${/^\d+$/.test(m)?m+' min':m}</option>`).join('')}</select></span>${spark((stockChartCache.get(top.symbol+'|'+stockChartMinutes)?.rows?.map(x=>x.c)||(top.intraday||[]).slice(-Math.max(1,Math.ceil((Number(stockChartMinutes)||120)/5)))),420,76)}</div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<div class="stock-interpret"><b>Was hat sich geändert? · Interpretation</b><span>${top.whyNow?.length?`Warum jetzt? ${esc(top.whyNow.join(' · '))} · `:''}${esc(stockInterpretation(top))}</span><small>Radar/Crowd/Search dienen nur der Discovery · 0 % BUY-Gewicht</small></div><small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} ${buyGateHint(top)}</small></div>${stockLadder(top)}</div>`;
+    topBox.innerHTML=`<div class="stockfocus-card ${top.light}${buy?' buy':''}"><div class="sf-focus-main"><div class="sf-title"><div><small>AUSGEWÄHLTE AKTIE · ${esc(top.symbol)}</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button><b>${esc(top.symbol)}</b><a class="gfinance focus-link" href="${googleFinanceUrl(top)}" target="_blank" rel="noopener" title="${esc(top.symbol)} in Google Finance in einem neuen Tab öffnen">Google Finance ↗</a></h3><div class="focus-livebar ${qm.cls}"><b>${qm.label}</b><span>Kurs ${focusDisplayPrice(top)}</span><span>Quote ${qm.when}</span><span>${esc(qm.src+qm.scope)}</span>${qm.age!=null?`<span>${qm.age}s alt</span>`:''}<span>${esc(stockUpdateLabel(top))}</span><button type="button" id="stockFocusRefresh" title="Diese Aktie neu abfragen; der autonome Whole-Market-Scan bleibt serverseitig.">↻ Aktie</button></div><span class="company-name" title="Vollständiger Firmenname. Warum sinnvoll? Der Ticker allein kann leicht mit ähnlich benannten Wertpapieren verwechselt werden.">${esc((top.securityName&&top.securityName!==top.symbol)?top.securityName:(top.name&&top.name!==top.symbol?top.name:'Firmenname wird noch geladen'))}</span><small class="company-focus" title="Kurzbeschreibung des operativen Fokus aus den verfügbaren Unternehmens-Metadaten. Warum sinnvoll? Sie hilft einzuordnen, wodurch die Aktie wirtschaftlich bewegt werden kann.">${esc((top.companyDescription||'').slice(0,220)||((top.sector&&top.sector!=='Discovery')?top.sector:'Unternehmensfokus noch nicht verifiziert'))}${(!top.companyDescription||!/candidate|program|pipeline|therapy|therapeutic|device|platform|drug/i.test(top.companyDescription))?' · Lead Program/Candidate nicht verifiziert':''}</small><small class="company-exchange" title="Primäres Listing laut verfügbaren Metadaten. Warum sinnvoll? Die Hauptbörse hilft bei Handelszeiten, Liquidität und Dateninterpretation. Höchstes aktuelles Volumen wird nur behauptet, wenn es tatsächlich gemessen werden kann.">Börse: ${esc(top.exchange||'n.v.')}</small><small class="analysis-inline" title="Tatsächlich aktive Analyse-/Sicherheitsmethoden. Situation Engine priorisiert nur Kandidaten und verändert BUY nicht."><b>Analyse:</b> ${esc(analysisMethodsText())}</small><span>${esc(top.sector)} · Score ${num(top.score,1)}${top.preSignalMaturity!=null?' · Reife '+Math.round(top.preSignalMaturity)+'%':''}${top.situationType?` · Situation ${esc(top.situationType)} ${Math.round(Number(top.situationScore)||0)}/100`:''}${top.radarLifecycle&&top.radarLifecycle!=='WATCH'?` · Phase ${esc(top.radarLifecycle)}`:''}</span></div><strong>${buy?'🟢 BUY':VERDICT_ICON[top.light]+' '+esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${focusDisplayPrice(top)}</b><small>${qm.ok?' Live-Quote':' Analyse-/Fallbackpreis'}</small></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span>Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Im FusionPulse-Modus ist dies das Netto-CRV bis zum gemessenen Strukturziel. Im Claude-Modus bleibt die dort definierte Plan-CRV-Logik unverändert.">${S.claudeMode?'Plan-CRV':'Struktur-CRV'} <b>${num(tr.netCrv,1)} : 1${Number(tr.netCrv)<Number(tr.minCrv||0)?' · zu niedrig':''}</b></span><span title="50/50-Plan nach geschätzten Fixkosten und Ausführungsreserve. Eigene Effizienzkennzahl; nicht mit dem Struktur-CRV verwechseln.">Plan-Effizienz <b>${sz?num(sz.planCrvAfterCosts,2)+' : 1':'–'}${!S.claudeMode&&sz&&sz.planCrvAfterCosts<FUSION_MIN_PLAN_EFFICIENCY?' · zu niedrig':''}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Strukturpotenzial = geschätzter technisch plausibler Kursweg bis zum nächsten relevanten Widerstand/Ziel aus Chart-, Elliott-/Fibonacci- und Marktstruktur. Das ist kein erwarteter Gewinn und allein kein Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}${crowdConfirmGauge(top)}</span></div><div class="opportunity-watch ${opp.ready?'ready':'waiting'}"><b>${buy?'BUY FREIGEGEBEN':opp.label}</b><span>${opp.why?esc(opp.why):(opp.reasons.length?esc(opp.reasons.join(' · ')):'Wartet auf Qualität, CRV, Kursweg und wirtschaftlich relevantes Gewinnpotenzial.')}</span></div><div class="intraday-chart" title="Kursverlauf. Intraday nutzt 5-Minuten-/IEX-Daten; längere Zeiträume werden passend aggregiert nachgeladen. Warum sinnvoll? Elliott-Strukturen sehen auf verschiedenen Zeitebenen unterschiedlich aus; der längere Chart liefert Kontext, aber kein BUY allein."><span>Chart · <select id="stockChartRange" title="Zeitraum wählen. Warum sinnvoll? Kurz zeigt Entry-Struktur, lang zeigt den übergeordneten Elliott-/Trend-Kontext.">${['5','10','30','60','120','180','240','300','1T','5T','1Wo','3Mo','6Mo','12Mo'].map(m=>`<option value="${m}"${String(m)===String(stockChartMinutes)?' selected':''}>${/^\d+$/.test(m)?m+' min':m}</option>`).join('')}</select></span>${spark((stockChartCache.get(top.symbol+'|'+stockChartMinutes)?.rows?.map(x=>x.c)||(top.intraday||[]).slice(-Math.max(1,Math.ceil((Number(stockChartMinutes)||120)/5)))),420,76)}</div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<div class="stock-interpret"><b>Was hat sich geändert? · Interpretation</b><span>${top.whyNow?.length?`Warum jetzt? ${esc(top.whyNow.join(' · '))} · `:''}${esc(stockInterpretation(top))}</span><small>Radar/Crowd/Search dienen nur der Discovery · 0 % BUY-Gewicht</small></div><small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} ${buyGateHint(top)}</small></div>${stockLadder(top)}</div>`;
     topBox.querySelector('[data-favstock]')?.addEventListener('click',e=>toggleStockFavorite(top.symbol,e));
     topBox.querySelector('#stockChartRange')?.addEventListener('change',async e=>{stockChartMinutes=String(e.target.value||'120');const k=top.symbol+'|'+stockChartMinutes,hit=stockChartCache.get(k);if(!hit||Date.now()-Number(hit.ts||0)>120_000){try{const q=new URLSearchParams({symbol:top.symbol,range:stockChartMinutes});if(S.token)q.set('t',S.token);const rr=await fetchWithTimeout('/api/stock-chart?'+q,{cache:'no-store'},10_000);const dd=await rr.json();if(dd?.rows?.length)stockChartCache.set(k,{...dd,ts:Date.now()});}catch{}}renderStocks();});
     topBox.querySelector('#stockFocusRefresh')?.addEventListener('click',async()=>{await searchStockNow(top.symbol,true);renderStocks();});
@@ -1960,7 +1981,7 @@ function analysisMethodsText(){
   // Immer aktive Aktien-Sicherheits-/Discovery-Methoden plus die explizit gewählten Komponenten.
   const core=['Situation Engine','ATR','CRV/Execution','Spread/Liquidität'];
   const base=[...new Set([...core,...(S.components||[]).map(x=>labels[x]||x)])].join(' · ');
-  return (S.claudeMode?'🤖 CLAUDE MODUS (EV-basiert) · ':'')+base;
+  return (S.claudeMode?'🤖 CLAUDE MODUS (EV-basiert, unverändert) · ':'⚡ FUSIONPULSE ADAPTIV · ')+base;
 }
 /** Erklärt die aktuell wirksamen BUY-Gates; im Claude-Modus die EV-basierten. */
 function buyGateHint(r){
@@ -1968,7 +1989,8 @@ function buyGateHint(r){
     const riskEur=S.equity*(S.riskPct/100);
     return `BUY (Claude): Score ≥${CLAUDE_MIN_SCORE_STOCK}, Plan-CRV ≥${num(CLAUDE_MIN_CRV_STOCK,1)}:1 netto, Plan netto ≥${eur(claudeMinNetEur(riskEur),0)} (1,2× Risikobudget), Erwartungswert ≥ +0,15R, Struktur-TP2.`;
   }
-  return `BUY: Score ≥8, CRV ≥${num(S.minCrvStock,1)}:1, Plan netto ≥${eur(Math.max(Number(S.minNetProfitStock||0),OPPORTUNITY_MIN_NET_EUR),0)}, Kursweg ≥${num(S.minTp2PctStock,1)}%.`;
+  const sz=stockSizing(r),minNet=fusionMinNetEur(sz);
+  return `BUY (FusionPulse Adaptiv): Score ≥${num(FUSION_MIN_SCORE_STOCK,1)}, Struktur-CRV ≥${num(S.minCrvStock,1)}:1, 50/50-Plan-Effizienz ≥${num(FUSION_MIN_PLAN_EFFICIENCY,2)}:1, Plan netto ≥${eur(minNet,0)} (mind. ${num(FUSION_MIN_NET_NOTIONAL_PCT,2)}% Einsatz), Kursweg ≥${num(S.minTp2PctStock,1)}%.`;
 }
 function renderAnalysisMethods(){
   const text=analysisMethodsText();

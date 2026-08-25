@@ -1,3 +1,52 @@
+# FusionPulse v3.5.2 · FusionPulse Adaptiv + Opportunity Lifecycle
+
+## Wichtig: Claude Modus methodisch unverändert
+- Die beiden serverseitigen Claude-Bewertungsblöcke für Krypto und Aktien wurden **byte-identisch** aus v3.5.1 übernommen. Auch Claude-Konstanten und Client-Overlay sind unverändert.
+- Neue Regressionstests prüfen SHA-256-Locks dieser Blöcke. Eine spätere versehentliche Änderung der Claude-Methodik lässt `npm run check` fehlschlagen.
+- Die folgenden Änderungen betreffen den **normalen FusionPulse-Modus** und die gemeinsame Discovery/Priorisierung, nicht die Claude-Bewertungsformeln.
+
+## Kernkorrektur im eigenen Aktienmodus
+Der Audit-Befund aus v3.5.0 wurde auf den normalen FusionPulse-Modus übertragen, ohne Claude zu kopieren: Eine Kennzahl darf nicht gegen eine mathematisch andere Auszahlung geprüft werden. Bis v3.5.1 wurde der 50/50-Plan nach Fixkosten gegen die 3:1-CRV-Grenze gehalten, obwohl sein festes TP1/TP2-Schema diese Grenze konstruktiv nicht erreichen konnte.
+
+FusionPulse Adaptiv trennt jetzt drei Ebenen:
+1. **Struktur-CRV:** CRV bis zu einem am Chart gemessenen Strukturziel. Dieses CRV muss weiterhin die eingestellte Aktiengrenze erfüllen (standardmäßig 3:1).
+2. **50/50-Plan-Effizienz:** Ergebnis des realen Standardplans nach geschätzten Flatex-/Tradegate-Fixkosten und Ausführungsreserve. Eigene Mindestschwelle 0,85:1; sie wird nicht mehr fälschlich als 3:1-Struktur-CRV behandelt.
+3. **Wirtschaftliche Relevanz:** mindestens der Nutzerwert, mindestens 75 EUR und zusätzlich mindestens 1,25 % der tatsächlich berechneten Positionsgröße. Bei 10.000 EUR Einsatz sind damit mindestens 125 EUR netto erforderlich. Der alte Default 350 EUR wird einmalig nur dann auf 75 EUR migriert, wenn er noch exakt dem alten Default entspricht.
+
+## Strukturziel statt selbstgebautem Ziel
+- Der FusionPulse-Modus verwendet für Aktien kein konstantes TP2-R-Multiple mehr als Freigabegrundlage.
+- Reclaim/Pullback zielt zunächst auf das reale vorherige Hoch; Breakout/Squeeze projiziert die tatsächlich gemessene Range bzw. den vorherigen Impuls (Measured Move/Fibonacci).
+- Reicht dieser Markt-Strukturraum nicht für das eingestellte Struktur-CRV, bleibt das Setup blockiert. Es wird kein höheres Ziel erfunden, nur damit das Gate passt.
+- Überdehnte Titel (>3 ATR über EMA21) bleiben blockiert.
+
+## Elliott-Fix im eigenen Aktienmodus
+- `deepRecheckRank()` gewichtete schon länger `r.elliott`, aber `analyseStock()` lieferte bis v3.5.1 bei Aktien gar kein `elliott`-Feld. Der behauptete Elliott-Anteil der Recheck-Priorität war dadurch faktisch immer 0.
+- v3.5.2 berechnet im normalen FusionPulse-Aktienmodus eine explizite Elliott/Fibonacci-Struktur aus Impulsbreite, höherem Tief, Trendstaffelung und Nähe zu 0,382/0,5/0,618-Retracements.
+- Fehlende Daten verbessern den Wert nicht; Elliott bleibt nur ein Teil der Gesamtanalyse.
+
+## Neue Opportunity-Lifecycle-Logik
+Der marktweite Large-Cap-Radar bewertet nicht mehr nur den aktuellen Zustand, sondern auch den **Zustandswechsel gegenüber dem vorherigen Radar-Snapshot**:
+- `PREP`: Druck direkt unter dem Trigger, noch ohne Ausbruch.
+- `IGNITION`: frischer Wechsel z. B. WATCH/NEAR HIGH -> BREAKOUT PRESSURE/ACCELERATION.
+- `CONFIRM`: Bewegung bestätigt sich nach dem Start.
+- `LATE`: Kurs bereits stark gelaufen, Geschwindigkeit fällt; wird bewusst abgewertet.
+- `WATCH`: noch keine belastbare Situation.
+
+Frische IGNITION-/PREP-Übergänge erhalten in der Deep-Scan-Reife Vorrang; ein später Tagesrunner verliert Rang. Radar/BOATS bleiben weiterhin **0 % direktes BUY-Gewicht**.
+
+## UI / Erklärung
+- Normalmodus wird in der Methodenanzeige als **FUSIONPULSE ADAPTIV** gekennzeichnet; Claude weiterhin klar separat.
+- FokusScope und Detailansicht trennen **Struktur-CRV** und **Plan-Effizienz** sichtbar.
+- Situation-Radar zeigt zusätzlich die Lifecycle-Phase, z. B. `IGNITION · BREAKOUT PRESSURE`.
+- BUY-Hinweis erklärt die tatsächlich wirksamen FusionPulse-Gates.
+
+## Nachweis
+- Funktionsfixture „frischer Ausbruch nach Impuls + Kompression“ kann im FusionPulse-Modus Grün erreichen und erfüllt dabei Struktur-CRV >= 3:1.
+- Stark überdehnte Late-Chase-Fixture bleibt blockiert.
+- Ohne Aktienvolumen bleibt FusionPulse fail-closed.
+- Claude-Blöcke werden zusätzlich per SHA-256 gegen v3.5.1 verriegelt.
+- `npm run check`: muss vor Release vollständig grün sein.
+
 # FusionPulse v3.5.1 · Deep-Scan-Regler & Tiingo-Kontingent
 
 ## Neu

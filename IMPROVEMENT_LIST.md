@@ -1,3 +1,19 @@
+# FusionPulse Verbesserungsliste – kumulativ
+
+## In v3.5.2 umgesetzt — FusionPulse Adaptiv / Opportunity Lifecycle
+- **Claude Modus geschützt:** Claude-Aktien- und Krypto-Methodik sowie die Claude-Client-Konstanten/Overlay sind gegenüber v3.5.1 byte-identisch und über SHA-256-Regressionstests gesperrt.
+- **Eigener Aktienmodus mathematisch korrigiert:** Struktur-CRV und 50/50-Plan-Effizienz werden nicht mehr vermischt. Struktur-CRV muss weiterhin die eingestellte Grenze (standardmäßig 3:1) erfüllen; der reale Teilverkaufsplan besitzt eine separate Kosten-/Effizienzprüfung.
+- **Wirtschaftliche Relevanz adaptiv:** absolute Untergrenze 75 EUR plus mindestens 1,25 % der tatsächlichen Positionsgröße; der alte 350-EUR-Default wird nur als exakt erkannter Alt-Default migriert.
+- **Marktgemessenes Strukturziel:** Reclaim/Pullback -> reales vorheriges Hoch; Breakout/Squeeze -> gemessene Range-/Impulsprojektion. Kein künstliches Hochsetzen des Ziels, um CRV zu retten.
+- **Aktien-Elliott repariert:** `analyseStock()` liefert jetzt einen echten Elliott/Fibonacci-Strukturwert; die bereits vorhandene Elliott-Gewichtung im Deep-Recheck ist damit erstmals real wirksam.
+- **Opportunity Lifecycle:** PREP -> IGNITION -> CONFIRM -> LATE/WATCH aus Zustandswechseln zwischen aufeinanderfolgenden IEX-Radar-Snapshots. PREP/IGNITION werden bevorzugt, Late-Chase wird abgewertet. Discovery bleibt 0 % direktes BUY-Gewicht.
+- **UI transparent:** FokusScope/Detail trennen Struktur-CRV und 50/50-Plan-Effizienz; Methodenfeld kennzeichnet FusionPulse Adaptiv versus unveränderten Claude Modus; Radar zeigt Lifecycle-Phase.
+
+## Offen / verbindliche VL für nächste Versionen
+- **Aktive Position im FokusScope:** Nach tatsächlichem Kauf Eingabefelder für Kaufkurs in EUR/Tradegate und Stückzahl. Daraus sofort investiertes Kapital, SL, TP1, TP2, Netto-CRV, Verlust am SL sowie Gewinn bei TP1/TP2 auf Basis der realen Ausführung berechnen. Technische Ziele/Stop dürfen nicht künstlich verschoben werden, nur um das CRV zu verbessern.
+- **Verkaufsüberwachung mit Alarm:** Übernommene Position aktiv überwachen. Bei SL-Gefahr/SL, TP1, TP2 oder eindeutigem strukturellem Exit **TON + sehr auffällige grafische Meldung**. Alarm bleibt sichtbar, bis bestätigt; klare Unterscheidung Warnung versus echte Verkaufsaktion.
+- **Positionsmanagement nach TP1:** Teilverkauf/Reststückzahl dokumentierbar; spätere Stop-Anpassung nur nach der jeweils aktiven Methodik und transparent anzeigen.
+
 # FusionPulse Improvement List — Stand v3.4.3
 
 

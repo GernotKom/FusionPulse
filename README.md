@@ -1,33 +1,22 @@
-# FusionPulse v3.5.1
+# FusionPulse v3.5.2
 
-## v3.5.1 Schwerpunkt · Deep-Scan-Regler & Tiingo-Kontingent
-- Neuer Regler „Aktien tief scannen (15–40)" (Einstellungen → Anzeigeumfang), serverseitig in D1 persistiert, da der Aktien-Deep-Scan über einen kontoweiten Cron läuft.
-- Tiingo-Kontingentanzeige in den Einstellungen — ausdrücklich als App-Eigenschätzung gekennzeichnet, da Tiingo keine Nutzungs-Header/Endpoint bereitstellt. Details in RELEASE_NOTES.md.
+## Schwerpunkt · FusionPulse Adaptiv + Opportunity Lifecycle
 
-# FusionPulse v3.5.1
+- **Claude Modus bleibt methodisch unverändert.** Seine Worker-Bewertungen, Konstanten und das Client-Overlay sind per SHA-256-Regression gegen die hochgeladene v3.5.1 verriegelt. Änderungen in v3.5.2 betreffen den normalen FusionPulse-Aktienmodus und die gemeinsame Discovery/Priorisierung.
+- **FusionPulse Adaptiv trennt Struktur-CRV von Plan-Effizienz.** Das Markt-Strukturziel muss weiterhin das eingestellte Aktien-CRV erreichen (Default 3:1); der reale 50/50-Auszahlungsplan wird separat nach Kosten auf Effizienz geprüft, statt gegen ein mathematisch unpassendes 3:1-Gate.
+- **Wirtschaftliche Relevanz ist positionsbezogen.** Im normalen Aktienmodus gilt mindestens der Nutzerwert, mindestens EUR 75 und mindestens 1,25 % der berechneten Positionsgröße. Bei EUR 10.000 Einsatz sind damit mindestens EUR 125 Netto-Potenzial erforderlich.
+- **Strukturziele kommen aus dem Markt.** Reclaim/Pullback nutzt das vorherige reale Hoch; Breakout/Squeeze nutzt gemessene Range/Impulsprojektion. Reicht der Strukturraum nicht, bleibt das Setup blockiert – kein künstliches Ziel, nur um ein Gate zu erfüllen.
+- **Aktien-Elliott/Fibonacci ist jetzt tatsächlich berechnet.** Bis v3.5.1 wurde `r.elliott` in der Recheck-Priorität gewichtet, obwohl `analyseStock()` bei Aktien kein solches Feld lieferte. v3.5.2 liefert eine explizite, fail-closed Strukturwertung.
+- **Opportunity Lifecycle:** `PREP`, `IGNITION`, `CONFIRM`, `LATE`, `WATCH`. Frische Zustandswechsel und Triggernähe werden früher tief geprüft; bereits gelaufene, verlangsamende Runner werden abgewertet.
+- **Large-Cap-Discovery, FokusScope-Priorität, Freshness-Ampeln und sichtbare Analysemethoden** bleiben erhalten.
+- **Krypto-Normalmodus wurde in v3.5.2 bewusst nicht methodisch umgebaut.** Erst die Aktienlogik wurde mit eigenen Fixtures und Regressionen neu kalibriert.
 
-## v3.5.0 Schwerpunkt · Claude Modus
-- Neuer Schalter **🤖 Claude Modus** (Einstellungen → Analyseverfahren): Erwartungswert-basierte Bewertung mit Struktur-Zielen statt der strukturell unerreichbaren Legacy-Gates (Plan-CRV ≥ 3:1 bei rechnerischem Maximum 2,525R; 350-€-Schwelle über dem eigenen Risikobudget).
-- Serverseitig parallele `claude`-Bewertung je Aktie/Coin; Client-Umschaltung reversibel, ohne API-Mehrkosten. Details in RELEASE_NOTES.md.
-- Alle Fail-Closed-Sicherheitsregeln (Volumen, Orderbuch, Freshness) bleiben in beiden Modi unverändert aktiv.
+## Historie
 
-# FusionPulse v3.5.0
-
-
-## v3.4.3 Schwerpunkt
-- Large-Cap **Situation Engine** sucht frische Zustandswechsel statt nur bereits große Tagesgewinner.
-- Fokus/Deep Scan zeigt Situationstyp und -dynamik; Discovery bleibt 0 % direktes BUY-Gewicht.
-- Kategorie-Freshness: Grün <3, Gelb 3–5, Orange 5–10, Rot ab 10 Minuten.
-- Stale-Recovery während aktiver US-Session ab >3 Minuten altem Aktien-Snapshot.
-- Aktive Analysemethoden dauerhaft in der unteren Fußleiste und direkt im FokusScope sichtbar.
-- Alle bestehenden fail-closed BUY-/CRV-/Sizing-Sicherheitsregeln bleiben bestehen.
-
-## v3.4.1 P0-Hotfix auf v3.4.0
-- Setzt die P0/P1-Kernbefunde des externen Audits minimal-invasiv um: Fokusbindung, Lookup-Race/Mismatch, Regime-Erklärung, Freshness-/Market-Gates, Timeouts, Poll-Stabilität und Cache-Freshness.
-- Integriert die aktuelle VL: Einzelaktien-Refresh, Opening-Momentum-Status/Speed, Sticky-Fokus, Learning-Erklärung und klare Freshness-Anzeige.
-- Tradingregeln, CRV-Berechnung und Schwellenwerte bleiben unverändert; fehlende oder schlechtere Daten dürfen ein Setup niemals verbessern.
-- Offene UX-/Analyseideen bleiben ausdrücklich in `IMPROVEMENT_LIST.md` statt ungeprüft in dieses Stabilitätsrelease zu rutschen.
-
+- **v3.5.1:** Deep-Scan-Regler 15–40 und Tiingo-Kontingent als klar gekennzeichnete App-Eigenschätzung.
+- **v3.5.0:** Claude Modus als parallele, umschaltbare Bewertung; Details bleiben historisch in `RELEASE_NOTES.md` dokumentiert.
+- **v3.4.3:** Situation Engine, Kategorie-Freshness, Stale-Recovery und sichtbare Analysemethoden.
+- Frühere Stabilitäts-/Audit-Releases: siehe `RELEASE_NOTES.md` und `IMPROVEMENT_LIST.md`.
 
 FusionPulse ist ein autonomer Momentum- und Opportunity-Waechter fuer Krypto und liquide US-Aktien. Ziel ist nicht moeglichst viele Signale, sondern wenige, wirtschaftlich relevante A-Setups: App starten, laufen lassen und nur dann aufmerksam werden, wenn Datenqualitaet, Handelbarkeit, CRV und realistisches absolutes Gewinnpotenzial zusammenpassen.
 
@@ -40,31 +29,36 @@ FusionPulse ist ein autonomer Momentum- und Opportunity-Waechter fuer Krypto und
 - **Fallback/Referenz:** Twelve Data bleibt im Code vorhanden, ist in `primary` aber nicht der Hauptfeed.
 - **Learning/Health:** Cloudflare D1; Aktien-Learning akzeptiert historische Samples aus Twelve Data und Tiingo IEX, ohne die Quellen unbemerkt zu vermischen.
 
-## v3.2.1: Whole-Market Radar -> Deep Scan -> Opportunity -> BUY
+## Aktueller Ablauf: Large-Cap Radar -> Lifecycle -> Deep Scan -> Opportunity -> BUY
 
-1. **Whole-Market Radar:** ein Tiingo-`/iex`-Bulk-Snapshot beobachtet serverseitig jede Minute den verfuegbaren IEX-Markt. Discovery basiert auf frischer Beschleunigung, Aktivitaet, Spread, Range und Tagesstaerke; 0 % BUY-Gewicht.
-2. **BOATS Discovery:** bleibt Overnight-/Extended-Hours-Fruehwarnung und hat ebenfalls 0 % BUY-Gewicht.
-3. **Adaptive Deep-Scan-Queue:** maximal 20 Titel je 2-Minuten-Zyklus aus Favoriten, Recheck fast reifer Setups, Radar-Kandidaten, BOATS und Exploration.
-4. **Opportunity Watch:** Live-Daten, Qualitaet, Netto-CRV, Kursweg und wirtschaftlich relevantes Netto-Euro-Potenzial bleiben Pflicht.
-5. **BUY:** alle bestehenden harten Gates bleiben unveraendert; Discovery kann niemals BUY erzeugen.
+1. **Whole-Market/Large-Cap Radar:** automatische Discovery ist inclusion-only auf den kuratierten Large-Cap-/hochliquiden US-Katalog begrenzt. Radar bewertet Beschleunigung, Aktivitaet, Spread, Range, Tagesstaerke und den Zustandswechsel zum vorherigen Snapshot; **0 % direktes BUY-Gewicht**.
+2. **Opportunity Lifecycle:** `PREP` erkennt Druck nahe am Trigger, `IGNITION` den frischen Zustandswechsel, `CONFIRM` die Fortsetzung, `LATE` einen bereits gelaufenen/verlangsamenden Move und `WATCH` noch unreife Situationen.
+3. **BOATS Discovery:** bleibt Overnight-/Extended-Hours-Fruehwarnung und hat ebenfalls 0 % direktes BUY-Gewicht.
+4. **Adaptive Deep-Scan-Queue:** 15–40 Titel je Zyklus, konfigurierbar und serverseitig persistiert; priorisiert Fokus/Favoriten, Recheck, frische Lifecycle-Übergänge, Radar, BOATS und Exploration.
+5. **Opportunity Watch / FokusScope:** frische Live-Daten, Handelbarkeit, Struktur-CRV, Plan-Effizienz, Kursweg, Elliott/Fibonacci-Kontext und wirtschaftlich relevantes Netto-Euro-Potenzial bleiben Pflicht. FokusScope hat höchste Datenpriorität.
+6. **BUY:** Discovery allein kann niemals BUY erzeugen; die jeweilige Bewertungslogik des gewählten Modus muss zusätzlich vollständig grün sein.
 
 ## Zentrale Sicherheitsregeln
 
 - Fehlende, stale oder qualitativ schlechtere Daten duerfen Score, BUY oder positiven Signalton niemals verbessern.
 - WATCH bleibt akustisch stumm.
-- BUY nur bei ausreichender Qualitaet, Handelbarkeit und Netto-CRV > 3:1.
-- BOATS, Crowd, Learning und Elliott/Fibonacci sind Zusatz-/Discovery-Layer; sie duerfen ein schlechtes Setup nicht hochstufen.
-- Ein bereits stark gelaufener Kurs ist keine Opportunity, wenn der attraktive Einstieg/CRV bereits vorbei ist.
+- **FusionPulse Adaptiv / Aktien:** BUY nur bei ausreichender Qualität/Handelbarkeit, aktivem Setup, realem Strukturraum und Struktur-CRV mindestens auf der eingestellten Aktiengrenze (Default 3:1); die 50/50-Plan-Effizienz ist eine eigene Kennzahl und kein Ersatz-CRV.
+- **Claude Modus:** verwendet weiterhin seine eigene, unveränderte EV-/Struktur-Logik; v3.5.2 greift diese Methodik nicht an.
+- Radar, BOATS, Crowd und Learning bleiben Discovery-/Zusatzlayer und erzeugen nicht alleine BUY.
+- Elliott/Fibonacci ist im FusionPulse-Aktienmodus ein echter, aber nur anteiliger Strukturbaustein; fehlende Daten verbessern den Wert nicht.
+- Ein bereits stark gelaufener Kurs ist keine Opportunity, wenn der attraktive Einstieg/Strukturraum bereits vorbei ist.
 
 ## Opportunity-Value
 
-FusionPulse beruecksichtigt neben CRV auch das realistische absolute Netto-Potenzial bei der Referenzposition. Kleine, formal korrekte Trades sollen nicht unnoetig Aufmerksamkeit binden. Aktuell gilt im Aktien-Opportunity-Waechter:
+Im **normalen FusionPulse-Aktienmodus** wird wirtschaftliche Relevanz nicht mehr über die alte starre EUR-350-Hürde erzwungen. Das Mindest-Netto-Potenzial des berechneten Tradeplans ist:
 
-- unter ca. EUR 200 Netto-Potenzial: **UNINTERESSANT**
-- ab ca. EUR 350 bei vollstaendigen Gates: **OPPORTUNITY**
-- ab ca. EUR 500 bei vollstaendigen Gates: **HIGH OPPORTUNITY**
+`max(Nutzerwert, EUR 75, 1,25 % der tatsächlichen Positionsgröße)`
 
-Diese Schwellen sind Selektions-/Rankinghilfen, keine Erfolgswahrscheinlichkeiten und ersetzen keine BUY-Gates.
+Beispiele: Bei EUR 5.000 Positionsgröße sind mindestens EUR 75, bei EUR 10.000 mindestens EUR 125 Netto-Potenzial erforderlich. Ein eigener Nutzerwert kann die Schwelle erhöhen. Ein gespeicherter Wert von exakt EUR 350 aus dem alten Default wird einmalig auf EUR 75 migriert; individuell geänderte Werte bleiben erhalten.
+
+Zusätzlich muss das **Struktur-CRV** die konfigurierte Aktiengrenze erfüllen (Default 3:1) und der reale 50/50-Plan nach Kosten mindestens die separate **Plan-Effizienz 0,85:1** erreichen. Diese Kennzahlen werden nicht mehr mathematisch vermischt.
+
+Der **Claude Modus** behält seine eigene EV-/Plan-Logik aus v3.5.0 unverändert; deren Schwellen werden in v3.5.2 nicht modifiziert.
 
 ## Tiingo Betrieb
 
@@ -106,9 +100,9 @@ npm run check
 
 `npm run check` umfasst JS-Syntax und die Safety-Regressionssuite.
 
-## Deployment-Hinweis v3.2.1
+## Deployment-Hinweis v3.5.2
 
-v3.2.1 erweitert Tiingo Primary um den autonomen Whole-Market-Radar. Nach Deploy zuerst Radar-Universum, RADAR-Kandidaten, Deep-Scan-Queue, Freshness und Worker-Latenz beobachten. Twelve Data nicht loeschen, bevor Tiingo mehrere Sessions stabil gelaufen ist.
+Nach Deploy zuerst sichtbare Version 3.5.2, Claude-Schalter in beiden Richtungen, Large-Cap-Radar, Lifecycle-Labels, FokusScope-Freshness und Worker-Latenz prüfen. Im FusionPulse-Modus müssen Struktur-CRV und Plan-Effizienz getrennt erscheinen. Stale/fehlende Daten dürfen weiterhin nie Grün erzeugen. Twelve Data nicht löschen, bevor Tiingo mehrere Sessions stabil gelaufen ist.
 
 
 ## v3.3.0

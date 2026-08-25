@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.5.1</title>
+<title>FusionPulse 3.5.2</title>
 </head>
 <body>
 
@@ -195,7 +195,7 @@
   <label title="Harter Deckel: FusionPulse darf eine kleinere Kaufsumme vorschlagen, aber niemals mehr als diesen Betrag.">Max. Kaufsumme pro Trade (€)<input id="sMaxTrade" type="number" min="100" step="100"></label>
   <label>Mindest-Netto-CRV für Krypto-BUY<select id="sMinCrvCoin"><option value="1.5">1 : 1,5</option><option value="2">1 : 2</option><option value="2.5">1 : 2,5</option><option value="3">1 : 3</option><option value="3.5">1 : 3,5</option><option value="4">1 : 4</option></select></label>
   <label>Mindest-Netto-CRV für Aktien-BUY<select id="sMinCrvStock"><option value="2">1 : 2</option><option value="2.5">1 : 2,5</option><option value="3">1 : 3</option><option value="3.5">1 : 3,5</option><option value="4">1 : 4</option></select></label>
-  <label title="Verhindert rechnerisch gute, aber praktisch zu kleine Trades. Ein BUY wird blockiert, wenn TP2 weniger Netto-Gewinn erwarten lässt.">Minimaler Netto-Gewinn bis TP2 (€)<input id="sMinNetProfit" type="number" min="0" step="25"></label>
+  <label title="Verhindert rechnerisch gute, aber praktisch zu kleine Trades. FusionPulse Adaptiv nimmt zusätzlich mindestens 1,25 % der tatsächlichen Positionsgröße als dynamische Untergrenze; der alte 350-€-Default wird einmalig auf 75 € migriert.">Minimaler Netto-Gewinn im Tradeplan (€)<input id="sMinNetProfit" type="number" min="0" step="25"></label>
   <label title="Mindestabstand vom Einstieg bis TP2. Zu enge Ziele sind bei manueller Flatex-Ausführung schwer handelbar.">Minimaler Kursweg bis TP2 (%)<input id="sMinTp2Pct" type="number" min="0" max="20" step="0.25"></label>
   <label>Steuersatz für Gewinnschätzung (%) · Österreich KESt = 27,5<input id="sTax" type="number" min="0" max="60" step="0.1"></label>
 
@@ -224,7 +224,7 @@
     <button id="sCompElliott">Nur Elliott-Wellen</button>
   </div>
   <label class="row" title="Ersetzt die strukturell unerreichbaren Legacy-Gates (Plan-CRV ≥ 3:1 bei rechnerischem Maximum 2,525R sowie fixe 350-€-Schwelle über dem eigenen Risikobudget) durch eine konsistente Bewertung: Elliott/Fibonacci-Strukturziele als TP2, erreichbare Netto-CRV-Schwellen (Aktien ≥ 1,6:1 Plan, Krypto ≥ 1,4:1), expliziter Erwartungswert in R und wirtschaftliche Mindestgröße relativ zum Risikobudget (≥ 1,2R netto). Situation Engine und Liquidity Vacuum fließen in den Claude-Score ein. Alle Fail-Closed-Datenqualitätsregeln (fehlendes Volumen/Orderbuch, Stale-Daten) bleiben unverändert aktiv. Reine Client-Umschaltung ohne zusätzliche API-Kosten."><input id="sClaudeMode" type="checkbox"> 🤖 Claude Modus (Erwartungswert-Analyse statt Legacy-Gates)</label>
-  <p class="hint">Der Claude Modus bewertet Setups über Erwartungswert (Trefferannahme × Netto-Plan-R) mit Struktur-Zielen statt fixer R-Vielfacher. Legacy-Analyse bleibt vollständig erhalten und ist jederzeit rückschaltbar.</p>
+  <p class="hint">Der Claude Modus bewertet Setups über Erwartungswert (Trefferannahme × Netto-Plan-R) mit Struktur-Zielen statt fixer R-Vielfacher. Claude bleibt als unveränderte Parallelbewertung erhalten. Ohne Claude-Schalter läuft FusionPulse Adaptiv mit getrenntem Struktur-CRV und realer 50/50-Plan-Effizienz.</p>
 
   <label>Analysemodus<select id="sMode">
     <option value="composite">Kombiniert (empfohlen)</option>

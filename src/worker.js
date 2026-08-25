@@ -1400,24 +1400,111 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
     };
   })();
 
+  // ---- v3.5.2 FUSIONPULSE ADAPTIV (eigener Modus; Claude-Block oben LOCKED) --
+  // Lehre aus dem v3.5.0 Audit: Ein Gate muss gegen SEINE eigene Auszahlungslogik
+  // mathematisch erreichbar sein. Der FusionPulse-Modus trennt deshalb:
+  //   1) Struktur-CRV bis zu einem am Markt gemessenen Ziel (BUY-Haupt-CRV),
+  //   2) 50/50-Plan-Effizienz nach realen Fixkosten (Client),
+  //   3) wirtschaftliche Relevanz relativ zur tatsaechlichen Positionsgroesse.
+  // Es wird KEIN Ziel erfunden, nur damit das CRV passt. Fehlt Strukturraum, bleibt
+  // das Setup gelb/rot. Der Claude-Modus wird dadurch weder berechnet noch veraendert.
+  const fusion = (() => {
+    const rangeWidth = priorHigh>priorLow ? priorHigh-priorLow : 0;
+
+    // Explizite Elliott/Fibonacci-Struktur fuer Aktien. Bis v3.5.1 las
+    // deepRecheckRank() zwar r.elliott, analyseStock() lieferte dieses Feld aber
+    // ueberhaupt nicht -> der behauptete Elliott-Anteil in der Recheck-Prioritaet war 0.
+    const ellWindow=bars.slice(-36);
+    const ellEarly=ellWindow.slice(0,Math.max(6,Math.floor(ellWindow.length*0.45)));
+    const ellLate=ellWindow.slice(Math.max(0,ellWindow.length-12));
+    const ellLow=ellEarly.length?Math.min(...ellEarly.map(b=>b.l)):last.l;
+    const ellHigh=ellWindow.length?Math.max(...ellWindow.map(b=>b.h)):last.h;
+    const ellPullLow=ellLate.length?Math.min(...ellLate.map(b=>b.l)):last.l;
+    const ellImpulse=Math.max(0,ellHigh-ellLow);
+    const ellRetr=ellImpulse>0?(ellHigh-ellPullLow)/ellImpulse:null;
+    const ellFibDist=ellRetr==null?1:Math.min(Math.abs(ellRetr-.382),Math.abs(ellRetr-.5),Math.abs(ellRetr-.618));
+    const ellHigherLow=ellPullLow>=ellLow+ellImpulse*0.18;
+    const ellTrend=ema9>ema21&&last.c>ema21;
+    const ellImpulseAtr=atr>0?ellImpulse/atr:0;
+    const stockElliott=clamp(5 + (ellTrend?1.25:-0.9) + (ellHigherLow?1.1:-0.7)
+      + Math.min(1.25,ellImpulseAtr*.16) + Math.max(0,1.4-ellFibDist*5.5) - (overextended?1.25:0));
+
+    // Ziel aus real gemessener Struktur statt aus einem festen R-Multiplikator:
+    // bei Breakout/Squeeze wird die vorangegangene Impuls-/Range-Breite projiziert;
+    // bei Reclaim/Pullback bleibt das naechste echte Hoch das Ziel.
+    const broadLow=ellWindow.length?Math.min(...ellWindow.slice(0,Math.max(8,ellWindow.length-8)).map(b=>b.l)):priorLow;
+    const impulseRange=priorHigh>broadLow?priorHigh-broadLow:rangeWidth;
+    let rawTarget=null;
+    if(priorHigh>entry){
+      if(squeezeRelease) rawTarget=priorHigh + Math.max(rangeWidth,0.786*impulseRange);
+      else if(brokePriorHigh) rawTarget=priorHigh + (stockElliott>=7.0?1.0:stockElliott>=6.2?0.618:0.382)*Math.max(rangeWidth,impulseRange);
+      else if(nearBreakout) rawTarget=priorHigh + 0.50*Math.max(rangeWidth,impulseRange);
+      else rawTarget=priorHigh;
+    }
+    const fTp2 = rawTarget>entry ? Math.min(rawTarget, entry + 8 * risk) : entry;
+    const fTp2Pct = fTp2>entry ? (fTp2/entry-1)*100 : 0;
+    const fCost = (costPct/100)*entry;
+    const fNetCRV = fTp2>entry ? Math.max(0,((fTp2-entry)-fCost)/(risk+fCost)) : 0;
+
+    const sit10=situationScore/10;
+    const rv10=relVolScore==null?null:clamp(5+(relVolScore-1)*2.7);
+    const trigger10=squeezeRelease?9.2:brokePriorHigh?8.7:nearBreakout?7.4:(reclaimVwap||reclaimEma21)?7.1:pullbackHold?6.8:5.0;
+    const fScore=+clamp(weighted([
+      [null,trendScore,0.16],
+      [null,momoScore,0.16],
+      ['volume',volScore,0.13],
+      ['vwap',vwapScore,0.09],
+      [null,sit10,0.18],
+      [null,liquidityVacuum/10,0.08],
+      [null,trigger10,0.08],
+      ['elliott',stockElliott,0.12],
+    ],on) - (overextended?1.35:0)).toFixed(1);
+    const activeSituation=situationType!=='WATCH' && situationScore>=38;
+    const structureOk=fTp2>tp1 && fNetCRV>=minCrv;
+    const rvOk=relVolScore!=null&&relVolScore>=1.2;
+    const fBlockers=[];
+    if(!volumeKnown)fBlockers.push('Volumenbasis fehlt (fail-closed)');
+    if(relVolScore==null)fBlockers.push('RVOL nicht messbar');
+    else if(!rvOk)fBlockers.push(`RVOL ${relVolScore.toFixed(1)}x < 1,2x`);
+    if(!activeSituation)fBlockers.push('Situation noch nicht aktiv/reif');
+    if(stockElliott<5.8)fBlockers.push(`Elliott-Struktur ${stockElliott.toFixed(1)} < 5,8`);
+    if(fScore<7.2)fBlockers.push(`Fusion-Score ${fScore} < 7,2`);
+    if(!rawTarget)fBlockers.push('kein belastbarer Struktur-Zielraum');
+    else if(fNetCRV<minCrv)fBlockers.push(`Struktur-CRV ${fNetCRV.toFixed(2)}:1 < ${Number(minCrv).toFixed(1)}:1`);
+    if(overextended)fBlockers.push('>3 ATR ueber EMA21 - nicht hinterherlaufen');
+    const fGreen=volumeKnown&&rvOk&&activeSituation&&stockElliott>=5.8&&fScore>=7.2&&structureOk&&!overextended;
+    const fYellow=!fGreen&&volumeKnown&&fScore>=5.8&&(activeSituation||nearBreakout||reclaimVwap||reclaimEma21);
+    return {
+      light:fGreen?'green':fYellow?'yellow':'red', score:fScore, netCRV:+fNetCRV.toFixed(2),
+      tp2Usd:fTp2, tp2Eur:e(fTp2), tp2Pct:+fTp2Pct.toFixed(2),
+      tp2Source:rawTarget?'Marktstruktur / Range-Projektion':'kein Strukturziel',
+      verdict:fGreen?'Kauf-Setup · FusionPulse':fYellow?'Beobachten · FusionPulse':'Kein Trade · FusionPulse',
+      blockers:fBlockers.slice(0,6), elliott:+stockElliott.toFixed(1),
+      targetR:+((fTp2-entry)/risk).toFixed(2), activeSituation,
+    };
+  })();
+
   return {
-    claude,
+    claude, fusion,
+    // v3.5.2: Legacy bleibt fuer Audit/Vergleich erhalten; die normale FusionPulse-Ansicht
+    // nutzt ab jetzt die mathematisch konsistente adaptive Bewertung. Claude bleibt parallel.
+    legacy:{light,score,netCRV,tp2Usd:tp2,tp2Eur:e(tp2),tp2Pct:+tp2Pct.toFixed(2),verdict,blockers:[]},
     symbol, sector, name: src?.meta?.name || STOCK_NAMES[symbol] || symbol,
     exchange: src?.meta?.exchange || 'US', currency: src?.meta?.currency || 'USD',
-    score, executability, light, verdict, setup, trend,
+    score:fusion.score, executability, light:fusion.light, verdict:fusion.verdict, setup, trend,
     priceUsd: last.c, priceEur: e(last.c),
     entryUsd: entry, entryEur: e(entry),
     stopUsd: stop, stopEur: e(stop),
     tp1Usd: tp1, tp1Eur: e(tp1),
-    tp2Usd: tp2, tp2Eur: e(tp2), tp2Pct: +tp2Pct.toFixed(2),
+    tp2Usd:fusion.tp2Usd, tp2Eur:fusion.tp2Eur, tp2Pct:fusion.tp2Pct, tp2Source:fusion.tp2Source,
     swingTargetUsd: swingTarget, swingTargetEur: e(swingTarget), structurePct: +structurePct.toFixed(2),
     zoneLowUsd: entry - 0.25 * atr, zoneHighUsd: entry + 0.25 * atr,
     zoneLowEur: e(entry - 0.25 * atr), zoneHighEur: e(entry + 0.25 * atr),
-    netCRV, atrPct: +((atr / last.c) * 100).toFixed(2),
+    netCRV:fusion.netCRV, elliott:fusion.elliott, atrPct: +((atr / last.c) * 100).toFixed(2),
     ret5: +ret5.toFixed(2), ret15: +ret15.toFixed(2), ret60: +ret60.toFixed(2),
     relVol: relVol == null ? null : +relVol.toFixed(2), volumeKnown, vwapUsd: vwap, aboveVwap: volumeKnown ? last.c >= vwap : null,
     liquidityVacuum: +liquidityVacuum.toFixed(0),
-    // Discovery-/Erklaerungsfelder; sie veraendern score/light/BUY NICHT.
+    // Situation-/Erklaerungsfelder: Discovery bleibt 0 % direktes BUY-Gewicht; FusionPulse Adaptiv nutzt nur die Deep-Situation als Analysekomponente.
     situationType, situationScore, situationReasons:situationReasons.slice(0,4),
     triggerUsd: priorHigh, triggerEur:e(priorHigh), triggerDistancePct:triggerDistancePct==null?null:+triggerDistancePct.toFixed(2),
     breakout60m:brokePriorHigh, nearBreakout, reclaimVwap, reclaimEma21, pullbackHold, squeezeRelease,
@@ -2320,6 +2407,17 @@ function iexRadarQuote(x,prev=null){
   else if(freshAccel) situation='ACCELERATION';
   else if(breakoutPressure) situation='NEAR HIGH';
 
+  // v3.5.2 Opportunity Lifecycle: nicht nur Zustand, sondern die AENDERUNG des
+  // Zustands zaehlt. Ein frischer Uebergang WATCH/NEAR HIGH -> IGNITION bekommt
+  // Vorrang vor einem Titel, der schon minutenlang einfach nur oben steht.
+  const prevSituation=String(prev?.situation||'WATCH');
+  const transitioned=situation!=='WATCH'&&situation!==prevSituation;
+  const ignition=transitioned&&['OPENING DRIVE','BREAKOUT PRESSURE','REVERSAL RECLAIM','EARLY ACCELERATION','ACCELERATION'].includes(situation)
+    && ['WATCH','NEAR HIGH'].includes(prevSituation);
+  const prep=situation==='NEAR HIGH'&&cleanSpread&&(volumePulse||speedPct>=0.03);
+  const decelerating=movePct>4&&rangePosition!=null&&rangePosition>=0.85&&Number.isFinite(prevSpeed)&&speedPct<Math.max(0.02,prevSpeed*0.55);
+  const lifecycle=decelerating?'LATE':ignition?'IGNITION':prep?'PREP':(['BREAKOUT PRESSURE','OPENING DRIVE','ACCELERATION'].includes(situation)?'CONFIRM':'WATCH');
+
   let situationScore=0;
   situationScore += Math.min(28,Math.max(0,speedPct)*55);
   situationScore += Math.min(14,Math.max(0,accelPct)*45);
@@ -2331,11 +2429,16 @@ function iexRadarQuote(x,prev=null){
   situationScore += Math.min(8,activity*1.1);
   situationScore += Math.min(6,Math.max(0,spreadImprove)*8);
   situationScore += Math.min(8,Math.max(0,movePct)*0.7);
+  situationScore += ignition?18:transitioned?7:prep?8:0;
+  if(lifecycle==='LATE') situationScore-=22;
   if(movePct>7&&speedPct<0.05) situationScore-=Math.min(18,(movePct-7)*1.2);
   if(rangePosition!=null&&rangePosition<0.35&&speedPct<=0) situationScore-=10;
   if(spreadPct==null) situationScore-=6;
 
   const reasons=[];
+  if(ignition) reasons.push(`NEU: ${prevSituation} -> ${situation}`);
+  else if(prep) reasons.push('Vorbereitung direkt unter Trigger');
+  if(lifecycle==='LATE') reasons.push('spaete Bewegung / Tempo faellt');
   if(openingDrive) reasons.push('Gap mit Follow-through');
   if(breakoutPressure) reasons.push('nahe Tageshoch mit Druck');
   if(freshAccel) reasons.push(`Beschleunigung +${speedPct.toFixed(2)} %`);
@@ -2347,7 +2450,7 @@ function iexRadarQuote(x,prev=null){
   if(ageMin!=null && ageMin>30) return null;
   if(ageMin!=null) situationScore-=Math.min(18,ageMin*0.7);
   const score=Math.max(0,situationScore);
-  return {symbol,last,prevClose,open:Number.isFinite(open)?open:null,high:Number.isFinite(high)?high:null,low:Number.isFinite(low)?low:null,volume:Number.isFinite(volume)?volume:null,movePct,openPct,gapPct,rangePct,rangePosition,spreadPct,speedPct,accelPct,volDelta,volPulsePct,score,situationScore:score,situation,reasons,ts,ageMin,source:'Tiingo IEX Situation Radar',buyWeight:0};
+  return {symbol,last,prevClose,open:Number.isFinite(open)?open:null,high:Number.isFinite(high)?high:null,low:Number.isFinite(low)?low:null,volume:Number.isFinite(volume)?volume:null,movePct,openPct,gapPct,rangePct,rangePosition,spreadPct,speedPct,accelPct,volDelta,volPulsePct,score,situationScore:score,situation,prevSituation,lifecycle,transitioned,ignition,reasons,ts,ageMin,source:'Tiingo IEX Situation Radar',buyWeight:0};
 }
 async function readPersistedIexRadar(env){
   if(!env?.DB) return null;
@@ -2355,7 +2458,7 @@ async function readPersistedIexRadar(env){
 }
 async function persistIexRadar(env,data){
   if(!env?.DB||!data?.rows?.length)return;
-  try{await ensureD1Schema(env);const ts=Date.now(),payload=safeJson({ts,universe:data.universe,rows:data.rows.slice(0,120).map(r=>({symbol:r.symbol,last:r.last,prevClose:r.prevClose,open:r.open,high:r.high,low:r.low,volume:r.volume,spreadPct:r.spreadPct,movePct:r.movePct,openPct:r.openPct,gapPct:r.gapPct,rangePct:r.rangePct,rangePosition:r.rangePosition,speedPct:r.speedPct,accelPct:r.accelPct,volDelta:r.volDelta,volPulsePct:r.volPulsePct,score:r.score,situationScore:r.situationScore,situation:r.situation,reasons:r.reasons,ts:r.ts}))});await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`).bind('iex_radar:last',payload,ts).run();}catch(e){console.warn(JSON.stringify({event:'iex_radar_cache_write_failed',message:String(e?.message||e),ts:Date.now()}));}
+  try{await ensureD1Schema(env);const ts=Date.now(),payload=safeJson({ts,universe:data.universe,rows:data.rows.slice(0,120).map(r=>({symbol:r.symbol,last:r.last,prevClose:r.prevClose,open:r.open,high:r.high,low:r.low,volume:r.volume,spreadPct:r.spreadPct,movePct:r.movePct,openPct:r.openPct,gapPct:r.gapPct,rangePct:r.rangePct,rangePosition:r.rangePosition,speedPct:r.speedPct,accelPct:r.accelPct,volDelta:r.volDelta,volPulsePct:r.volPulsePct,score:r.score,situationScore:r.situationScore,situation:r.situation,prevSituation:r.prevSituation,lifecycle:r.lifecycle,transitioned:r.transitioned,ignition:r.ignition,reasons:r.reasons,ts:r.ts}))});await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`).bind('iex_radar:last',payload,ts).run();}catch(e){console.warn(JSON.stringify({event:'iex_radar_cache_write_failed',message:String(e?.message||e),ts:Date.now()}));}
 }
 
 // v3.3.3: Opening Momentum kann im Premarket bereits verifizierte marktweite
@@ -2652,10 +2755,14 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       const q=Math.max(0,Math.min(10,Number(row.score)||0)),crv=Math.max(0,Number(row.netCRV)||0),rv=Math.max(0,Number(row.relVol)||0),sit=Math.max(0,Math.min(100,Number(row.situationScore)||0));
       // Reife bleibt reine Vorwarnung: Situation kann frueh Aufmerksamkeit erzeugen,
       // aber weder Score noch CRV noch BUY-Gates verbessern.
-      row.preSignalMaturity=Math.round(Math.max(0,Math.min(100,q/8*44 + Math.min(1,crv/3)*22 + Math.min(1,rv/1.8)*12 + sit*0.22)));
-      row.whyNow=[...(row.situationReasons||[]),...(rm?.reasons||[])].filter(Boolean).slice(0,4);
+      const life=String(rm?.lifecycle||'WATCH');
+      const lifeBonus=life==='IGNITION'?16:life==='PREP'?10:life==='CONFIRM'?6:life==='LATE'?-14:0;
+      const triggerProx=row.triggerDistancePct==null?0:Math.max(0,10-Math.min(10,Math.abs(Number(row.triggerDistancePct))*12));
+      row.preSignalMaturity=Math.round(Math.max(0,Math.min(100,q/8*38 + Math.min(1,crv/3)*20 + Math.min(1,rv/1.8)*10 + sit*0.18 + lifeBonus + triggerProx)));
+      row.whyNow=[...(rm?.reasons||[]),...(row.situationReasons||[])].filter(Boolean).slice(0,5);
       row.radarRank=Number(rm?.situationScore??rm?.score)||0;
       row.radarSituation=rm?.situation||null;
+      row.radarLifecycle=life;
       return row;
     }catch(e){console.warn(JSON.stringify({event:'tiingo_stock_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));return null;}
   })).filter(Boolean);
@@ -2675,7 +2782,7 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   const rows=[...safeCarry.values()].sort((a,b)=>(Number(b.preSignalMaturity)||0)-(Number(a.preSignalMaturity)||0)||(Number(b.situationScore)||0)-(Number(a.situationScore)||0)||(Number(b.radarRank)||0)-(Number(a.radarRank)||0)||(Number(b.score)||0)-(Number(a.score)||0)).slice(0,100);
   stockMemo={ts:Date.now(),rows,cycle,sig}; setApiState('stocks',fresh.length?'ok':'stale',fresh.length?null:'Tiingo lieferte keine analysierbaren Bars');
   await persistStockScan(env,sig,cycle,rows,{provider:'Tiingo IEX',fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol),queue:{favorites:favPick,recheck:recheckPick,gainers:gainerPick,radar:radarPick,boats:boatsPick,explore},verifiedRadar:(radar.rows||[]).slice(0,20),verifiedBoats:(boats.rows||[]).slice(0,12)});
-  return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:radar.universe||12000,universeLabel:`${radar.universe||'12.000+'} Tiingo/IEX`,scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:phase,queue:{favorites:favPick.length,recheck:recheckPick.length,gainers:gainerPick.length,radar:radarPick.length,boats:boatsPick.length,explore:explore.length},discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar.ts,universe:radar.universe,candidates:(radar.rows||[]).slice(0,20),gainers:openingGainers(radar.rows||[]),buyWeight:0},boats:{source:'Tiingo BOATS',ts:boats.ts,session:boats.session,candidates:(boats.rows||[]).slice(0,15),buyWeight:0}},version:APP_VERSION,note:'Tiingo Primary: Whole-Market IEX Radar + BOATS Discovery (beide 0 % BUY-Gewicht) -> adaptive 20er Deep-Scan-Queue -> IEX 5-Min Analyse. BUY-Gates unveraendert.'};
+  return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:radar.universe||12000,universeLabel:`${radar.universe||'12.000+'} Tiingo/IEX`,scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:phase,queue:{favorites:favPick.length,recheck:recheckPick.length,gainers:gainerPick.length,radar:radarPick.length,boats:boatsPick.length,explore:explore.length},discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar.ts,universe:radar.universe,candidates:(radar.rows||[]).slice(0,20),gainers:openingGainers(radar.rows||[]),buyWeight:0},boats:{source:'Tiingo BOATS',ts:boats.ts,session:boats.session,candidates:(boats.rows||[]).slice(0,15),buyWeight:0}},version:APP_VERSION,note:'Tiingo Primary: Large-Cap Opportunity Lifecycle Radar + BOATS Discovery (beide 0 % direktes BUY-Gewicht) -> adaptive Deep-Scan-Queue -> IEX 5-Min Analyse.'};
 }
 async function tiingoStockSuggest(env,raw){
   const query=String(raw||'').trim();
