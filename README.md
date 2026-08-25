@@ -1,4 +1,10 @@
-# FusionPulse v3.5.2
+# FusionPulse v3.5.3
+
+**Aktueller Stand:** v3.5.3 baut auf v3.5.2 auf und repariert ausschließlich die beiden im externen Claude-Audit gefundenen Punkte A/B im **normalen FusionPulse-Aktienmodus**. Der Claude-Modus bleibt methodisch unverändert und durch SHA-256-Regression geschützt.
+
+- Zielprojektion: unabhängiges 36-Bar-Swingfenster statt kurzer 12-Bar-Triggerreferenz.
+- Wirtschaftliches Gate: risikobudget-kalibriert statt Notional-/75-EUR-Falle.
+- Alle Fail-Closed-Regeln bleiben bestehen.
 
 ## Schwerpunkt · FusionPulse Adaptiv + Opportunity Lifecycle
 

@@ -68,7 +68,7 @@ assert.match(index,/id="miniTiingo" class="mini-dot busy fast-tip"/,'Tiingo-T mu
 assert.match(index,/class="hclock fast-tip"/,'Countdown muss schnellen Tooltip verwenden');
 
 // v3.1.7 UI/data guards
-assert.match(app, /OPPORTUNITY_MIN_NET_EUR\s*=\s*75/, 'FusionPulse adaptive absolute opportunity floor must remain explicit');
+assert.match(app, /OPPORTUNITY_MIN_NET_EUR\s*=\s*20/, 'FusionPulse adaptive absolute opportunity floor must remain explicit and reachable');
 assert.match(app, /BOATS \$\{mark\(boats\)\}/, 'Tiingo UI must report BOATS separately');
 const workerText=fs.readFileSync(new URL('../src/worker.js',import.meta.url),'utf8');
 assert.match(workerText, /out\.tests\.boats=/, 'Tiingo validation must test BOATS separately');
@@ -213,7 +213,7 @@ assert.match(index,/id="sStockDeep"/,'Settings must contain the stock deep-scan 
 
 console.log('✓ FusionPulse v3.5.1 deep-scan/quota regressions: OK');
 
-// v3.5.2 FusionPulse Adaptiv + Opportunity Lifecycle. Claude-Methodik ist LOCKED.
+// v3.5.3 FusionPulse Adaptiv + Opportunity Lifecycle + Audit A/B. Claude-Methodik ist LOCKED.
 {
   const sha=(x)=>crypto.createHash('sha256').update(x).digest('hex');
   const block=(text,marker)=>{const a=text.indexOf(marker);assert.ok(a>=0,`Marker fehlt: ${marker}`);const b=text.indexOf('  })();',a);assert.ok(b>a,`Blockende fehlt: ${marker}`);return text.slice(a,b+'  })();'.length);};
@@ -224,7 +224,9 @@ console.log('✓ FusionPulse v3.5.1 deep-scan/quota regressions: OK');
   const ov=app.slice(app.indexOf('/* ---- Claude-Modus-Overlay'),app.indexOf('function buyReady',app.indexOf('/* ---- Claude-Modus-Overlay')));
   assert.equal(sha(ov),'9e6b5efc81bd1c3237ed7ca5b9e5564ea49abb1441bacd37f3be7d7849c1e73e','Claude Overlay muss unveraendert bleiben');
 
-  assert.match(workerText,/v3\.5\.2 FUSIONPULSE ADAPTIV/,'Eigener adaptiver Aktienmodus muss serverseitig separat existieren');
+  assert.match(workerText,/v3\.5\.3 FUSIONPULSE ADAPTIV/,'Eigener adaptiver Aktienmodus muss serverseitig separat existieren');
+  assert.match(workerText,/targetRefWindow=bars\.slice\(-40,-4\)\.slice\(-36\)/,'v3.5.3 target projection must use an independent 36-bar swing window');
+  assert.match(workerText,/if\(squeezeRelease\|\|brokePriorHigh\)\{[\s\S]*1\.618\*projectionBase/,'Breakout target must remain available even after entry has already cleared the short priorHigh');
   assert.match(workerText,/deepRecheckRank\(\)[\s\S]*const ell=Number\(r\?\.elliott\)/,'Deep recheck must still read Elliott evidence');
   const st=analyseStock('TST','Tech',stockFusionBreakout(false),1.17,new Set(['ema21','mtf','volume','vwap','elliott']),3);
   assert.ok(st?.fusion,'FusionPulse adaptive assessment must be returned separately');
@@ -238,12 +240,13 @@ console.log('✓ FusionPulse v3.5.1 deep-scan/quota regressions: OK');
 
   assert.match(app,/const structuralCrv = Number\(r\.netCRV \?\? 0\)/,'FusionPulse client must separate structural CRV from 50\/50 plan efficiency');
   assert.match(app,/planEfficiency >= FUSION_MIN_PLAN_EFFICIENCY/,'FusionPulse plan efficiency must be a separate reachable gate');
-  assert.match(app,/FUSION_MIN_NET_NOTIONAL_PCT = 1\.25/,'Economic relevance must scale with actual notional');
-  assert.match(app,/Number\(storedSettings\.minNetProfitStock\)===350[\s\S]*S\.minNetProfitStock=75/,'Old impossible 350-EUR default must migrate to the new adaptive base floor');
+  assert.match(app,/FUSION_MIN_NET_RISK_MULT = 0\.75/,'Economic relevance must scale with the real risk budget rather than notional');
+  assert.match(app,/reachableCap=Math\.max\(OPPORTUNITY_MIN_NET_EUR,riskBudget\)/,'Economic gate must be capped by the current risk budget so it cannot silently force ~6R');
+  assert.match(app,/Number\(S\.minNetProfitStock\)===75[\s\S]*S\.minNetProfitStock=30/,'v3.5.3 must migrate the former 75-EUR default to a risk-calibrated reachable floor');
   assert.match(workerText,/const lifecycle=decelerating\?'LATE':ignition\?'IGNITION':prep\?'PREP'/,'Radar must model opportunity lifecycle states');
   assert.match(workerText,/NEU: \$\{prevSituation\} -> \$\{situation\}/,'Fresh state transitions must be explicitly visible in why-now reasons');
   assert.match(workerText,/lifeBonus=life==='IGNITION'\?16:life==='PREP'\?10/,'Deep-scan maturity must prioritize ignition\/prep over late continuation');
 }
 
-console.log('✓ FusionPulse v3.5.2 adaptive/lifecycle regressions: OK');
+console.log('✓ FusionPulse v3.5.3 adaptive/target/economic regressions: OK');
 

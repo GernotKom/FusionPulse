@@ -1400,7 +1400,7 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
     };
   })();
 
-  // ---- v3.5.2 FUSIONPULSE ADAPTIV (eigener Modus; Claude-Block oben LOCKED) --
+  // ---- v3.5.3 FUSIONPULSE ADAPTIV (eigener Modus; Claude-Block oben LOCKED) --
   // Lehre aus dem v3.5.0 Audit: Ein Gate muss gegen SEINE eigene Auszahlungslogik
   // mathematisch erreichbar sein. Der FusionPulse-Modus trennt deshalb:
   //   1) Struktur-CRV bis zu einem am Markt gemessenen Ziel (BUY-Haupt-CRV),
@@ -1429,17 +1429,33 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
     const stockElliott=clamp(5 + (ellTrend?1.25:-0.9) + (ellHigherLow?1.1:-0.7)
       + Math.min(1.25,ellImpulseAtr*.16) + Math.max(0,1.4-ellFibDist*5.5) - (overextended?1.25:0));
 
-    // Ziel aus real gemessener Struktur statt aus einem festen R-Multiplikator:
-    // bei Breakout/Squeeze wird die vorangegangene Impuls-/Range-Breite projiziert;
-    // bei Reclaim/Pullback bleibt das naechste echte Hoch das Ziel.
-    const broadLow=ellWindow.length?Math.min(...ellWindow.slice(0,Math.max(8,ellWindow.length-8)).map(b=>b.l)):priorLow;
-    const impulseRange=priorHigh>broadLow?priorHigh-broadLow:rangeWidth;
+    // v3.5.3: Zielreferenz bewusst vom kurzen 12-Bar-Situationstrigger entkoppelt.
+    // Ein echter Breakout liegt definitionsgemaess oft bereits UEBER priorHigh; priorHigh>entry
+    // war deshalb eine systematische UND-Falle. Fuer die Zielprojektion nutzen wir ein
+    // unabhaengiges 36-Bar-Swing-Fenster (wie Elliott) und blenden die letzten 4 Bars aus,
+    // damit der laufende Ausbruch seine eigene Referenz nicht nach oben verschiebt.
+    const targetRefWindow=bars.slice(-40,-4).slice(-36);
+    const targetHigh=targetRefWindow.length?Math.max(...targetRefWindow.map(b=>b.h).filter(Number.isFinite)):priorHigh;
+    const targetLow=targetRefWindow.length?Math.min(...targetRefWindow.map(b=>b.l).filter(Number.isFinite)):priorLow;
+    const targetBaseHigh=Math.max(Number.isFinite(targetHigh)?targetHigh:-Infinity,Number.isFinite(priorHigh)?priorHigh:-Infinity);
+    const targetRange=targetBaseHigh>targetLow?targetBaseHigh-targetLow:rangeWidth;
+    const broadLow=ellWindow.length?Math.min(...ellWindow.slice(0,Math.max(8,ellWindow.length-8)).map(b=>b.l)):targetLow;
+    const impulseRange=targetBaseHigh>broadLow?targetBaseHigh-broadLow:targetRange;
+    const projectionBase=Math.max(targetRange,impulseRange,risk);
     let rawTarget=null;
-    if(priorHigh>entry){
-      if(squeezeRelease) rawTarget=priorHigh + Math.max(rangeWidth,0.786*impulseRange);
-      else if(brokePriorHigh) rawTarget=priorHigh + (stockElliott>=7.0?1.0:stockElliott>=6.2?0.618:0.382)*Math.max(rangeWidth,impulseRange);
-      else if(nearBreakout) rawTarget=priorHigh + 0.50*Math.max(rangeWidth,impulseRange);
-      else rawTarget=priorHigh;
+    if(squeezeRelease||brokePriorHigh){
+      const ext=stockElliott>=7.0?1.0:stockElliott>=6.2?0.786:0.618;
+      rawTarget=targetBaseHigh + ext*projectionBase;
+      // Falls der Breakout die erste Projektion bereits erreicht hat, auf die naechste
+      // Fibonacci-Erweiterung wechseln statt faelschlich 'kein Zielraum' zu melden.
+      if(!(rawTarget>entry)) rawTarget=targetBaseHigh + 1.618*projectionBase;
+    } else if(nearBreakout){
+      rawTarget=targetBaseHigh + 0.50*projectionBase;
+      if(!(rawTarget>entry)) rawTarget=targetBaseHigh + 1.0*projectionBase;
+    } else {
+      // Reclaim/Pullback: naechstes reales Swing-Hoch ist primaer; wenn es bereits
+      // ueberlaufen wurde, keine erfundene BUY-Freigabe, sondern nur konservative Projektion.
+      rawTarget=targetBaseHigh>entry?targetBaseHigh:null;
     }
     const fTp2 = rawTarget>entry ? Math.min(rawTarget, entry + 8 * risk) : entry;
     const fTp2Pct = fTp2>entry ? (fTp2/entry-1)*100 : 0;
@@ -1477,7 +1493,7 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
     return {
       light:fGreen?'green':fYellow?'yellow':'red', score:fScore, netCRV:+fNetCRV.toFixed(2),
       tp2Usd:fTp2, tp2Eur:e(fTp2), tp2Pct:+fTp2Pct.toFixed(2),
-      tp2Source:rawTarget?'Marktstruktur / Range-Projektion':'kein Strukturziel',
+      tp2Source:rawTarget?'36-Bar-Swingstruktur / Range-Projektion':'kein Strukturziel',
       verdict:fGreen?'Kauf-Setup · FusionPulse':fYellow?'Beobachten · FusionPulse':'Kein Trade · FusionPulse',
       blockers:fBlockers.slice(0,6), elliott:+stockElliott.toFixed(1),
       targetR:+((fTp2-entry)/risk).toFixed(2), activeSituation,
@@ -1486,7 +1502,7 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
 
   return {
     claude, fusion,
-    // v3.5.2: Legacy bleibt fuer Audit/Vergleich erhalten; die normale FusionPulse-Ansicht
+    // v3.5.3: Legacy bleibt fuer Audit/Vergleich erhalten; die normale FusionPulse-Ansicht
     // nutzt ab jetzt die mathematisch konsistente adaptive Bewertung. Claude bleibt parallel.
     legacy:{light,score,netCRV,tp2Usd:tp2,tp2Eur:e(tp2),tp2Pct:+tp2Pct.toFixed(2),verdict,blockers:[]},
     symbol, sector, name: src?.meta?.name || STOCK_NAMES[symbol] || symbol,

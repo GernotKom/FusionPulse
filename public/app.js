@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.5.2 — Frontend
+   FusionPulse v3.5.3 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -73,7 +73,7 @@ const DEFAULTS = {
   equity: 5000, riskPct: 0.75, interval: 20000, deep: 20,
   sound: true, token: '', watch: 'BTC-EUR,ETH-EUR,SOL-EUR', minQ: 0, onlyZone: false,
   theme: 'dark', taxPct: 27.5, analysisMode: 'composite', coinCount: 12, stockCount: 12,
-  maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0, minNetProfitStock: 75, minTp2PctStock: 2.0,
+  maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0, minNetProfitStock: 30, minTp2PctStock: 2.0,
   claudeMode: false, stockDeep: 20,
   mutedPairs: [], mutedStocks: [], favoritePairs: [], favoriteStocks: [], stockOrder: [], components: [...ALL_COMPONENTS], stockSound: true,
 };
@@ -83,22 +83,29 @@ const S = { ...DEFAULTS, ...storedSettings };
 // Nur der exakte alte Default wird migriert; bewusst individuell gesetzte Werte bleiben unangetastet.
 let settingsMigrated352=false;
 if(Number(storedSettings.minNetProfitStock)===350 && !storedSettings.fusionAdaptive352){S.minNetProfitStock=75;S.fusionAdaptive352=true;settingsMigrated352=true;}
+// v3.5.3: der 75-EUR-Default konnte bei 5.000 EUR / 0,75 % Risiko still ein ~6R-Ziel erzwingen.
+if(Number(S.minNetProfitStock)===75 && !storedSettings.fusionAdaptive353){S.minNetProfitStock=30;S.fusionAdaptive353=true;settingsMigrated352=true;}
 // Flatex AT / Tradegate cost model (v3.0.4): public base fee + minimum venue cost
 // per execution. Spread/slippage cannot be known from the Twelve Data candle feed,
 // therefore a separate conservative execution reserve is shown as an estimate.
 const STOCK_ORDER_FIXED_EUR = 10.75; // conservative v3.0.4 estimate for typical 5k–10k executions: 9.90 € flatex example + 0.85 € Tradegate min. external cost
 const STOCK_EXECUTION_FRICTION_PCT = 0.06; // estimated round-trip spread/slippage reserve, not a live Tradegate quote
-const OPPORTUNITY_MIN_NET_EUR = 75; // FusionPulse Adaptiv: absolute Untergrenze; zusaetzlich relativ zur realen Positionsgroesse
+const OPPORTUNITY_MIN_NET_EUR = 20; // v3.5.3: kleine absolute Untergrenze; Hauptkalibrierung erfolgt gegen das reale Risikobudget
 const OPPORTUNITY_HIGH_NET_EUR = 500; // priorisierte High-Opportunity, keine Erfolgswahrscheinlichkeit
 
 const FUSION_MIN_SCORE_STOCK = 7.2;
 const FUSION_MIN_PLAN_EFFICIENCY = 0.85; // 50/50-Plan nach Fixkosten muss mindestens 0,85R liefern; NICHT mit Struktur-CRV verwechseln
-const FUSION_MIN_NET_NOTIONAL_PCT = 1.25; // 10.000 EUR Einsatz -> mindestens 125 EUR netto
-const fusionMinNetEur = (sz) => Math.max(
-  Number(S.minNetProfitStock||0),
-  OPPORTUNITY_MIN_NET_EUR,
-  Number(sz?.notional||0) * (FUSION_MIN_NET_NOTIONAL_PCT/100),
-);
+const FUSION_MIN_NET_RISK_MULT = 0.75; // v3.5.3: wirtschaftliche Relevanz skaliert am realen Risikobudget, nicht am Notional
+const fusionMinNetEur = (sz) => {
+  const riskBudget=Math.max(0,Number(S.equity||0)*(Number(S.riskPct||0)/100));
+  const riskCalibrated=Math.max(OPPORTUNITY_MIN_NET_EUR,riskBudget*FUSION_MIN_NET_RISK_MULT);
+  // Ein bewusst hoeher gesetzter Nutzerwert bleibt sichtbar, darf aber nicht wieder
+  // unbemerkt ein strukturell viel hoeheres CRV erzwingen: die effektive Schwelle
+  // wird auf 1,0R des aktuellen Risikobudgets begrenzt.
+  const userFloor=Math.max(0,Number(S.minNetProfitStock||0));
+  const reachableCap=Math.max(OPPORTUNITY_MIN_NET_EUR,riskBudget);
+  return Math.min(Math.max(userFloor,riskCalibrated),reachableCap);
+};
 
 /* ---- v3.5.0 Claude Modus --------------------------------------------------
    Legacy-Befund: Der 50/50-Plan (TP1=1,7R / TP2=3,35R) hat brutto max. 2,525R,
@@ -1990,7 +1997,7 @@ function buyGateHint(r){
     return `BUY (Claude): Score ≥${CLAUDE_MIN_SCORE_STOCK}, Plan-CRV ≥${num(CLAUDE_MIN_CRV_STOCK,1)}:1 netto, Plan netto ≥${eur(claudeMinNetEur(riskEur),0)} (1,2× Risikobudget), Erwartungswert ≥ +0,15R, Struktur-TP2.`;
   }
   const sz=stockSizing(r),minNet=fusionMinNetEur(sz);
-  return `BUY (FusionPulse Adaptiv): Score ≥${num(FUSION_MIN_SCORE_STOCK,1)}, Struktur-CRV ≥${num(S.minCrvStock,1)}:1, 50/50-Plan-Effizienz ≥${num(FUSION_MIN_PLAN_EFFICIENCY,2)}:1, Plan netto ≥${eur(minNet,0)} (mind. ${num(FUSION_MIN_NET_NOTIONAL_PCT,2)}% Einsatz), Kursweg ≥${num(S.minTp2PctStock,1)}%.`;
+  return `BUY (FusionPulse Adaptiv): Score ≥${num(FUSION_MIN_SCORE_STOCK,1)}, Struktur-CRV ≥${num(S.minCrvStock,1)}:1, 50/50-Plan-Effizienz ≥${num(FUSION_MIN_PLAN_EFFICIENCY,2)}:1, Plan netto ≥${eur(minNet,0)} (kalibriert auf ${num(FUSION_MIN_NET_RISK_MULT,2)}× Risikobudget), Kursweg ≥${num(S.minTp2PctStock,1)}%.`;
 }
 function renderAnalysisMethods(){
   const text=analysisMethodsText();

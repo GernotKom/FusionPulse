@@ -1,5 +1,19 @@
 # FusionPulse Verbesserungsliste – kumulativ
 
+## In v3.5.3 umgesetzt — Claude-Audit A/B
+- **Claude Modus unverändert:** Die vier SHA-256-Locks für Claude-Aktien/Krypto sowie Client-Konstanten/Overlay bleiben unverändert und werden durch `npm run check` geprüft.
+- **Audit A repariert – Strukturziel vom kurzen Triggerfenster entkoppelt:** Die FusionPulse-Zielprojektion nutzt nun ein unabhängiges **36-Bar-Swingfenster** (letzte 4 Bars ausgeblendet), statt das kurze 12-Bar-`priorHigh` als alleinige Zielreferenz zu verwenden. Ein laufender Breakout verliert damit nicht mehr automatisch seinen Zielraum, nur weil der Kurs das kurze vorherige Hoch bereits überschritten hat.
+- **Breakout-Projektion:** Bei Breakout/Squeeze wird vom 36-Bar-Swinghoch bzw. dem höheren belastbaren Referenzhoch eine Range-/Impulsprojektion gerechnet; ist die erste Projektion bereits überlaufen, wird auf die nächste 1,618-Erweiterung gewechselt. Kein Ziel wird nur zur CRV-Rettung erfunden; Cap bei 8R bleibt erhalten.
+- **Audit B repariert – wirtschaftliches Gate am Risikobudget kalibriert:** Die frühere 75-EUR-/1,25%-Notional-Logik konnte bei Default-Risiko still ein ca. 6R-Erfordernis erzeugen. FusionPulse nutzt jetzt eine kleine absolute Untergrenze von 20 EUR plus **0,75× reales Risikobudget**, mit effektivem Cap bei **1,0R Risikobudget**. Der ehemalige 75-EUR-Default wird auf 30 EUR migriert.
+- **UI transparent:** Der BUY-Hinweis nennt jetzt ausdrücklich die risikobudget-kalibrierte Netto-Schwelle statt eine Notional-Prozent-Schwelle.
+- **Regressionen:** Neuer Guard prüft 36-Bar-Zielfenster, Breakout-Ziel trotz bereits überschrittenem Kurzhoch, risikobudget-basierte Wirtschaftsschwelle und weiterhin unveränderte Claude-Hashes.
+
+## Offen / verbindliche VL für nächste Versionen
+- **Aktive Position im FokusScope:** Nach tatsächlichem Kauf Eingabefelder für Kaufkurs in EUR/Tradegate und Stückzahl. Daraus sofort investiertes Kapital, SL, TP1, TP2, Netto-CRV, Verlust am SL sowie Gewinn bei TP1/TP2 auf Basis der realen Ausführung berechnen. Technische Ziele/Stop dürfen nicht künstlich verschoben werden, nur um das CRV zu verbessern.
+- **Verkaufsüberwachung mit Alarm:** Übernommene Position aktiv überwachen. Bei SL-Gefahr/SL, TP1, TP2 oder eindeutigem strukturellem Exit **TON + sehr auffällige grafische Meldung**. Alarm bleibt sichtbar, bis bestätigt; klare Unterscheidung Warnung versus echte Verkaufsaktion.
+- **Positionsmanagement nach TP1:** Teilverkauf/Reststückzahl dokumentierbar; spätere Stop-Anpassung nur nach der jeweils aktiven Methodik und transparent anzeigen.
+- **Stop-Logik FusionPulse (nicht Claude):** Swing-Low nicht als nackten Stop verwenden; ATR-/Volatilitäts- und Spread/Slippage-Puffer prüfen, damit normale Retests/Liquiditätsabholungen nicht unnötig ausstoppen. Vor Umsetzung mit Fixtures gegen zu weite Stops und Verlustausweitung absichern.
+
 ## In v3.5.2 umgesetzt — FusionPulse Adaptiv / Opportunity Lifecycle
 - **Claude Modus geschützt:** Claude-Aktien- und Krypto-Methodik sowie die Claude-Client-Konstanten/Overlay sind gegenüber v3.5.1 byte-identisch und über SHA-256-Regressionstests gesperrt.
 - **Eigener Aktienmodus mathematisch korrigiert:** Struktur-CRV und 50/50-Plan-Effizienz werden nicht mehr vermischt. Struktur-CRV muss weiterhin die eingestellte Grenze (standardmäßig 3:1) erfüllen; der reale Teilverkaufsplan besitzt eine separate Kosten-/Effizienzprüfung.

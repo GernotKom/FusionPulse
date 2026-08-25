@@ -1,3 +1,17 @@
+# FusionPulse v3.5.3 · Claude-Audit A/B
+
+## Kernfixes
+- Claude-Modus methodisch **nicht verändert**; bestehende SHA-256-Locks bleiben grün.
+- FusionPulse-Strukturziel nutzt nun ein unabhängiges 36-Bar-Swingfenster statt der kurzen 12-Bar-Triggerreferenz. Dadurch bleibt bei einem echten bereits laufenden Breakout ein belastbarer Projektionsraum vorhanden.
+- Breakout/Squeeze: Range-/Impulsprojektion mit nächster 1,618-Erweiterung, falls die erste Projektion schon überlaufen ist; weiterhin maximal 8R und kein künstliches Ziel zur CRV-Rettung.
+- Wirtschaftliche Mindestschwelle im normalen FusionPulse-Modus auf das **reale Risikobudget** kalibriert: 20 EUR absolute Basis, 0,75R Standard, maximal 1,0R als wirksame Schwelle. Alter 75-EUR-Default wird auf 30 EUR migriert.
+- UI nennt die tatsächlich wirksame risikobudget-basierte Schwelle.
+
+## Tests
+`npm run check` muss Syntax, Safety, Claude-SHA-Locks sowie v3.5.3 Target-/Economic-Regressionen bestehen.
+
+---
+
 # FusionPulse v3.5.2 · FusionPulse Adaptiv + Opportunity Lifecycle
 
 ## Wichtig: Claude Modus methodisch unverändert
