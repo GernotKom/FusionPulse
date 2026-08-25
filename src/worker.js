@@ -1023,6 +1023,95 @@ async function readLatestPersistedStockScan(env,maxAgeMs=4*60_000){
   }catch(e){console.warn(JSON.stringify({event:'fusionpulse_stock_latest_cache_read_failed',message:String(e?.message||e),ts:Date.now()}));return null;}
 }
 
+/* ---- v3.5.1: konfigurierbare Deep-Scan-Tiefe -----------------------------
+   Die 20-Titel-Grenze war fest verdrahtet und ohne UI-Regler; die Warteschlange
+   wird vom serverseitigen Cron gebaut (laeuft auch bei geschlossener PWA),
+   daher ist die Tiefe eine geteilte Konto-Einstellung in D1, kein reiner
+   Client-Zustand. Persistierter Wert; Fallback 20, wenn D1 fehlt/leer ist. */
+const STOCK_DEEP_MIN=15, STOCK_DEEP_MAX=40, STOCK_DEEP_DEFAULT=20;
+let stockDeepMemo={value:STOCK_DEEP_DEFAULT,ts:0};
+function clampStockDeep(n){ const v=Math.round(Number(n)); return Number.isFinite(v)?Math.max(STOCK_DEEP_MIN,Math.min(STOCK_DEEP_MAX,v)):STOCK_DEEP_DEFAULT; }
+async function readStockDeepLimit(env){
+  if(stockDeepMemo.value && Date.now()-stockDeepMemo.ts<60_000) return stockDeepMemo.value;
+  if(!env?.DB){ stockDeepMemo={value:STOCK_DEEP_DEFAULT,ts:Date.now()}; return STOCK_DEEP_DEFAULT; }
+  try{
+    await ensureD1Schema(env);
+    const row=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind('stock_deep_limit').first();
+    const v=clampStockDeep(row?.value);
+    stockDeepMemo={value:v,ts:Date.now()};
+    return v;
+  }catch(e){ console.warn(JSON.stringify({event:'stock_deep_read_failed',message:String(e?.message||e),ts:Date.now()})); return STOCK_DEEP_DEFAULT; }
+}
+async function persistStockDeepLimit(env, n){
+  const v=clampStockDeep(n);
+  stockDeepMemo={value:v,ts:Date.now()};
+  if(!env?.DB) return v;
+  try{
+    await ensureD1Schema(env);
+    await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts')
+      .bind('stock_deep_limit',String(v),Date.now()).run();
+  }catch(e){ console.warn(JSON.stringify({event:'stock_deep_write_failed',message:String(e?.message||e),ts:Date.now()})); }
+  return v;
+}
+
+/* ---- v3.5.1: Tiingo-Kontingent — App-Eigenzaehlung -----------------------
+   Tiingo liefert (anders als Twelve Data) KEINE Nutzungs-Header in der
+   REST-Antwort und KEINEN oeffentlichen usage-Endpoint. Es gibt daher keinen
+   Weg, das reale Kontingent aus der API selbst auszulesen. Diese Zaehlung ist
+   ausdrueckliche eine App-Schaetzung: sie zaehlt nur Requests, die DIESER
+   Worker absetzt, nicht das gesamte Tiingo-Konto (z.B. Web-Dashboard-Zugriffe
+   zaehlen nicht mit). Ehrlich als "state:'app-estimate'" gekennzeichnet.
+   Plan-Obergrenzen laut oeffentlicher Tiingo-Preisseite (Power, Stand 2026):
+   10.000 Requests/Stunde, 100.000 Requests/Tag. BOATS ist ein Entitlement
+   ohne separates Limit, zaehlt gegen dasselbe Kontingent. */
+const TIINGO_PLAN_LIMITS = { hourly: 10_000, daily: 100_000 };
+const tiingoHourKey = (d=new Date()) => `${d.toISOString().slice(0,13)}`; // YYYY-MM-DDTHH
+const tiingoDayKeyUTC = (d=new Date()) => d.toISOString().slice(0,10);
+let tiingoQuota = { hourKey:'', hourCalls:0, dayKey:'', dayCalls:0, loadedFromD1:false };
+async function loadTiingoQuotaOnce(env){
+  if(tiingoQuota.loadedFromD1 || !env?.DB) return;
+  try{
+    await ensureD1Schema(env);
+    const row=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind('tiingo_quota').first();
+    if(row?.value){
+      const p=JSON.parse(row.value);
+      const hk=tiingoHourKey(), dk=tiingoDayKeyUTC();
+      tiingoQuota={
+        hourKey:p.hourKey===hk?hk:hk, hourCalls:p.hourKey===hk?(Number(p.hourCalls)||0):0,
+        dayKey:p.dayKey===dk?dk:dk, dayCalls:p.dayKey===dk?(Number(p.dayCalls)||0):0,
+        loadedFromD1:true,
+      };
+    } else tiingoQuota.loadedFromD1=true;
+  }catch(e){ console.warn(JSON.stringify({event:'tiingo_quota_load_failed',message:String(e?.message||e),ts:Date.now()})); tiingoQuota.loadedFromD1=true; }
+}
+let tiingoQuotaPersistTimer=0;
+function noteTiingoCall(env){
+  const hk=tiingoHourKey(), dk=tiingoDayKeyUTC();
+  if(tiingoQuota.hourKey!==hk){ tiingoQuota.hourKey=hk; tiingoQuota.hourCalls=0; }
+  if(tiingoQuota.dayKey!==dk){ tiingoQuota.dayKey=dk; tiingoQuota.dayCalls=0; }
+  tiingoQuota.hourCalls++; tiingoQuota.dayCalls++;
+  // Persistenz throttlen: nicht bei jedem Call synchron auf D1 schreiben.
+  if(env?.DB && Date.now()-tiingoQuotaPersistTimer>15_000){
+    tiingoQuotaPersistTimer=Date.now();
+    const payload=JSON.stringify(tiingoQuota);
+    ensureD1Schema(env).then(()=>env.DB.prepare(
+      'INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts'
+    ).bind('tiingo_quota',payload,Date.now()).run()).catch(e=>console.warn(JSON.stringify({event:'tiingo_quota_persist_failed',message:String(e?.message||e),ts:Date.now()})));
+  }
+}
+function tiingoQuotaView(){
+  const hk=tiingoHourKey(), dk=tiingoDayKeyUTC();
+  const hourCalls = tiingoQuota.hourKey===hk?tiingoQuota.hourCalls:0;
+  const dayCalls = tiingoQuota.dayKey===dk?tiingoQuota.dayCalls:0;
+  return {
+    state:'app-estimate', // ehrlich: keine echten Tiingo-Nutzungsdaten verfuegbar (kein Header, kein API-Endpoint)
+    hourCalls, hourLimit:TIINGO_PLAN_LIMITS.hourly, hourPct:+Math.min(100,(hourCalls/TIINGO_PLAN_LIMITS.hourly)*100).toFixed(1),
+    dayCalls, dayLimit:TIINGO_PLAN_LIMITS.daily, dayPct:+Math.min(100,(dayCalls/TIINGO_PLAN_LIMITS.daily)*100).toFixed(1),
+    note:'App-eigene Zaehlung dieses Workers; Tiingo liefert keine Nutzungs-Header/Endpoint. Kein Konto-weiter Wert.',
+  };
+}
+
+
 /* --- Kontingent-Überwachung ------------------------------------------------
    Twelve Data liefert bei JEDER Antwort die Header api-credits-used und
    api-credits-left. Beides wird 1:1 übernommen. Es wird NICHTS erfunden:
@@ -2077,6 +2166,8 @@ function authed(req, url, env) {
 /* ------------------------------------------------ Tiingo v3.1.0 isolated layer */
 async function tiingoFetch(env, path) {
   if (!env.TIINGO_API_TOKEN) throw new Error('TIINGO_API_TOKEN fehlt');
+  await loadTiingoQuotaOnce(env);
+  noteTiingoCall(env);
   const res = await fetch(`https://api.tiingo.com${path}`, {
     headers: { accept: 'application/json', authorization: `Token ${env.TIINGO_API_TOKEN}` },
     signal: AbortSignal.timeout(20_000),
@@ -2520,13 +2611,17 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
     boats={...boats,rows:[]}; // fail-closed: keine unbestätigten BOATS-Instrumente in den Aktien-Deep-Scan
   }
 
+  const deepLimit=await readStockDeepLimit(env);
+  const scale=deepLimit/STOCK_DEEP_DEFAULT; // proportional zur bisherigen 20er-Baseline
+  const capFav=2, capGainer=Math.max(4,Math.round(4*scale)), capRadar=Math.max(8,Math.round(8*scale)),
+        capRecheck=Math.max(2,Math.round(2*scale)), capBoats=Math.max(2,Math.round(2*scale));
   const picked=new Set(), favPick=[], recheckPick=[], radarPick=[], boatsPick=[], explore=[];
   // Favoriten bleiben vertreten, blockieren aber nicht mehr die gesamte Queue.
   // Favoriten rotieren pro Deep-Scan-Zyklus. v3.3.2 nahm immer nur die ersten
   // zwei Favoriten und ließ spätere Favoriten dadurch unnötig lange stale.
   if(favs.length){
     const startFav=(cycle*2)%favs.length;
-    for(let i=0;i<favs.length&&favPick.length<2;i++){
+    for(let i=0;i<favs.length&&favPick.length<capFav;i++){
       const sym=favs[(startFav+i)%favs.length];
       if(!picked.has(sym)){picked.add(sym);favPick.push(sym);}
     }
@@ -2534,16 +2629,16 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   // v3.3.4: Whole-Market-Kandidaten werden VOR alten Rechecks priorisiert.
   // So kann der Deep Scan nicht wieder faktisch zu einem Favoriten-/Cache-Pool werden.
   const gainerPick=[];
-  for(const x of openingGainers(radar.rows||[],8)){if(!picked.has(x.symbol)){picked.add(x.symbol);gainerPick.push(x.symbol);}if(gainerPick.length>=4)break;}
-  for(const x of radar.rows||[]){if(!picked.has(x.symbol)){picked.add(x.symbol);radarPick.push(x.symbol);}if(radarPick.length>=8)break;}
+  for(const x of openingGainers(radar.rows||[],capGainer)){if(!picked.has(x.symbol)){picked.add(x.symbol);gainerPick.push(x.symbol);}if(gainerPick.length>=capGainer)break;}
+  for(const x of radar.rows||[]){if(!picked.has(x.symbol)){picked.add(x.symbol);radarPick.push(x.symbol);}if(radarPick.length>=capRadar)break;}
   // Nur zwei starke Altanalysen pro Zyklus nachziehen; Discovery hat Vorrang.
-  for(const r of [...(stockMemo.rows||[])].sort((a,b)=>deepRecheckRank(b)-deepRecheckRank(a))){const sym=String(r?.symbol||'').toUpperCase();if(sym&&!picked.has(sym)){picked.add(sym);recheckPick.push(sym);}if(recheckPick.length>=2)break;}
+  for(const r of [...(stockMemo.rows||[])].sort((a,b)=>deepRecheckRank(b)-deepRecheckRank(a))){const sym=String(r?.symbol||'').toUpperCase();if(sym&&!picked.has(sym)){picked.add(sym);recheckPick.push(sym);}if(recheckPick.length>=capRecheck)break;}
   // Overnight/Extended-Hours-Kandidaten duerfen die Queue ergaenzen, aber nie BUY setzen.
-  for(const x of boats.rows||[]){if(!picked.has(x.symbol)){picked.add(x.symbol);boatsPick.push(x.symbol);}if(boatsPick.length>=2)break;}
+  for(const x of boats.rows||[]){if(!picked.has(x.symbol)){picked.add(x.symbol);boatsPick.push(x.symbol);}if(boatsPick.length>=capBoats)break;}
   // Exploration verhindert Tunnelblick und sorgt fuer fortlaufende Rotation des stabilen Basiskatalogs.
   const start=(cycle*7)%STOCK_SEARCH_CATALOG.length;
-  for(let i=0;i<STOCK_SEARCH_CATALOG.length&&picked.size<20;i++){const sym=STOCK_SEARCH_CATALOG[(start+i)%STOCK_SEARCH_CATALOG.length][1];if(!picked.has(sym)){picked.add(sym);explore.push(sym);}}
-  const syms=[...favPick,...recheckPick,...gainerPick,...radarPick,...boatsPick,...explore].slice(0,20), fx=await getTiingoFx(env);
+  for(let i=0;i<STOCK_SEARCH_CATALOG.length&&picked.size<deepLimit;i++){const sym=STOCK_SEARCH_CATALOG[(start+i)%STOCK_SEARCH_CATALOG.length][1];if(!picked.has(sym)){picked.add(sym);explore.push(sym);}}
+  const syms=[...favPick,...recheckPick,...gainerPick,...radarPick,...boatsPick,...explore].slice(0,deepLimit), fx=await getTiingoFx(env);
   const radarMap=new Map((radar.rows||[]).map(x=>[x.symbol,x])), boatsMap=new Map((boats.rows||[]).map(x=>[x.symbol,x]));
   const fresh=(await pool(syms,6,async sym=>{
     const inf=STOCK_SEARCH_BY_SYMBOL.get(sym)||{sector:'Discovery',name:sym};
@@ -2700,9 +2795,13 @@ export default {
     }
 
     if (url.pathname === '/api/tiingo/status') {
-      if(!env.TIINGO_API_TOKEN) return json({configured:false,authenticated:false,state:'nokey',version:APP_VERSION},200,{ 'cache-control':'no-store' });
-      try { const d=await tiingoFetch(env,'/api/test/'); return json({configured:true,authenticated:true,state:'ok',message:d?.message||'Tiingo authentication successful',boatsEntitlement:'not-tested',version:APP_VERSION},200,{ 'cache-control':'no-store' }); }
-      catch(e){ return json({configured:true,authenticated:false,state:'error',error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+      const wantDeep=url.searchParams.get('stockDeep');
+      if(wantDeep!=null) await persistStockDeepLimit(env,wantDeep);
+      const deepLimit=await readStockDeepLimit(env);
+      await loadTiingoQuotaOnce(env);
+      if(!env.TIINGO_API_TOKEN) return json({configured:false,authenticated:false,state:'nokey',version:APP_VERSION,quota:tiingoQuotaView(),stockDeep:deepLimit,stockDeepRange:{min:STOCK_DEEP_MIN,max:STOCK_DEEP_MAX}},200,{ 'cache-control':'no-store' });
+      try { const d=await tiingoFetch(env,'/api/test/'); return json({configured:true,authenticated:true,state:'ok',message:d?.message||'Tiingo authentication successful',boatsEntitlement:'not-tested',version:APP_VERSION,quota:tiingoQuotaView(),stockDeep:deepLimit,stockDeepRange:{min:STOCK_DEEP_MIN,max:STOCK_DEEP_MAX}},200,{ 'cache-control':'no-store' }); }
+      catch(e){ return json({configured:true,authenticated:false,state:'error',error:String(e.message||e),version:APP_VERSION,quota:tiingoQuotaView(),stockDeep:deepLimit,stockDeepRange:{min:STOCK_DEEP_MIN,max:STOCK_DEEP_MAX}},502,{ 'cache-control':'no-store' }); }
     }
     if (url.pathname === '/api/tiingo/boats') {
       try { return json(await tiingoBoatsSnapshot(env,url.searchParams.get('symbols')),200,{ 'cache-control':'no-store' }); }

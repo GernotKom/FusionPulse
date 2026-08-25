@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.5.0</title>
+<title>FusionPulse 3.5.1</title>
 </head>
 <body>
 
@@ -201,6 +201,7 @@
 
   <h3>Anzeigeumfang</h3>
   <label title="Wie viele Coins der Worker vertieft analysiert. Mehr Coins erzeugen mehr externe API-Abfragen pro Scan.">Coins scannen (tief analysieren, 4–20)<input id="sDeep" type="number" min="4" max="20" step="1"></label>
+  <label title="Wie viele Aktien der serverseitige Cron pro 2-Minuten-Zyklus tief analysiert (Elliott/EMA/VWAP/RVOL, kein reines Anzeige-Limit). Gilt kontoweit, auch wenn die PWA geschlossen ist — jede zusätzliche Aktie kostet einen echten Tiingo-Request je Zyklus.">Aktien tief scannen (15–40)<input id="sStockDeep" type="number" min="15" max="40" step="1"></label>
   <label title="Wie viele Coin-Zeilen maximal im Radar sichtbar sind. Das verändert nur die Anzeige, nicht die Anzahl der API-Abfragen.">Coins anzeigen<input id="sCoinCount" type="number" min="3" max="50" step="1"></label>
   <label title="Wie viele der am besten bewerteten Aktien im Radar angezeigt werden. Das Aktien-Universum wird rotierend gescannt, um API-Credits zu sparen.">Aktien anzeigen<input id="sStockCount" type="number" min="3" max="50" step="1"></label>
   <p class="hint" id="sCountsInfo">–</p>
@@ -249,6 +250,9 @@
   <div class="tiingo-testbox">
     <div><b>Tiingo Verbindungstest</b><small id="tiingoTestState">Noch nicht geprüft.</small></div>
     <button id="tiingoTest" type="button">Tiingo prüfen</button>
+  </div>
+  <div class="tiingo-testbox" id="tiingoQuotaBox" title="Tiingo liefert keine Nutzungs-Header und keinen öffentlichen usage-Endpoint. Diese Zahlen sind eine App-eigene Zählung nur dieses Workers, kein von Tiingo bestätigter Kontostand.">
+    <div><b>Tiingo-Kontingent (App-Schätzung)</b><small id="tiingoQuotaState">Wird beim Öffnen der Einstellungen geladen…</small></div>
   </div>
 
   <div class="actions">

@@ -1,3 +1,17 @@
+# FusionPulse v3.5.1 · Deep-Scan-Regler & Tiingo-Kontingent
+
+## Neu
+- **Regler „Aktien tief scannen (15–40)"** in den Einstellungen. Ersetzt die bisher fest verdrahtete 20er-Grenze im Deep-Scan. Anders als der Krypto-Regler ist dieser Wert **serverseitig in D1 persistiert** (`stock_deep_limit`), weil der Aktien-Deep-Scan über einen Cron läuft, der auch bei geschlossener PWA aktiv bleibt – ein reiner Client-Zustand hätte den Cron nicht erreicht. Alle Warteschlangen-Anteile (Favoriten, Gainer, Radar, Recheck, BOATS, Explore) skalieren proportional zur bisherigen 20er-Baseline mit; die finale Kappung via `.slice(0, deepLimit)` verhindert in jedem Fall eine Überschreitung.
+- **Tiingo-Kontingentanzeige** in den Einstellungen. Wichtig zu wissen: Tiingo liefert – anders als Twelve Data – **keine Nutzungs-Header** in der REST-Antwort und **keinen öffentlichen usage-Endpoint**. Es gibt daher keinen Weg, das reale Kontokontingent aus der API selbst auszulesen. Die Anzeige ist deshalb eine **ausdrücklich gekennzeichnete App-Eigenzählung** (`state: 'app-estimate'`): sie zählt nur Requests, die dieser Worker selbst absetzt (nicht das gesamte Tiingo-Konto, z.B. Dashboard-Zugriffe zählen nicht mit), gegen die öffentlich dokumentierten Power-Plan-Grenzwerte (10.000 Requests/Stunde, 100.000/Tag; BOATS teilt sich dasselbe Kontingent als Entitlement ohne eigenes Limit).
+
+## Im Funktionsnachweis gefundener und behobener Bug
+Beim Testen des `/api/tiingo/status`-Routings gegen den echten Produktionscode fiel auf: Schlägt der Tiingo-Auth-Check fehl (Netzwerkfehler, Rate-Limit, 429 etc.), fehlten `quota` und `stockDeep` in der Fehlerantwort – **genau dann, wenn die Kontingentanzeige am wichtigsten gewesen wäre**, blieb sie leer. Der catch-Zweig liefert diese Felder jetzt ebenfalls mit. Ein Regressionstest sichert das ab.
+
+## Technischer Nachweis (gegen den echten Worker-Handler, nicht nur Unit-Logik)
+- Persistenz-Rundreise über ein simuliertes D1 bestätigt: `stockDeep=33` gesetzt → nächster Aufruf ohne Parameter liefert weiterhin 33.
+- Clamping bestätigt: `stockDeep=999` → 40 (Obergrenze), `stockDeep=1` → 15 (Untergrenze).
+- Kontingentzählung bestätigt: jeder Tiingo-Call (auch fehlgeschlagene) erhöht `hourCalls`/`dayCalls` korrekt, `hourLimit`/`dayLimit` entsprechen den Power-Plan-Werten.
+
 # FusionPulse v3.5.0 · Claude Modus
 
 ## Kernbefund des Audits (warum nie ein BUY erschien)

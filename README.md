@@ -1,4 +1,10 @@
-# FusionPulse v3.5.0
+# FusionPulse v3.5.1
+
+## v3.5.1 Schwerpunkt · Deep-Scan-Regler & Tiingo-Kontingent
+- Neuer Regler „Aktien tief scannen (15–40)" (Einstellungen → Anzeigeumfang), serverseitig in D1 persistiert, da der Aktien-Deep-Scan über einen kontoweiten Cron läuft.
+- Tiingo-Kontingentanzeige in den Einstellungen — ausdrücklich als App-Eigenschätzung gekennzeichnet, da Tiingo keine Nutzungs-Header/Endpoint bereitstellt. Details in RELEASE_NOTES.md.
+
+# FusionPulse v3.5.1
 
 ## v3.5.0 Schwerpunkt · Claude Modus
 - Neuer Schalter **🤖 Claude Modus** (Einstellungen → Analyseverfahren): Erwartungswert-basierte Bewertung mit Struktur-Zielen statt der strukturell unerreichbaren Legacy-Gates (Plan-CRV ≥ 3:1 bei rechnerischem Maximum 2,525R; 350-€-Schwelle über dem eigenen Risikobudget).

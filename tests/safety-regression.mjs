@@ -71,7 +71,7 @@ assert.match(wrangler,/"TIINGO_STOCKS_MODE": "primary"/,'Tiingo Primary must rem
 assert.match(workerText,/Discovery only: unusual overnight move[\s\S]*NEVER enters analyseStock\/BUY/,'BOATS discovery must be explicitly isolated from BUY');
 assert.match(workerText,/row\.discovery=\{type:'iex-radar',\.\.\.rm,buyWeight:0\}/,'IEX Radar candidate metadata must carry 0 BUY weight');
 assert.match(workerText,/row\.discovery=\{type:'boats',\.\.\.bm,buyWeight:0\}/,'BOATS candidate metadata must carry 0 BUY weight');
-assert.match(workerText,/const syms=\[\.\.\.favPick,\.\.\.recheckPick,\.\.\.gainerPick,\.\.\.radarPick,\.\.\.boatsPick,\.\.\.explore\]\.slice\(0,20\)/,'Deep scan must cap adaptive candidate batch at 20');
+assert.match(workerText,/const syms=\[\.\.\.favPick,\.\.\.recheckPick,\.\.\.gainerPick,\.\.\.radarPick,\.\.\.boatsPick,\.\.\.explore\]\.slice\(0,deepLimit\)/,'Deep scan must cap adaptive candidate batch at the configurable deep limit');
 assert.match(workerText,/await tiingoFetch\(env,'\/iex'\)/,'Whole-market Radar must use Tiingo IEX bulk snapshot');
 assert.match(workerText,/stockMinute%2===1[\s\S]*tiingoIexMarketRadar\(env,80,true\)/,'Server scheduler must keep the market radar independent of the browser');
 assert.match(workerText,/execution!=='server'&&!force[\s\S]*readLatestPersistedStockScan/,'Browser stock requests must consume the persisted server scan instead of starting a duplicate market scan');
@@ -88,7 +88,7 @@ assert.match(workerText,/\/tiingo\/daily\/\$\{encodeURIComponent\(sym\)\}/,'Comm
 
 // v3.2.6 Elliott-first / Market-Gainer guards
 assert.match(workerText,/const ell=Number\(r\?\.elliott\)\|\|0/,'Deep recheck ranking must explicitly include Elliott structure');
-assert.match(workerText,/openingGainers\(radar\.rows\|\|\[\],(?:6|8)\)/,'Verified market gainers must receive dedicated discovery slots');
+assert.match(workerText,/openingGainers\(radar\.rows\|\|\[\],capGainer\)/,'Verified market gainers must receive dedicated discovery slots (now scaled with the configurable deep limit)');
 assert.match(workerText,/security_meta:v327:/,'Security cache generation must be invalidated for v3.2.6');
 assert.match(workerText,/independentTwinEpisodes\(cur,rows\)/,'Historical Twin must collapse correlated snapshots into independent episodes');
 assert.doesNotMatch(workerText,/eligible\.slice\(0,12\)/,'Historical Twin must not hard-fill a fixed n=12 sample');
@@ -97,7 +97,7 @@ assert.match(workerText,/MAX_DIST=3\.25/,'Historical Twin must use a fixed simil
 
 // v3.3.4 Radar-to-Deep-Scan / click-through guards
 assert.match(workerText,/verifiedDiscoveryNow=new Set/,'Currently verified Discovery titles must be eligible for safe carry between deep-scan cycles');
-assert.match(workerText,/radarPick\.length>=8/,'Whole-Market Radar must have meaningful priority in the deep-scan queue');
+assert.match(workerText,/radarPick\.length>=capRadar/,'Whole-Market Radar must have meaningful priority in the deep-scan queue (now scaled with the configurable deep limit)');
 assert.match(app,/async function openStockFromDiscovery\(symbol\)/,'Discovery cards need a dedicated deep-load/open path');
 assert.match(app,/openStockFromDiscovery\(b\.dataset\.openstock\)/,'Whole-Market/Extended discovery cards must use the dedicated open path');
 // v3.2.7 ETF cache-leak regression guard
@@ -176,3 +176,25 @@ assert.match(app,/stockSnapshotAgeMs\(\)>=3\*60_000/,'Opening\/regular stock rec
 }
 
 console.log('✓ FusionPulse safety regressions: OK');
+
+// v3.5.1 Konfigurierbare Aktien-Scan-Tiefe + Tiingo-Kontingent-Schätzung
+{
+  assert.match(workerText,/const STOCK_DEEP_MIN=15, STOCK_DEEP_MAX=40, STOCK_DEEP_DEFAULT=20;/,'Deep-scan slider bounds must be defined');
+  assert.match(workerText,/async function readStockDeepLimit\(env\)/,'Deep-scan limit must be readable server-side (persisted, cron-shared)');
+  assert.match(workerText,/async function persistStockDeepLimit\(env, n\)/,'Deep-scan limit must be persistable server-side');
+  assert.match(workerText,/const deepLimit=await readStockDeepLimit\(env\);/,'Deep-scan queue must actually use the configurable limit, not a hardcoded 20');
+  // Tiingo hat keinen öffentlichen usage-Endpoint/Header -> App-Zählung muss explizit als solche gekennzeichnet sein.
+  assert.match(workerText,/state:'app-estimate'/,'Tiingo quota must be honestly labelled as an app-side estimate, not vendor-confirmed usage');
+  assert.match(workerText,/const TIINGO_PLAN_LIMITS = \{ hourly: 10_000, daily: 100_000 \};/,'Tiingo plan limits must reflect the public Power pricing page');
+  assert.match(workerText,/function noteTiingoCall\(env\)/,'Every Tiingo call must be counted for the quota estimate');
+assert.match(index,/id="sStockDeep"/,'Settings must contain the stock deep-scan slider');
+  assert.match(index,/id="tiingoQuotaBox"/,'Settings must show the Tiingo quota estimate box');
+  assert.match(app,/async function loadTiingoQuota/,'Client must load quota/deep-limit from the worker');
+  // Bug gefunden im Funktionsnachweis: bei einem Tiingo-Fetch-Fehler (z.B. Rate-Limit,
+  // Netzwerkproblem) fiel quota/stockDeep aus der Fehlerantwort -> genau dann, wenn
+  // die Kontingentanzeige am wichtigsten ist, blieb sie leer. Muss auch im catch-Zweig da sein.
+  const statusRouteBlock = workerText.slice(workerText.indexOf("url.pathname === '/api/tiingo/status'"), workerText.indexOf("url.pathname === '/api/tiingo/boats'"));
+  assert.match(statusRouteBlock,/catch\(e\)\{ return json\(\{configured:true,authenticated:false,state:'error',error:String\(e\.message\|\|e\),version:APP_VERSION,quota:tiingoQuotaView\(\),stockDeep:deepLimit/,'Tiingo status error path must still return quota + stockDeep for diagnosis');
+}
+
+console.log('✓ FusionPulse v3.5.1 deep-scan/quota regressions: OK');

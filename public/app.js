@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.5.0 — Frontend
+   FusionPulse v3.5.1 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -74,7 +74,7 @@ const DEFAULTS = {
   sound: true, token: '', watch: 'BTC-EUR,ETH-EUR,SOL-EUR', minQ: 0, onlyZone: false,
   theme: 'dark', taxPct: 27.5, analysisMode: 'composite', coinCount: 12, stockCount: 12,
   maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0, minNetProfitStock: 350, minTp2PctStock: 2.0,
-  claudeMode: false,
+  claudeMode: false, stockDeep: 20,
   mutedPairs: [], mutedStocks: [], favoritePairs: [], favoriteStocks: [], stockOrder: [], components: [...ALL_COMPONENTS], stockSound: true,
 };
 const storedSettings = (() => { try { return JSON.parse(localStorage.getItem('fp.settings') || '{}'); } catch { return {}; } })();
@@ -1937,6 +1937,7 @@ setInterval(() => {
 function openSettings() {
   $('#sEquity').value = S.equity; $('#sRisk').value = S.riskPct; $('#sMaxTrade').value = S.maxTradeEur; $('#sMinCrvCoin').value = S.minCrvCoin; $('#sMinCrvStock').value = S.minCrvStock; $('#sMinNetProfit').value = S.minNetProfitStock; $('#sMinTp2Pct').value = S.minTp2PctStock;
   $('#sDeep').value = S.deep; $('#sCoinCount').value = S.coinCount; $('#sStockCount').value = S.stockCount;
+  $('#sStockDeep').value = S.stockDeep || DEFAULTS.stockDeep;
   $('#sWatch').value = S.watch; $('#sToken').value = S.token; $('#sMin').value = S.minQ;
   $('#sZone').checked = S.onlyZone; $('#sTheme').value = S.theme;
   $('#sTax').value = S.taxPct; $('#sMode').value = S.analysisMode;
@@ -1944,6 +1945,7 @@ function openSettings() {
   if ($('#sClaudeMode')) $('#sClaudeMode').checked = !!S.claudeMode;
   $$('#sComponents input[data-comp]').forEach((c) => { c.checked = S.components.includes(c.dataset.comp); });
   updateCountsInfo();
+  loadTiingoQuota();
   $('#settings').classList.add('open');
 }
 function updateCountsInfo() {
@@ -1985,6 +1987,8 @@ function applySettings() {
   S.deep = Math.min(20, Math.max(4, +$('#sDeep').value || DEFAULTS.deep));
   S.coinCount = Math.min(50, Math.max(3, +$('#sCoinCount').value || DEFAULTS.coinCount));
   S.stockCount = Math.min(50, Math.max(3, +$('#sStockCount').value || DEFAULTS.stockCount));
+  const prevStockDeep = S.stockDeep || DEFAULTS.stockDeep;
+  S.stockDeep = Math.min(40, Math.max(15, +$('#sStockDeep').value || DEFAULTS.stockDeep));
   S.watch = $('#sWatch').value.toUpperCase().replace(/\s/g, '');
   S.token = $('#sToken').value.trim();
   S.minQ = +$('#sMin').value || 0;
@@ -2003,6 +2007,8 @@ function applySettings() {
   // jeder erzwungene Aktien-Refresh kostet echte Twelve-Data-Credits.
   const changed = prevAnalysis !== S.analysisMode + '|' + S.components.join(',') + '|' + S.minCrvStock;
   scanStocks(changed);
+  // Deep-Scan-Tiefe ist kontoweit (Cron laeuft auch bei geschlossener PWA) -> serverseitig persistieren.
+  if (S.stockDeep !== prevStockDeep) loadTiingoQuota(S.stockDeep);
 }
 
 function applyTheme() {
@@ -2176,6 +2182,26 @@ async function runTiingoUiTest(){
 }
 
 $('#tiingoTest')?.addEventListener('click',runTiingoUiTest);
+
+/** Laedt Deep-Scan-Tiefe + App-eigene Tiingo-Kontingentschaetzung aus dem Worker.
+ *  Ehrlich gekennzeichnet: Tiingo liefert weder Nutzungs-Header noch einen
+ *  oeffentlichen usage-Endpoint, daher ist dies eine reine App-Zaehlung
+ *  dieses Workers, kein von Tiingo bestaetigter Kontostand. */
+async function loadTiingoQuota(applyStockDeep){
+  const el=$('#tiingoQuotaState'); if(!el)return null;
+  try{
+    const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
+    if(applyStockDeep!=null)q.set('stockDeep',String(applyStockDeep));
+    const r=await fetch('/api/tiingo/status?'+q,{cache:'no-store'}), d=await r.json();
+    if(d?.stockDeep!=null){ S.stockDeep=d.stockDeep; if($('#sStockDeep'))$('#sStockDeep').value=d.stockDeep; }
+    const qv=d?.quota;
+    if(!qv){ el.textContent='Kontingent unbekannt (Tiingo-Token fehlt oder Antwort ohne Daten).'; return d; }
+    const bar=(pct)=>pct>=90?'err':pct>=70?'warn':'ok';
+    el.className=bar(Math.max(qv.hourPct,qv.dayPct));
+    el.textContent=`Stunde: ${qv.hourCalls}/${qv.hourLimit} (${qv.hourPct}%) · Tag: ${qv.dayCalls}/${qv.dayLimit} (${qv.dayPct}%) · nur dieser Worker, App-Schätzung`;
+    return d;
+  }catch(e){ el.textContent='Kontingent konnte nicht geladen werden: '+(e?.message||e); return null; }
+}
 $('#regime')?.addEventListener('click',()=>{const el=$('#regimeExplain');if(!el)return;const opening=el.classList.contains('hidden');el.classList.toggle('hidden',!opening);el.innerHTML=regimeExplanation();$('#regime').setAttribute('aria-expanded',opening?'true':'false');});
 document.addEventListener('click',(e)=>{if(!e.target.closest('.hstat')){const el=$('#regimeExplain');if(el&&!el.classList.contains('hidden')){el.classList.add('hidden');$('#regime')?.setAttribute('aria-expanded','false');}}});
 renderSignalBanner();
