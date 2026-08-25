@@ -29,3 +29,10 @@
 - Frontend-Defensivfilter für offensichtliche ETF/ETN/ETP/Leveraged/Inverse-Produkte zusätzlich zum serverseitigen Common-Stock-Gate.
 - Live prüfen: CRWU/AXTU müssen nach Reload verschwinden und dürfen auch nach mehreren Scanzyklen nicht wiederkehren.
 - Shooting/Short-Radar bleibt als eigener, Elliott-basierter Workflow offen; nicht in Long-BUY-Logik mischen.
+
+
+## v3.2.9 umgesetzt
+- Historical Twin grundlegend korrigiert: keine harte Top-12-Auffüllung mehr. Nur ausreichend ähnliche Fälle (feste Distanzschwelle) werden berücksichtigt.
+- Stark korrelierte 5-Minuten-Snapshots werden pro Symbol/Tag zu einer unabhängigen Episode verdichtet; D1 und lokaler Fallback verwenden dieselbe Logik.
+- n zeigt die tatsächlich verwendete Zahl unabhängiger qualifizierter Episoden und darf natürlich variieren; unter 5 Fällen nur 'lernt'.
+- Twin bleibt Forschungs-/Learning-Modul mit 0 % BUY-Gewicht.

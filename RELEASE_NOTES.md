@@ -1,9 +1,15 @@
-# FusionPulse Release Notes — v3.2.8
+# FusionPulse Release Notes — v3.2.9
 
-## P0 Browser-cache ETF leak hotfix
-- Fixes the remaining ETF/ETP resurrection path in the browser frontend. `fp.stockLastRows.v1` could re-add stale Discovery rows after the Worker had correctly removed them.
-- Stock last-row cache migrated to `fp.stockLastRows.v2`; the legacy v1 cache is purged once on load.
-- Cached fallback rows are now allowed only for explicit Favorites/Depot symbols. Old non-favorite Discovery candidates are never reintroduced by the browser.
-- Frontend adds an exclusion-only defensive non-common-instrument sanitizer (including CRWU/AXTU and obvious ETF/ETN/ETP/leveraged/inverse naming). Server-side common-stock verification remains authoritative.
-- Elliott-first Discovery, Market Gainers, BUY gates, data-quality rules and net CRV > 3:1 remain unchanged.
-- Shooting/Short remains a separate planned workflow and is not mixed into the Long scanner in this hotfix.
+## Historical Twin Hotfix
+- Entfernt die harte `.slice(0,12)`-Logik als Stichprobenmechanismus.
+- D1-Twins werden nur bei echter Ähnlichkeit (feste Distanzgrenze) zugelassen; es wird nicht auf eine Wunsch-Stichprobengröße aufgefüllt.
+- Mehrere korrelierte Snapshots desselben Titels am selben Tag werden zu einer unabhängigen Episode zusammengefasst.
+- Lokaler Fallback verwendet dieselbe Unabhängigkeits- und Ähnlichkeitslogik.
+- `n` ist nun die tatsächlich verwendete Zahl qualifizierter unabhängiger Episoden; bei n<5 wird nur „lernt“ angezeigt.
+- Nahe Twins werden für die historische Erfolgsquote stärker gewichtet als grenzwertige Twins.
+- 0 % BUY-Gewicht unverändert; Elliott-/BUY-/CRV-/Freshness-Regeln unverändert.
+
+## Unverändert beibehalten
+- Common-Stock-/ETF-Schutz aus v3.2.8.
+- Elliott-first Discovery, Market-Gainer und Whole-Market-Radar.
+- Nur eine RELEASE_NOTES.md und eine IMPROVEMENT_LIST.md.

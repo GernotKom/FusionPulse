@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.2.8 — Frontend
+   FusionPulse v3.2.9 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -37,7 +37,7 @@ const saveSettings = () => { try { localStorage.setItem('fp.settings', JSON.stri
 let rows = [];
 let meta = {};
 let stockRows = [];
-// v3.2.8: Browser-Stock-Cache is versioned separately from the server cache.
+// v3.2.9: Browser-Stock-Cache is versioned separately from the server cache.
 // v1 could resurrect old Discovery ETFs after the Worker had already rejected them.
 const LEGACY_STOCK_LAST_ROWS_KEY='fp.stockLastRows.v1';
 const STOCK_LAST_ROWS_KEY='fp.stockLastRows.v2';
@@ -816,7 +816,23 @@ let twinStore=(()=>{try{return JSON.parse(localStorage.getItem(TWIN_KEY)||'{"pen
 function saveTwins(){try{localStorage.setItem(TWIN_KEY,JSON.stringify(twinStore))}catch{}}
 function featureOf(r){const c=crowdForFresh(r.symbol),cc=crowdMarketConfirmation(r);return {score:+r.score||0,crv:+r.netCRV||0,rv:+r.relVol||0,r15:+r.ret15||0,r60:+r.ret60||0,atr:+r.atrPct||0,vac:+r.liquidityVacuum||0,lag:+r.sectorLag||0,crowd:c?+c.score:null,crowdConfirm:Number.isFinite(cc.score)?cc.score:null};}
 function twinDist(a,b){const w={score:1.2,crv:.7,rv:.45,r15:.5,r60:.25,atr:.5,vac:.035,lag:.35,crowd:.025,crowdConfirm:.03};let z=0;for(const k in w)z+=Math.pow((a[k]-b[k])*w[k],2);return Math.sqrt(z)}
-function historicalTwin(r){const srv=learningStock.get(String(r.symbol||'').toUpperCase())?.twin;if(srv&&Number(srv.n)>0)return {...srv,source:srv.source||'d1'};const f=featureOf(r),d=(twinStore.done||[]).filter(x=>x.symbol===r.symbol || (!!r.sector && x.sector===r.sector)).map(x=>({...x,d:twinDist(f,x.f)})).sort((a,b)=>a.d-b.d).slice(0,12);if(d.length<5)return {n:d.length,source:'local'};const wins=d.filter(x=>x.maxPct>=5).length,stops=d.filter(x=>x.minPct<=-1.5).length,med=[...d].map(x=>x.maxPct).sort((a,b)=>a-b)[Math.floor(d.length/2)];return {n:d.length,wins,stops,median:med,edge:Math.round(wins/d.length*100),source:'local'};}
+function historicalTwin(r){
+  const srv=learningStock.get(String(r.symbol||'').toUpperCase())?.twin;
+  if(srv&&Number(srv.n)>0)return {...srv,source:srv.source||'d1'};
+  const f=featureOf(r),MAX_DIST=3.25,byEpisode=new Map();
+  for(const x of (twinStore.done||[])){
+    if(!(x.symbol===r.symbol || (!!r.sector && x.sector===r.sector)))continue;
+    const dist=twinDist(f,x.f||{});if(!Number.isFinite(dist)||dist>MAX_DIST)continue;
+    const day=new Date(Number(x.ts)||Number(x.resolved)||0).toISOString().slice(0,10);
+    const key=`${String(x.symbol||'').toUpperCase()}:${day}`;
+    const v={...x,d:dist},prev=byEpisode.get(key);if(!prev||dist<prev.d)byEpisode.set(key,v);
+  }
+  const d=[...byEpisode.values()].sort((a,b)=>a.d-b.d).slice(0,40),available=d.length;
+  if(d.length<5)return {n:d.length,available,distinctSymbols:new Set(d.map(x=>x.symbol)).size,source:'local'};
+  const stops=d.filter(x=>x.minPct<=-1.5).length,med=[...d].map(x=>x.maxPct).sort((a,b)=>a-b)[Math.floor(d.length/2)];
+  let winW=0,totalW=0;for(const x of d){const w=1/Math.pow(1+Math.max(0,+x.d||0),2);totalW+=w;if(x.maxPct>=5)winW+=w;}
+  return {n:d.length,available,distinctSymbols:new Set(d.map(x=>x.symbol)).size,stops,median:med,edge:totalW?Math.round(winW/totalW*100):0,source:'local',independent:true};
+}
 function learnStocks(){const now=Date.now(),pending=twinStore.pending||[],done=twinStore.done||[];for(const x of pending){const r=stockRows.find(z=>z.symbol===x.symbol);if(r){const pct=(r.priceUsd/x.px-1)*100;x.maxPct=Math.max(x.maxPct??pct,pct);x.minPct=Math.min(x.minPct??pct,pct)}}const keep=[];for(const x of pending){if(now-x.ts>=120*60_000)done.push({...x,resolved:now});else keep.push(x)}const bucket=Math.floor(now/(15*60_000));for(const r of stockRows){if(!keep.some(x=>x.symbol===r.symbol&&x.bucket===bucket))keep.push({symbol:r.symbol,sector:r.sector,ts:now,bucket,px:r.priceUsd,f:featureOf(r),maxPct:0,minPct:0})}twinStore={pending:keep.slice(-500),done:done.slice(-2500)};saveTwins();}
 function edgeSignals(r){const c=crowdForFresh(r.symbol),crowd=c?+c.score:null;const quiet=Math.max(0,100-Math.min(100,Math.abs(+r.ret15||0)*18));const apd=crowd==null?null:Math.round(Math.max(0,Math.min(100,crowd*.72+quiet*.28)));const vac=Math.round(+r.liquidityVacuum||0);const lag=r.sectorLag==null?null:+r.sectorLag;const lagScore=Math.round(Math.max(0,Math.min(100,50+(lag??0)*18)));const tw=historicalTwin(r);return {apd,vac,lag,lagScore,tw};}
 
@@ -872,7 +888,7 @@ function leadModel(r){
   return {n,cur,firstKey,best};
 }
 function leadBadge(r){const m=leadModel(r);const cur=m.cur.length?m.cur.slice(0,4).map(k=>LEAD_LABEL[k]).join('→'):'wartet';let learned='lernt';if(m.n>=5){const f=m.firstKey?LEAD_LABEL[m.firstKey]:'–';const lead=m.best[0]&&Number.isFinite(m.best[0].m)?` · ${LEAD_LABEL[m.best[0].k]} ~${Math.round(m.best[0].m)}m vor +5%`:'';learned=`${f} zuerst · n=${m.n}${lead}`;}return `<span title="Early-Momentum-Learning: speichert, welcher Frühindikator wie viele Minuten VOR einer tatsächlich beobachteten +5%-Expansion angesprungen ist. Aktuelle Reihenfolge: ${esc(cur)}. Auswertung erst nach echten Fällen; 0 % BUY-Gewicht.">🧬 Lead ${esc(cur)} · ${esc(learned)}</span>`;}
-function edgeStrip(r){const e=edgeSignals(r),tw=e.tw;const twinSrc=tw.source==='d1'?'D1':'lokal';const ds=tw.distinctSymbols!=null?` · ${tw.distinctSymbols} Titel`:'';const avail=tw.available!=null&&tw.available!==tw.n?`/${tw.available}`:'';const twin=tw.n>=5?`${tw.edge}% · n=${tw.n}${avail}${ds} · ${twinSrc}`:`lernt · n=${tw.n}${avail}${ds} · ${twinSrc}`;return `<div class="edge-strip"><span title="Attention-Price-Divergence: hohe Suchaufmerksamkeit bei noch relativ ruhigem Preis. Forschungsindikator, kein BUY allein.">⚡ Attention ${e.apd==null?'n.v.':e.apd+'/100'}</span><span title="Liquidity Vacuum: heuristisch wenig frühere Aktivität/Widerstand direkt oberhalb des Einstiegs. Höher kann schnellere Expansion begünstigen.">↗ Vacuum ${e.vac}/100</span><span title="Sector Leader-Lag: positiver Wert bedeutet, dass andere Titel derselben Branche kurzfristig stärker laufen. Beobachtet potenzielle Nachzügler.">⇢ Sektor-Lag ${e.lag==null?'n.v.':num(e.lag,1)+'%'}</span><span title="Historical Twin: bevorzugt serverseitig in Cloudflare D1 gelernte, ähnlichste frühere Markt-Snapshots; lokal nur Fallback. Prozent = Anteil der ähnlichen Fälle mit mindestens +5 % beobachteter Maximalbewegung. Erst ab 5 Fällen angezeigt.">🧠 Twin ${twin}</span>${leadBadge(r)}</div>`;}
+function edgeStrip(r){const e=edgeSignals(r),tw=e.tw;const twinSrc=tw.source==='d1'?'D1':'lokal';const ds=tw.distinctSymbols!=null?` · ${tw.distinctSymbols} Titel`:'';const avail=tw.available!=null&&tw.available!==tw.n?`/${tw.available}`:'';const indep=tw.independent?' · unabhängig':'';const twin=tw.n>=5?`${tw.edge}% · n=${tw.n}${avail}${ds}${indep} · ${twinSrc}`:`lernt · n=${tw.n}${avail}${ds}${indep} · ${twinSrc}`;return `<div class="edge-strip"><span title="Attention-Price-Divergence: hohe Suchaufmerksamkeit bei noch relativ ruhigem Preis. Forschungsindikator, kein BUY allein.">⚡ Attention ${e.apd==null?'n.v.':e.apd+'/100'}</span><span title="Liquidity Vacuum: heuristisch wenig frühere Aktivität/Widerstand direkt oberhalb des Einstiegs. Höher kann schnellere Expansion begünstigen.">↗ Vacuum ${e.vac}/100</span><span title="Sector Leader-Lag: positiver Wert bedeutet, dass andere Titel derselben Branche kurzfristig stärker laufen. Beobachtet potenzielle Nachzügler.">⇢ Sektor-Lag ${e.lag==null?'n.v.':num(e.lag,1)+'%'}</span><span title="Historical Twin: bevorzugt serverseitig in Cloudflare D1 gelernte, ähnlichste frühere Markt-Snapshots; lokal nur Fallback. Prozent = Anteil der ähnlichen Fälle mit mindestens +5 % beobachteter Maximalbewegung. Erst ab 5 Fällen angezeigt.">🧠 Twin ${twin}</span>${leadBadge(r)}</div>`;}
 
 
 function learningBadge(){

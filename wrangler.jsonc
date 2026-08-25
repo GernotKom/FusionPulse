@@ -9,7 +9,7 @@
 
   // Nur Diagnose. Die verbindliche Version steht in src/version.js und wird
   // von scripts/sync-version.mjs aus package.json hierher gespiegelt.
-  "vars": { "APP_VERSION": "3.2.8", "ALPACA_FEED": "iex", "TIINGO_STOCKS_MODE": "primary" },
+  "vars": { "APP_VERSION": "3.2.9", "ALPACA_FEED": "iex", "TIINGO_STOCKS_MODE": "primary" },
 
   // v3.2: Cron läuft jede Minute. Im Worker selbst wird gedrosselt:
   // Krypto 5-minütig, Alpaca im Opening-Fenster, Aktien-Learning im Primary-Modus über Tiingo.

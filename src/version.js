@@ -6,5 +6,5 @@
      src/version.js · public/version.js · public/sw.js
      public/index.html (<title>) · wrangler.jsonc (vars.APP_VERSION)
    ========================================================================== */
-export const APP_VERSION = '3.2.8';
+export const APP_VERSION = '3.2.9';
 export default APP_VERSION;

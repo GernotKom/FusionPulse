@@ -1667,6 +1667,25 @@ function twinDistance(a,b){
   }
   return n>=3?Math.sqrt(z):9999;
 }
+// v3.2.9 — Historical Twin uses independent, genuinely similar episodes instead of
+// blindly filling a fixed Top-12 list with highly correlated snapshots.
+function independentTwinEpisodes(cur, rows){
+  const MAX_DIST=3.25; // fixed similarity gate; never loosened to manufacture a sample size
+  const bestByEpisode=new Map();
+  for(const raw of rows||[]){
+    const d=twinDistance(cur,raw);
+    if(!Number.isFinite(d)||d>=9999||d>MAX_DIST) continue;
+    const ts=Number(raw.ts)||0;
+    // One observation per symbol and UTC trading date. This collapses the many overlapping
+    // 5-minute snapshots of the same move into one independent historical episode.
+    const day=ts?new Date(ts).toISOString().slice(0,10):String(raw.bucket5||'unknown');
+    const key=`${String(raw.symbol||'').toUpperCase()}:${day}`;
+    const x={...raw,d};
+    const prev=bestByEpisode.get(key);
+    if(!prev||d<prev.d) bestByEpisode.set(key,x);
+  }
+  return [...bestByEpisode.values()].sort((a,b)=>a.d-b.d).slice(0,40);
+}
 async function d1TwinFor(env, symbol){
   if(!env.DB) return {n:0,source:'none'};
   const cur=await env.DB.prepare(`SELECT sector,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure
@@ -1674,14 +1693,18 @@ async function d1TwinFor(env, symbol){
   if(!cur) return {n:0,source:'d1'};
   if(!cur.sector) return {n:0,source:'d1',reason:'kein Sektor'};
   const curBucket=Math.floor(Date.now()/(5*60_000));
-  const q=env.DB.prepare(`SELECT symbol,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure,max_pct,min_pct
-       FROM market_snapshots WHERE resolved_ts IS NOT NULL AND asset_type='stock' AND source IN ('Twelve Data','Tiingo IEX') AND sector=? AND bucket5<=? AND symbol!=? ORDER BY ts DESC LIMIT 300`).bind(cur.sector,curBucket-36,String(symbol).toUpperCase());
+  const q=env.DB.prepare(`SELECT symbol,ts,bucket5,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure,max_pct,min_pct
+       FROM market_snapshots WHERE resolved_ts IS NOT NULL AND asset_type='stock' AND source IN ('Twelve Data','Tiingo IEX') AND sector=? AND bucket5<=? ORDER BY ts DESC LIMIT 500`).bind(cur.sector,curBucket-36);
   const rows=(await q.all()).results||[];
-  const eligible=rows.map(x=>({...x,d:twinDistance(cur,x)})).filter(x=>x.d<9999).sort((a,b)=>a.d-b.d);
-  const nearest=eligible.slice(0,12);
-  if(nearest.length<5)return {n:nearest.length,available:eligible.length,distinctSymbols:new Set(nearest.map(x=>x.symbol)).size,source:'d1'};
-  const vals=nearest.map(x=>Number(x.max_pct)||0).sort((a,b)=>a-b);
-  return {n:nearest.length,available:eligible.length,distinctSymbols:new Set(nearest.map(x=>x.symbol)).size,edge:Math.round(nearest.filter(x=>Number(x.max_pct)>=5).length/nearest.length*100),stops:nearest.filter(x=>Number(x.min_pct)<=-1.5).length,median:r1(vals[Math.floor(vals.length/2)]||0),source:'d1'};
+  const twins=independentTwinEpisodes(cur,rows);
+  const available=twins.length;
+  const distinctSymbols=new Set(twins.map(x=>String(x.symbol||'').toUpperCase())).size;
+  if(twins.length<5)return {n:twins.length,available,distinctSymbols,source:'d1',reason:'zu wenige unabhängige ähnliche Episoden'};
+  const vals=twins.map(x=>Number(x.max_pct)||0).sort((a,b)=>a-b);
+  // Distance-weighted outcome: close historical analogues count more than marginal ones.
+  let winW=0,totalW=0;
+  for(const x of twins){const w=1/Math.pow(1+Math.max(0,Number(x.d)||0),2);totalW+=w;if(Number(x.max_pct)>=5)winW+=w;}
+  return {n:twins.length,available,distinctSymbols,edge:totalW?Math.round(winW/totalW*100):0,stops:twins.filter(x=>Number(x.min_pct)<=-1.5).length,median:r1(vals[Math.floor(vals.length/2)]||0),source:'d1',independent:true};
 }
 async function d1LeadModel(env, symbol){
   if(!env.DB)return {n:0};

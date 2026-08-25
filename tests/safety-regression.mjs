@@ -91,7 +91,9 @@ console.log('✓ FusionPulse safety regressions: OK');
 assert.match(workerText,/const ell=Number\(r\?\.elliott\)\|\|0/,'Deep recheck ranking must explicitly include Elliott structure');
 assert.match(workerText,/openingGainers\(radar\.rows\|\|\[\],6\)/,'Verified market gainers must receive dedicated discovery slots');
 assert.match(workerText,/security_meta:v327:/,'Security cache generation must be invalidated for v3.2.6');
-assert.match(workerText,/available:eligible\.length/,'Historical Twin must expose the qualified pool in addition to capped n');
+assert.match(workerText,/independentTwinEpisodes\(cur,rows\)/,'Historical Twin must collapse correlated snapshots into independent episodes');
+assert.doesNotMatch(workerText,/eligible\.slice\(0,12\)/,'Historical Twin must not hard-fill a fixed n=12 sample');
+assert.match(workerText,/MAX_DIST=3\.25/,'Historical Twin must use a fixed similarity gate instead of filling to a target n');
 
 // v3.2.7 ETF cache-leak regression guard
 assert.match(workerText,/function stripKnownNonCommon\(rows\)/,'Cached stock rows must have a hard non-common sanitizer');
