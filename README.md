@@ -1,6 +1,6 @@
-# FusionPulse v3.3.8
+# FusionPulse v3.3.9
 
-## v3.3.8 P0 Discovery-Fokus Hotfix
+## v3.3.9 P0 Discovery-Fokus Hotfix
 - Behebt die v3.3.7-Regression, durch die ein Klick auf Whole-Market Radar / Opening Momentum / Extended Hours das große Aktien-Fokusfenster nicht mehr renderte. Ursache war fehlende Initialisierung der Quote-Metadaten (`qm`) im Fokus-Renderer.
 - Der ausgewählte Ticker erscheint jetzt sofort im großen Fokusfenster, auch während Deep-Analyse bzw. Live-Quote noch laden. Ein langsamer Alpaca-/Quote-Pfad darf die sichtbare Auswahl nicht blockieren.
 - Opening Momentum zeigt nun ebenfalls den Speed-Wert mit derselben grün/rot-Logik und verständlichem Mouseover wie der Whole-Market Radar.

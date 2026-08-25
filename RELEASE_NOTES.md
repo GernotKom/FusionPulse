@@ -1,77 +1,14 @@
-# FusionPulse v3.3.8
+# FusionPulse v3.3.9
 
-## v3.3.8 P0 Discovery-Fokus Regression Fix
-- Klick auf Whole-Market Radar, Opening Momentum und Extended Hours öffnet wieder zuverlässig das große Aktien-Fokusfenster.
-- Root Cause behoben: `focusQuoteMeta(top)` wird vor der Live-/Freshness-Leiste initialisiert; der Renderer bricht nicht mehr mit einem undefinierten `qm` ab.
-- Auswahl wird sofort sichtbar: Ticker und Ladezustand erscheinen bereits vor Abschluss von Deep-Analyse/Live-Quote. Provider-Fehler blockieren die Fokusdarstellung nicht.
-- Opening Momentum enthält nun `Speed` mit grün/rot-Farblogik und Mouseover-Erklärung; Speed bleibt reiner Kontext/Discovery und hat kein eigenständiges BUY-Gewicht.
-- Trading- und Safety-Gates unverändert.
+Patch auf Basis v3.3.8.
 
+- Aktien-Fokus: Netto-CRV als eigene, deutlich sichtbare Kennzahl; bei Unterschreitung der Mindestgrenze mit „zu niedrig“ markiert.
+- Netto-CRV-Mouseover laienverständlich erweitert (Nettogewinn/Risiko nach Kosten, Spread, Slippage).
+- Strukturpotenzial-Mouseover präzisiert: technisch plausibler Zielraum, kein erwarteter Gewinn und kein eigenständiges BUY-Signal.
+- Unternehmensfokus im Fokusfenster erweitert; bei nicht verifiziertem Lead Program/Candidate wird dies ausdrücklich angezeigt statt Angaben zu erfinden.
+- Versionsreferenzen auf 3.3.9 synchronisiert.
 
-## P0 Stabilisierung – Connection Watchdog
-- Harte Timeouts für die zentralen PWA-Abrufe (Krypto-Scan, Aktien, Opening Momentum, Health und Aktiensuche), damit ein hängender Request die Oberfläche nicht dauerhaft auf „Verbinde…“ festhält.
-- Automatischer Connection-Watchdog erkennt festhängende bzw. zu alte Krypto-Scans, bricht sie ab und startet selbstständig einen Reconnect. Ein Browser-Neustart soll nicht mehr nötig sein.
-- Während der Wiederherstellung zeigt die PWA explizit „Verbindung wird wiederhergestellt“ statt eines unklaren dauerhaften „Verbinde…“.
-- Health-Check wird beim Reconnect parallel neu geladen; bestehende Trading-/Safety-Gates bleiben unverändert.
-- Keine Erhöhung der Scanlast und keine Lockerung von BUY-, CRV-, Freshness- oder Common-Stock-Regeln.
-
-# FusionPulse Release Notes — v3.3.4
-
-## v3.3.4 – Radar-to-Deep-Scan & Discovery-Klicks
-
-- Whole-Market-/Opening-Radar-Kandidaten werden im autonomen Deep Scan vor alten Cache-Rechecks priorisiert.
-- Bereits tief analysierte Nicht-Favoriten bleiben sichtbar, solange sie im aktuell verifizierten Discovery-Pool stehen.
-- Klick auf Whole-Market Radar, Opening Momentum oder Extended-Hours lädt eine noch nicht analysierte Aktie direkt per Lookup und öffnet sie anschließend im großen Aktienfenster.
-- Kein BUY-Gewicht für Discovery; Elliott-first, Netto-CRV und Safety-Gates unverändert.
-
-## v3.3.3 – Radar-Pipeline, Freshness & Google-Finance-Deep-Link
-- Whole-Market-Radar nutzt als sicheren Fallback bereits Common-Stock-verifizierte Opening-Radar-Kandidaten und zeigt sie sofort in der UI; Discovery bleibt 0 % BUY-Gewicht.
-- Verifizierte Opening-Radar-Kandidaten werden in D1 persistiert und können den nächsten serverseitigen Deep Scan nominieren.
-- Favoriten werden im Deep Scan zyklisch rotiert statt immer nur die ersten zwei zu aktualisieren.
-- Erfolgreiche Whole-Market-Radar-Zyklen persistieren den Aktien-Healthstatus; erfolgreiche PWA-Krypto-Scans bestätigen den Krypto-Healthstatus. Grau = noch nicht verifiziert, Blinken = Prüfung/Aktualisierung läuft.
-- Google Finance öffnet bei bekanntem Primary Listing direkt den aktuell ausgewählten Ticker statt nur die allgemeine Finance-Suche.
-- BUY-Gates, Elliott-first, Netto-CRV und Safety-Regeln unverändert.
-
-## v3.3.2 – Whole-Market-Sichtbarkeit & Live-Suche
-- Opening Momentum liest bei fehlendem verifiziertem Deep-Scan-Cache direkt den persistenten Tiingo Whole-Market-Radar und verifiziert nur die kleine Top-Kandidatenmenge über den bestehenden Security-Metadaten-Cache. Kein zusätzlicher schwerer /iex-Bulk-Scan aus der PWA.
-- Whole-Market-Radar zeigt jetzt verifizierte Kandidaten unabhängig davon, ob sie bereits +2 % Market-Gainer sind; Favoriten werden mit ★ kenntlich gemacht.
-- Filterbezeichnung präzisiert: „Alle analysierten Aktien“ statt missverständlichem „Alle Aktien“.
-- Aktiensuche zeigt Treffer bereits während der Eingabe (280-ms-Debounce, maximal fünf Vorschläge); Return bleibt zum vollständigen Laden/Analysieren.
-- BUY-Gates, Elliott-first, Netto-CRV und Safety-Regeln unverändert.
-
-
-## Schwerpunkt
-Stabilisierungsrelease nach dem ersten Live-Test von v3.3.0. Keine Änderung an BUY-Gates, Elliott-first, CRV oder Safety-Regeln.
-
-## Behoben / verbessert
-- **Opening Momentum breiter:** Kandidaten werden bevorzugt aus dem bereits serverseitig verifizierten Tiingo-IEX-Whole-Market-Radar des letzten Cron-Batches übernommen und mit Favoriten/Basiskatalog ergänzt. Die PWA startet dafür keinen zusätzlichen schweren Markt-Scan.
-- **Aktien-Suche:** deutlich sichtbarer, X zum Löschen, direkter Treffer-Preview; nach erfolgreicher Suche wird der Suchtext automatisch geleert, damit er nicht unbemerkt als Filter stehen bleibt.
-- **Signal-Herkunft:** Aktien-/Coin-Signale bleiben mit Ticker, Signalart und Uhrzeit im Footer sichtbar und überleben einen Browser-Neustart, bis sie mit ✓ quittiert werden. Die 5-Minuten-Hervorhebung der Karte bleibt davon getrennt.
-- **Funktionalitätsampel:** Krypto, Aktien, Tiingo und Cloudflare sind verständlich beschriftet. Gesamtstatus nutzt einheitlich Grün/Gelb/Orange/Rot und sagt ausdrücklich, ob Handlungsbedarf besteht.
-- **Opening/Market-Richtung:** steigende Kandidaten werden grün, fallende rot hervorgehoben.
-- **Google Finance:** direkter Link aus Aktien-Fokus und Aktienzeile; öffnet in neuem Tab/Fenster.
-- **Refresh-Erklärung:** der blaue Refresh lädt den neuesten verfügbaren Stand; der schwere Whole-Market-/Deep-Scan bleibt CPU-schonend serverseitig und wird nicht parallel aus der PWA gestartet.
-
-## Safety unverändert
-- Elliott-Wellenanalyse bleibt struktureller Ausgangspunkt der Aktienanalyse.
-- Radar, Opening Momentum, Market Gainer, Extended Hours und Crowd bleiben Discovery/Context mit 0 % direktem BUY-Gewicht.
-- BUY nur bei ausreichender Qualität, zulässigen/frischen Daten und Netto-CRV > 3:1.
-- Fehlende oder schlechtere Daten dürfen ein Setup niemals verbessern.
-
-- UX-Nachschärfung: Aktienblock vor Krypto; im Krypto-Bereich Übersicht vor Detailfenster.
-- Momentum-/Opening-Prozentwerte farbcodiert und Karten dezent grün/rot hinterlegt.
-- Google-Finance-Link im großen Aktienfenster deutlich sichtbar.
-## v3.3.6 P0 Feed-Isolation Hotfix
-- Bitpanda/Fusion-Upstream-Aufrufe haben nun einen Worker-seitigen harten Timeout von 5,5 s. Ein hängender externer Feed blockiert damit nicht mehr den gesamten `/api/scan`-Request bis zum Browser-Timeout.
-- Single-Flight entkoppelt: ein bereits laufender Krypto-Refresh wird nicht mehr von jeder neuen PWA-Anfrage abgewartet. Wenn ein letzter guter Snapshot vorhanden ist, wird dieser sofort als `staleWhileRefresh` geliefert.
-- Bei Upstream-Fehlern wird der letzte gute Krypto-Datensatz als klar veralteter Cache zurückgegeben statt die komplette Oberfläche leer laufen zu lassen. Alte Daten dürfen weiterhin keine frische BUY-Freigabe erzeugen.
-- Ein erzwungener Refresh wartet nicht mehr auf ein eventuell festhängendes altes Inflight-Promise.
-- Frontend-Timeout auf 12 s reduziert; der Header kennzeichnet Cache-/Reconnect-Zustand als Warnung statt fälschlich grün.
-
-
-## v3.3.7 P0 Quote/Freshness Hotfix
-- Ausgewählte Radar-Aktien laden einen separaten, möglichst frischen Quote (Alpaca vor Tiingo) mit Quelle, Scope, Uhrzeit und Alter.
-- Das große Aktienfenster zeigt klar „AUSGEWÄHLTE AKTIE“ und scrollt beim Radar-Klick sofort in den sichtbaren Bereich.
-- Analysepreis und Live-/Referenzquote werden nicht mehr stillschweigend gleichgesetzt.
-- Krypto-Ampel wird nur noch grün, wenn ein höchstens 90 Sekunden alter Kryptodatensatz bestätigt ist. Worker-Erreichbarkeit allein reicht nicht.
-- Keine Änderung an BUY-Gates, Elliott-first, CRV oder Instrument-Safety.
+### P0 Hotfix – Radar-Fokus eindeutig
+- Klick auf Whole-Market Radar / Opening Momentum / Extended Hours bindet das Fokusfenster jetzt strikt an den angeklickten Ticker.
+- Das Fokusfenster fällt nicht mehr auf den ersten sichtbaren Listentitel (z. B. PMI) zurück, wenn der angeklickte Titel außerhalb des aktuellen Listen-Slices liegt.
+- API-Antworten mit abweichendem Ticker werden fail-closed als Ticker-Mismatch verworfen statt die falsche Aktie anzuzeigen.

@@ -63,3 +63,10 @@
 - Worker-Upstream-Timeout, stale-while-refresh und sofortiger letzter guter Snapshot statt globalem Feed-Hänger.
 - Manueller Refresh kann unabhängig von altem Inflight-Zustand neu ansetzen.
 - Header/Status kennzeichnet veraltete Cache-Daten explizit; keine grüne Freshness-Anzeige bei Stale-Daten.
+
+## v3.3.9 umgesetzt
+- Fokusfenster: prominente Netto-CRV-Kachel + verständlicher Tooltip.
+- Strukturpotenzial: verständlicher Tooltip und klare Abgrenzung zum erwarteten Gewinn.
+- Unternehmensbeschreibung: Lead Program/Candidate nur bei verifizierbarer Datenbasis; sonst explizit „nicht verifiziert“.
+
+- [x] **P0 v3.3.9:** Radar-/Momentum-Klick darf im Fokusfenster niemals auf PMI/ersten sichtbaren Titel zurückfallen; Fokus strikt an angeklickten Ticker binden und Ticker-Mismatch aus API fail-closed behandeln.
