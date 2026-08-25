@@ -1,3 +1,29 @@
+# FusionPulse v3.5.5 · Modul 1: Aladdin-Style Market Intelligence
+
+## Die Idee
+Nicht "noch ein Indikator", sondern eine hierarchische Marktmeinung im Geist von BlackRocks Aladdin: mehrere Datenebenen zu einer konsistenten, nachvollziehbaren Entscheidung zusammenfuehren. FusionPulse sagt jetzt nicht nur "diese Aktie hat ein Setup", sondern bildet oberhalb des Radars eine "FusionPulse Market Recommendation":
+
+MARKTLAGE: RISK-ON 72 % · Fuehrung: Semiconductors · Software · Vermeiden: ... · Beste Situation: NVDA (Sektor fuehrt, RVOL 2,4, Strukturraum 4,1 %) · Empfehlung: Long bevorzugen, keine Late-Chases · Marktrisiko: ... · Was wuerde die Meinung aendern: ...
+
+## Architektur (entscheidend)
+Der Aladdin-Layer ist ein **eigener Layer, der die Empfehlung speist – er veraendert WEDER den Claude- noch den FusionPulse-Score**. Die Kombination (Setup x Marktpassung x Liquiditaet) passiert in einer separaten, ungelockten Schicht. Grund: So kann Modul 0 Setup-Edge und Markt-Edge **getrennt** auf Erfolg tracken. Verschmolzen waere diese Information fuer immer verloren. Alle vier SHA-256-Bloecke des Claude-Modus sind nach dem Einbau verifiziert identisch.
+
+## Ebenen
+- **Regime:** Risk-On / Neutral / Risk-Off mit Wahrscheinlichkeit, aus Breadth (Anteil positiver 1h-Returns), VWAP-Breite und Volumenbestaetigung.
+- **Sektor-Rotation:** relative Staerke je Sektor (↑/→/↓) aus 1h-Grundtrend, 15m-Beschleunigung und Volumen. Nur Sektoren mit ≥3 Titeln werden bewertet.
+- **Stress-Layer:** atypische Zustaende (erhoehte Median-ATR, hohe Gleichrichtung/Konzentration, weite Spreads).
+- **Szenario-Engine:** lineare Was-waere-wenn-Sensitivitaet (Nasdaq -1 %, Renditen +10 bp, BTC -3 %) mit transparenten Beta-Annahmen, ausdruecklich kein Faktormodell.
+- **Opportunity-Ranking:** Setup-Qualitaet x Marktpassung x Liquiditaet, mit Late-Chase-Malus und Sektor-Leader-Bonus.
+
+## Ehrlichkeits-Prinzip (wie Modul 0)
+Unsere Marktabdeckung ist eine **Stichprobe** (20-40 rotierende Titel), kein Vollmarkt. Jede Ebene weist Datenbasis und Konfidenz aus. Eine Breadth-Aussage aus 22 Titeln wird als Stichprobe etikettiert, nicht als Marktbreite-Index. Im Funktionsnachweis bestaetigt: bei 14 Titeln zeigt der Layer "Risk-On 89 %" ABER Konfidenz nur 16 und markiert die duenne Basis explizit als Marktrisiko. Lieber ehrlich unsicher als selbstsicher falsch.
+
+## Funktionsnachweis
+Synthetische Marktzustaende bestaetigen: breite Staerke -> Risk-On, breite Schwaeche -> Risk-Off, zu wenige Titel -> "Unklar" (statt falscher Sicherheit), Late-Chase (viel gelaufen, Tempo raus) wird trotz hohem Setup-Score aus der Spitzenposition verdraengt.
+
+## Neu
+Route /api/aladdin · Market-Recommendation-Kachel oberhalb des Aktienradars.
+
 # FusionPulse v3.5.4 · Modul 0: Selbstauswertung & Overfitting-Wächter
 
 ## Was neu ist

@@ -719,3 +719,25 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 .attr-recs{margin-top:.5rem;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}
 .attr-recs span{background:rgba(230,140,50,.18);border-radius:.4rem;padding:.15rem .5rem;font-size:.8rem}
 .attr-recs small{flex-basis:100%;opacity:.7}
+
+/* Modul 1: Aladdin Market Recommendation */
+.aladdin-card{margin:0 0 1rem;padding:.9rem 1.1rem;border:1px solid var(--line,#2a2a2a);border-radius:.8rem;background:linear-gradient(180deg,rgba(80,120,220,.06),transparent)}
+.ala-head{display:flex;justify-content:space-between;align-items:baseline;gap:1rem;flex-wrap:wrap;margin-bottom:.6rem}
+.ala-head small{opacity:.65}
+.ala-regime{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin-bottom:.7rem}
+.ala-badge{font-weight:700;font-size:1.05rem;padding:.25rem .7rem;border-radius:.5rem}
+.ala-on .ala-badge{background:rgba(60,200,120,.18);color:#3ec878}
+.ala-off .ala-badge{background:rgba(220,70,70,.18);color:#e05555}
+.ala-neutral .ala-badge{background:rgba(180,180,180,.15)}
+.ala-conf{opacity:.7;font-size:.85rem}
+.ala-grid{display:grid;grid-template-columns:1fr 1fr;gap:.5rem .9rem;margin-bottom:.6rem}
+.ala-cell{display:flex;flex-direction:column;gap:.15rem}
+.ala-k{font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;opacity:.55}
+.ala-v{font-size:.9rem}
+.ala-v.up{color:#3ec878}.ala-v.down{color:#e0a055}
+.ala-v small{opacity:.6;font-weight:400}
+.ala-stance{padding:.45rem .6rem;background:rgba(80,120,220,.10);border-radius:.5rem;font-size:.9rem;margin-bottom:.4rem}
+.ala-risk,.ala-inval{font-size:.82rem;opacity:.82;margin-bottom:.3rem}
+.ala-risk b,.ala-inval b{opacity:.9}
+.ala-foot{font-size:.76rem;opacity:.5;margin-top:.3rem}
+@media(max-width:640px){.ala-grid{grid-template-columns:1fr}}

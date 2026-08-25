@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.5.4 — Frontend
+   FusionPulse v3.5.5 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1105,7 +1105,54 @@ async function loadLearning(){
     mergeServerHistories();renderLearningStatus();renderLearningReport();render();renderStocks();
   }catch(e){learningData={configured:true,state:'error',error:String(e.message||e)};renderLearningStatus();}
 }
-function setLearningPoll(){clearInterval(learningTimer);learningTimer=setInterval(()=>{if(document.visibilityState==='visible'){loadLearning();loadAttribution();}},120_000);}
+function setLearningPoll(){clearInterval(learningTimer);learningTimer=setInterval(()=>{if(document.visibilityState==='visible'){loadLearning();loadAttribution();loadAladdin();}},120_000);}
+
+/* Modul 1 UI: Aladdin-Style Market Recommendation oberhalb des Radars.
+   Reine Anzeige der serverseitigen Marktmeinung; kein Score-Eingriff. */
+let aladdinData={};
+async function loadAladdin(){
+  try{
+    const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
+    const r=await fetchWithTimeout('/api/aladdin?'+q,{cache:'no-store'},10_000);
+    aladdinData=await r.json()||{};
+  }catch(e){ aladdinData={state:'error',error:String(e.message||e)}; }
+  renderAladdin();
+}
+function regimeClass(label){ return label==='Risk-On'?'ala-on':label==='Risk-Off'?'ala-off':'ala-neutral'; }
+function renderAladdin(){
+  const el=$('#aladdinCard'); if(!el)return;
+  const d=aladdinData||{};
+  if(d.state==='error'){ el.innerHTML=`<div class="ala-head"><b>🧭 Market Intelligence</b><small class="err">${esc(d.error||'Fehler')}</small></div>`; return; }
+  const rec=d.recommendation; if(!rec){ el.innerHTML=`<div class="ala-head"><b>🧭 Market Intelligence</b><small>Noch keine Marktdaten – Radar lädt.</small></div>`; return; }
+  const reg=d.regime||{};
+  const conf=reg.confidence!=null?`Konfidenz ${reg.confidence}%`:'';
+  const thin=reg.thin||d.dataBasis?.sampledTitles<20;
+  const lead=rec.leadership?.length?rec.leadership.join(' · '):'–';
+  const avoid=rec.avoid?.length?rec.avoid.join(' · '):'–';
+  const best=rec.best, alt=rec.alt;
+  const bestLine=best?`<b>${esc(best.symbol)}</b> <small>${esc(best.why.join(' · '))}</small>`:'–';
+  const altLine=alt?`<b>${esc(alt.symbol)}</b> <small>${esc(alt.why.join(' · '))}</small>`:'–';
+  el.innerHTML=`
+    <div class="ala-head">
+      <b>🧭 FusionPulse Market Recommendation</b>
+      <small>Aladdin-Style · speist die Empfehlung, ändert keinen Score${thin?' · ⚠ Stichprobe, kein Vollmarkt':''}</small>
+    </div>
+    <div class="ala-regime ${regimeClass(reg.label)}">
+      <span class="ala-badge">${esc(rec.headline)}</span>
+      <span class="ala-conf">${conf}${reg.sample?` · Basis ${reg.sample} Titel`:''}</span>
+    </div>
+    <div class="ala-grid">
+      <div class="ala-cell"><span class="ala-k">Führung</span><span class="ala-v up">${esc(lead)}</span></div>
+      <div class="ala-cell"><span class="ala-k">Vermeiden</span><span class="ala-v down">${esc(avoid)}</span></div>
+      <div class="ala-cell"><span class="ala-k">Beste Situation</span><span class="ala-v">${bestLine}</span></div>
+      <div class="ala-cell"><span class="ala-k">Alternative</span><span class="ala-v">${altLine}</span></div>
+    </div>
+    <div class="ala-stance"><b>Empfehlung:</b> ${esc(rec.stance)}</div>
+    ${rec.marketRisk?.length?`<div class="ala-risk"><b>Marktrisiko:</b> ${esc(rec.marketRisk.join(' · '))}</div>`:''}
+    ${rec.invalidation?.length?`<div class="ala-inval"><b>Was würde die Meinung ändern:</b> ${esc(rec.invalidation.join(' · '))}</div>`:''}
+    <div class="ala-foot">${reg.reasons?.length?esc(reg.reasons.join(' · ')):''}</div>`;
+  el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
+}
 
 /* Modul 0 UI: Attribution & Overfitting-Guard. Reine Anzeige der serverseitigen
    Auswertung; sie triggert keine Score-Aenderung, nur Empfehlungen. */
@@ -2145,7 +2192,7 @@ $('#scan').onclick = async () => {
   // v3.4.2: manueller blauer Refresh bedeutet ECHTE Aktualisierung. FokusScope zuerst,
   // danach der gesamte Aktien-Snapshot; alte Cache-Daten duerfen nicht als Refresh gelten.
   if(focusStock) await searchStockNow(focusStock,true);
-  await Promise.allSettled([scan(true), scanStocks(true), scanOpeningMomentum(true), loadExperimental(true), loadCrowd(true), loadLearning(), loadAttribution(), loadHealth()]);
+  await Promise.allSettled([scan(true), scanStocks(true), scanOpeningMomentum(true), loadExperimental(true), loadCrowd(true), loadLearning(), loadAttribution(), loadAladdin(), loadHealth()]);
 };
 $('#sound').onclick = () => {
   S.sound = !S.sound; saveSettings();
@@ -2274,6 +2321,7 @@ loadExperimental(false);
 loadCrowd(false);
 loadLearning();
 loadAttribution();
+loadAladdin();
 setPoll(S.interval);
 setStockPoll();
 setHealthPoll();

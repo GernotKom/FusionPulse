@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { analyse, analyseStock } from '../src/worker.js';
+import { analyse, analyseStock, aladdinIntelligence } from '../src/worker.js';
 
 function coinBars(n=82){
   const out=[]; const t0=1_700_000_000;
@@ -272,3 +272,30 @@ console.log('✓ FusionPulse v3.5.3 adaptive/target/economic regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.5.4 attribution/overfitting-guard regressions: OK');
+// v3.5.5 Modul 1: Aladdin-Style Market Intelligence. Marktmeinung, KEIN Score-Eingriff.
+{
+  assert.match(workerText,/MODUL 1 · ALADDIN-STYLE MARKET INTELLIGENCE/,'Aladdin-Layer muss vorhanden sein');
+  assert.match(workerText,/function aladdinRegime\(rows\)/,'Regime-Ebene muss existieren');
+  assert.match(workerText,/function aladdinSectors\(rows\)/,'Sektor-Rotations-Ebene muss existieren');
+  assert.match(workerText,/function aladdinStress\(rows, regime\)/,'Stress-Ebene muss existieren');
+  assert.match(workerText,/function marketRecommendation\(rows, regime, sectors\)/,'Kombinationsschicht (Setup x Marktpassung) muss existieren');
+  assert.match(workerText,/url\.pathname === '\/api\/aladdin'/,'Aladdin-Route muss existieren');
+  // Der Layer darf keinen gelockten Score veraendern: er ruft analyseStock/analyse NICHT.
+  const alaBlock=workerText.slice(workerText.indexOf('MODUL 1 · ALADDIN'),workerText.indexOf('async function learningPayload'));
+  assert.ok(!/analyseStock\(|function analyse\(/.test(alaBlock),'Aladdin-Layer darf die Bewertungslogik nicht erzeugen/veraendern (reine Aggregation)');
+  assert.match(alaBlock,/kein Vollmarkt/,'Ehrlichkeit: Datenbasis muss explizit als Stichprobe gekennzeichnet sein');
+
+  // Verhaltenspruefung mit synthetischen Marktzustaenden.
+  const mkRow=(sym,sec,r15,r60,rv,vwap,sc)=>({symbol:sym,sector:sec,ret15:r15,ret60:r60,relVol:rv,aboveVwap:vwap,score:sc,atrPct:2,structurePct:3,light:sc>=8?'green':sc>=6?'yellow':'red',volumeKnown:true,breakout60m:r60>3,spreadPct:0.05});
+  const on=[];for(let i=0;i<14;i++)on.push(mkRow('S'+i,i<4?'Semiconductors':i<8?'Software':'Industrials',1.5,3.0,1.8,true,7.5));
+  const A=aladdinIntelligence(on);
+  assert.equal(A.regime.label,'Risk-On','Breite Staerke muss als Risk-On erkannt werden');
+  assert.ok(A.regime.confidence<70,'Bei Stichprobe darf die Konfidenz nicht hoch tun');
+  assert.ok(A.recommendation.marketRisk.some(x=>/Stichprobe|duenn/i.test(x)) || A.regime.sample>=20,'Duenne Basis muss als Marktrisiko ausgewiesen werden');
+  const off=on.map(r=>({...r,ret15:-1,ret60:-2,aboveVwap:false,relVol:1.0,score:4}));
+  assert.equal(aladdinIntelligence(off).regime.label,'Risk-Off','Breite Schwaeche muss als Risk-Off erkannt werden');
+  const thin=aladdinIntelligence(on.slice(0,6));
+  assert.equal(thin.regime.label,'Unklar','Zu wenige Titel muessen zu "Unklar" fuehren, nicht zu falscher Sicherheit');
+}
+
+console.log('✓ FusionPulse v3.5.5 aladdin market-intelligence regressions: OK');

@@ -2320,6 +2320,208 @@ async function claudeAttribution(env){
   };
 }
 
+/* ============================================================================
+   MODUL 1 · ALADDIN-STYLE MARKET INTELLIGENCE (v3.5.5, additiv)
+   ----------------------------------------------------------------------------
+   Nicht "noch ein Indikator", sondern eine hierarchische Marktmeinung aus den
+   bereits vorhandenen Zeilen-Signalen. Der Layer speist die Empfehlung OBERHALB
+   des Radars; er veraendert WEDER den Claude- noch den FusionPulse-Score. Die
+   Kombination (Setup x Marktpassung) passiert in einer eigenen, ungelockten
+   Schicht (marketRecommendation), damit Modul 0 Setup-Edge und Markt-Edge
+   getrennt tracken kann.
+
+   EHRLICHKEITS-PRINZIP (wie Modul 0): Unsere Marktabdeckung ist eine Stichprobe
+   (20-40 rotierende Titel), kein Vollmarkt. Jede Ebene weist ihre Datenbasis und
+   eine Konfidenz aus. Eine Breadth-Aussage aus 22 Titeln ist eine Stichprobe,
+   kein Marktbreite-Index - und wird genau so etikettiert. Lieber ehrlich
+   unsicher als selbstsicher falsch.
+   ============================================================================ */
+const ALADDIN = {
+  MIN_SAMPLE_REGIME: 12,   // darunter: Regime = 'Unklar' mit niedriger Konfidenz
+  MIN_SECTOR_MEMBERS: 3,   // Sektor-Aussage erst ab so vielen Titeln im Sektor
+  RISK_ON_THRESH: 0.60,    // Anteil positiver/starker Titel fuer Risk-On-Neigung
+  RISK_OFF_THRESH: 0.35,
+};
+const clampNum=(x,lo,hi)=>Math.max(lo,Math.min(hi,Number.isFinite(Number(x))?Number(x):lo));
+/** Konfidenz aus Stichprobengroesse: klein -> niedrig, wird nie 100 %. */
+function sampleConfidence(n, floor=12, full=40){
+  if(n<=0) return 0;
+  return Math.round(clampNum((n-floor)/(full-floor),0,1)*70 + Math.min(30, n/full*30));
+}
+/** Regime aus Zeilen-Signalen: Anteil Titel ueber VWAP, positive ret60,
+ *  RVOL-Schub, Situationsdruck. Alles bereits pro Zeile vorhanden. */
+function aladdinRegime(rows){
+  const usable=rows.filter(r=>r && Number.isFinite(Number(r.ret60)));
+  const n=usable.length;
+  if(n<ALADDIN.MIN_SAMPLE_REGIME){
+    return {label:'Unklar',prob:50,confidence:sampleConfidence(n),sample:n,
+      reasons:[`nur ${n} analysierbare Titel – zu duenn fuer eine belastbare Regime-Aussage`],
+      breadth:null,thin:true};
+  }
+  const above=usable.filter(r=>r.aboveVwap===true).length;
+  const posRet60=usable.filter(r=>Number(r.ret60)>0).length;
+  const strongRvol=usable.filter(r=>Number(r.relVol)>=1.5).length;
+  const breadth=posRet60/n;                       // Anteil Titel mit positivem 1h-Return
+  const vwapBreadth=above/n;
+  const rvolShare=strongRvol/n;
+  // gewichteter Risk-On-Score 0..1
+  const riskOnScore=clampNum(breadth*0.5 + vwapBreadth*0.3 + rvolShare*0.2,0,1);
+  let label='Neutral';
+  if(riskOnScore>=ALADDIN.RISK_ON_THRESH) label='Risk-On';
+  else if(riskOnScore<=ALADDIN.RISK_OFF_THRESH) label='Risk-Off';
+  const prob=Math.round(riskOnScore*100);
+  const reasons=[];
+  reasons.push(`${Math.round(breadth*100)} % der Titel mit positivem 1h-Return (Breadth)`);
+  reasons.push(`${Math.round(vwapBreadth*100)} % ueber VWAP`);
+  if(rvolShare>=0.3) reasons.push(`${Math.round(rvolShare*100)} % mit RVOL ≥ 1,5x – Volumen bestaetigt Bewegung`);
+  else reasons.push(`nur ${Math.round(rvolShare*100)} % mit erhoehtem Volumen – Bewegung schwach getragen`);
+  return {label,prob,confidence:sampleConfidence(n),sample:n,breadth:+breadth.toFixed(2),
+    vwapBreadth:+vwapBreadth.toFixed(2),rvolShare:+rvolShare.toFixed(2),riskOnScore:+riskOnScore.toFixed(2),
+    reasons,thin:n<20};
+}
+/** Sektor-Rotation: relative Staerke je Sektor (ret15/ret60), Volumen, Beschleunigung.
+ *  Nur Sektoren mit genug Mitgliedern werden bewertet; Rest = 'zu wenig Daten'. */
+function aladdinSectors(rows){
+  const bySector=new Map();
+  for(const r of rows){
+    const s=r?.sector; if(!s||s==='Discovery') continue;
+    (bySector.get(s)??bySector.set(s,[]).get(s)).push(r);
+  }
+  const sectors=[];
+  for(const [sector,rs] of bySector){
+    const n=rs.length;
+    const avg=(f)=>{const v=rs.map(x=>Number(x[f])).filter(Number.isFinite);return v.length?v.reduce((a,b)=>a+b,0)/v.length:null;};
+    const ret15=avg('ret15'), ret60=avg('ret60'), rvol=avg('relVol');
+    const accel=(ret15!=null&&ret60!=null)?(ret15 - ret60/4):null; // 15m-Tempo vs. 1h-Grundtrend
+    if(n<ALADDIN.MIN_SECTOR_MEMBERS){
+      sectors.push({sector,members:n,status:'zu wenig Daten',ret15:r1(ret15),ret60:r1(ret60),rvol:r1(rvol),thin:true});
+      continue;
+    }
+    // Trend: kombiniert 1h-Grundrichtung, 15m-Beschleunigung, Volumenbestaetigung
+    const trendScore=(ret60||0)*0.5 + (accel||0)*0.8 + ((rvol||1)-1)*1.5;
+    const arrow=trendScore>=1.2?'↑':trendScore<=-1.2?'↓':'→';
+    sectors.push({sector,members:n,status:'ok',arrow,
+      ret15:r1(ret15),ret60:r1(ret60),rvol:r1(rvol),accel:r1(accel),trendScore:+trendScore.toFixed(2),thin:false});
+  }
+  const rated=sectors.filter(s=>s.status==='ok').sort((a,b)=>b.trendScore-a.trendScore);
+  return {
+    leaders:rated.filter(s=>s.arrow==='↑').slice(0,3),
+    laggards:rated.filter(s=>s.arrow==='↓').slice(0,3),
+    all:sectors.sort((a,b)=>(b.trendScore??-99)-(a.trendScore??-99)),
+    ratedCount:rated.length,
+  };
+}
+/** Stress-Layer: atypische Zustaende in der Stichprobe (Spread/ATR/Korrelation/
+ *  Liquiditaet). Ehrlich als Stichproben-Signal, nicht als VIX-Ersatz. */
+function aladdinStress(rows, regime){
+  const usable=rows.filter(r=>r&&Number.isFinite(Number(r.atrPct)));
+  const n=usable.length;
+  const flags=[];
+  if(n>=8){
+    const atrs=usable.map(r=>Number(r.atrPct)).sort((a,b)=>a-b);
+    const medATR=atrs[Math.floor(atrs.length/2)];
+    if(medATR>=4) flags.push(`erhoehte Volatilitaet (Median-ATR ${medATR.toFixed(1)} %)`);
+    // Korrelations-Proxy: laufen fast alle Titel gleichgerichtet? (Konzentrationsrisiko)
+    const up=usable.filter(r=>Number(r.ret60)>0).length/n;
+    if(up>=0.85||up<=0.15) flags.push(`hohe Gleichrichtung (${Math.round(up*100)} % gleiche Richtung) – wenig Diversifikation`);
+    const wideSpread=usable.filter(r=>r.spreadPct!=null&&Number(r.spreadPct)>=0.15).length;
+    if(wideSpread/n>=0.3) flags.push(`${Math.round(wideSpread/n*100)} % mit weiten Spreads – Liquiditaet angespannt`);
+  }
+  const level=flags.length>=2?'erhoeht':flags.length===1?'leicht':'normal';
+  return {level,flags,sample:n,thin:n<12};
+}
+/** Szenario-/Stress-What-if: verschiebt Kandidaten-Kennzahlen unter Annahmen
+ *  (Nasdaq -1 %, Renditen +10bp -> Tech-Beta-Druck, BTC -3 % -> Krypto-nahe Titel).
+ *  Bewusst als lineare Sensitivitaet gekennzeichnet, kein echtes Faktormodell. */
+function aladdinScenario(candidates, shock){
+  // shock: {nasdaqPct, yieldBp, btcPct}. Grobe, transparente Beta-Annahmen.
+  const nas=Number(shock?.nasdaqPct)||0, yld=Number(shock?.yieldBp)||0, btc=Number(shock?.btcPct)||0;
+  return candidates.map(c=>{
+    const cryptoProxy=/MSTR|COIN|MARA|RIOT|CLSK|HOOD|HUT/i.test(c.symbol)?1:0;
+    const techBeta=/Semiconduct|Software|Technolog|Info/i.test(c.sector||'')?1.2:0.8;
+    // lineare Naeherung: Marktschock * Beta + Zins-Gegenwind fuer Tech + BTC-Kopplung
+    const est=nas*techBeta + (yld/10)*-0.4*techBeta + (cryptoProxy?btc*0.9:0);
+    return {symbol:c.symbol, estMovePct:+est.toFixed(2),
+      note:cryptoProxy?'krypto-gekoppelt':techBeta>1?'zinssensitiv (Tech-Beta)':'defensiver'};
+  });
+}
+
+/** KOMBINATIONSSCHICHT (ungelockt, von Modul 0 trackbar):
+ *  finaleEmpfehlung = Setup-Qualitaet x Marktpassung x Liquiditaet.
+ *  Aendert NICHTS am Claude-/FusionPulse-Score, sondern re-rankt die vorhandenen
+ *  Kandidaten nach Passung zum aktuellen Marktregime. Late-Chases werden
+ *  abgewertet, Titel im fuehrenden Sektor bevorzugt. */
+function marketRecommendation(rows, regime, sectors){
+  const leaderSet=new Set(regime.label==='Risk-On'?sectors.leaders.map(s=>s.sector):[]);
+  const laggardSet=new Set(sectors.laggards.map(s=>s.sector));
+  const scored=rows.filter(r=>r&&r.light&&r.volumeKnown!==false).map(r=>{
+    const setupQ=clampNum(Number(r.score)||0,0,10)/10;
+    // Marktpassung: fuehrt der Sektor? passt Richtung zum Regime? nicht ueberdehnt?
+    let fit=0.5;
+    if(leaderSet.has(r.sector)) fit+=0.25;
+    if(laggardSet.has(r.sector)) fit-=0.25;
+    if(regime.label==='Risk-On' && r.aboveVwap===true) fit+=0.1;
+    if(regime.label==='Risk-Off' && r.aboveVwap===true) fit-=0.15; // Long im Risk-Off skeptisch
+    // Late-Chase-Malus: viel gelaufen (ret60 hoch) aber Tempo raus (ret15 schwach)
+    const lateChase=Number(r.ret60)>4 && Number(r.ret15)<Number(r.ret60)*0.15;
+    if(lateChase) fit-=0.35; // stark genug, damit die "keine Late-Chases"-Empfehlung die Rangliste nicht konterkariert
+    fit=clampNum(fit,0,1);
+    const liq=r.relVol==null?0.5:clampNum(Number(r.relVol)/2.5,0.2,1);
+    const combined=+(setupQ*0.5 + fit*0.35 + liq*0.15).toFixed(3);
+    const why=[];
+    if(leaderSet.has(r.sector)) why.push(`Sektor ${r.sector} fuehrt`);
+    if(Number(r.relVol)>=1.5) why.push(`RVOL ${Number(r.relVol).toFixed(1)}x`);
+    if(r.breakout60m) why.push('60m-Ausbruch');
+    if(Number(r.structurePct)>0) why.push(`Strukturraum ${Number(r.structurePct).toFixed(1)} %`);
+    if(Number(r.ret60)>4 && Number(r.ret15)<Number(r.ret60)*0.15) why.push('⚠ spaet – Tempo laesst nach');
+    return {symbol:r.symbol, sector:r.sector, light:r.light, score:r1(r.score),
+      setupQ:+setupQ.toFixed(2), marketFit:+fit.toFixed(2), liquidity:+liq.toFixed(2),
+      combined, relVol:r.relVol, aboveVwap:r.aboveVwap, ret60:r.ret60, ret15:r.ret15,
+      structurePct:r.structurePct, why:why.slice(0,5)};
+  }).sort((a,b)=>b.combined-a.combined);
+  return scored;
+}
+/** Top-Level-Assembler: fuehrt alle Ebenen zur "FusionPulse Market Recommendation"
+ *  zusammen. Reine Meinung ueber vorhandenen Daten; kein Score-Eingriff. */
+function aladdinIntelligence(rows, opts={}){
+  const clean=(rows||[]).filter(r=>r&&r.symbol);
+  const regime=aladdinRegime(clean);
+  const sectors=aladdinSectors(clean);
+  const stress=aladdinStress(clean,regime);
+  const ranked=marketRecommendation(clean,regime,sectors);
+  const best=ranked[0]||null;
+  const alt=ranked[1]||null;
+  // Empfehlungssatz aus dem Regime ableiten – konservativ, mit Invalidation.
+  let stance='Neutral agieren – kein klarer Vorteil einer Seite.';
+  if(regime.label==='Risk-On') stance='Long-Seite bevorzugen, aber keine Late-Chases.';
+  else if(regime.label==='Risk-Off') stance='Defensiv – Long nur bei klarem Sektor-Leader und starkem Setup.';
+  const invalidation=[];
+  if(regime.breadth!=null) invalidation.push(`Regime kippt, wenn Breadth unter ${Math.round((ALADDIN.RISK_OFF_THRESH)*100)} % faellt`);
+  if(sectors.leaders[0]) invalidation.push(`${sectors.leaders[0].sector} verliert Fuehrung (Trend dreht auf →/↓)`);
+  if(best) invalidation.push(`${best.symbol}: Setup ungueltig unter Stop/VWAP-Verlust`);
+  const marketRisk=[];
+  if(regime.thin) marketRisk.push(`duenne Datenbasis (${regime.sample} Titel) – Aussage ist Stichprobe, kein Vollmarkt`);
+  if(stress.level!=='normal') marketRisk.push(...stress.flags);
+  if(regime.rvolShare!=null && regime.rvolShare<0.3) marketRisk.push('Bewegung schwach durch Volumen bestaetigt');
+  return {
+    generatedTs:Date.now(),
+    regime, sectors, stress,
+    recommendation:{
+      headline:`${regime.label==='Unklar'?'MARKTLAGE UNKLAR':'MARKTLAGE: '+regime.label.toUpperCase()} ${regime.prob} %`,
+      confidence:regime.confidence,
+      leadership:sectors.leaders.map(s=>s.sector),
+      avoid:sectors.laggards.map(s=>s.sector),
+      best, alt, stance,
+      marketRisk, invalidation:invalidation.slice(0,3),
+    },
+    ranked:ranked.slice(0,8),
+    dataBasis:{sampledTitles:clean.length,ratedSectors:sectors.ratedCount,
+      honesty:'Stichprobe aus rotierendem Deep-Scan; Breadth/Rotation sind Naeherungen, kein Vollmarkt-Index.'},
+    note:'Aladdin-Style Marktmeinung. Speist die Empfehlung, veraendert KEINEN Claude-/FusionPulse-Score. Kombination (Setup x Marktpassung) ist separat trackbar.',
+    version:APP_VERSION,
+  };
+}
+
 async function learningPayload(env, stocks=[], coins=[]){
   if(!env.DB)return {configured:false,state:'nodb',message:'D1-Binding DB fehlt',version:APP_VERSION};
   await ensureD1Schema(env);
@@ -3002,7 +3204,7 @@ async function tiingoStockLookup(env,raw,comp,minCrv=3,force=false){
   stockLookupMemo.set(info.symbol,{ts:Date.now(),row});const old=new Map(stockMemo.rows.map(r=>[r.symbol,r]));old.set(row.symbol,row);stockMemo.rows=[...old.values()].sort((a,b)=>b.score-a.score).slice(0,80);
   return {configured:true,state:'ok',cached:false,lookup:true,row,source:'Tiingo IEX',provider:'Tiingo',version:APP_VERSION};
 }
-export { analyse, analyseStock };
+export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation };
 
 export default {
   async fetch(request, env, ctx) {
@@ -3087,6 +3289,15 @@ export default {
     if (url.pathname === '/api/attribution') {
       try { return json(await claudeAttribution(env),200,{ 'cache-control':'no-store' }); }
       catch(e) { return json({configured:!!env.DB,state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    // Modul 1: Aladdin-Style Market Intelligence. Marktmeinung ueber vorhandenem
+    // Aktien-Cache; veraendert keinen Claude-/FusionPulse-Score.
+    if (url.pathname === '/api/aladdin') {
+      try {
+        const src=(stockMemo.rows&&stockMemo.rows.length)?stockMemo.rows:(await readLatestPersistedStockScan(env))?.rows||[];
+        return json(aladdinIntelligence(src),200,{ 'cache-control':'no-store' });
+      } catch(e) { return json({state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
     }
 
     if (url.pathname === '/api/experimental') {
