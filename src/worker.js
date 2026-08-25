@@ -1378,6 +1378,10 @@ function barTimeET(ts){
 }
 function momentumFromAlpaca(symbol, snap, bars=[]){
   if(!snap)return null;
+  // v3.4.1 P0: Die Preisquelle muss vor dem Return immer definiert sein.
+  // Reihenfolge bleibt bewusst minute -> trade -> daily; daily ist nur Discovery-Fallback
+  // und darf in der UI nicht wie ein frischer Extended-Hours-Quote aussehen.
+  const priceSource = Number(snap.minuteBar?.c||0)>0 ? 'minute' : Number(snap.latestTrade?.p||0)>0 ? 'trade' : Number(snap.dailyBar?.c||0)>0 ? 'daily' : 'none';
   const prevClose=Number(snap.prevDailyBar?.c||0), latest=Number(snap.minuteBar?.c||snap.latestTrade?.p||snap.dailyBar?.c||0);
   if(!(latest>0&&prevClose>0))return null;
   const bs=(bars||[]).map(b=>({t:b.t,c:+b.c,h:+b.h,l:+b.l,v:+b.v||0})).filter(b=>b.c>0).sort((a,b)=>new Date(a.t)-new Date(b.t));

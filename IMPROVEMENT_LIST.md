@@ -1,4 +1,11 @@
-# FusionPulse Improvement List — Stand v3.4.0
+# FusionPulse Improvement List — Stand v3.4.1
+
+
+## In v3.4.1 umgesetzt — P0 Hotfix
+- **P0 Laufzeitfehler Opening/Alpaca:** `momentumFromAlpaca()` definierte `priceSource` vor dem Return nicht. Der dadurch ausgelöste `ReferenceError: priceSource is not defined` konnte Opening Momentum/Extended-Hours-Aktienpfade abbrechen. `priceSource` wird jetzt deterministisch als `minute`, `trade`, `daily` oder `none` gesetzt.
+- **Daily-Bar klar fail-closed gekennzeichnet:** Wenn Alpaca weder Minute-Bar noch Latest Trade liefert, erscheint der Tages-Bar nur als `⚠ Tages-Bar/Fallback` im Discovery-Bereich; er wird nicht als Live-Quote dargestellt und bleibt 0 % BUY-Gewicht.
+- **Regressionstest ergänzt:** Safety-Suite prüft jetzt explizit, dass `priceSource` vor der Rückgabe definiert ist und der Daily-Fallback sichtbar gekennzeichnet bleibt.
+- Keine Änderung an BUY-Schwellen, CRV, Sizing, Elliott-Logik oder Discovery-Gewichtung.
 
 ## In v3.4.0 umgesetzt — Audit + VL
 - P0 Fokusbindung: Radar/Momentum/Extended/Suche dürfen niemals still auf ersten/vorherigen Ticker zurückfallen; aktiver Fokus wird über Polls erhalten.

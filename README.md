@@ -1,6 +1,6 @@
-# FusionPulse v3.4.0
+# FusionPulse v3.4.1
 
-## v3.4.0 Audit-/VL-Stabilitätsrelease
+## v3.4.1 P0-Hotfix auf v3.4.0
 - Setzt die P0/P1-Kernbefunde des externen Audits minimal-invasiv um: Fokusbindung, Lookup-Race/Mismatch, Regime-Erklärung, Freshness-/Market-Gates, Timeouts, Poll-Stabilität und Cache-Freshness.
 - Integriert die aktuelle VL: Einzelaktien-Refresh, Opening-Momentum-Status/Speed, Sticky-Fokus, Learning-Erklärung und klare Freshness-Anzeige.
 - Tradingregeln, CRV-Berechnung und Schwellenwerte bleiben unverändert; fehlende oder schlechtere Daten dürfen ein Setup niemals verbessern.

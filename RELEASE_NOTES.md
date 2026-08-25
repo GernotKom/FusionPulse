@@ -1,3 +1,20 @@
+# FusionPulse v3.4.1 — P0 Hotfix
+
+## Behoben
+- Laufzeitfehler `priceSource is not defined` im Alpaca Opening-/Momentum-Pfad behoben.
+- Preisquelle wird deterministisch als `minute`, `trade`, `daily` oder `none` gesetzt.
+- Alpaca-Tages-Bar wird im Opening Momentum ausdrücklich als `⚠ Tages-Bar/Fallback` gekennzeichnet und nicht als Live-Quote dargestellt.
+- Regressionstest für diesen konkreten Fehler ergänzt.
+
+## Safety
+- Keine Änderung an BUY-Gates, Netto-CRV, Sizing, Elliott-Logik oder Discovery-Gewichtung.
+- Daily-Bar bleibt Discovery-Kontext mit 0 % direktem BUY-Gewicht.
+
+## Basis
+- Enthält vollständig den Audit-/VL-Stand von v3.4.0.
+
+---
+
 # FusionPulse v3.4.0 — Release Notes
 
 Datum: 25.08.2026
