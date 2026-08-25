@@ -1,4 +1,10 @@
-# FusionPulse Improvement List — Stand v3.3.2
+# FusionPulse Improvement List — Stand v3.3.3
+
+## In v3.3.3 zusätzlich umgesetzt
+- Whole-Market-Radar-Fallback aus verifizierten Opening-Radar-Kandidaten; persistente Übergabe an den autonomen Deep Scan.
+- Favoritenrotation im Deep Scan, damit nicht dauerhaft nur die ersten zwei Favoriten frisch gerechnet werden.
+- Health-Ampel an persistente echte Provider-/Freshness-Bestätigungen gekoppelt; Tooltip erklärt Grau/Blinken und alle Farben.
+- Google Finance öffnet bei bekanntem Primary Listing direkt den aktuell ausgewählten Ticker.
 
 ## In v3.3.2 umgesetzt
 - Whole-Market-Radar sichtbar auch ohne +2-%-Gainer-Schwelle; Favoriten klar getrennt markiert.

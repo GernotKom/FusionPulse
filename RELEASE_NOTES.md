@@ -1,4 +1,12 @@
-# FusionPulse Release Notes — v3.3.2
+# FusionPulse Release Notes — v3.3.3
+
+## v3.3.3 – Radar-Pipeline, Freshness & Google-Finance-Deep-Link
+- Whole-Market-Radar nutzt als sicheren Fallback bereits Common-Stock-verifizierte Opening-Radar-Kandidaten und zeigt sie sofort in der UI; Discovery bleibt 0 % BUY-Gewicht.
+- Verifizierte Opening-Radar-Kandidaten werden in D1 persistiert und können den nächsten serverseitigen Deep Scan nominieren.
+- Favoriten werden im Deep Scan zyklisch rotiert statt immer nur die ersten zwei zu aktualisieren.
+- Erfolgreiche Whole-Market-Radar-Zyklen persistieren den Aktien-Healthstatus; erfolgreiche PWA-Krypto-Scans bestätigen den Krypto-Healthstatus. Grau = noch nicht verifiziert, Blinken = Prüfung/Aktualisierung läuft.
+- Google Finance öffnet bei bekanntem Primary Listing direkt den aktuell ausgewählten Ticker statt nur die allgemeine Finance-Suche.
+- BUY-Gates, Elliott-first, Netto-CRV und Safety-Regeln unverändert.
 
 ## v3.3.2 – Whole-Market-Sichtbarkeit & Live-Suche
 - Opening Momentum liest bei fehlendem verifiziertem Deep-Scan-Cache direkt den persistenten Tiingo Whole-Market-Radar und verifiziert nur die kleine Top-Kandidatenmenge über den bestehenden Security-Metadaten-Cache. Kein zusätzlicher schwerer /iex-Bulk-Scan aus der PWA.

@@ -671,3 +671,7 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 .trend-pct{font-weight:850}.trend-pct.up{color:var(--green)}.trend-pct.down{color:var(--red)}
 .gfinance.focus-link{margin-left:10px;padding:5px 9px;font-size:10px;border-color:color-mix(in srgb,var(--accent) 60%,var(--line2));background:color-mix(in srgb,var(--accent) 10%,var(--panel));white-space:nowrap}
 .gfinance.focus-link:hover{background:color-mix(in srgb,var(--accent) 18%,var(--panel))}
+
+/* v3.3.3 Health-Ampel: Grau blinkt nur waehrend laufender/noch nicht verifizierter Pruefung. */
+@keyframes fp-status-check{0%,100%{opacity:.38}50%{opacity:1}}
+.mini-dot.busy::before{animation:fp-status-check 1.05s ease-in-out infinite}

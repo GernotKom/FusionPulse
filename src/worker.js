@@ -1,7 +1,7 @@
 import { APP_VERSION } from './version.js';
 
 /* ============================================================================
-   FusionPulse v3.0.8 — Cloudflare Worker
+   FusionPulse v3.3.3 — Cloudflare Worker
    Momentum- & Einstiegszonen-Scanner für Bitpanda Fusion (EUR-Paare)
 
    Design-Prinzipien:
@@ -1420,7 +1420,16 @@ async function openingMomentum(env, force=false, favoriteSymbols=[]){
   const rows=dynamicUniverse.map(sym=>momentumFromAlpaca(sym,snaps?.[sym],hist?.bars?.[sym]||[])).filter(Boolean).sort((a,b)=>b.momentumScore-a.momentumScore);
   const limitations=(feed==='sip'?'SIP: konsolidierter Echtzeit-Feed aller US-Börsen einschließlich Extended Hours.':'IEX Free: nur eine US-Börse; frühe Premarket-Daten sind unvollständig.')+' Kandidaten: Whole-Market-Radar + Favoriten + Basiskatalog; Opening bleibt Discovery mit 0 % BUY-Gewicht.';
   const data={configured:true,state:'ok',rows:rows.map(r=>({...r,origin:radarSyms.includes(r.symbol)?'radar':favs.includes(r.symbol)?'favorite':'base'})),scanned:rows.length,universe:dynamicUniverse.length,radarCandidates:radarSyms.length,radarSource,feed:feedLabel,phase:phase.key,phaseLabel,phaseHelp,limitations,ts:Date.now(),version:APP_VERSION};
-  openingMemo={ts:Date.now(),data}; setApiState('alpaca','ok',`${rows.length} Momentum-Titel · ${phase.label}`); return data;
+  openingMemo={ts:Date.now(),data};
+  setApiState('alpaca','ok',`${rows.length} Momentum-Titel · ${phase.label}`);
+  // Nur Kandidaten, die aus dem bereits Common-Stock-verifizierten Radar kamen,
+  // werden persistiert. Die Alpaca-Momentumwerte selbst sind kein Security-Gate.
+  const openingVerified=radarRows.filter(r=>radarSyms.includes(String(r.symbol||'').toUpperCase()));
+  await Promise.allSettled([
+    persistVerifiedOpeningRadar(env,openingVerified),
+    persistApiState(env,'alpaca','ok',`${rows.length} Momentum-Titel · ${phase.label}`)
+  ]);
+  return data;
 }
 
 
@@ -1826,7 +1835,11 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
     // dem persistierten Radar. So laufen JSON-Bulk-Ranking und 20 Historien-
     // Analysen nie mehr im selben Worker-Aufruf.
     if(stockMinute%2===1){
-      try{await tiingoIexMarketRadar(env,80,true);setApiState('stocks','ok','Whole-Market Radar aktualisiert');}
+      try{
+        const rd=await tiingoIexMarketRadar(env,80,true);
+        setApiState('stocks','ok',`Whole-Market Radar aktualisiert · ${rd?.rows?.length||0} Kandidaten`);
+        await persistApiState(env,'stocks','ok',`Whole-Market Radar aktualisiert · ${rd?.rows?.length||0} Kandidaten`,now);
+      }
       catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('iex-radar',state,e?.message);}
     }else{
       try{
@@ -2005,6 +2018,41 @@ async function persistIexRadar(env,data){
   if(!env?.DB||!data?.rows?.length)return;
   try{await ensureD1Schema(env);const ts=Date.now(),payload=safeJson({ts,universe:data.universe,rows:data.rows.slice(0,120).map(r=>({symbol:r.symbol,last:r.last,prevClose:r.prevClose,open:r.open,high:r.high,low:r.low,volume:r.volume,spreadPct:r.spreadPct,movePct:r.movePct,openPct:r.openPct,rangePct:r.rangePct,speedPct:r.speedPct,volDelta:r.volDelta,score:r.score,reasons:r.reasons,ts:r.ts}))});await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`).bind('iex_radar:last',payload,ts).run();}catch(e){console.warn(JSON.stringify({event:'iex_radar_cache_write_failed',message:String(e?.message||e),ts:Date.now()}));}
 }
+
+// v3.3.3: Opening Momentum kann im Premarket bereits verifizierte marktweite
+// Kandidaten liefern, bevor der normale Deep-Scan sie übernommen hat. Diese
+// kleine, bereits durch filterRadarToCommonStocks() geprüfte Menge wird separat
+// persistiert. Sie bleibt reine Discovery (0 % BUY-Gewicht), darf aber den
+// nächsten serverseitigen Deep-Scan nominieren und den Radar in der UI füllen.
+async function persistVerifiedOpeningRadar(env, rows){
+  if(!env?.DB||!Array.isArray(rows)||!rows.length)return;
+  try{
+    await ensureD1Schema(env);
+    const ts=Date.now(), clean=rows.slice(0,24).map(r=>({
+      symbol:String(r.symbol||'').toUpperCase(), last:r.last??r.priceUsd??null,
+      movePct:r.movePct??r.gapPct??null, speedPct:r.speedPct??r.ret5??null,
+      spreadPct:r.spreadPct??null, volume:r.volume??null, score:r.score??r.momentumScore??0,
+      reasons:Array.isArray(r.reasons)?r.reasons.slice(0,3):['Opening Momentum'],
+      securityVerified:true, securityName:r.securityName||r.name||r.symbol,
+      companyDescription:r.companyDescription||'', exchange:r.exchange||'', ts:r.ts||ts,
+      buyWeight:0, source:'Opening Momentum · verified'
+    })).filter(r=>r.symbol);
+    if(!clean.length)return;
+    const payload=safeJson({ts,rows:clean});
+    await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`).bind('opening_radar_verified:last',payload,ts).run();
+  }catch(e){console.warn(JSON.stringify({event:'opening_radar_cache_write_failed',message:String(e?.message||e),ts:Date.now()}));}
+}
+async function readVerifiedOpeningRadar(env,maxAgeMs=30*60_000){
+  if(!env?.DB)return [];
+  try{
+    await ensureD1Schema(env);
+    const r=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind('opening_radar_verified:last').first();
+    if(!r?.value)return [];
+    const p=JSON.parse(r.value), ts=Number(p?.ts||r.updated_ts||0);
+    if(!ts||Date.now()-ts>maxAgeMs)return [];
+    return verifiedCommonOnly(Array.isArray(p?.rows)?p.rows:[]).slice(0,24);
+  }catch{return [];}
+}
 // v3.2.3 Security-master gate: keep the broad IEX radar, but validate
 // candidates with Tiingo's stable EOD metadata endpoint instead of the beta
 // Search endpoint. This avoids a production dependency on Search and keeps
@@ -2147,7 +2195,12 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   if(execution!=='server'&&!force){
     const persisted=await readLatestPersistedStockScan(env,4*60_000);
     if(persisted){
-      const verifiedRadar=verifiedCommonOnly(Array.isArray(persisted.meta?.verifiedRadar)?persisted.meta.verifiedRadar:[]);
+      let verifiedRadar=verifiedCommonOnly(Array.isArray(persisted.meta?.verifiedRadar)?persisted.meta.verifiedRadar:[]);
+      const openingVerified=await readVerifiedOpeningRadar(env,30*60_000);
+      if(openingVerified.length){
+        const bySym=new Map([...verifiedRadar,...openingVerified].map(x=>[String(x.symbol||'').toUpperCase(),x]));
+        verifiedRadar=[...bySym.values()].slice(0,24);
+      }
       const verifiedBoats=verifiedCommonOnly(Array.isArray(persisted.meta?.verifiedBoats)?persisted.meta.verifiedBoats:[]);
       const allowed=new Set([...verifiedRadar,...verifiedBoats].map(x=>String(x.symbol||'').toUpperCase()));
       const catalogSet=new Set(STOCK_SEARCH_CATALOG.map(x=>x[1]));
@@ -2168,6 +2221,11 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
     radar=(tiingoIexRadarMemo.rows.length&&Date.now()-tiingoIexRadarMemo.ts<4*60_000)?tiingoIexRadarMemo:(await readPersistedIexRadar(env)||radar);
     // ETF/ETP-Gate jetzt auf der kleinen Kandidatenmenge und getrennt vom Bulk-Radar.
     radar={...radar,rows:await filterRadarToCommonStocks(env,radar.rows||[],20),source:'Tiingo IEX Whole-Market Radar · Common Stocks verified'};
+    const openingVerified=await readVerifiedOpeningRadar(env,30*60_000);
+    if(openingVerified.length){
+      const merged=new Map([...(radar.rows||[]),...openingVerified].map(x=>[String(x.symbol||'').toUpperCase(),x]));
+      radar={...radar,rows:[...merged.values()].slice(0,24),source:'Tiingo IEX Whole-Market Radar + Opening verified'};
+    }
   }catch(e){console.warn(JSON.stringify({event:'iex_market_radar_cache_failed',message:String(e?.message||e),ts:Date.now()}));}
   let boats=await tiingoBoatsDiscovery(env,20,false);
   try{
@@ -2179,7 +2237,15 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
 
   const picked=new Set(), favPick=[], recheckPick=[], radarPick=[], boatsPick=[], explore=[];
   // Favoriten bleiben vertreten, blockieren aber nicht mehr die gesamte Queue.
-  for(const sym of favs){if(!picked.has(sym)){picked.add(sym);favPick.push(sym);}if(favPick.length>=2)break;}
+  // Favoriten rotieren pro Deep-Scan-Zyklus. v3.3.2 nahm immer nur die ersten
+  // zwei Favoriten und ließ spätere Favoriten dadurch unnötig lange stale.
+  if(favs.length){
+    const startFav=(cycle*2)%favs.length;
+    for(let i=0;i<favs.length&&favPick.length<2;i++){
+      const sym=favs[(startFav+i)%favs.length];
+      if(!picked.has(sym)){picked.add(sym);favPick.push(sym);}
+    }
+  }
   // Fast reife / zuletzt starke Analysen werden gezielt erneut geprueft.
   for(const r of [...(stockMemo.rows||[])].sort((a,b)=>deepRecheckRank(b)-deepRecheckRank(a))){const sym=String(r?.symbol||'').toUpperCase();if(sym&&!picked.has(sym)){picked.add(sym);recheckPick.push(sym);}if(recheckPick.length>=4)break;}
   // Marktweite frische Kandidaten erhalten den groessten Anteil der Deep-Scan-Kapazitaet.
@@ -2407,7 +2473,9 @@ export default {
           minCrv: Math.max(1, +url.searchParams.get('minCrv') || 2),
         };
         const force = url.searchParams.get('force') === '1';
-        return json(await getSnapshot(env, opts, force), 200, { 'cache-control':'no-store' });
+        const snap=await getSnapshot(env, opts, force);
+        if(snap?.rows?.length) ctx.waitUntil(persistApiState(env,'crypto','ok',`${snap.rows.length} Rows · PWA bestätigt`).catch(()=>{}));
+        return json(snap, 200, { 'cache-control':'no-store' });
       } catch (e) {
         const state = classifyError(e);
         return json({ error: e.message || String(e), state, version: APP_VERSION },
