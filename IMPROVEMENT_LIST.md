@@ -1,4 +1,11 @@
-# FusionPulse Improvement List — Stand v3.3.7
+# FusionPulse Improvement List — Stand v3.3.8
+
+## In v3.3.8 umgesetzt
+- P0 Regression: Radar-/Momentum-/Extended-Hours-Klick öffnet wieder das große Aktien-Fokusfenster; fehlende Quote-Metadaten-Initialisierung behoben.
+- Fokusfenster zeigt ausgewählten Ticker sofort als Ladezustand, bevor Deep-Analyse/Live-Quote abgeschlossen sind.
+- Speed zusätzlich in Opening Momentum, inklusive grün/rot-Darstellung und verständlichem Mouseover; kein eigenständiges BUY-Signal.
+- Weiter offen: Aktienchart mit echter Premarket-/After-Hours-Zeitreihe, Previous Close und Gap-Referenz.
+
 
 ## In v3.3.7 weiterhin enthalten / umgesetzt
 

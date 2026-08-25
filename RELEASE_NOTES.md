@@ -1,4 +1,12 @@
-# FusionPulse v3.3.7
+# FusionPulse v3.3.8
+
+## v3.3.8 P0 Discovery-Fokus Regression Fix
+- Klick auf Whole-Market Radar, Opening Momentum und Extended Hours öffnet wieder zuverlässig das große Aktien-Fokusfenster.
+- Root Cause behoben: `focusQuoteMeta(top)` wird vor der Live-/Freshness-Leiste initialisiert; der Renderer bricht nicht mehr mit einem undefinierten `qm` ab.
+- Auswahl wird sofort sichtbar: Ticker und Ladezustand erscheinen bereits vor Abschluss von Deep-Analyse/Live-Quote. Provider-Fehler blockieren die Fokusdarstellung nicht.
+- Opening Momentum enthält nun `Speed` mit grün/rot-Farblogik und Mouseover-Erklärung; Speed bleibt reiner Kontext/Discovery und hat kein eigenständiges BUY-Gewicht.
+- Trading- und Safety-Gates unverändert.
+
 
 ## P0 Stabilisierung – Connection Watchdog
 - Harte Timeouts für die zentralen PWA-Abrufe (Krypto-Scan, Aktien, Opening Momentum, Health und Aktiensuche), damit ein hängender Request die Oberfläche nicht dauerhaft auf „Verbinde…“ festhält.

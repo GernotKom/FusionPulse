@@ -682,3 +682,6 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 .focus-livebar.stale{border-color:rgba(255,190,61,.55);background:rgba(255,190,61,.09)}
 .focus-livebar b{letter-spacing:.04em}.focus-livebar.live b{color:#55e6a8}.focus-livebar.stale b{color:#ffd05a}
 .sf-grid span small{display:block;opacity:.72;font-size:9px;margin-top:2px}
+
+/* v3.3.8: discovery click must show a focus target immediately */
+.stockfocus-loading{display:flex;flex-direction:column;gap:8px;min-height:150px;padding:18px}.stockfocus-loading h3{margin:0;font-size:1.55rem}.stockfocus-loading span{color:var(--muted,#93a4bd);max-width:720px}
