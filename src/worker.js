@@ -1,7 +1,7 @@
 import { APP_VERSION } from './version.js';
 
 /* ============================================================================
-   FusionPulse v3.3.6 — Cloudflare Worker
+   FusionPulse v3.3.7 — Cloudflare Worker
    Momentum- & Einstiegszonen-Scanner für Bitpanda Fusion (EUR-Paare)
 
    Design-Prinzipien:
@@ -821,7 +821,7 @@ async function getSnapshot(env, opts, force) {
       return persisted;
     }
   }
-  // v3.3.6: Ein langsamer/defekter Upstream darf den Browser niemals an ein
+  // v3.3.7: Ein langsamer/defekter Upstream darf den Browser niemals an ein
   // bereits laufendes Promise ketten. Bevorzugt wird der letzte gute Snapshot;
   // der laufende Refresh darf im Hintergrund zu Ende laufen oder fehlschlagen.
   if (!force && inflight && inflightSig === sig) {
@@ -2176,6 +2176,41 @@ async function tiingoAnalyseOne(env,symbol,sector,comp,minCrv,fx){
   if(r){r.feed='Tiingo IEX';r.dataSource='tiingo-iex';}
   return r;
 }
+
+// v3.3.7 P0: A Deep-Scan close is an analysis price, not automatically the
+// current executable/reference quote. For a user-selected stock we fetch the
+// freshest available independent quote and expose source + timestamp. Missing
+// freshness never improves a setup; the UI can therefore label/block stale data.
+async function freshestStockQuote(env,symbol){
+  const sym=safeRadarSymbol(symbol); if(!sym) return null;
+  const candidates=[];
+  const add=(price,ts,source,scope)=>{
+    const p=Number(price),ms=ts?Date.parse(ts):NaN;
+    if(Number.isFinite(p)&&p>0)candidates.push({priceUsd:p,ts:Number.isFinite(ms)?ms:null,updated:ts||null,source,scope});
+  };
+  if(env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY){
+    try{
+      const feed=alpacaFeed(env),d=await alpacaJSON('/v2/stocks/snapshots',{symbols:sym,feed},env),snap=d?.[sym];
+      if(snap){
+        add(snap.latestTrade?.p,snap.latestTrade?.t,`Alpaca ${alpacaFeedLabel(env)}`,feed==='sip'?'konsolidierter US-Feed':'IEX-Teilmarkt');
+        add(snap.minuteBar?.c,snap.minuteBar?.t,`Alpaca ${alpacaFeedLabel(env)}`,feed==='sip'?'konsolidierter US-Feed':'IEX-Teilmarkt');
+      }
+    }catch(e){console.warn(JSON.stringify({event:'stock_fresh_quote_alpaca_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));}
+  }
+  if(env.TIINGO_API_TOKEN){
+    try{
+      const arr=await tiingoIexSnapshot(env,sym),x=arr?.[0];
+      if(x)add(x.tngoLast??x.last??x.lastPrice,x.timestamp||x.lastSaleTimestamp||x.quoteTimestamp||x.lastUpdated, 'Tiingo IEX','IEX-Teilmarkt');
+    }catch(e){console.warn(JSON.stringify({event:'stock_fresh_quote_tiingo_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));}
+  }
+  if(!candidates.length)return null;
+  candidates.sort((a,b)=>(b.ts||0)-(a.ts||0));
+  const q=candidates[0],ageSec=q.ts?Math.max(0,Math.round((Date.now()-q.ts)/1000)):null;
+  const phase=usMarketPhase();
+  const active=['premarket-early','premarket','opening','regular','after'].includes(phase.key);
+  const live=active ? (ageSec!=null && ageSec<=120) : (ageSec!=null && ageSec<=900);
+  return {...q,ageSec,live,marketPhase:phase.key};
+}
 async function tiingoValidation(env,rawSymbols){
   const symbols=[...new Set(String(rawSymbols||'AAPL,NVDA,TSLA').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,3);
   const out={configured:!!env.TIINGO_API_TOKEN,mode:tiingoStocksMode(env),symbols,version:APP_VERSION,tests:{},safe:true};
@@ -2358,10 +2393,22 @@ async function tiingoStockLookup(env,raw,comp,minCrv=3){
     }catch(e){ console.warn(JSON.stringify({event:'tiingo_search_failed',query:String(raw||''),message:String(e?.message||e),ts:Date.now()})); }
   }
   if(!info) return {configured:true,state:'ok',notFound:true,error:'Ticker/Firmenname bei Tiingo nicht gefunden.',source:'Tiingo IEX',version:APP_VERSION};
-  const cached=stockLookupMemo.get(info.symbol);if(cached&&Date.now()-cached.ts<5*60_000)return {configured:true,state:'ok',cached:true,lookup:true,row:cached.row,source:'Tiingo IEX',version:APP_VERSION};
+  const cached=stockLookupMemo.get(info.symbol);if(cached&&Date.now()-cached.ts<5*60_000){
+    const row={...cached.row};
+    const fq=await freshestStockQuote(env,info.symbol);
+    if(fq){const fx=await getTiingoFx(env);row.livePriceUsd=fq.priceUsd;row.livePriceEur=fx?fq.priceUsd/fx:null;row.liveUpdated=fq.updated;row.liveQuoteTs=fq.ts;row.liveQuoteAgeSec=fq.ageSec;row.liveQuoteSource=fq.source;row.liveQuoteScope=fq.scope;row.liveQuoteOk=!!fq.live;}
+    return {configured:true,state:'ok',cached:true,lookup:true,row,source:'Tiingo IEX',version:APP_VERSION};
+  }
   const fx=await getTiingoFx(env),row=await tiingoAnalyseOne(env,info.symbol,info.sector,comp,minCrv,fx);
   if(!row)return {configured:true,state:'ok',notFound:true,error:'Noch nicht genügend Tiingo-5-Minuten-Daten.',source:'Tiingo IEX',version:APP_VERSION};
   if(info.name&&row.name===row.symbol)row.name=info.name;
+  const fq=await freshestStockQuote(env,info.symbol);
+  if(fq){
+    row.livePriceUsd=fq.priceUsd; row.livePriceEur=fx?fq.priceUsd/fx:null;
+    row.liveUpdated=fq.updated; row.liveQuoteTs=fq.ts; row.liveQuoteAgeSec=fq.ageSec;
+    row.liveQuoteSource=fq.source; row.liveQuoteScope=fq.scope; row.liveQuoteOk=!!fq.live;
+    row.analysisPriceUsd=row.priceUsd; row.analysisUpdated=row.updated;
+  }else{row.liveQuoteOk=false;row.liveQuoteSource='kein separater Live-Quote verfügbar';}
   stockLookupMemo.set(info.symbol,{ts:Date.now(),row});const old=new Map(stockMemo.rows.map(r=>[r.symbol,r]));old.set(row.symbol,row);stockMemo.rows=[...old.values()].sort((a,b)=>b.score-a.score).slice(0,80);
   return {configured:true,state:'ok',cached:false,lookup:true,row,source:'Tiingo IEX',provider:'Tiingo',version:APP_VERSION};
 }

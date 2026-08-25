@@ -675,3 +675,10 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.3.3 Health-Ampel: Grau blinkt nur waehrend laufender/noch nicht verifizierter Pruefung. */
 @keyframes fp-status-check{0%,100%{opacity:.38}50%{opacity:1}}
 .mini-dot.busy::before{animation:fp-status-check 1.05s ease-in-out infinite}
+
+/* v3.3.7 selected-stock live/freshness bar */
+.focus-livebar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0 8px;padding:6px 8px;border-radius:8px;font-size:11px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.035)}
+.focus-livebar.live{border-color:rgba(36,211,138,.55);background:rgba(36,211,138,.09)}
+.focus-livebar.stale{border-color:rgba(255,190,61,.55);background:rgba(255,190,61,.09)}
+.focus-livebar b{letter-spacing:.04em}.focus-livebar.live b{color:#55e6a8}.focus-livebar.stale b{color:#ffd05a}
+.sf-grid span small{display:block;opacity:.72;font-size:9px;margin-top:2px}
