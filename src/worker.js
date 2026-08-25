@@ -1,7 +1,7 @@
 import { APP_VERSION } from './version.js';
 
 /* ============================================================================
-   FusionPulse v3.3.4 — Cloudflare Worker
+   FusionPulse v3.3.5 — Cloudflare Worker
    Momentum- & Einstiegszonen-Scanner für Bitpanda Fusion (EUR-Paare)
 
    Design-Prinzipien:

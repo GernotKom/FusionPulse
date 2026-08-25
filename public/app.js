@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.3.4 — Frontend
+   FusionPulse v3.3.5 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -10,6 +10,62 @@ const $$ = (s) => [...document.querySelectorAll(s)];
 
 /* Version: kommt aus /version.js, das aus package.json generiert wird. */
 const FP_VERSION = (typeof self !== 'undefined' && self.FP_VERSION) || '0.0.0';
+
+
+/* ---------------------------------------------------- Netzwerk-Stabilität */
+const NET_TIMEOUT_MS = 15_000;
+let lastSuccessfulScanTs = 0;
+let scanStartedTs = 0;
+let reconnectAttempt = 0;
+let connectionWatchdogTimer = null;
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = NET_TIMEOUT_MS) {
+  const outerSignal = options.signal;
+  const ac = new AbortController();
+  let outerAbort;
+  if (outerSignal) {
+    if (outerSignal.aborted) ac.abort();
+    else { outerAbort = () => ac.abort(); outerSignal.addEventListener('abort', outerAbort, { once: true }); }
+  }
+  const timerId = setTimeout(() => ac.abort('timeout'), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: ac.signal, cache: options.cache || 'no-store' });
+  } catch (e) {
+    if (ac.signal.aborted && !outerSignal?.aborted) {
+      const err = new Error(`Zeitüberschreitung nach ${Math.round(timeoutMs/1000)} s`);
+      err.name = 'TimeoutError';
+      throw err;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timerId);
+    if (outerSignal && outerAbort) outerSignal.removeEventListener('abort', outerAbort);
+  }
+}
+
+function showReconnectState(reason='Datenabruf hängt') {
+  const el=$('#status'); if(!el)return;
+  el.textContent=`Verbindung wird wiederhergestellt · ${reason}`;
+  el.dataset.state='busy';
+  el.title='FusionPulse hat einen festhängenden oder veralteten Datenabruf erkannt. Der Watchdog bricht ihn ab und startet automatisch einen neuen Abruf. Kein Browser-Neustart nötig.';
+}
+
+function startConnectionWatchdog(){
+  clearInterval(connectionWatchdogTimer);
+  connectionWatchdogTimer=setInterval(()=>{
+    if(document.visibilityState!=='visible')return;
+    const now=Date.now();
+    const stuck=scanning && scanStartedTs && now-scanStartedTs>NET_TIMEOUT_MS+5_000;
+    const stale=lastSuccessfulScanTs && now-lastSuccessfulScanTs>90_000;
+    if(!stuck && !stale)return;
+    reconnectAttempt++;
+    showReconnectState(stuck?'Abruf reagiert nicht':'letzter erfolgreicher Scan zu alt');
+    try{controller?.abort();}catch{}
+    scanning=false;
+    setMiniStatus('#miniCrypto','warn','Krypto: Reconnect läuft · kein manueller Browser-Neustart nötig');
+    setTimeout(()=>{ if(document.visibilityState==='visible') { loadHealth(); scan(false); } }, Math.min(4000,500+reconnectAttempt*500));
+  },15_000);
+}
 
 /* ------------------------------------------------------------ Einstellungen */
 const ALL_COMPONENTS = ['vwap', 'ema21', 'rs', 'mtf', 'volume', 'book', 'squeeze', 'pullback', 'elliott'];
@@ -426,7 +482,7 @@ function checkQuotaPopup(q, state) {
 async function loadHealth() {
   try {
     const p = new URLSearchParams(); if (S.token) p.set('t', S.token);
-    const r = await fetch('/api/health?' + p, { cache: 'no-store' });
+    const r = await fetchWithTimeout('/api/health?' + p, { cache: 'no-store' }, 8_000);
     health = await r.json();
     if (health.version) {
       $('#appver').textContent = 'v' + health.version;
@@ -523,6 +579,7 @@ async function scan(force = false) {
   controller = new AbortController();
   const localController = controller;
   const t0 = performance.now();
+  scanStartedTs = Date.now();
   $('#status').dataset.state = 'busy';
 
   try {
@@ -531,7 +588,7 @@ async function scan(force = false) {
     });
     if (S.token) q.set('t', S.token);
     if (force) q.set('force', '1');
-    const res = await fetch(`/api/scan?${q}`, { signal: localController.signal });
+    const res = await fetchWithTimeout(`/api/scan?${q}`, { signal: localController.signal, cache:'no-store' }, NET_TIMEOUT_MS);
     const data = await res.json();
     if (!res.ok) {
       setSys('#sysCrypto', data.state || 'error', data.error);
@@ -552,16 +609,17 @@ async function scan(force = false) {
     $('#status').textContent = `${data.warmStart ? 'Cron-Cache' : data.cached ? 'Cache' : 'Live'} · ${data.deepCount} gescannt / ${shown} angezeigt von ${data.universe} · ${data.requests ?? data.subrequests ?? '–'} API-Unterabfragen · ${Math.round(performance.now() - t0)} ms`;
     $('#status').title = 'Live/Cache = Datenquelle des letzten Scans · „gescannt“ = tief analysierte Coins, „angezeigt“ = Zeilen in dieser Liste (Einstellungen) · API-Unterabfragen = Bitpanda-Unterabfragen innerhalb dieses Scans, NICHT dein Cloudflare-Tagesverbrauch (Eigenzählung je Worker-Instanz) · ms = Dauer des Scans.';
     $('#status').dataset.state = 'ok';
+    lastSuccessfulScanTs = Date.now(); reconnectAttempt = 0;
     $('#stamp').textContent = new Date(data.ts).toLocaleTimeString('de-AT');
   } catch (e) {
-    if (e.name === 'AbortError') return;
+    if (e.name === 'AbortError' && localController.signal.aborted && req !== scanReqSeq) return;
     const msg = String(e.message || e);
-    $('#status').textContent = `Fehler: ${msg}`;
-    $('#status').dataset.state = 'err';
+    if(e.name==='TimeoutError'){ showReconnectState(msg); setMiniStatus('#miniCrypto','warn','Krypto: Zeitüberschreitung · automatischer Reconnect läuft'); setTimeout(()=>{if(document.visibilityState==='visible')scan(false);},1200); }
+    else { $('#status').textContent = `Fehler: ${msg}`; $('#status').dataset.state = 'err'; }
     if (/cpu|exceeded|resource|1102/i.test(msg)) showQuotaWarning('cpu', msg);
     else if (/429|too many|limit/i.test(msg)) showQuotaWarning('requests', msg);
   } finally {
-    if (req === scanReqSeq) scanning = false;
+    if (req === scanReqSeq) { scanning = false; scanStartedTs = 0; }
   }
 }
 
@@ -986,7 +1044,7 @@ async function openStockFromDiscovery(symbol){
   if(st){st.textContent=`${sym} wird tief analysiert…`;st.className='badge';}
   try{
     const q=new URLSearchParams({lookup:sym,comp:S.components.join(','),minCrv:S.minCrvStock});if(S.token)q.set('t',S.token);
-    const res=await fetch('/api/stocks?'+q,{cache:'no-store'}),data=await res.json();
+    const res=await fetchWithTimeout('/api/stocks?'+q,{cache:'no-store'},12_000),data=await res.json();
     if(data.row){
       const m=new Map(stockRows.map(r=>[r.symbol,r]));m.set(data.row.symbol,data.row);stockRows=[...m.values()];
       rememberStockRows([data.row]);stockRows=mergeFavoriteRows(stockRows);focusStock=data.row.symbol;
@@ -1161,7 +1219,7 @@ async function scanStocks(force = false) {
     const q = new URLSearchParams({ comp: S.components.join(','), minCrv: S.minCrvStock, favorites: (S.favoriteStocks||[]).join(',') });
     if (S.token) q.set('t', S.token);
     if (force) q.set('force', '1');
-    const res = await fetch('/api/stocks?' + q);
+    const res = await fetchWithTimeout('/api/stocks?' + q, {cache:'no-store'}, 12_000);
     const data = await res.json();
     if(req!==stockReqSeq)return;
     stockMeta = data;
@@ -1201,7 +1259,7 @@ async function previewStockSearchLive(){
   stockSuggestTimer=setTimeout(async()=>{
     try{
       const q=new URLSearchParams({q:raw}); if(S.token)q.set('t',S.token);
-      const res=await fetch('/api/stock-suggest?'+q,{cache:'no-store'}), data=await res.json();
+      const res=await fetchWithTimeout('/api/stock-suggest?'+q,{cache:'no-store'},8_000), data=await res.json();
       if(seq!==stockSuggestSeq || input.value.trim()!==raw)return;
       const rows=data.rows||[];
       preview.innerHTML=rows.length?rows.map(r=>`<button type="button" data-suggeststock="${esc(r.symbol)}">✓ ${esc(r.symbol)} · ${esc(r.name||'Aktie')} <small>gefunden</small></button>`).join(''):'<span class="search-notfound">Noch kein Treffer</span>';
@@ -1227,7 +1285,7 @@ async function searchStockNow() {
   const st = $('#stockState'); if (st) { st.textContent = 'Suche…'; st.className = 'badge'; }
   try {
     const q = new URLSearchParams({ lookup: raw, comp: S.components.join(','), minCrv: S.minCrvStock }); if (S.token) q.set('t', S.token);
-    const res = await fetch('/api/stocks?' + q, { cache: 'no-store' }); const data = await res.json();
+    const res = await fetchWithTimeout('/api/stocks?' + q, { cache: 'no-store' }, 12_000); const data = await res.json();
     stockMeta = { ...stockMeta, ...data, refreshedSymbols:[data.row?.symbol].filter(Boolean), ts:Date.now() };
     if (data.row) { const m = new Map(stockRows.map((r) => [r.symbol, r])); m.set(data.row.symbol, data.row); stockRows = [...m.values()]; rememberStockRows([data.row]); stockRows=mergeFavoriteRows(stockRows); focusStock=data.row.symbol; }
     renderQuota(data.quota); checkQuotaPopup(data.quota, data.state);
@@ -1242,7 +1300,7 @@ async function scanOpeningMomentum(force = false) {
   const req=++openingReqSeq;
   try {
     const q = new URLSearchParams({favorites:(S.favoriteStocks||[]).join(',')}); if (S.token) q.set('t', S.token); if (force) q.set('force','1');
-    const res = await fetch('/api/opening?' + q, { cache: 'no-store' });
+    const res = await fetchWithTimeout('/api/opening?' + q, { cache: 'no-store' }, 10_000);
     const data = await res.json(); if(req!==openingReqSeq)return; openingMeta = data; openingRows = data.rows || []; renderOpeningPanel(); renderStocks(); loadCrowd(false);
   } catch (e) { openingMeta = { state:'error', phaseLabel:'Alpaca nicht erreichbar', phaseHelp:String(e.message||e) }; renderOpeningPanel(); }
 }
@@ -1803,6 +1861,7 @@ document.addEventListener('visibilitychange', () => {
     scanStocks(false);
     scanOpeningMomentum(false);
     loadHealth();
+    if(!lastSuccessfulScanTs || Date.now()-lastSuccessfulScanTs>90_000){ scanning=false; scan(false); }
   }
 });
 
@@ -1955,4 +2014,5 @@ loadLearning();
 setPoll(S.interval);
 setStockPoll();
 setHealthPoll();
+startConnectionWatchdog();
 setLearningPoll();

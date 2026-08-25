@@ -1,3 +1,12 @@
+# FusionPulse v3.3.5
+
+## P0 Stabilisierung – Connection Watchdog
+- Harte Timeouts für die zentralen PWA-Abrufe (Krypto-Scan, Aktien, Opening Momentum, Health und Aktiensuche), damit ein hängender Request die Oberfläche nicht dauerhaft auf „Verbinde…“ festhält.
+- Automatischer Connection-Watchdog erkennt festhängende bzw. zu alte Krypto-Scans, bricht sie ab und startet selbstständig einen Reconnect. Ein Browser-Neustart soll nicht mehr nötig sein.
+- Während der Wiederherstellung zeigt die PWA explizit „Verbindung wird wiederhergestellt“ statt eines unklaren dauerhaften „Verbinde…“.
+- Health-Check wird beim Reconnect parallel neu geladen; bestehende Trading-/Safety-Gates bleiben unverändert.
+- Keine Erhöhung der Scanlast und keine Lockerung von BUY-, CRV-, Freshness- oder Common-Stock-Regeln.
+
 # FusionPulse Release Notes — v3.3.4
 
 ## v3.3.4 – Radar-to-Deep-Scan & Discovery-Klicks

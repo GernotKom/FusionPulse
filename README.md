@@ -1,4 +1,4 @@
-# FusionPulse v3.3.4
+# FusionPulse v3.3.5
 
 FusionPulse ist ein autonomer Momentum- und Opportunity-Waechter fuer Krypto und liquide US-Aktien. Ziel ist nicht moeglichst viele Signale, sondern wenige, wirtschaftlich relevante A-Setups: App starten, laufen lassen und nur dann aufmerksam werden, wenn Datenqualitaet, Handelbarkeit, CRV und realistisches absolutes Gewinnpotenzial zusammenpassen.
 
@@ -99,3 +99,7 @@ Stabilisierungsrelease nach dem Live-Test: dynamischeres Opening Momentum aus de
 
 ## v3.3.3 Stabilisierung
 Radar-Pipeline zwischen Opening/Whole-Market und Deep Scan geschlossen, Favoriten zyklisch aktualisiert, Health-Freshness persistent gemacht und Google-Finance-Deep-Link auf den ausgewählten Ticker präzisiert. Safety-/BUY-Regeln unverändert.
+
+
+## v3.3.5 P0 Connection Watchdog
+Harte Frontend-Timeouts und automatischer Reconnect verhindern einen dauerhaft hängenden „Verbinde…“-Zustand. Trading- und Safety-Regeln bleiben unverändert.

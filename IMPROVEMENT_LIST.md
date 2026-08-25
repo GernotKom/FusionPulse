@@ -1,6 +1,6 @@
-# FusionPulse Improvement List — Stand v3.3.4
+# FusionPulse Improvement List — Stand v3.3.5
 
-## In v3.3.4 zusätzlich umgesetzt
+## In v3.3.5 weiterhin enthalten / umgesetzt
 
 - Radar → Deep Scan: marktweite Kandidaten vor Cache-Rechecks priorisiert; verifizierte Nicht-Favoriten bleiben zwischen Zyklen sichtbar.
 - Radar-/Opening-/Extended-Hours-Karten laden beim Klick fehlende Deep-Analyse direkt und öffnen anschließend das große Aktienfenster.
@@ -46,3 +46,7 @@
 - Momentum-/Opening-/Extended-Hours-Prozentwerte selbst grün/rot; Karten zusätzlich dezent richtungsabhängig hinterlegt.
 - Hauptreihenfolge: Aktien als erster Block, Krypto als zweiter Block. Im Krypto-Bereich zuerst Coin-Tabelle, danach großes Coin-Fokusfenster.
 - Google-Finance-Link im großen Aktien-Detailfenster prominent und eindeutig beschriftet; öffnet in neuem Tab.
+
+
+## VL nach v3.3.5
+- Aktienchart: Premarket/After Hours als echte Zeitreihe darstellen, Previous Close und Gap-% sichtbar machen, Sessions optisch trennen; keine künstliche Linie über Datenlücken.
