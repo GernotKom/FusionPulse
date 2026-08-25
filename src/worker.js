@@ -1390,12 +1390,24 @@ async function openingMomentum(env, force=false, favoriteSymbols=[]){
   // bereits als Common Stocks verifizierten Kandidaten aus dem letzten Cron-Batch.
   // Dadurch entsteht KEIN zusätzlicher schwerer Markt-Scan aus der PWA heraus.
   const favs=[...new Set((favoriteSymbols||[]).map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,12);
-  let radarSyms=[];
+  let radarRows=[], radarSource='none';
   try{
-    const persisted=await readLatestPersistedStockScan(env,10*60_000);
-    radarSyms=verifiedCommonOnly(Array.isArray(persisted?.meta?.verifiedRadar)?persisted.meta.verifiedRadar:[]).map(x=>x.symbol).slice(0,24);
+    // Bevorzugt den bereits sicherheitsgeprüften Deep-Scan-Cache.
+    const persisted=await readLatestPersistedStockScan(env,30*60_000);
+    radarRows=verifiedCommonOnly(Array.isArray(persisted?.meta?.verifiedRadar)?persisted.meta.verifiedRadar:[]).slice(0,24);
+    if(radarRows.length) radarSource='verified-deep-cache';
   }catch{}
-  if(!radarSyms.length) radarSyms=verifiedCommonOnly(tiingoIexRadarMemo.rows||[]).map(x=>x.symbol).slice(0,24);
+  if(!radarRows.length){
+    try{
+      // v3.3.2: Fallback direkt auf den persistenten Whole-Market-Radar.
+      // Nur die kleine Top-Menge wird durch den bestehenden 7-Tage-Metadaten-Cache
+      // als Common Stock verifiziert. Kein neuer /iex-Bulk-Scan aus der PWA.
+      const raw=(tiingoIexRadarMemo.rows.length&&Date.now()-tiingoIexRadarMemo.ts<10*60_000)?tiingoIexRadarMemo:await readPersistedIexRadar(env);
+      radarRows=await filterRadarToCommonStocks(env,raw?.rows||[],18);
+      if(radarRows.length) radarSource='persistent-whole-market-radar';
+    }catch(e){console.warn(JSON.stringify({event:'opening_radar_fallback_failed',message:String(e?.message||e),ts:Date.now()}));}
+  }
+  const radarSyms=radarRows.map(x=>x.symbol).slice(0,24);
   const dynamicUniverse=[...new Set([...radarSyms,...favs,...OPENING_UNIVERSE])].slice(0,48);
   // 1 Snapshot-Request + 1 Multi-Symbol-Bars-Request. 5-Minuten-Bars reichen
   // für unser Momentum-Modell und decken mit 8h Historie den kompletten
@@ -1407,7 +1419,7 @@ async function openingMomentum(env, force=false, favoriteSymbols=[]){
   ]);
   const rows=dynamicUniverse.map(sym=>momentumFromAlpaca(sym,snaps?.[sym],hist?.bars?.[sym]||[])).filter(Boolean).sort((a,b)=>b.momentumScore-a.momentumScore);
   const limitations=(feed==='sip'?'SIP: konsolidierter Echtzeit-Feed aller US-Börsen einschließlich Extended Hours.':'IEX Free: nur eine US-Börse; frühe Premarket-Daten sind unvollständig.')+' Kandidaten: Whole-Market-Radar + Favoriten + Basiskatalog; Opening bleibt Discovery mit 0 % BUY-Gewicht.';
-  const data={configured:true,state:'ok',rows,scanned:rows.length,universe:dynamicUniverse.length,radarCandidates:radarSyms.length,feed:feedLabel,phase:phase.key,phaseLabel,phaseHelp,limitations,ts:Date.now(),version:APP_VERSION};
+  const data={configured:true,state:'ok',rows:rows.map(r=>({...r,origin:radarSyms.includes(r.symbol)?'radar':favs.includes(r.symbol)?'favorite':'base'})),scanned:rows.length,universe:dynamicUniverse.length,radarCandidates:radarSyms.length,radarSource,feed:feedLabel,phase:phase.key,phaseLabel,phaseHelp,limitations,ts:Date.now(),version:APP_VERSION};
   openingMemo={ts:Date.now(),data}; setApiState('alpaca','ok',`${rows.length} Momentum-Titel · ${phase.label}`); return data;
 }
 
@@ -2213,6 +2225,34 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   await persistStockScan(env,sig,cycle,rows,{provider:'Tiingo IEX',fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol),queue:{favorites:favPick,recheck:recheckPick,gainers:gainerPick,radar:radarPick,boats:boatsPick,explore},verifiedRadar:(radar.rows||[]).slice(0,20),verifiedBoats:(boats.rows||[]).slice(0,12)});
   return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:radar.universe||12000,universeLabel:`${radar.universe||'12.000+'} Tiingo/IEX`,scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:phase,queue:{favorites:favPick.length,recheck:recheckPick.length,gainers:gainerPick.length,radar:radarPick.length,boats:boatsPick.length,explore:explore.length},discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar.ts,universe:radar.universe,candidates:(radar.rows||[]).slice(0,20),gainers:openingGainers(radar.rows||[]),buyWeight:0},boats:{source:'Tiingo BOATS',ts:boats.ts,session:boats.session,candidates:(boats.rows||[]).slice(0,15),buyWeight:0}},version:APP_VERSION,note:'Tiingo Primary: Whole-Market IEX Radar + BOATS Discovery (beide 0 % BUY-Gewicht) -> adaptive 20er Deep-Scan-Queue -> IEX 5-Min Analyse. BUY-Gates unveraendert.'};
 }
+async function tiingoStockSuggest(env,raw){
+  const query=String(raw||'').trim();
+  if(query.length<1) return {configured:!!env.TIINGO_API_TOKEN,state:'idle',rows:[],version:APP_VERSION};
+  const local=resolveStockQuery(query);
+  const out=[];
+  if(local) out.push({symbol:local.symbol,name:local.name||local.symbol,sector:local.sector||null,source:'catalog'});
+  if(env.TIINGO_API_TOKEN && query.length>=2){
+    try{
+      const q=encodeURIComponent(query);
+      const d=await tiingoFetch(env,`/tiingo/utilities/search?query=${q}`);
+      for(const hit of (Array.isArray(d)?d:[])){
+        if(hit?.isActive===false) continue;
+        const asset=String(hit?.assetType||'').toLowerCase();
+        if(asset && asset!=='stock') continue;
+        const symbol=String(hit?.ticker||'').toUpperCase().replace(/\./g,'-');
+        if(!/^[A-Z][A-Z0-9-]{0,11}$/.test(symbol) || NON_COMMON_SYMBOL_DENY.has(symbol)) continue;
+        const name=String(hit?.name||symbol);
+        if(NON_COMMON_EQUITY_RE.test(name)) continue;
+        if(!out.some(x=>x.symbol===symbol)) out.push({symbol,name,exchange:hit?.exchangeCode||hit?.exchange||null,source:'tiingo-search'});
+        if(out.length>=5) break;
+      }
+    }catch(e){
+      if(!out.length) return {configured:true,state:'partial',rows:[],error:String(e?.message||e),version:APP_VERSION};
+    }
+  }
+  return {configured:!!env.TIINGO_API_TOKEN,state:'ok',rows:out.slice(0,5),version:APP_VERSION};
+}
+
 async function tiingoStockLookup(env,raw,comp,minCrv=3){
   let info=resolveStockQuery(raw);
   if(!info){
@@ -2326,6 +2366,11 @@ export default {
     if (url.pathname === '/api/stock-chart') {
       try { return json(await tiingoStockChart(env,url.searchParams.get('symbol'),url.searchParams.get('range')||'120'),200,{ 'cache-control':'public, max-age=60' }); }
       catch(e){ return json({state:'error',error:String(e.message||e),rows:[],version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/stock-suggest') {
+      try { return json(await tiingoStockSuggest(env,url.searchParams.get('q')),200,{ 'cache-control':'no-store' }); }
+      catch(e){ return json({configured:!!env.TIINGO_API_TOKEN,state:'error',rows:[],error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
     }
 
     if (url.pathname === '/api/stocks') {

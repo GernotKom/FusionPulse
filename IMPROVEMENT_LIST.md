@@ -1,6 +1,13 @@
-# FusionPulse Improvement List — Stand v3.3.1
+# FusionPulse Improvement List — Stand v3.3.2
 
-## In v3.3.1 umgesetzt
+## In v3.3.2 umgesetzt
+- Whole-Market-Radar sichtbar auch ohne +2-%-Gainer-Schwelle; Favoriten klar getrennt markiert.
+- Opening Momentum erhält robusten persistenten Radar-Fallback und zeigt Herkunft (RADAR/Favorit).
+- Aktiensuche mit Live-Treffervorschau während der Eingabe; Return lädt die vollständige Analyse.
+- „Alle Aktien“ sprachlich zu „Alle analysierten Aktien“ präzisiert.
+
+
+## In v3.3.2 umgesetzt
 - Opening Momentum an verifizierte Whole-Market-Radar-Kandidaten angebunden; statischer Basiskatalog nur noch Ergänzung/Fallback.
 - Aktien-Suchfeld heller; X zum Löschen; Treffer-Preview; Suchtext nach erfolgreicher Suche automatisch leeren.
 - Persistente Signal-Herkunft im Footer mit AKTIE/COIN, Ticker, Signalart, Uhrzeit und Quittierung.
@@ -24,3 +31,7 @@
 - Learning-Bericht um „Was wurde verpasst?“ erweitern.
 - Liquideste Börse nur mit echten Venue-Volumendaten anzeigen.
 - Cloudflare-Kosten-/Upgrade-Empfehlung nur bei tatsächlich gemessener Nähe zu Limits oder wiederholten CPU-Problemen.
+
+- Momentum-/Opening-/Extended-Hours-Prozentwerte selbst grün/rot; Karten zusätzlich dezent richtungsabhängig hinterlegt.
+- Hauptreihenfolge: Aktien als erster Block, Krypto als zweiter Block. Im Krypto-Bereich zuerst Coin-Tabelle, danach großes Coin-Fokusfenster.
+- Google-Finance-Link im großen Aktien-Detailfenster prominent und eindeutig beschriftet; öffnet in neuem Tab.

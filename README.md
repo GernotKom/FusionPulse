@@ -1,4 +1,4 @@
-# FusionPulse v3.3.1
+# FusionPulse v3.3.2
 
 FusionPulse ist ein autonomer Momentum- und Opportunity-Waechter fuer Krypto und liquide US-Aktien. Ziel ist nicht moeglichst viele Signale, sondern wenige, wirtschaftlich relevante A-Setups: App starten, laufen lassen und nur dann aufmerksam werden, wenn Datenqualitaet, Handelbarkeit, CRV und realistisches absolutes Gewinnpotenzial zusammenpassen.
 
@@ -85,5 +85,5 @@ v3.2.1 erweitert Tiingo Primary um den autonomen Whole-Market-Radar. Nach Deploy
 ## v3.3.0
 Siehe RELEASE_NOTES.md. Elliott-first bleibt die zentrale Aktienanalyse; neue Crowd-, Extended-Hours- und Learning-Flächen sind ergänzende Discovery-/Transparenzebenen.
 
-## v3.3.1
+## v3.3.2
 Stabilisierungsrelease nach dem Live-Test: dynamischeres Opening Momentum aus dem serverseitigen Whole-Market-Radar, persistente Signal-Herkunft, verständliche Funktionalitätsampel, verbesserte Aktien-Suche, Richtungsfarben und Google-Finance-Link. Trading-/Safety-Regeln bleiben unverändert. Siehe RELEASE_NOTES.md.

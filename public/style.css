@@ -657,3 +657,17 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 .opcard.move-up{border-color:color-mix(in srgb,var(--green) 55%,var(--line));background:color-mix(in srgb,var(--green) 7%,var(--panel))}.opcard.move-down{border-color:color-mix(in srgb,var(--red) 55%,var(--line));background:color-mix(in srgb,var(--red) 7%,var(--panel))}
 .gfinance{display:inline-flex;align-items:center;margin-left:7px;padding:3px 6px;border:1px solid var(--line2);border-radius:7px;background:var(--panel);color:var(--accent);font:700 9px/1.1 system-ui,sans-serif;text-decoration:none;vertical-align:middle}.gfinance:hover{border-color:var(--accent)}.gfinance.mini{margin-left:2px;padding:2px 5px;font-size:8px}.sr-head .gfinance.mini{margin-left:2px}.sr-head .rowmute{margin-left:auto}
 @media(max-width:760px){.mini-status{max-width:100%}.mini-dot{font-size:8px}.stock-search-wrap{min-width:100%}.stock-search-preview{order:9}.gfinance{font-size:8px}}
+
+/* v3.3.2 — Live-Aktiensuche + klar sichtbarer Whole-Market-Radar */
+.stock-search-preview{display:flex;flex-wrap:wrap;gap:6px;min-height:24px;margin-top:5px}
+.stock-search-preview button{border:1px solid #36527b;background:#14233b;color:#eaf2ff;border-radius:8px;padding:5px 8px;cursor:pointer;text-align:left}
+.stock-search-preview button:hover{background:#1b3152}
+.stock-search-preview small{opacity:.7;margin-left:4px}
+.search-looking{color:#9fb2d2}.search-notfound{color:#e0b35c}
+
+/* v3.3.2 UX-Ergaenzung: Richtung sofort lesbar + klarer Finance-Link */
+.opcard.move-up{background:color-mix(in srgb,var(--green) 11%,var(--panel));}
+.opcard.move-down{background:color-mix(in srgb,var(--red) 11%,var(--panel));}
+.trend-pct{font-weight:850}.trend-pct.up{color:var(--green)}.trend-pct.down{color:var(--red)}
+.gfinance.focus-link{margin-left:10px;padding:5px 9px;font-size:10px;border-color:color-mix(in srgb,var(--accent) 60%,var(--line2));background:color-mix(in srgb,var(--accent) 10%,var(--panel));white-space:nowrap}
+.gfinance.focus-link:hover{background:color-mix(in srgb,var(--accent) 18%,var(--panel))}

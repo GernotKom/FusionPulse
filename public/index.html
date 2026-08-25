@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.3.1</title>
+<title>FusionPulse 3.3.2</title>
 </head>
 <body>
 
@@ -134,7 +134,7 @@
       <button id="stockSearchGo" class="searchgo" title="Aktie direkt suchen">🔎</button>
       <div id="stockSearchPreview" class="stock-search-preview" aria-live="polite"></div>
       <select id="stockF" title="Aktienfilter">
-        <option value="">Alle Aktien</option>
+        <option value="">Alle analysierten Aktien</option>
         <option value="favorites">★ Favoriten / Depot</option>
         <option value="momentum">🚀 Opening Momentum</option>
         <option value="green">Handeln</option>
@@ -142,7 +142,7 @@
       </select>
     </div>
     <div id="depotStrip" class="depotstrip" title="Deine mit ★ markierten Aktien. Damit kannst du dein bestehendes Depot bzw. eine persönliche Watchlist abbilden."></div>
-    <div id="marketGainers" class="openingpanel" title="Starke verifizierte Common-Stock-Market-Gainer aus dem Tiingo-IEX-Whole-Market-Radar. Discovery בלבד; Elliott-Deep-Scan entscheidet über Qualität."></div>
+    <div id="marketGainers" class="openingpanel" title="Verifizierte Common-Stock-Kandidaten aus dem Tiingo-IEX-Whole-Market-Radar. Unabhängig von Favoriten; Discovery בלבד; Elliott-Deep-Scan entscheidet über Qualität."></div>
     <div id="extendedWatch" class="openingpanel" title="Pre-/After-Hours-Beobachtung. Warum sinnvoll? Auffällige Bewegungen außerhalb der Hauptsession können Kandidaten fürs Opening liefern, sind wegen dünnerer Liquidität aber noch kein BUY."></div>
     <div id="openingPanel" class="openingpanel" title="Premarket-/Opening-Momentum über Alpaca. Im kostenlosen IEX-Feed ist die Live-Abdeckung auf IEX beschränkt; vor 08:00 ET gibt es dort keine Live-Daten."></div>
     <div class="experimental-grid">
