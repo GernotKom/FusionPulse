@@ -642,3 +642,18 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 .learning-report small{color:var(--dim)}
 @media(max-width:760px){body{padding-top:104px}.resource-strip{order:8;min-width:100%;max-width:none}.viewbar{top:104px!important}.learning-report .lr-grid{grid-template-columns:repeat(2,1fr)}}
 .company-name{display:block!important;font-size:11px!important;color:var(--fg)!important;margin-top:1px}.company-focus,.company-exchange{display:block;font-size:9px;color:var(--dim);max-width:620px;line-height:1.25;margin-top:2px}
+
+/* v3.3.1 — Stabilisierung: verständliche Funktionalitätsampel, Suche, Signal-Herkunft */
+.mini-status{gap:6px;border-radius:10px;flex-wrap:wrap}
+.mini-dot{display:inline-flex;align-items:center;gap:4px;font:700 9px/1.1 system-ui,sans-serif;color:var(--dim)}
+.mini-dot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--dim2);box-shadow:0 0 0 1px #0005}
+.mini-dot.ok::before{background:var(--green)}.mini-dot.warn::before{background:var(--yellow)}.mini-dot.err::before{background:var(--red)}.mini-dot.busy::before{background:var(--dim2)}
+.mini-dot.ok,.mini-dot.warn,.mini-dot.err,.mini-dot.busy{color:var(--fg)}
+.resource-strip.ok{border-color:color-mix(in srgb,var(--green) 60%,var(--line))}.resource-strip.orange{border-color:#ff8a3d99}.resource-strip.orange span{color:#ffc18f}.resource-strip.err span{color:#ff9c9c}
+.stock-search-wrap{position:relative;flex:1;min-width:240px}.stock-search-wrap input{width:100%;box-sizing:border-box;padding-right:34px!important;background:color-mix(in srgb,var(--panel2) 72%,#fff 8%)!important;border-color:color-mix(in srgb,var(--line2) 75%,#fff 18%)!important}.stock-search-wrap input:focus{border-color:var(--accent)!important;box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 20%,transparent)}
+.searchclear{position:absolute;right:6px;top:50%;transform:translateY(-50%);min-width:24px!important;width:24px;height:24px;padding:0!important;border:0!important;border-radius:50%;background:var(--line2)!important;color:var(--fg)!important;font-size:17px;line-height:1}.searchclear.hidden{display:none!important}
+.stock-search-preview{flex:1 1 100%;min-height:18px;font-size:10px;color:var(--dim)}.stock-search-preview:empty{display:none}.stock-search-preview button{padding:5px 8px;border:1px solid color-mix(in srgb,var(--green) 50%,var(--line));border-radius:8px;background:color-mix(in srgb,var(--green) 8%,var(--panel2));color:var(--fg);font-size:10px}
+.signal-item{display:inline-flex;align-items:stretch;flex:0 0 auto}.signal-item .signal-chip{border-radius:9px 0 0 9px}.signal-ack{min-width:30px;padding:4px 7px;border-left:0;border-radius:0 9px 9px 0;background:var(--panel2);color:var(--green);font-weight:900}.signal-ack:hover{background:color-mix(in srgb,var(--green) 12%,var(--panel2))}
+.opcard.move-up{border-color:color-mix(in srgb,var(--green) 55%,var(--line));background:color-mix(in srgb,var(--green) 7%,var(--panel))}.opcard.move-down{border-color:color-mix(in srgb,var(--red) 55%,var(--line));background:color-mix(in srgb,var(--red) 7%,var(--panel))}
+.gfinance{display:inline-flex;align-items:center;margin-left:7px;padding:3px 6px;border:1px solid var(--line2);border-radius:7px;background:var(--panel);color:var(--accent);font:700 9px/1.1 system-ui,sans-serif;text-decoration:none;vertical-align:middle}.gfinance:hover{border-color:var(--accent)}.gfinance.mini{margin-left:2px;padding:2px 5px;font-size:8px}.sr-head .gfinance.mini{margin-left:2px}.sr-head .rowmute{margin-left:auto}
+@media(max-width:760px){.mini-status{max-width:100%}.mini-dot{font-size:8px}.stock-search-wrap{min-width:100%}.stock-search-preview{order:9}.gfinance{font-size:8px}}

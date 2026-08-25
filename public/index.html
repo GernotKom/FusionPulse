@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.3.0</title>
+<title>FusionPulse 3.3.1</title>
 </head>
 <body>
 
@@ -38,10 +38,11 @@
   </div>
 
   <div class="hcenter-tools">
-    <div class="mini-status" aria-label="Datenquellen-Status">
-      <span id="miniCrypto" class="mini-dot busy fast-tip" data-tip="Krypto-Datenquelle">●</span>
-      <span id="miniStocks" class="mini-dot busy fast-tip" data-tip="Aktien-Datenquelle">●</span>
-      <span id="miniTiingo" class="mini-dot busy fast-tip" data-tip="Tiingo-Verbindung">T</span>
+    <div class="mini-status" aria-label="Funktionalitätsampel">
+      <span id="miniCrypto" class="mini-dot busy fast-tip" data-tip="Krypto wird geprüft">Krypto</span>
+      <span id="miniStocks" class="mini-dot busy fast-tip" data-tip="Aktien werden geprüft">Aktien</span>
+      <span id="miniTiingo" class="mini-dot busy fast-tip" data-tip="Tiingo wird geprüft">Tiingo</span>
+      <span id="miniCloudflare" class="mini-dot busy fast-tip" data-tip="Cloudflare wird geprüft">Cloudflare</span>
     </div>
     <div id="resourceStrip" class="resource-strip fast-tip" data-tip="Systemressourcen: zeigt nur messbare Zustände. Warum sinnvoll? Wenn Server oder Datenanbieter an Grenzen stoßen, können Scans später oder unvollständig eintreffen."><b>☁ System</b><span id="resourceText">wird geprüft…</span></div>
     <div class="hclock fast-tip" data-tip="Countdown bis zur nächsten 5-Minuten-Grenze des Coin-Scanners. Kein Börsen-Countdown und keine Signal-Gültigkeit.">
@@ -57,7 +58,7 @@
 
   <button id="sound" title="Haupt-Ton Ein/Aus (m)">🔊</button>
   <button id="wake" title="Display wach halten">☀</button>
-  <button id="scan" class="primary" title="Aktualisiert Krypto, Aktienstatus, Opening/Market-Radar, Crowd und Learning. Die schweren autonomen Markt-Scans laufen zusätzlich serverseitig weiter. Warum sinnvoll? So siehst du sofort den neuesten gespeicherten Stand, ohne den Hintergrundscanner zu ersetzen.">↻</button>
+  <button id="scan" class="primary" title="Lädt sofort den neuesten verfügbaren Stand für Krypto, Aktien, Opening Momentum, Crowd und Learning. Der schwere Whole-Market-/Deep-Scan bleibt CPU-schonend serverseitig und wird nicht parallel aus dem Browser gestartet.">↻</button>
   <button id="cog" title="Einstellungen">⚙</button>
 </header>
 <div id="signalBanner" class="signal-banner" aria-live="polite"><span class="signal-idle"><b>SIGNAL-INFO</b><span>Noch kein neues BUY-/Grün-Signal in dieser Sitzung.</span></span></div>
@@ -126,8 +127,12 @@
       </div>
     </div>
     <div class="stocktools">
-      <input id="stockQ" placeholder="Aktie suchen… Ticker oder Firmenname" autocomplete="off" spellcheck="false" title="Sucht ausschließlich Aktien. Enter oder 🔎 lädt auch Titel außerhalb des Standardradars über Twelve Data.">
+      <div class="stock-search-wrap">
+        <input id="stockQ" placeholder="Aktie suchen… Ticker oder Firmenname" autocomplete="off" spellcheck="false" title="Sucht ausschließlich Aktien. Enter oder 🔎 lädt auch Titel außerhalb des Standardradars.">
+        <button id="stockSearchClear" class="searchclear hidden" type="button" title="Suche löschen" aria-label="Suche löschen">×</button>
+      </div>
       <button id="stockSearchGo" class="searchgo" title="Aktie direkt suchen">🔎</button>
+      <div id="stockSearchPreview" class="stock-search-preview" aria-live="polite"></div>
       <select id="stockF" title="Aktienfilter">
         <option value="">Alle Aktien</option>
         <option value="favorites">★ Favoriten / Depot</option>

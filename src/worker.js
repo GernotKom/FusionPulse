@@ -1378,24 +1378,36 @@ function momentumFromAlpaca(symbol, snap, bars=[]){
   const phaseAction=['premarket-early','premarket'].includes(phase.key)?(momentumScore>=7.5?'VORBEREITEN':'beobachten'):actionable?'Opening-Bestätigung prüfen':phase.key==='closed'?'Vorbereitung':'beobachten';
   return {symbol,priceUsd:latest,gapPct:r1(gapPct),ret5:r1(ret5),ret15:r1(ret15),ret60:r1(ret60),relVol:r1(relVol),momentumScore,preHigh,preLow,openingHigh,breakPremarketHigh:!!(preHigh&&latest>preHigh),structurePct,structureTargetUsd:r2(latest*(1+structurePct/100)),light,phaseAction,marketPhase:phase.key,updated:snap.minuteBar?.t||snap.latestTrade?.t||null};
 }
-async function openingMomentum(env, force=false){
+async function openingMomentum(env, force=false, favoriteSymbols=[]){
   const phase=usMarketPhase();
   const feed=alpacaFeed(env), feedLabel=alpacaFeedLabel(env);
   const phaseLabel=feed==='sip' && phase.key==='premarket-early' ? 'Premarket 04:00–08:00 ET · SIP live' : phase.label;
   const phaseHelp=feed==='sip' && phase.key==='premarket-early' ? 'Alpaca SIP liefert den konsolidierten US-Gesamtmarkt auch im frühen Premarket.' : phase.help;
   if(!env.ALPACA_API_KEY_ID||!env.ALPACA_API_SECRET_KEY){setApiState('alpaca','nokey','Alpaca Secrets fehlen');return {configured:false,state:'nokey',rows:[],feed:feedLabel,phase:phase.key,phaseLabel,phaseHelp,version:APP_VERSION};}
   if(!force&&openingMemo.data&&Date.now()-openingMemo.ts<45_000)return {...openingMemo.data,cached:true};
+  // v3.3.1: Opening Momentum ist nicht mehr auf den alten statischen 30er-Katalog
+  // beschränkt. Es übernimmt bevorzugt die vom autonomen Tiingo-Whole-Market-Radar
+  // bereits als Common Stocks verifizierten Kandidaten aus dem letzten Cron-Batch.
+  // Dadurch entsteht KEIN zusätzlicher schwerer Markt-Scan aus der PWA heraus.
+  const favs=[...new Set((favoriteSymbols||[]).map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,12);
+  let radarSyms=[];
+  try{
+    const persisted=await readLatestPersistedStockScan(env,10*60_000);
+    radarSyms=verifiedCommonOnly(Array.isArray(persisted?.meta?.verifiedRadar)?persisted.meta.verifiedRadar:[]).map(x=>x.symbol).slice(0,24);
+  }catch{}
+  if(!radarSyms.length) radarSyms=verifiedCommonOnly(tiingoIexRadarMemo.rows||[]).map(x=>x.symbol).slice(0,24);
+  const dynamicUniverse=[...new Set([...radarSyms,...favs,...OPENING_UNIVERSE])].slice(0,48);
   // 1 Snapshot-Request + 1 Multi-Symbol-Bars-Request. 5-Minuten-Bars reichen
   // für unser Momentum-Modell und decken mit 8h Historie den kompletten
   // 04:00-ET-Premarket ab, ohne unnötig große Multi-Symbol-Antworten.
-  const symbols=OPENING_UNIVERSE.join(',');
+  const symbols=dynamicUniverse.join(',');
   const [snaps,hist]=await Promise.all([
     alpacaJSON('/v2/stocks/snapshots',{symbols,feed},env),
     alpacaJSON('/v2/stocks/bars',{symbols,timeframe:'5Min',start:isoAgo(480),limit:'10000',feed,sort:'asc'},env),
   ]);
-  const rows=OPENING_UNIVERSE.map(sym=>momentumFromAlpaca(sym,snaps?.[sym],hist?.bars?.[sym]||[])).filter(Boolean).sort((a,b)=>b.momentumScore-a.momentumScore);
-  const limitations=feed==='sip'?'SIP: konsolidierter Echtzeit-Feed aller US-Börsen einschließlich Extended Hours.':'IEX Free: nur eine US-Börse; frühe Premarket-Daten sind unvollständig.';
-  const data={configured:true,state:'ok',rows,scanned:rows.length,universe:OPENING_UNIVERSE.length,feed:feedLabel,phase:phase.key,phaseLabel,phaseHelp,limitations,ts:Date.now(),version:APP_VERSION};
+  const rows=dynamicUniverse.map(sym=>momentumFromAlpaca(sym,snaps?.[sym],hist?.bars?.[sym]||[])).filter(Boolean).sort((a,b)=>b.momentumScore-a.momentumScore);
+  const limitations=(feed==='sip'?'SIP: konsolidierter Echtzeit-Feed aller US-Börsen einschließlich Extended Hours.':'IEX Free: nur eine US-Börse; frühe Premarket-Daten sind unvollständig.')+' Kandidaten: Whole-Market-Radar + Favoriten + Basiskatalog; Opening bleibt Discovery mit 0 % BUY-Gewicht.';
+  const data={configured:true,state:'ok',rows,scanned:rows.length,universe:dynamicUniverse.length,radarCandidates:radarSyms.length,feed:feedLabel,phase:phase.key,phaseLabel,phaseHelp,limitations,ts:Date.now(),version:APP_VERSION};
   openingMemo={ts:Date.now(),data}; setApiState('alpaca','ok',`${rows.length} Momentum-Titel · ${phase.label}`); return data;
 }
 
@@ -2307,7 +2319,7 @@ export default {
     }
 
     if (url.pathname === '/api/opening') {
-      try { return json(await openingMomentum(env, url.searchParams.get('force') === '1'), 200, { 'cache-control':'no-store' }); }
+      try { return json(await openingMomentum(env, url.searchParams.get('force') === '1', (url.searchParams.get('favorites')||'').split(',').filter(Boolean)), 200, { 'cache-control':'no-store' }); }
       catch (e) { const state=classifyError(e); setApiState('alpaca',state,e?.message); return json({configured:!!(env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY),state,error:e.message||String(e),rows:openingMemo.data?.rows||[],feed:alpacaFeedLabel(env),phaseLabel:usMarketPhase().label,phaseHelp:usMarketPhase().help,version:APP_VERSION},state==='ratelimit'?429:502,{ 'cache-control':'no-store' }); }
     }
 

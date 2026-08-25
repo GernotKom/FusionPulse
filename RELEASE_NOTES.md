@@ -1,23 +1,19 @@
-# FusionPulse Release Notes — v3.3.0
+# FusionPulse Release Notes — v3.3.1
 
 ## Schwerpunkt
-Transparenz + autonomes Learning sichtbar machen, Crowd auf Trader-Communities ausrichten und die bestehende Elliott-first Architektur erhalten.
+Stabilisierungsrelease nach dem ersten Live-Test von v3.3.0. Keine Änderung an BUY-Gates, Elliott-first, CRV oder Safety-Regeln.
 
-## Neu
-- Header permanent fixiert; Refresh bleibt beim Scrollen erreichbar und erklärt seinen Umfang.
-- Kompakter Ressourcenstatus im Header für Cloudflare/API-Stabilität; keine erfundenen Kontingentwerte.
-- Sichtbarer Nacht-/Learning-Bericht mit D1-Beobachtungen, ausgewerteten Verläufen und Expansionen der letzten 24 h.
-- Crowd Pulse sucht vorrangig Reddit, X und Stocktwits über Community-Suchabfragen; 0 % direktes BUY-Gewicht.
-- Extended-Hours-Watch mit Pre-/After-Hours-Kandidaten und kompakter Kurve, soweit Kursdaten vorhanden sind.
-- Aktien-Detailkopf: Ticker, Firmenname, Kurzbeschreibung/Fokus und primäres Listing getrennt.
-- Aktienchart erweitert: 5/10/30/60/120/180/240/300 min sowie 1T/5T/1Wo/3Mo/6Mo/12Mo; längere Bereiche werden passend über Tiingo nachgeladen.
-- Update-Banner wird nach bestätigtem Reload für 10 Minuten quittiert, um Reload-Schleifen zu vermeiden.
+## Behoben / verbessert
+- **Opening Momentum breiter:** Kandidaten werden bevorzugt aus dem bereits serverseitig verifizierten Tiingo-IEX-Whole-Market-Radar des letzten Cron-Batches übernommen und mit Favoriten/Basiskatalog ergänzt. Die PWA startet dafür keinen zusätzlichen schweren Markt-Scan.
+- **Aktien-Suche:** deutlich sichtbarer, X zum Löschen, direkter Treffer-Preview; nach erfolgreicher Suche wird der Suchtext automatisch geleert, damit er nicht unbemerkt als Filter stehen bleibt.
+- **Signal-Herkunft:** Aktien-/Coin-Signale bleiben mit Ticker, Signalart und Uhrzeit im Footer sichtbar und überleben einen Browser-Neustart, bis sie mit ✓ quittiert werden. Die 5-Minuten-Hervorhebung der Karte bleibt davon getrennt.
+- **Funktionalitätsampel:** Krypto, Aktien, Tiingo und Cloudflare sind verständlich beschriftet. Gesamtstatus nutzt einheitlich Grün/Gelb/Orange/Rot und sagt ausdrücklich, ob Handlungsbedarf besteht.
+- **Opening/Market-Richtung:** steigende Kandidaten werden grün, fallende rot hervorgehoben.
+- **Google Finance:** direkter Link aus Aktien-Fokus und Aktienzeile; öffnet in neuem Tab/Fenster.
+- **Refresh-Erklärung:** der blaue Refresh lädt den neuesten verfügbaren Stand; der schwere Whole-Market-/Deep-Scan bleibt CPU-schonend serverseitig und wird nicht parallel aus der PWA gestartet.
 
-## Unverändert / Safety
-- Elliott-Wellenanalyse bleibt Kern der Setup-Qualifikation.
-- Radar, Market Gainer, Extended Hours und Crowd sind Discovery/Context und erzeugen kein BUY allein.
-- BUY-Gates, Netto-CRV > 3:1, Freshness und Datenqualitätsregeln bleiben unverändert.
-- ETF-/ETP-Ausschluss aus v3.2.8+ bleibt erhalten.
-
-## Noch nicht produktiv implementiert
-- Shooting/Short-Radar bleibt separat geplant. Vor Aktivierung braucht es eine eigenständige Short-Elliott-/Risk-Logik und Audit; keine Vermischung mit Long-BUY.
+## Safety unverändert
+- Elliott-Wellenanalyse bleibt struktureller Ausgangspunkt der Aktienanalyse.
+- Radar, Opening Momentum, Market Gainer, Extended Hours und Crowd bleiben Discovery/Context mit 0 % direktem BUY-Gewicht.
+- BUY nur bei ausreichender Qualität, zulässigen/frischen Daten und Netto-CRV > 3:1.
+- Fehlende oder schlechtere Daten dürfen ein Setup niemals verbessern.

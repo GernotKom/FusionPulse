@@ -1,19 +1,26 @@
-# FusionPulse Improvement List — Stand v3.3.0
+# FusionPulse Improvement List — Stand v3.3.1
 
-## In v3.3.0 umgesetzt
-- Sticky/fixer Header; Refresh permanent erreichbar und verständlich erklärt.
-- Ressourcen-/Stabilitätsanzeige für Cloudflare/APIs ohne erfundene Quoten.
-- Nacht-/Learning-Bericht aus D1, 24h sichtbar.
-- Crowd Community-first: Reddit, X, Stocktwits; 0 % BUY-Gewicht.
-- Extended-Hours Watch mit Kurvenkontext.
-- Aktienkopf: Ticker, Firmenname, Fokus/Beschreibung, primäres Listing + laienverständliche Mouseover.
-- Chart-Zeiträume Intraday bis 300 min + 1T/5T/1Wo/3Mo/6Mo/12Mo.
-- Update-Banner Quittierung verbessert.
-- Historical Twin unabhängige Episoden / keine erzwungene n=12-Logik aus v3.2.9 beibehalten.
+## In v3.3.1 umgesetzt
+- Opening Momentum an verifizierte Whole-Market-Radar-Kandidaten angebunden; statischer Basiskatalog nur noch Ergänzung/Fallback.
+- Aktien-Suchfeld heller; X zum Löschen; Treffer-Preview; Suchtext nach erfolgreicher Suche automatisch leeren.
+- Persistente Signal-Herkunft im Footer mit AKTIE/COIN, Ticker, Signalart, Uhrzeit und Quittierung.
+- Einheitliche Funktionalitätsampel: Grün = stabil/kein Handlungsbedarf, Gelb = funktioniert mit kleiner Einschränkung, Orange = beobachten/zeitnah prüfen, Rot = konkreter Handlungsbedarf.
+- Klar beschriftete Quellenstatus für Krypto, Aktien, Tiingo und Cloudflare statt kryptischer Punkte/T.
+- Opening-/Momentum-Karten: Kursrichtung grün/rot schneller erkennbar.
+- Direkter Google-Finance-Link bei Aktien, öffnet separat.
+- Refresh-Tooltip präzisiert: PWA lädt neuesten Stand; schwerer Markt-/Deep-Scan bleibt serverseitig.
 
-## Offen / nächste Prüfungen
-- Shooting/Short-Radar separat: Underlying short-seitig Elliott-first analysieren; inverse/gehebelte Produkte höchstens als Discovery-Sensor. Vor Produktivsetzung Audit erforderlich.
-- Crowd: Quellenqualität, Bot-/Spam-Risiko, echte Erwähnungsdynamik und Sentiment erst bei belastbarer Datenbasis erweitern.
-- Cloudflare-Ressourcen: echte CPU-/Request-/D1-Metriken nur anzeigen, wenn sie über API/Account messbar sind; bei wiederholtem exceededCpu Paid-Empfehlung anzeigen.
-- „Was wurde verpasst?“ im Learning-Bericht als Outcome-Review erweitern.
-- Liquideste Börse getrennt vom primären Listing nur dann anzeigen, wenn volumenbasierte Venue-Daten wirklich verfügbar sind.
+## Live-Test vor externem Audit
+- Header/Funktionalitätsampel inkl. verständlichem Handlungsbedarf.
+- Aktien/Krypto stabil; Whole-Market-Kandidaten sichtbar; keine ETF-Leaks.
+- Opening Momentum zeigt auch automatisch nominierte Nicht-Favoriten.
+- Signalton lässt sich eindeutig einem persistent sichtbaren Aktien-/Coin-Signal zuordnen.
+- Nachtbericht, Extended Hours, Crowd und längere Charts prüfen.
+- Cloudflare Logs auf wiederholte `exceededCpu`-Ereignisse prüfen.
+- Erst bei stabilem RC den nächsten Claude/Opus-Audit durchführen.
+
+## Weiter offen
+- Shooting/Short-Radar separat und erst nach externem Audit produktivieren.
+- Learning-Bericht um „Was wurde verpasst?“ erweitern.
+- Liquideste Börse nur mit echten Venue-Volumendaten anzeigen.
+- Cloudflare-Kosten-/Upgrade-Empfehlung nur bei tatsächlich gemessener Nähe zu Limits oder wiederholten CPU-Problemen.
