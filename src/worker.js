@@ -1447,6 +1447,12 @@ function crowdQueryName(sym){
   const n=STOCK_SEARCH_BY_SYMBOL.get(sym)?.name||STOCK_NAMES[sym]||sym;
   return `${String(n).replace(/,/g,' ')} stock`;
 }
+function crowdCommunityQuery(sym){
+  const n=STOCK_SEARCH_BY_SYMBOL.get(sym)?.name||STOCK_NAMES[sym]||sym;
+  // v3.3.0: trader/community-first. SerpApi is used only as a search transport;
+  // Reddit/X/Stocktwits are the sources being discovered, not mainstream news.
+  return `(${sym} OR \"${String(n).replace(/[,]/g,' ')}\") (site:reddit.com OR site:x.com OR site:stocktwits.com)`;
+}
 function trendScore(values){
   const a=(values||[]).map(Number).filter(Number.isFinite); if(a.length<3)return null;
   const recent=mean(a.slice(-3)); const base=mean(a.slice(0,Math.max(1,a.length-3)))||recent||1;
@@ -1457,25 +1463,24 @@ function trendScore(values){
 async function crowdPulse(env,symbols,force=false){
   const syms=[...new Set(String(symbols||'').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,8}$/.test(x)))].slice(0,15);
   const key=syms.join(',');
-  if(!env.SERPAPI_KEY)return {configured:false,state:'nokey',rows:syms.map(symbol=>({symbol,score:null,stars:null,source:'Google Trends'})),note:'SERPAPI_KEY fehlt; keine Suchwerte werden erfunden.',version:APP_VERSION};
-  if(!force&&crowdMemo.data&&crowdMemo.key===key&&Date.now()-crowdMemo.ts<55*60_000)return {...crowdMemo.data,cached:true};
+  if(!env.SERPAPI_KEY)return {configured:false,state:'nokey',rows:syms.map(symbol=>({symbol,score:null,stars:null,source:'Reddit/X/Stocktwits Search'})),note:'SERPAPI_KEY fehlt; Crowd-Werte werden nicht erfunden.',version:APP_VERSION};
+  if(!force&&crowdMemo.data&&crowdMemo.key===key&&Date.now()-crowdMemo.ts<20*60_000)return {...crowdMemo.data,cached:true};
   const rows=[];
-  // Bis zu fünf Begriffe pro Google-Trends-Aufruf. 55-Min-Cache: Crowd ist bewusst ein vorgelagerter Aufmerksamkeitsindikator; Marktvolumen ist keine Voraussetzung.
-  for(let i=0;i<syms.length;i+=5){
-    const group=syms.slice(i,i+5),queries=group.map(crowdQueryName);
-    const u=new URL('https://serpapi.com/search.json');u.searchParams.set('engine','google_trends');u.searchParams.set('q',queries.join(','));u.searchParams.set('date','now 4-H');u.searchParams.set('geo','US');u.searchParams.set('data_type','TIMESERIES');u.searchParams.set('api_key',env.SERPAPI_KEY);
+  for(const symbol of syms){
+    const u=new URL('https://serpapi.com/search.json');u.searchParams.set('engine','google');u.searchParams.set('q',crowdCommunityQuery(symbol));u.searchParams.set('location','United States');u.searchParams.set('hl','en');u.searchParams.set('num','20');u.searchParams.set('tbs','qdr:d');u.searchParams.set('api_key',env.SERPAPI_KEY);
     try{
-      const j=await fetchJSONPublic(u.toString()); const tl=j?.interest_over_time?.timeline_data||[];
-      for(let gi=0;gi<group.length;gi++){
-        const vals=tl.map(t=>Number(t?.values?.[gi]?.extracted_value??t?.values?.[gi]?.value)).filter(Number.isFinite);
-        const m=trendScore(vals);rows.push({symbol:group[gi],score:m?.score??null,stars:m?.stars??null,accel:m?.accel??null,interest:m?.recent??null,source:'Google Trends via SerpApi'});
-      }
-    }catch(e){for(const symbol of group)rows.push({symbol,score:null,stars:null,source:'Google Trends via SerpApi',error:String(e.message||e)});}
+      const j=await fetchJSONPublic(u.toString());const org=(j?.organic_results||[]).slice(0,20);
+      const domains=new Set(),texts=[];
+      for(const x of org){const link=String(x?.link||'').toLowerCase();if(link.includes('reddit.com'))domains.add('Reddit');if(link.includes('x.com'))domains.add('X');if(link.includes('stocktwits.com'))domains.add('Stocktwits');texts.push(`${x?.title||''} ${x?.snippet||''}`.toLowerCase());}
+      const mentions=org.length, breadth=domains.size;
+      // Attention only: no fabricated sentiment. Breadth + fresh result count become a transparent 0..100 attention score.
+      const score=clamp(mentions*4+breadth*8,0,100);const stars=mentions?star5(1+score/25):null;
+      rows.push({symbol,score:r1(score),stars,accel:null,interest:mentions,source:[...domains].join(' + ')||'Community Search',sources:[...domains],mentions24h:mentions,note:'Community-Aufmerksamkeit der letzten 24 h; keine Sentiment- oder BUY-Aussage.'});
+    }catch(e){rows.push({symbol,score:null,stars:null,source:'Reddit/X/Stocktwits Search',error:String(e.message||e)});}
   }
-  const data={configured:true,state:'ok',rows,cacheMinutes:55,note:'Crowd/Search ist ein vorgelagerter Aufmerksamkeitsindikator. Marktvolumen ist keine Voraussetzung; 0 % BUY-Gewicht.',ts:Date.now(),version:APP_VERSION};
+  const data={configured:true,state:'ok',rows,cacheMinutes:20,note:'Crowd Pulse sucht vorrangig Reddit, X und Stocktwits. Er misst frische Aufmerksamkeit/Quellenbreite, nicht Wahrheit oder Kaufqualität; 0 % BUY-Gewicht.',ts:Date.now(),version:APP_VERSION};
   crowdMemo={ts:Date.now(),key,data};return data;
 }
-
 
 
 /* ========================================================================
@@ -1748,12 +1753,15 @@ async function learningPayload(env, stocks=[], coins=[]){
     COUNT(*) snapshots,
     SUM(CASE WHEN resolved_ts IS NOT NULL THEN 1 ELSE 0 END) resolved,
     SUM(CASE WHEN success_ts IS NOT NULL THEN 1 ELSE 0 END) expansions,
-    MAX(ts) last_ts FROM market_snapshots`).first();
+    MAX(ts) last_ts,
+    SUM(CASE WHEN ts>=${now-24*60*60_000} THEN 1 ELSE 0 END) snapshots24h,
+    SUM(CASE WHEN ts>=${now-24*60*60_000} AND resolved_ts IS NOT NULL THEN 1 ELSE 0 END) resolved24h,
+    SUM(CASE WHEN ts>=${now-24*60*60_000} AND success_ts IS NOT NULL THEN 1 ELSE 0 END) expansions24h FROM market_snapshots`).first();
   const stockOut={};
   for(const sym of stocks.slice(0,16)) stockOut[sym]={twin:await d1TwinFor(env,sym),lead:await d1LeadModel(env,sym),history:await d1History(env,sym,'stock')};
   const coinOut={};
   for(const sym of coins.slice(0,30)) coinOut[sym]={history:await d1History(env,sym,'coin')};
-  const data={configured:true,state:'ok',ts:now,stats:{snapshots:Number(counts?.snapshots)||0,resolved:Number(counts?.resolved)||0,expansions:Number(counts?.expansions)||0,lastTs:Number(counts?.last_ts)||null},stocks:stockOut,coins:coinOut,version:APP_VERSION};
+  const data={configured:true,state:'ok',ts:now,stats:{snapshots:Number(counts?.snapshots)||0,resolved:Number(counts?.resolved)||0,expansions:Number(counts?.expansions)||0,snapshots24h:Number(counts?.snapshots24h)||0,resolved24h:Number(counts?.resolved24h)||0,expansions24h:Number(counts?.expansions24h)||0,lastTs:Number(counts?.last_ts)||null},stocks:stockOut,coins:coinOut,version:APP_VERSION};
   learnMemo={ts:now,key,data}; return data;
 }
 async function serverLearningCycle(env, scheduledTime=Date.now()){
@@ -1830,6 +1838,20 @@ async function tiingoFetch(env, path) {
   if (res.status === 429) throw new Error('Tiingo Rate-Limit (429)');
   if (!res.ok) throw new Error(`Tiingo ${res.status}: ${(await res.text()).slice(0,180)}`);
   return res.json();
+}
+async function tiingoStockChart(env,symbol,range='120'){
+  const sym=safeRadarSymbol(symbol);if(!sym)throw new Error('Ungültiger Ticker');
+  const now=new Date(), end=now.toISOString().slice(0,10);let start=new Date(now),path='';
+  const long={ '1T':1,'5T':5,'1Wo':7,'3Mo':92,'6Mo':183,'12Mo':366 };
+  if(long[range]){
+    start.setUTCDate(start.getUTCDate()-long[range]);const sd=start.toISOString().slice(0,10);
+    if(long[range]<=7){const freq=long[range]<=1?'15min':'1hour';path=`/iex/${encodeURIComponent(sym)}/prices?startDate=${sd}&resampleFreq=${freq}&columns=open,high,low,close,volume`;}
+    else path=`/tiingo/daily/${encodeURIComponent(sym)}/prices?startDate=${sd}&endDate=${end}&columns=open,high,low,close,volume`;
+  }else{
+    const mins=Math.max(5,Math.min(300,Number(range)||120));start=new Date(Date.now()-(mins+180)*60_000);const sd=start.toISOString();path=`/iex/${encodeURIComponent(sym)}/prices?startDate=${encodeURIComponent(sd)}&resampleFreq=5min&columns=open,high,low,close,volume`;
+  }
+  const d=await tiingoFetch(env,path),rows=(Array.isArray(d)?d:[]).map(x=>({t:x.date||x.timestamp||null,c:Number(x.close),v:Number(x.volume)})).filter(x=>Number.isFinite(x.c));
+  return {symbol:sym,range,rows,source:long[range]&&long[range]>7?'Tiingo EOD':'Tiingo IEX',ts:Date.now(),version:APP_VERSION};
 }
 async function tiingoBoatsSnapshot(env, rawSymbols) {
   const symbols=[...new Set(String(rawSymbols||'').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,25);
@@ -1989,10 +2011,10 @@ async function radarEquityMeta(env,symbol){
     const text=`${name} ${desc}`;
     const nonCommon=NON_COMMON_SYMBOL_DENY.has(sym) || NON_COMMON_EQUITY_RE.test(text) || /-P(?:-|$)/.test(sym);
     const active=hit?.endDate==null || Date.parse(hit.endDate)>=Date.now()-7*86400_000;
-    out={ts:Date.now(),tradableStock:Boolean(active&&!nonCommon),name,assetType:nonCommon?'non-common':'stock',exchange,reason:!active?'inaktiv':nonCommon?'ETF/ETP/Fonds/Derivat erkannt':'Common-Stock verifiziert'};
+    out={ts:Date.now(),tradableStock:Boolean(active&&!nonCommon),name,description:desc.slice(0,500),assetType:nonCommon?'non-common':'stock',exchange,reason:!active?'inaktiv':nonCommon?'ETF/ETP/Fonds/Derivat erkannt':'Common-Stock verifiziert'};
   }catch(e){out.reason=`Metadatenpruefung fehlgeschlagen: ${String(e?.message||e).slice(0,90)}`;}
   nonEquityMemo.set(sym,out);
-  if(env?.DB){try{await ensureD1Schema(env);await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`).bind(key,safeJson({tradableStock:out.tradableStock,name:out.name,assetType:out.assetType,exchange:out.exchange||'',reason:out.reason}),out.ts).run();}catch{}}
+  if(env?.DB){try{await ensureD1Schema(env);await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`).bind(key,safeJson({tradableStock:out.tradableStock,name:out.name,description:out.description||'',assetType:out.assetType,exchange:out.exchange||'',reason:out.reason}),out.ts).run();}catch{}}
   return out;
 }
 async function filterRadarToCommonStocks(env,rows,limit){
@@ -2000,7 +2022,7 @@ async function filterRadarToCommonStocks(env,rows,limit){
   // next common stocks. Metadata checks are cached for seven days.
   const source=(rows||[]).map(r=>({...r,symbol:safeRadarSymbol(r?.symbol)})).filter(r=>r.symbol).slice(0,24);
   const checked=await pool(source,4,async r=>{try{return {r,m:await radarEquityMeta(env,r.symbol)};}catch(e){return {r,m:{tradableStock:false,reason:String(e?.message||e)}};}});
-  return checked.filter(x=>x?.m?.tradableStock).map(x=>({...x.r,securityName:x.m.name,assetType:'stock',securityVerified:true})).slice(0,limit);
+  return checked.filter(x=>x?.m?.tradableStock).map(x=>({...x.r,securityName:x.m.name,companyDescription:x.m.description||'',exchange:x.m.exchange||'',assetType:'stock',securityVerified:true})).slice(0,limit);
 }
 
 function verifiedCommonOnly(rows){
@@ -2154,8 +2176,8 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       if(!row)return null;
       if(NON_COMMON_SYMBOL_DENY.has(sym)||NON_COMMON_EQUITY_RE.test(`${row?.name||''} ${row?.securityName||''}`))return null;
       const rm=radarMap.get(sym),bm=boatsMap.get(sym);
-      if(rm){ row.discovery={type:'iex-radar',...rm,buyWeight:0}; row.securityVerified=rm.securityVerified===true; row.securityName=rm.securityName||row.name; }
-      else if(bm){ row.discovery={type:'boats',...bm,buyWeight:0}; row.securityVerified=bm.securityVerified===true; row.securityName=bm.securityName||row.name; }
+      if(rm){ row.discovery={type:'iex-radar',...rm,buyWeight:0}; row.securityVerified=rm.securityVerified===true; row.securityName=rm.securityName||row.name; row.companyDescription=rm.companyDescription||''; row.exchange=rm.exchange||''; }
+      else if(bm){ row.discovery={type:'boats',...bm,buyWeight:0}; row.securityVerified=bm.securityVerified===true; row.securityName=bm.securityName||row.name; row.companyDescription=bm.companyDescription||''; row.exchange=bm.exchange||''; }
       const q=Math.max(0,Math.min(10,Number(row.score)||0)),crv=Math.max(0,Number(row.netCRV)||0),rv=Math.max(0,Number(row.relVol)||0);
       row.preSignalMaturity=Math.round(Math.max(0,Math.min(100,q/8*50 + Math.min(1,crv/3)*25 + Math.min(1,rv/1.8)*15 + (rm?.speedPct>0.2?10:0))));
       row.whyNow=(rm?.reasons||[]).slice(0,3);
@@ -2287,6 +2309,11 @@ export default {
     if (url.pathname === '/api/opening') {
       try { return json(await openingMomentum(env, url.searchParams.get('force') === '1'), 200, { 'cache-control':'no-store' }); }
       catch (e) { const state=classifyError(e); setApiState('alpaca',state,e?.message); return json({configured:!!(env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY),state,error:e.message||String(e),rows:openingMemo.data?.rows||[],feed:alpacaFeedLabel(env),phaseLabel:usMarketPhase().label,phaseHelp:usMarketPhase().help,version:APP_VERSION},state==='ratelimit'?429:502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/stock-chart') {
+      try { return json(await tiingoStockChart(env,url.searchParams.get('symbol'),url.searchParams.get('range')||'120'),200,{ 'cache-control':'public, max-age=60' }); }
+      catch(e){ return json({state:'error',error:String(e.message||e),rows:[],version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
     }
 
     if (url.pathname === '/api/stocks') {

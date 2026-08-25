@@ -627,3 +627,18 @@ body{padding-bottom:108px}.signal-idle{display:flex;align-items:center;gap:9px;w
 .hclock.fast-tip::after{right:0;left:auto;transform:translateY(-2px);text-align:left}
 .hclock.fast-tip:hover::after,.hclock.fast-tip:focus-visible::after{transform:translateY(0)}
 @media(max-width:760px){.fast-tip::after{display:none}}
+
+/* v3.3.0 — permanent header + resource/learning transparency */
+body{padding-top:62px}
+body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
+.viewbar{top:62px!important}
+.resource-strip{display:flex;flex-direction:column;min-width:122px;max-width:190px;padding:4px 7px;border:1px solid var(--line);border-radius:8px;background:var(--panel);font-size:9px;line-height:1.2}
+.resource-strip b{font-size:9px!important}.resource-strip span{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.resource-strip.warn{border-color:#f2c01577}.resource-strip.err{border-color:#ef5a5a88}
+.learning-report{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:10px;min-height:90px}
+.learning-report .lr-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:7px}
+.learning-report .lr-grid span{padding:6px;border:1px solid var(--line);border-radius:8px;font-size:9px;color:var(--dim)}
+.learning-report .lr-grid b{display:block;color:var(--fg);font-size:12px}
+.learning-report small{color:var(--dim)}
+@media(max-width:760px){body{padding-top:104px}.resource-strip{order:8;min-width:100%;max-width:none}.viewbar{top:104px!important}.learning-report .lr-grid{grid-template-columns:repeat(2,1fr)}}
+.company-name{display:block!important;font-size:11px!important;color:var(--fg)!important;margin-top:1px}.company-focus,.company-exchange{display:block;font-size:9px;color:var(--dim);max-width:620px;line-height:1.25;margin-top:2px}

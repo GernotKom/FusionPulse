@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.2.9</title>
+<title>FusionPulse 3.3.0</title>
 </head>
 <body>
 
@@ -43,6 +43,7 @@
       <span id="miniStocks" class="mini-dot busy fast-tip" data-tip="Aktien-Datenquelle">●</span>
       <span id="miniTiingo" class="mini-dot busy fast-tip" data-tip="Tiingo-Verbindung">T</span>
     </div>
+    <div id="resourceStrip" class="resource-strip fast-tip" data-tip="Systemressourcen: zeigt nur messbare Zustände. Warum sinnvoll? Wenn Server oder Datenanbieter an Grenzen stoßen, können Scans später oder unvollständig eintreffen."><b>☁ System</b><span id="resourceText">wird geprüft…</span></div>
     <div class="hclock fast-tip" data-tip="Countdown bis zur nächsten 5-Minuten-Grenze des Coin-Scanners. Kein Börsen-Countdown und keine Signal-Gültigkeit.">
       <small>Nächster 5m-Takt</small><b id="barclock">--:--</b>
     </div>
@@ -56,7 +57,7 @@
 
   <button id="sound" title="Haupt-Ton Ein/Aus (m)">🔊</button>
   <button id="wake" title="Display wach halten">☀</button>
-  <button id="scan" class="primary" title="Neu scannen (Leertaste)">↻</button>
+  <button id="scan" class="primary" title="Aktualisiert Krypto, Aktienstatus, Opening/Market-Radar, Crowd und Learning. Die schweren autonomen Markt-Scans laufen zusätzlich serverseitig weiter. Warum sinnvoll? So siehst du sofort den neuesten gespeicherten Stand, ohne den Hintergrundscanner zu ersetzen.">↻</button>
   <button id="cog" title="Einstellungen">⚙</button>
 </header>
 <div id="signalBanner" class="signal-banner" aria-live="polite"><span class="signal-idle"><b>SIGNAL-INFO</b><span>Noch kein neues BUY-/Grün-Signal in dieser Sitzung.</span></span></div>
@@ -137,8 +138,10 @@
     </div>
     <div id="depotStrip" class="depotstrip" title="Deine mit ★ markierten Aktien. Damit kannst du dein bestehendes Depot bzw. eine persönliche Watchlist abbilden."></div>
     <div id="marketGainers" class="openingpanel" title="Starke verifizierte Common-Stock-Market-Gainer aus dem Tiingo-IEX-Whole-Market-Radar. Discovery בלבד; Elliott-Deep-Scan entscheidet über Qualität."></div>
+    <div id="extendedWatch" class="openingpanel" title="Pre-/After-Hours-Beobachtung. Warum sinnvoll? Auffällige Bewegungen außerhalb der Hauptsession können Kandidaten fürs Opening liefern, sind wegen dünnerer Liquidität aber noch kein BUY."></div>
     <div id="openingPanel" class="openingpanel" title="Premarket-/Opening-Momentum über Alpaca. Im kostenlosen IEX-Feed ist die Live-Abdeckung auf IEX beschränkt; vor 08:00 ET gibt es dort keine Live-Daten."></div>
     <div class="experimental-grid">
+      <section id="learningReport" class="learning-report" title="Was hat FusionPulse im Hintergrund gelernt? Zeigt gespeicherte Beobachtungen und Systemzustände; verändert keine BUY-Regel automatisch."></section>
       <section id="experimentalPanel" class="experimental-panel" title="Experimentelle externe Einflussgrößen. 1–5 Sterne bewerten ausschließlich die aktuelle Dynamik/Aktivität, nicht die erwartete Kursrichtung. Diese Ebene hat derzeit 0 % Gewicht im BUY-Score."></section>
       <section class="experimental-note">
         <b>🧪 Experimental Lab</b>
