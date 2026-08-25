@@ -1,3 +1,18 @@
+# FusionPulse Release Notes — v3.4.2
+
+## Refresh, FokusScope und Analyseanzeige
+- Einzelaktien-Refresh im FokusScope erzwingt jetzt eine echte Neuanalyse und umgeht den lokalen 5-Minuten-Lookup-Cache.
+- Der blaue globale Refresh erzwingt jetzt auch den Aktien-Snapshot statt nur den serverseitigen Cache erneut anzuzeigen; die Fokusaktie wird dabei zuerst aktualisiert.
+- Aktive Analysemethoden werden kompakt in der Fußleiste angezeigt und aktualisieren sich mit den Einstellungen.
+- FokusScope ist als höchste Daten-/Analysepriorität behandelt; Safety-Gates bleiben unverändert fail-closed.
+
+## Large-Cap-Radar / Flatex-Praxisfilter
+- Automatische Aktien-Discovery (Whole-Market Radar) ist jetzt inclusion-only auf eine kuratierte Large-Cap-/hochliquide US-Whitelist begrenzt. Small-/Micro-Caps können nicht mehr automatisch in den Radar gelangen.
+- Opening Momentum verwendet denselben Large-Cap-Basiskatalog; dynamische Radar-Kandidaten müssen den Large-Cap-Gate ebenfalls bestehen.
+- Common-Stock-/ETF-Sicherheitsfilter bleiben zusätzlich aktiv. Fehlende/unklare Metadaten können keinen Kandidaten freischalten.
+- Manuelle Aktiensuche und Favoriten bleiben bewusst getrennt, damit ein vom Nutzer explizit gewünschter Ticker weiterhin aufrufbar ist.
+- Trading-/BUY-Regeln, CRV, Sizing, Elliott-Logik und Discovery-Gewichtung (0 % direktes BUY-Gewicht) bleiben unverändert.
+
 # FusionPulse v3.4.1 — P0 Hotfix
 
 ## Behoben

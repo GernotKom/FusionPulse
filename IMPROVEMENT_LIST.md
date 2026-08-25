@@ -1,4 +1,17 @@
-# FusionPulse Improvement List — Stand v3.4.1
+# FusionPulse Improvement List — Stand v3.4.2
+
+
+## In v3.4.2 umgesetzt — Refresh/FokusScope/Analysemethoden
+- **FokusScope höchste Priorität:** Ein manueller Refresh der Fokusaktie umgeht den 5-Minuten-Lookup-Cache und erzwingt eine neue Deep-Analyse plus frischesten verfügbaren Quote. Fehlende/schlechtere Daten bleiben fail-closed.
+- **Blauer globaler Refresh repariert:** Der blaue Pfeil erzwingt jetzt zuerst die Fokusaktie und danach einen echten neuen Aktien-Snapshot (`force=1`) sowie Opening/Krypto/Crowd/Learning/Health. Ein bloßes Neurendern alter Aktien-Cache-Daten gilt nicht als erfolgreicher manueller Refresh.
+- **Analysemethoden in der Fußleiste:** Die aktuell aktivierten Verfahren werden kompakt unten angezeigt; die Anzeige folgt den Einstellungen und verändert keine Gewichtung.
+- **Priorität:** FokusScope vor breiter Discovery. BUY-/CRV-/Sizing-Sicherheitsregeln unverändert.
+
+## In v3.4.2 umgesetzt — Large-Cap-/Flatex-Filter
+- **Automatischer Aktien-Radar nur noch Large Caps:** Whole-Market Radar und automatische Opening-Momentum-Discovery sind inclusion-only auf einen kuratierten Large-Cap-/hochliquiden US-Titelkatalog begrenzt. Small-/Micro-Caps werden nicht mehr automatisch angezeigt.
+- **Flatex-Praxisziel:** Weniger theoretische Momentum-Treffer, dafür Kandidaten mit deutlich höherer Wahrscheinlichkeit realer Handelbarkeit über Flatex/Tradegate. Eine einzelne Broker-Verfügbarkeit kann technisch nicht garantiert werden.
+- **Manuelle Suche/Favoriten bleiben möglich:** Der Filter gilt für automatische Discovery; bewusst gesuchte oder favorisierte Titel werden nicht pauschal gesperrt.
+- Common-Stock-/ETF-Gate bleibt zusätzlich aktiv; Trading-/BUY-Schwellen, Netto-CRV, Sizing und Elliott bleiben unverändert.
 
 
 ## In v3.4.1 umgesetzt — P0 Hotfix

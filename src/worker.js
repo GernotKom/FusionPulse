@@ -900,6 +900,20 @@ const STOCK_UNIVERSE = [
   ['Industrie',    'GE',    'GE Aerospace'],
 ];
 const STOCK_NAMES = Object.fromEntries(STOCK_UNIVERSE.map(([, s, n]) => [s, n]));
+// v3.4.2: Automatic stock discovery is intentionally restricted to a curated
+// large-cap / highly liquid US universe. The goal is practical broker
+// tradability (Flatex/Tradegate) rather than maximum candidate count. This is
+// an inclusion-only gate: unknown/small/micro-cap symbols cannot enter Radar
+// or Opening Momentum automatically. Manual search/favorites remain separate.
+const LARGE_CAP_RADAR_SYMBOLS = new Set([
+  'AAPL','ABBV','AMD','AMAT','AMZN','ARM','AVGO','BA','BAC','CAT','CEG','COP','COST',
+  'CRM','CRWD','CVX','DIS','GE','GOOG','GOOGL','GS','HD','HOOD','IBM','INTC','JNJ',
+  'JPM','LLY','MA','META','MRK','MSFT','MSTR','MU','NFLX','NKE','NVDA','ORCL','PFE',
+  'PLTR','QCOM','TMO','TSLA','UBER','UNH','V','WMT','XOM'
+]);
+function largeCapRadarAllowed(symbol){
+  return LARGE_CAP_RADAR_SYMBOLS.has(String(symbol||'').trim().toUpperCase().replace(/\./g,'-'));
+}
 const STOCK_SEARCH_CATALOG = [
   ...STOCK_UNIVERSE,
   ['Technologie','PLTR','Palantir Technologies Inc.'], ['Technologie','IONQ','IonQ, Inc.'],
@@ -1358,9 +1372,7 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3, favoriteSymbo
    08:00–17:00 ET; deshalb ist 04:00–08:00 ET im Free-Tarif NICHT vollständig
    live abdeckbar. Die UI kennzeichnet das ausdrücklich. Keine Orders.
    ======================================================================== */
-const OPENING_UNIVERSE = [
-  'MRNA','IONQ','RGTI','PLTR','MSTR','NVDA','AMD','AVGO','SMCI','ARM','TSLA','META','AAPL','MSFT','AMZN','GOOGL','NFLX','COIN','HOOD','SOFI','CRWD','SNOW','UBER','RKLB','AEM','AG','LLY','BA','GE','CAT'
-];
+const OPENING_UNIVERSE = [...LARGE_CAP_RADAR_SYMBOLS];
 let openingMemo={ts:0,data:null};
 function alpacaFeed(env){
   return String(env.ALPACA_FEED || 'iex').toLowerCase() === 'sip' ? 'sip' : 'iex';
@@ -2125,11 +2137,11 @@ async function filterRadarToCommonStocks(env,rows,limit){
   // next common stocks. Metadata checks are cached for seven days.
   const source=(rows||[]).map(r=>({...r,symbol:safeRadarSymbol(r?.symbol)})).filter(r=>r.symbol).slice(0,24);
   const checked=await pool(source,4,async r=>{try{return {r,m:await radarEquityMeta(env,r.symbol)};}catch(e){return {r,m:{tradableStock:false,reason:String(e?.message||e)}};}});
-  return checked.filter(x=>x?.m?.tradableStock).map(x=>({...x.r,securityName:x.m.name,companyDescription:x.m.description||'',exchange:x.m.exchange||'',assetType:'stock',securityVerified:true})).slice(0,limit);
+  return checked.filter(x=>x?.m?.tradableStock && largeCapRadarAllowed(x?.r?.symbol)).map(x=>({...x.r,securityName:x.m.name,companyDescription:x.m.description||'',exchange:x.m.exchange||'',assetType:'stock',securityVerified:true,largeCapRadar:true})).slice(0,limit);
 }
 
 function verifiedCommonOnly(rows){
-  return (rows||[]).filter(r=>r?.securityVerified===true && !NON_COMMON_SYMBOL_DENY.has(String(r?.symbol||'').toUpperCase()) && !NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''}`));
+  return (rows||[]).filter(r=>r?.securityVerified===true && largeCapRadarAllowed(r?.symbol) && !NON_COMMON_SYMBOL_DENY.has(String(r?.symbol||'').toUpperCase()) && !NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''}`));
 }
 // v3.2.7 P0: Never let a previously cached/persisted non-common instrument leak
 // back into the visible stock scanner. This is deliberately exclusion-only.
@@ -2153,13 +2165,14 @@ async function tiingoIexMarketRadar(env,limit=80,force=false){
   const phase=usMarketPhase(new Date(now),'iex');
   const maxAge=['opening','regular'].includes(phase.key)?12:['premarket','after'].includes(phase.key)?30:90;
   const ranked=all.map(x=>iexRadarQuote(x,prevMap.get(String(x?.ticker||x?.symbol||'').toUpperCase()))).filter(Boolean)
+    .filter(r=>largeCapRadarAllowed(r.symbol))
     .filter(r=>r.ageMin==null||r.ageMin<=maxAge)
     .sort((a,b)=>b.score-a.score);
   // Instrument-Metadaten bewusst NICHT hier prüfen: Der Bulk-Radar soll CPU-arm
   // bleiben. ETF/ETP/Common-Stock-Verifikation erfolgt erst im getrennten Deep-
   // Scan-Cron auf den wenigen Top-Kandidaten.
   const rows=ranked.slice(0,Math.max(24,Math.min(120,limit)));
-  tiingoIexRadarMemo={ts:now,rows,universe:all.length,phase:phase.key,source:'Tiingo IEX Whole-Market Radar · prefiltered',buyWeight:0};
+  tiingoIexRadarMemo={ts:now,rows,universe:all.length,phase:phase.key,source:'Tiingo IEX Large-Cap Radar · prefiltered',buyWeight:0};
   await persistIexRadar(env,tiingoIexRadarMemo);
   return tiingoIexRadarMemo;
 }
@@ -2388,7 +2401,7 @@ async function tiingoStockSuggest(env,raw){
   return {configured:!!env.TIINGO_API_TOKEN,state:'ok',rows:out.slice(0,5),version:APP_VERSION};
 }
 
-async function tiingoStockLookup(env,raw,comp,minCrv=3){
+async function tiingoStockLookup(env,raw,comp,minCrv=3,force=false){
   let info=resolveStockQuery(raw);
   if(!info){
     try{
@@ -2399,7 +2412,7 @@ async function tiingoStockLookup(env,raw,comp,minCrv=3){
     }catch(e){ console.warn(JSON.stringify({event:'tiingo_search_failed',query:String(raw||''),message:String(e?.message||e),ts:Date.now()})); }
   }
   if(!info) return {configured:true,state:'ok',notFound:true,error:'Ticker/Firmenname bei Tiingo nicht gefunden.',source:'Tiingo IEX',version:APP_VERSION};
-  const cached=stockLookupMemo.get(info.symbol);if(cached&&Date.now()-cached.ts<5*60_000){
+  const cached=stockLookupMemo.get(info.symbol);if(!force&&cached&&Date.now()-cached.ts<5*60_000){
     const row={...cached.row};
     const fq=await freshestStockQuote(env,info.symbol);
     if(fq){const fx=await getTiingoFx(env);row.livePriceUsd=fq.priceUsd;row.livePriceEur=fx?fq.priceUsd/fx:null;row.liveUpdated=fq.updated;row.liveQuoteTs=fq.ts;row.liveQuoteAgeSec=fq.ageSec;row.liveQuoteSource=fq.source;row.liveQuoteScope=fq.scope;row.liveQuoteOk=!!fq.live;}
@@ -2526,7 +2539,7 @@ export default {
         const minCrv = Math.max(1, +url.searchParams.get('minCrv') || 3);
         const lookup = url.searchParams.get('lookup');
         if (lookup) {
-          if(tiingoStocksMode(env)==='primary') return json(await tiingoStockLookup(env,lookup,comp,minCrv),200,{ 'cache-control':'no-store' });
+          if(tiingoStocksMode(env)==='primary') return json(await tiingoStockLookup(env,lookup,comp,minCrv,url.searchParams.get('force')==='1'),200,{ 'cache-control':'no-store' });
           const qv=quotaView();
           if(Number.isFinite(qv.creditsLeft) && qv.creditsLeft<=2) return json({state:'ratelimit',error:'Twelve-Data-Reserve geschützt: Suche kurz warten.',quota:qv,version:APP_VERSION},429,{ 'cache-control':'no-store' });
           return json(await stockLookup(env, lookup, comp, minCrv), 200, { 'cache-control':'no-store' });

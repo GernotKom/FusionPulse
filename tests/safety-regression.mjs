@@ -131,5 +131,10 @@ assert.match(workerText,/signal: AbortSignal\.timeout\(20_000\)/,'Provider fetch
 // v3.4.1 P0 runtime regression guard
 assert.match(workerText,/const priceSource = Number\(snap\.minuteBar\?\.c\|\|0\)>0 \? 'minute'/,'Alpaca momentum must define priceSource before returning it');
 assert.match(app,/Tages-Bar\/Fallback/,'Daily Alpaca fallback must be visibly labelled and must not look live');
+// v3.4.2 Large-cap-only automatic stock discovery
+assert.match(workerText,/const LARGE_CAP_RADAR_SYMBOLS = new Set/,'Automatic stock discovery must use an explicit large-cap allowlist');
+assert.match(workerText,/\.filter\(r=>largeCapRadarAllowed\(r\.symbol\)\)/,'Whole-market radar must exclude non-large-cap symbols before ranking/display');
+assert.match(workerText,/x=>x\?\.m\?\.tradableStock && largeCapRadarAllowed\(x\?\.r\?\.symbol\)/,'Verified radar candidates must still pass the large-cap gate');
+assert.match(workerText,/const OPENING_UNIVERSE = \[\.\.\.LARGE_CAP_RADAR_SYMBOLS\]/,'Opening Momentum base universe must be large-cap only');
 
 console.log('✓ FusionPulse safety regressions: OK');

@@ -689,3 +689,8 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.4.0: Fokusziel bleibt unter Sticky Header + Viewbar vollständig sichtbar. */
 .stockfocus{scroll-margin-top:118px}
 .focus-livebar button{margin-left:auto;padding:3px 7px;border-radius:7px;font-size:9px}
+
+/* v3.4.2 — permanente kompakte Anzeige der aktiven Analyseverfahren */
+.analysis-footer{margin:14px 0 76px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);color:var(--dim);font-size:10px;line-height:1.45;display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.analysis-footer b{color:var(--fg)}.analysis-footer small{margin-left:auto;color:var(--dim2)}
+@media(max-width:760px){.analysis-footer small{width:100%;margin-left:0}}

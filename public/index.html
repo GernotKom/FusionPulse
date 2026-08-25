@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.4.1</title>
+<title>FusionPulse 3.4.2</title>
 </head>
 <body>
 
@@ -172,6 +172,10 @@
     <kbd>Leer</kbd> Scan · <kbd>/</kbd> Suche · <kbd>j</kbd>/<kbd>k</kbd> blättern ·
     <kbd>c</kbd> Plan kopieren · <kbd>d</kbd> Details · <kbd>1–3</kbd> Filter · <kbd>z</kbd> nur Zone
   </p>
+  <footer class="analysis-footer" id="analysisFooter" title="Aktive Analyseverfahren. Diese Anzeige informiert nur; sie verändert keine Gewichtung und lockert keine BUY-Gates.">
+    <b>Analysemethoden:</b> <span id="analysisMethods">VWAP · EMA/Trend · Relative Stärke · Momentum/MTF · Volumen · Orderbuch · Squeeze · Pullback · Elliott/Fibonacci</span>
+    <small>FokusScope = höchste Daten-/Analysepriorität · fehlende Daten bleiben fail-closed</small>
+  </footer>
 </main>
 
 <div id="dock" class="dock hidden">
