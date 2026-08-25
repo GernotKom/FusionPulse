@@ -89,12 +89,18 @@ console.log('✓ FusionPulse safety regressions: OK');
 
 // v3.2.6 Elliott-first / Market-Gainer guards
 assert.match(workerText,/const ell=Number\(r\?\.elliott\)\|\|0/,'Deep recheck ranking must explicitly include Elliott structure');
-assert.match(workerText,/openingGainers\(radar\.rows\|\|\[\],6\)/,'Verified market gainers must receive dedicated discovery slots');
+assert.match(workerText,/openingGainers\(radar\.rows\|\|\[\],(?:6|8)\)/,'Verified market gainers must receive dedicated discovery slots');
 assert.match(workerText,/security_meta:v327:/,'Security cache generation must be invalidated for v3.2.6');
 assert.match(workerText,/independentTwinEpisodes\(cur,rows\)/,'Historical Twin must collapse correlated snapshots into independent episodes');
 assert.doesNotMatch(workerText,/eligible\.slice\(0,12\)/,'Historical Twin must not hard-fill a fixed n=12 sample');
 assert.match(workerText,/MAX_DIST=3\.25/,'Historical Twin must use a fixed similarity gate instead of filling to a target n');
 
+
+// v3.3.4 Radar-to-Deep-Scan / click-through guards
+assert.match(workerText,/verifiedDiscoveryNow=new Set/,'Currently verified Discovery titles must be eligible for safe carry between deep-scan cycles');
+assert.match(workerText,/radarPick\.length>=8/,'Whole-Market Radar must have meaningful priority in the deep-scan queue');
+assert.match(app,/async function openStockFromDiscovery\(symbol\)/,'Discovery cards need a dedicated deep-load/open path');
+assert.match(app,/openStockFromDiscovery\(b\.dataset\.openstock\)/,'Whole-Market/Extended discovery cards must use the dedicated open path');
 // v3.2.7 ETF cache-leak regression guard
 assert.match(workerText,/function stripKnownNonCommon\(rows\)/,'Cached stock rows must have a hard non-common sanitizer');
 assert.match(workerText,/const cleanMemo=stripKnownNonCommon\(stockMemo\.rows\)/,'Fast memo return must sanitize cached ETF\/ETP rows');

@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.3.3 — Frontend
+   FusionPulse v3.3.4 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -977,11 +977,31 @@ async function loadCrowd(force=false){
   try{const q=new URLSearchParams({symbols:symbols.join(',')});if(S.token)q.set('t',S.token);if(force)q.set('force','1');const r=await fetch('/api/crowd?'+q,{cache:'no-store'});const d=await r.json();if(req!==crowdReqSeq)return;crowdMeta=d;for(const x of d.rows||[])crowdMap.set(x.symbol,{...x,_ts:Number(x.ts||d.ts||Date.now())});renderStocks();}
   catch(e){crowdMeta={state:'error',error:String(e.message||e)};renderStocks();}
 }
+async function openStockFromDiscovery(symbol){
+  const sym=String(symbol||'').trim().toUpperCase(); if(!sym)return;
+  focusStock=sym;
+  const loaded=stockRows.find(r=>String(r.symbol||'').toUpperCase()===sym);
+  if(loaded){renderStocks();$('#stockFocus')?.scrollIntoView({behavior:'smooth',block:'start'});return;}
+  const st=$('#stockState');
+  if(st){st.textContent=`${sym} wird tief analysiert…`;st.className='badge';}
+  try{
+    const q=new URLSearchParams({lookup:sym,comp:S.components.join(','),minCrv:S.minCrvStock});if(S.token)q.set('t',S.token);
+    const res=await fetch('/api/stocks?'+q,{cache:'no-store'}),data=await res.json();
+    if(data.row){
+      const m=new Map(stockRows.map(r=>[r.symbol,r]));m.set(data.row.symbol,data.row);stockRows=[...m.values()];
+      rememberStockRows([data.row]);stockRows=mergeFavoriteRows(stockRows);focusStock=data.row.symbol;
+      if(st){st.textContent=data.cached?'Treffer · Cache':'Treffer geladen';st.className='badge ok';}
+    }else if(st){st.textContent=data.error||`${sym} noch nicht tief analysierbar`;st.className='badge warn';}
+  }catch(e){if(st){st.textContent='Aktie konnte nicht geladen werden';st.className='badge err';st.title=String(e.message||e);}}
+  renderStocks();
+  $('#stockFocus')?.scrollIntoView({behavior:'smooth',block:'start'});
+}
+
 function renderExtendedWatch(){
   const el=$('#extendedWatch');if(!el)return;const phase=String(openingMeta.phaseLabel||stockMeta.market?.label||'');
   const extended=/pre|after|overnight/i.test(phase);const cand=openingRows.slice(0,6);
   el.innerHTML=`<div class="ophead"><b>🌙 Extended-Hours Watch</b><span>${esc(phase||'Sessionstatus wird geladen')}</span><small>Beobachtung · kein BUY allein</small></div>`+(cand.length?`<div class="opgrid">${cand.map(r=>{const sr=stockRows.find(x=>x.symbol===r.symbol);return `<button class="opcard ${Number(r.gapPct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="${esc(r.symbol)} außerhalb/nahe der Hauptsession beobachten. Warum sinnvoll? Vor- und Nachbörse können frühe Aufmerksamkeit zeigen; breitere Spreads und weniger Volumen machen die Bewegung aber unsicherer."><b>${esc(r.symbol)}</b><span class="trend-pct ${Number(r.gapPct)>=0?'up':'down'}">${r.gapPct>=0?'+':''}${num(r.gapPct,1)}%</span>${spark((sr?.intraday||[]).slice(-12),120,28)}<em>${extended?'Extended Hours':'Opening/Session'}</em></button>`}).join('')}</div>`:'<span class="hint">Noch keine Extended-Hours-Kandidaten.</span>');
-  el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>{focusStock=b.dataset.openstock||'';renderStocks();$('#stockFocus')?.scrollIntoView({behavior:'smooth',block:'start'});}));
+  el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
 }
 function renderOpeningPanel() {
   const el=$('#openingPanel'); if(!el) return;
@@ -990,12 +1010,7 @@ function renderOpeningPanel() {
   const top=openingRows.slice(0,5);
   el.innerHTML=`<div class="ophead"><b>🚀 Opening Momentum</b><span title="${esc(openingMeta.phaseHelp||'')} ">${esc(phase)}</span><small title="${esc(openingMeta.limitations||'Alpaca Marktdatenfeed')}">Alpaca · ${esc(openingMeta.feed||'IEX')} · ${Number(openingMeta.radarCandidates||0)} Radar · ${esc(openingMeta.radarSource||'warte')}</small></div>`+
     (top.length?`<div class="opgrid">${top.map(r=>`<button type="button" class="opcard ${r.light} ${Number(r.ret5)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="${esc(r.symbol)} im Aktienradar öffnen. Momentum-Score kombiniert Gap, Volumenbeschleunigung, kurzfristige Kursdynamik und Premarket-/Opening-Level. Kein BUY allein."><b>${esc(r.symbol)}${r.origin==='favorite'?' ★':r.origin==='radar'?' · RADAR':''}</b><span class="trend-pct ${Number(r.gapPct)>=0?'up':'down'}">${r.gapPct>=0?'+':''}${num(r.gapPct,1)}% Gap</span><span>Mom ${num(r.momentumScore,1)}</span><span>RV ${r.relVol==null?'n.v.':num(r.relVol,1)+'×'}</span><span title="Elliott/Fibonacci-Strukturprojektion: grober möglicher Bewegungsraum aus aktuellem Impuls und 1,618-Projektion; kein garantiertes Kursziel.">Struktur ${num(r.structurePct,1)}%</span><em>${esc(r.phaseAction)}</em></button>`).join('')}</div>`:`<span class="hint">Noch keine verwertbaren Live-Daten im aktuellen ${esc(openingMeta.feed||'Alpaca')}-Zeitfenster.</span>`);
-  el.querySelectorAll('[data-openstock]').forEach(btn => btn.addEventListener('click', async () => {
-    focusStock = btn.dataset.openstock || '';
-    renderStocks();
-    if (!stockRows.some(r=>r.symbol===focusStock)) { const q=$('#stockQ'); if(q){ const old=q.value; q.value=focusStock; await searchStockNow(); q.value=old; } }
-    $('#stockFocus')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }));
+  el.querySelectorAll('[data-openstock]').forEach(btn=>btn.addEventListener('click',()=>openStockFromDiscovery(btn.dataset.openstock)));
 }
 
 function renderMarketGainers(){
@@ -1006,12 +1021,13 @@ function renderMarketGainers(){
     const openingRadar=openingRows.filter(r=>r.origin==='radar').slice(0,12).map(r=>({symbol:r.symbol,movePct:r.gapPct,speedPct:r.ret5,score:r.momentumScore,spreadPct:null}));
     if(openingRadar.length){
       el.innerHTML=`<div class="ophead"><b>📡 Whole-Market Radar</b><span>${openingRadar.length} verifizierte Opening-Radar-Kandidaten · unabhängig von Favoriten</span><small>Discovery · 0 % BUY-Gewicht</small></div><div class="opgrid">${openingRadar.map(r=>`<button type="button" class="opcard ${Number(r.movePct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="Vom verifizierten Opening-Radar erkannt. Der serverseitige Deep Scan übernimmt geeignete Kandidaten automatisch; BUY erst nach Elliott/Qualität/CRV."><b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b><span class="trend-pct ${Number(r.movePct)>=0?'up':'down'}">${Number(r.movePct)>=0?'+':''}${num(r.movePct,1)}% Gap</span><span>Mom ${num(r.score,1)}</span><span>Opening verified</span><em>Radar · Elliott prüfen</em></button>`).join('')}</div>`;
+      el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
       return;
     }
     el.innerHTML='<div class="ophead"><b>📡 Whole-Market Radar</b><small>0 % BUY-Gewicht · Elliott-first</small></div><span class="hint">Noch keine verifizierten marktweiten Radar-Kandidaten. Favoriten sind davon getrennt.</span>';return;
   }
   el.innerHTML=`<div class="ophead"><b>📡 Whole-Market Radar</b><span>${radar.length} verifizierte Kandidaten · unabhängig von Favoriten</span><small>Discovery · 0 % BUY-Gewicht</small></div><div class="opgrid">${radar.map(r=>`<button type="button" class="opcard ${Number(r.movePct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="Whole-Market-Kandidat, nicht durch deine Favoriten erzeugt. Erst der Elliott-/Qualitäts-/CRV-Deep-Scan kann einen Trade freigeben."><b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b><span class="trend-pct ${Number(r.movePct)>=0?'up':'down'}">${Number(r.movePct)>=0?'+':''}${num(r.movePct,1)}% Tag</span><span class="${r.speedPct!=null?'trend-pct '+(Number(r.speedPct)>=0?'up':'down'):''}">${r.speedPct!=null?'Speed '+(Number(r.speedPct)>=0?'+':'')+num(r.speedPct,2)+'%':'Radar '+num(r.score,1)}</span><span>${r.spreadPct!=null?'Spread '+num(r.spreadPct,2)+'%':'Spread n.v.'}</span><em>${gainers.some(x=>x.symbol===r.symbol)?'Gainer · Elliott prüfen':'Radar · Elliott prüfen'}</em></button>`).join('')}</div>`;
-  el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',async()=>{focusStock=b.dataset.openstock||'';renderStocks();if(!stockRows.some(r=>r.symbol===focusStock)){const q=$('#stockQ');if(q){q.value=focusStock;await searchStockNow();}}$('#stockFocus')?.scrollIntoView({behavior:'smooth',block:'start'});}));
+  el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
 }
 
 function googleFinanceUrl(row){

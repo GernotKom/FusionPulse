@@ -1,4 +1,9 @@
-# FusionPulse Improvement List — Stand v3.3.3
+# FusionPulse Improvement List — Stand v3.3.4
+
+## In v3.3.4 zusätzlich umgesetzt
+
+- Radar → Deep Scan: marktweite Kandidaten vor Cache-Rechecks priorisiert; verifizierte Nicht-Favoriten bleiben zwischen Zyklen sichtbar.
+- Radar-/Opening-/Extended-Hours-Karten laden beim Klick fehlende Deep-Analyse direkt und öffnen anschließend das große Aktienfenster.
 
 ## In v3.3.3 zusätzlich umgesetzt
 - Whole-Market-Radar-Fallback aus verifizierten Opening-Radar-Kandidaten; persistente Übergabe an den autonomen Deep Scan.

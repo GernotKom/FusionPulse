@@ -1,4 +1,11 @@
-# FusionPulse Release Notes — v3.3.3
+# FusionPulse Release Notes — v3.3.4
+
+## v3.3.4 – Radar-to-Deep-Scan & Discovery-Klicks
+
+- Whole-Market-/Opening-Radar-Kandidaten werden im autonomen Deep Scan vor alten Cache-Rechecks priorisiert.
+- Bereits tief analysierte Nicht-Favoriten bleiben sichtbar, solange sie im aktuell verifizierten Discovery-Pool stehen.
+- Klick auf Whole-Market Radar, Opening Momentum oder Extended-Hours lädt eine noch nicht analysierte Aktie direkt per Lookup und öffnet sie anschließend im großen Aktienfenster.
+- Kein BUY-Gewicht für Discovery; Elliott-first, Netto-CRV und Safety-Gates unverändert.
 
 ## v3.3.3 – Radar-Pipeline, Freshness & Google-Finance-Deep-Link
 - Whole-Market-Radar nutzt als sicheren Fallback bereits Common-Stock-verifizierte Opening-Radar-Kandidaten und zeigt sie sofort in der UI; Discovery bleibt 0 % BUY-Gewicht.

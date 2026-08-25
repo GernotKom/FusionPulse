@@ -1,7 +1,7 @@
 import { APP_VERSION } from './version.js';
 
 /* ============================================================================
-   FusionPulse v3.3.3 — Cloudflare Worker
+   FusionPulse v3.3.4 — Cloudflare Worker
    Momentum- & Einstiegszonen-Scanner für Bitpanda Fusion (EUR-Paare)
 
    Design-Prinzipien:
@@ -2246,12 +2246,13 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       if(!picked.has(sym)){picked.add(sym);favPick.push(sym);}
     }
   }
-  // Fast reife / zuletzt starke Analysen werden gezielt erneut geprueft.
-  for(const r of [...(stockMemo.rows||[])].sort((a,b)=>deepRecheckRank(b)-deepRecheckRank(a))){const sym=String(r?.symbol||'').toUpperCase();if(sym&&!picked.has(sym)){picked.add(sym);recheckPick.push(sym);}if(recheckPick.length>=4)break;}
-  // Marktweite frische Kandidaten erhalten den groessten Anteil der Deep-Scan-Kapazitaet.
+  // v3.3.4: Whole-Market-Kandidaten werden VOR alten Rechecks priorisiert.
+  // So kann der Deep Scan nicht wieder faktisch zu einem Favoriten-/Cache-Pool werden.
   const gainerPick=[];
-  for(const x of openingGainers(radar.rows||[],6)){if(!picked.has(x.symbol)){picked.add(x.symbol);gainerPick.push(x.symbol);}if(gainerPick.length>=4)break;}
-  for(const x of radar.rows||[]){if(!picked.has(x.symbol)){picked.add(x.symbol);radarPick.push(x.symbol);}if(radarPick.length>=6)break;}
+  for(const x of openingGainers(radar.rows||[],8)){if(!picked.has(x.symbol)){picked.add(x.symbol);gainerPick.push(x.symbol);}if(gainerPick.length>=4)break;}
+  for(const x of radar.rows||[]){if(!picked.has(x.symbol)){picked.add(x.symbol);radarPick.push(x.symbol);}if(radarPick.length>=8)break;}
+  // Nur zwei starke Altanalysen pro Zyklus nachziehen; Discovery hat Vorrang.
+  for(const r of [...(stockMemo.rows||[])].sort((a,b)=>deepRecheckRank(b)-deepRecheckRank(a))){const sym=String(r?.symbol||'').toUpperCase();if(sym&&!picked.has(sym)){picked.add(sym);recheckPick.push(sym);}if(recheckPick.length>=2)break;}
   // Overnight/Extended-Hours-Kandidaten duerfen die Queue ergaenzen, aber nie BUY setzen.
   for(const x of boats.rows||[]){if(!picked.has(x.symbol)){picked.add(x.symbol);boatsPick.push(x.symbol);}if(boatsPick.length>=2)break;}
   // Exploration verhindert Tunnelblick und sorgt fuer fortlaufende Rotation des stabilen Basiskatalogs.
@@ -2275,14 +2276,16 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       return row;
     }catch(e){console.warn(JSON.stringify({event:'tiingo_stock_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));return null;}
   })).filter(Boolean);
-  // Alte autonom entdeckte Kandidaten aus älteren/bekannt fehlerhaften Security-Gates
-  // nicht endlos mitschleppen. Nur lokaler Basiskatalog/Favoriten dürfen ohne
-  // erneute Discovery-Verifikation aus dem Cache fortbestehen.
+  // v3.3.4: Bereits erfolgreich tief analysierte Radar-Titel bleiben sichtbar, solange
+  // sie im AKTUELL verifizierten Discovery-Pool stehen. Das ist fail-closed, weil
+  // unbestätigte/alte Discovery-Titel weiterhin herausfallen, verhindert aber, dass
+  // die UI zwischen Zyklen wieder fast nur Favoriten zeigt.
   const safeCarry=new Map();
   const catalogSet=new Set(STOCK_SEARCH_CATALOG.map(x=>x[1]));
+  const verifiedDiscoveryNow=new Set([...(radar.rows||[]),...(boats.rows||[])].map(x=>String(x?.symbol||'').toUpperCase()).filter(Boolean));
   for(const r of stockMemo.rows||[]){
     const sym=String(r?.symbol||'').toUpperCase();
-    if(catalogSet.has(sym)||favs.includes(sym)) safeCarry.set(sym,r);
+    if(catalogSet.has(sym)||favs.includes(sym)||verifiedDiscoveryNow.has(sym)) safeCarry.set(sym,r);
   }
   for(const r of fresh)safeCarry.set(r.symbol,r);
   // Hohe Radar-/Setup-Relevanz oben halten; Freshness-Gates bleiben unveraendert.
