@@ -1,3 +1,34 @@
+# FusionPulse v3.6.3 · Die Kennzahlen im Fokusfenster erklaeren sich jetzt
+
+## Die Luecke
+Ausgerechnet die Zeile, die man als erstes liest, war die einzige ohne jeden Mouseover:
+
+> Technologie · Score 8,4 · **Reife 95 %** · Situation **SQUEEZE RELEASE 99/100**
+
+Vier Kennzahlen, drei davon fuer Aussenstehende nicht erschliessbar. Und „Reife 95 %" neben „SQUEEZE RELEASE 99/100" liest sich unweigerlich wie „fast perfekt" — waehrend die Karte darunter Plan-CRV 0,8:1 und 35 € Gesamtplan zeigt. Wieder dasselbe Muster: eine Zahl, die technisch korrekt ist, aber ohne Erklaerung falsch verstanden werden muss.
+
+## Was die Zahlen wirklich bedeuten
+- **Score 8,4** — wie viele der aktivierten Analyseverfahren dasselbe Bild zeigen. Sagt nichts darueber, ob sich der Trade lohnt.
+- **Reife 95 %** — ein **Fortschrittsbalken** zur Freigabe, kein Kaufsignal. Gerechnet aus Musterqualitaet, CRV, Volumen, Situationsbewertung und Abstand zum Ausloesepunkt. Ein Setup kann 95 % reif sein und trotzdem nie ausloesen oder wirtschaftlich uninteressant bleiben.
+- **SQUEEZE RELEASE** — die Schwankungen waren ungewoehnlich klein geworden, jetzt bricht der Kurs ueber das 60-Minuten-Hoch aus und die Spanne weitet sich. Startsignal einer groesseren Bewegung — sagt aber **nicht**, dass es nach oben geht, und schon gar nicht wie weit.
+- **99/100** — wie **ausgepraegt** das Ereignis ist, nicht wie gross der Gewinn wird. Dient nur der Priorisierung im Tiefenscan, 0 % Gewicht in der Freigabe.
+
+## Umgesetzt
+- Jede Kennzahl der Kopfzeile ist einzeln markiert und erklaert — nicht der ganze Block auf einmal, sondern Begriff fuer Begriff, damit erkennbar ist, wo eine Erklaerung liegt.
+- **Alle neun Situationstypen** der Situation Engine haben einen eigenen Eintrag: SQUEEZE RELEASE, BREAKOUT START, BREAKOUT PRESSURE, RECLAIM, PULLBACK HOLD, ACCELERATION, NEAR HIGH, OPENING DRIVE, WATCH.
+- **Phase** (PREP / IGNITION / CONFIRM / LATE) erklaert — insbesondere, dass LATE heisst: der Zug ist abgefahren.
+- **Entry, Stop, TP1, TP2** hatten im Fokusfenster ebenfalls keinen Mouseover. Jetzt schon, inklusive der Begruendung, warum der Stop bewusst ausserhalb der normalen Tagesschwankung sitzt.
+- Auch **Kurs** erklaert den Unterschied zwischen „Live-Quote" und „Analyse-/Fallbackpreis" — mit dem Hinweis, vor einer Order immer den echten Brokerkurs zu pruefen.
+- Die Aktienzeile in der Liste zeigt dieselben Erklaerungen; vorher stand dort nur eine knappe Fachnotiz.
+- Alle neuen Begriffe sind im sichtbaren Glossar (Einstellungen) in zwei neuen Gruppen einsortiert.
+
+## Test mit Selbstschutz
+Der neue Test liest die Situationstypen **direkt aus `src/worker.js`** heraus und prueft fuer jeden einzelnen, dass er eine eigene Erklaerung hat — und ausdruecklich **nicht** auf den generischen Platzhaltertext zurueckfaellt. Wenn spaeter ein neuer Situationstyp im Worker hinzukommt, ohne dass jemand die Erklaerung nachtraegt, faellt die Suite. Negativkontrolle gefahren: SQUEEZE-RELEASE-Eintrag entfernt → Suite faellt mit genau dieser Meldung.
+
+Alle **12** Suiten gruen, SHA-Bloecke identisch.
+
+---
+
 # FusionPulse v3.6.2 · Hotfix: Heatmap-Beschriftung
 
 ## Was schiefging

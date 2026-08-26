@@ -79,7 +79,7 @@ export function loadClient(overrides = {}) {
   get stockPositions(){return stockPositions;}, set stockPositions(v){stockPositions=v;},
   portfolioExposure, portfolioBlocksNewBuy, portfolioBudgetEur, sectorOfSymbol, positionRiskEur,
   stockStrength, DEFAULTS,
-  GLOSS, gloss, gl, glossForSetup, GLOSS_GROUPS, GLOSS_LABEL,
+  GLOSS, gloss, gl, glossForSetup, glossForSituation, GLOSS_GROUPS, GLOSS_LABEL,
   coinHeadline, buyReady, sizing, stockHeatmapMark, crowdStatus, crowdTrack, refreshRate,
   get crowdMeta(){return crowdMeta;}, set crowdMeta(v){crowdMeta=v;},
   get crowdMap(){return crowdMap;}, set crowdMap(v){crowdMap=v;},

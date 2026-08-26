@@ -744,3 +744,56 @@ console.log('✓ FusionPulse v3.6.0 glossary/plain-language regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.6.1 coin-headline/heatmap/crowd/glossary regressions: OK');
+
+// ---------------------------------------------------------------------------
+// v3.6.3 · Die Kennzahlen im Fokusfenster ("Reife", "SQUEEZE RELEASE", "Score")
+// standen ohne jede Erklaerung da. Das war die groesste verbliebene Luecke:
+// ausgerechnet die Zeile, die man zuerst liest, war die einzige ohne Mouseover.
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+
+  // -- Jede Kennzahl der Kopfzeile ist erklaert, und zwar in normaler Sprache.
+  for (const k of ['score','maturity','situationScore','lifecyclePhase','execScore','sectorTag']) {
+    assert.ok(C.GLOSS[k] && C.GLOSS[k].length >= 120, `Kennzahl "${k}" braucht eine Laien-Erklaerung`);
+    assert.ok(C.GLOSS_LABEL[k], `Kennzahl "${k}" braucht eine Ueberschrift im sichtbaren Glossar`);
+  }
+  // Die haeufigsten Fehldeutungen muessen ausdruecklich adressiert sein.
+  assert.match(C.gloss('maturity'), /kein Kaufsignal|Fortschrittsbalken/, 'Reife muss klarstellen, dass sie kein Kaufsignal ist');
+  assert.match(C.gloss('situationScore'), /0 % Gewicht|Priorisierung/, 'Situation muss klarstellen, dass sie die Freigabe nicht beeinflusst');
+  assert.match(C.gloss('score'), /NICHTS|nicht.*lohnt/i, 'Score muss von der Wirtschaftlichkeit abgegrenzt werden');
+
+  // -- Alle Situationstypen, die der Worker erzeugen kann, sind erklaert.
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url),'utf8');
+  const produced = [...new Set([...worker.matchAll(/situation(?:Type)?\s*=\s*'([A-Z][A-Z ]+)'/g)].map(m=>m[1]))];
+  assert.ok(produced.length >= 6, `Es muessen mehrere Situationstypen gefunden werden, gefunden: ${produced.length}`);
+  for (const t of produced) {
+    const txt = C.glossForSituation(t);
+    assert.ok(txt.length >= 100, `Situationstyp "${t}" braucht eine Erklaerung (hat ${txt.length} Zeichen)`);
+    assert.ok(!/^Von der Situation Engine erkanntes/.test(txt),
+      `Situationstyp "${t}" faellt auf den Platzhaltertext zurueck — es fehlt ein eigener Glossareintrag`);
+  }
+  // Der Fall aus dem Screenshot, namentlich.
+  assert.match(C.glossForSituation('SQUEEZE RELEASE'), /Kompression|Schwankungen/, 'SQUEEZE RELEASE muss in normaler Sprache erklaert sein');
+  assert.match(C.glossForSituation('SQUEEZE RELEASE'), /nicht.*nach oben|sagt.*nicht/i, 'SQUEEZE RELEASE muss klarstellen, dass es keine Richtung vorhersagt');
+
+  // -- Im Fokusfenster sind die Begriffe einzeln markiert, nicht als ein Block.
+  assert.match(app, /class="sf-tags"/, 'Die Kennzahlenzeile braucht eine eigene, erklaerbare Struktur');
+  assert.match(app, /gl\('Score '\+num\(top\.score,1\),'score'\)/, 'Score im Fokus muss erklaert sein');
+  assert.match(app, /gl\('Reife '\+Math\.round\(top\.preSignalMaturity\)\+'%','maturity'\)/, 'Reife im Fokus muss erklaert sein');
+  assert.match(app, /glossForSituation\(top\.situationType\)/, 'Der Situationstyp im Fokus muss erklaert sein');
+  assert.match(app, /gl\(top\.sector,'sectorTag'\)/, 'Die Branche im Fokus muss erklaert sein');
+  assert.doesNotMatch(app, /<span>\$\{esc\(top\.sector\)\} · Score/, 'Die alte Zeile ohne Mouseover darf nicht zurueckkehren');
+
+  // -- Entry/Stop/TP1/TP2 im Fokus hatten ebenfalls keinen Mouseover.
+  for (const [label,needle] of [['Entry',/Der geplante Kaufkurs/],['Stop',/Stop-Loss: der Kurs/],
+                                ['TP1',/halbe Position verkauft/],['TP2',/verbleibende halbe Position/]]) {
+    assert.match(app, needle, `${label} im Fokusfenster braucht eine Erklaerung`);
+  }
+
+  // -- Vollstaendigkeit: kein Glossareintrag ohne sichtbaren Platz (Regel aus 3.6.0).
+  const grouped = new Set(C.GLOSS_GROUPS.flatMap(g=>g.keys));
+  for (const k of Object.keys(C.GLOSS)) assert.ok(grouped.has(k), `Neuer Glossareintrag "${k}" fehlt in der sichtbaren Liste`);
+}
+
+console.log('✓ FusionPulse v3.6.3 focus-metrics/situation glossary regressions: OK');

@@ -863,3 +863,10 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .focus-freq{cursor:help}
 .focus-freq.hot{color:var(--green)}
 .focus-freq.cold{color:var(--dim)}
+
+/* v3.6.3: Kennzahlen-Zeile im Fokusfenster — jeder Begriff einzeln erklaert.
+   Die Trenner bleiben unmarkiert, damit nur die erklaerten Teile unterstrichen
+   sind und man auf einen Blick sieht, wo eine Erklaerung liegt. */
+.sf-tags i{font-style:normal;opacity:.45;text-decoration:none}
+.sf-tags abbr.gl{text-decoration-color:color-mix(in srgb,var(--dim) 55%,transparent)}
+.sr-nums span[title]{cursor:help}
