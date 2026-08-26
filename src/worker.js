@@ -1893,26 +1893,118 @@ function trendScore(values){
   const score=clamp(50+accel*2.2,0,100); const stars=star5(1+Math.abs(accel)/8);
   return {score:r1(score),stars,accel:r1(accel),recent:r1(recent)};
 }
+/* ==== v3.6.5 · SerpAPI-Budgetwaechter ======================================
+   BEFUND (kritisch): Bis 3.6.4 hat jeder Aufruf ohne warmen Isolate-Cache
+   ALLE bis zu 15 Symbole neu gesucht. `crowdMemo` liegt im Arbeitsspeicher
+   des Workers — Cloudflare-Isolates sind kurzlebig und es gibt viele davon,
+   der Cache greift also unzuverlaessig. Der Client ruft alle 20 Minuten ab
+   und beim manuellen Refresh mit force=1 (Cache komplett umgangen).
+   Rechnung: 100 Freiabfragen/Monat / 15 Symbole = 6,6 vollstaendige Laeufe.
+   IM GANZEN MONAT. Ein einziger Handelstag haette das Kontingent verbrannt.
+
+   Behoben durch drei Schichten, jede fuer sich fail-closed:
+   1. D1-Cache `crowd_cache` wird jetzt auch GELESEN (war bisher nur Schreib-
+      ziel). Ueberlebt Isolate-Neustarts.
+   2. Harte Monatsbudget-Zaehlung in fp_meta. Ist das Budget erschoepft,
+      werden KEINE Abfragen mehr gemacht — auch nicht mit force=1.
+   3. Pro Aufruf maximal wenige echte Abfragen; der Rest kommt aus dem Cache
+      oder bleibt null. Lieber ein leeres Feld als ein verbranntes Budget. */
+const CROWD_TTL_MS          = 6*60*60_000;  // ein Symbol wird hoechstens alle 6 h neu gesucht
+const CROWD_TTL_FORCED_MS   = 60*60_000;    // auch "force" respektiert eine Stunde Mindestabstand
+const CROWD_MAX_FETCH_CALL  = 3;            // hoechstens 3 echte SerpAPI-Abfragen je Aufruf
+const CROWD_DEFAULT_BUDGET  = 90;           // Freitarif = 100/Monat, 10 als Reserve
+
+const monthKey = (d=new Date()) => `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`;
+
+async function crowdBudgetRead(env){
+  const budget=Math.max(0, Number(env?.SERPAPI_MONTHLY_BUDGET ?? CROWD_DEFAULT_BUDGET) || 0);
+  const month=monthKey();
+  if(!env?.DB) return {month,used:0,budget,left:budget,persistent:false};
+  try{
+    await ensureD1Schema(env);
+    const row=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind('serpapi_quota').first();
+    let v=null; if(row?.value){ try{ v=JSON.parse(row.value); }catch{} }
+    const used=(v&&v.month===month)?Math.max(0,Number(v.used)||0):0;  // Monatswechsel setzt zurueck
+    return {month,used,budget,left:Math.max(0,budget-used),persistent:true};
+  }catch{ return {month,used:0,budget,left:budget,persistent:false}; }
+}
+async function crowdBudgetAdd(env,n){
+  if(!env?.DB||!(n>0)) return;
+  try{
+    await ensureD1Schema(env);
+    const q=await crowdBudgetRead(env);
+    await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
+      .bind('serpapi_quota', safeJson({month:q.month,used:q.used+n}), Date.now()).run();
+  }catch(e){ console.warn(JSON.stringify({event:'fusionpulse_crowd_budget_persist_failed',message:String(e?.message||e)})); }
+}
+async function d1ReadCrowd(env,syms){
+  const out=new Map();
+  if(!env?.DB||!syms.length) return out;
+  try{
+    await ensureD1Schema(env);
+    const ph=syms.map(()=>'?').join(',');
+    const rs=await env.DB.prepare(`SELECT symbol,ts,score,stars,accel,interest,source FROM crowd_cache WHERE symbol IN (${ph})`).bind(...syms).all();
+    for(const r of rs?.results||[]) out.set(String(r.symbol).toUpperCase(),r);
+  }catch{}
+  return out;
+}
+
 async function crowdPulse(env,symbols,force=false){
   const syms=[...new Set(String(symbols||'').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,8}$/.test(x)))].slice(0,15);
   const key=syms.join(',');
   if(!env.SERPAPI_KEY)return {configured:false,state:'nokey',rows:syms.map(symbol=>({symbol,score:null,stars:null,source:'Reddit/X/Stocktwits Search'})),note:'SERPAPI_KEY fehlt; Crowd-Werte werden nicht erfunden.',version:APP_VERSION};
-  if(!force&&crowdMemo.data&&crowdMemo.key===key&&Date.now()-crowdMemo.ts<20*60_000)return {...crowdMemo.data,cached:true};
-  const rows=[];
+
+  const quota=await crowdBudgetRead(env);
+  const cache=await d1ReadCrowd(env,syms);
+  const now=Date.now();
+  const ttl=force?CROWD_TTL_FORCED_MS:CROWD_TTL_MS;
+
+  // Wer ist wirklich veraltet? Aelteste zuerst, damit nichts dauerhaft haengenbleibt.
+  const stale=syms.filter(sym=>{ const c=cache.get(sym); return !c||!(now-Number(c.ts||0)<ttl); })
+    .sort((a,b)=>Number(cache.get(a)?.ts||0)-Number(cache.get(b)?.ts||0));
+  const allowed=Math.max(0,Math.min(CROWD_MAX_FETCH_CALL, quota.left, stale.length));
+  const toFetch=new Set(stale.slice(0,allowed));
+
+  const rows=[]; let spent=0;
   for(const symbol of syms){
+    const c=cache.get(symbol);
+    if(!toFetch.has(symbol)){
+      rows.push(c
+        ? {symbol,score:dbNum(c.score),stars:c.stars==null?null:Number(c.stars),accel:dbNum(c.accel),
+           interest:dbNum(c.interest),source:c.source||'Community Search',ts:Number(c.ts)||null,cached:true,
+           note:'Aus dem Zwischenspeicher; zur Schonung des SerpAPI-Kontingents nicht neu abgefragt.'}
+        : {symbol,score:null,stars:null,accel:null,source:'Community Search',cached:false,
+           note:quota.left<=0?'SerpAPI-Monatsbudget erschöpft; es wird bewusst nichts geschätzt.'
+                             :'Noch nicht abgefragt; wird nach und nach nachgeholt, um das Kontingent zu schonen.'});
+      continue;
+    }
     const u=new URL('https://serpapi.com/search.json');u.searchParams.set('engine','google');u.searchParams.set('q',crowdCommunityQuery(symbol));u.searchParams.set('location','United States');u.searchParams.set('hl','en');u.searchParams.set('num','20');u.searchParams.set('tbs','qdr:d');u.searchParams.set('api_key',env.SERPAPI_KEY);
     try{
-      const j=await fetchJSONPublic(u.toString());const org=(j?.organic_results||[]).slice(0,20);
+      const j=await fetchJSONPublic(u.toString());spent++;
+      const org=(j?.organic_results||[]).slice(0,20);
       const domains=new Set(),texts=[];
       for(const x of org){const link=String(x?.link||'').toLowerCase();if(link.includes('reddit.com'))domains.add('Reddit');if(link.includes('x.com'))domains.add('X');if(link.includes('stocktwits.com'))domains.add('Stocktwits');texts.push(`${x?.title||''} ${x?.snippet||''}`.toLowerCase());}
       const mentions=org.length, breadth=domains.size;
       // Attention only: no fabricated sentiment. Breadth + fresh result count become a transparent 0..100 attention score.
       const score=clamp(mentions*4+breadth*8,0,100);const stars=mentions?star5(1+score/25):null;
-      rows.push({symbol,score:r1(score),stars,accel:null,interest:mentions,source:[...domains].join(' + ')||'Community Search',sources:[...domains],mentions24h:mentions,note:'Community-Aufmerksamkeit der letzten 24 h; keine Sentiment- oder BUY-Aussage.'});
-    }catch(e){rows.push({symbol,score:null,stars:null,source:'Reddit/X/Stocktwits Search',error:String(e.message||e)});}
+      // Beschleunigung gegen den vorherigen gespeicherten Wert — echte Aenderung, keine Schaetzung.
+      const prev=c&&Number.isFinite(Number(c.score))?{v:Number(c.score),t:Number(c.ts)||0}:null;
+      const hrs=prev?Math.max(0.5,(now-prev.t)/3_600_000):0;
+      const accel=prev&&hrs>=0.5?r1((score-prev.v)/hrs):null;
+      rows.push({symbol,score:r1(score),stars,accel,interest:mentions,source:[...domains].join(' + ')||'Community Search',sources:[...domains],mentions24h:mentions,ts:now,cached:false,note:'Community-Aufmerksamkeit der letzten 24 h; keine Sentiment- oder BUY-Aussage.'});
+    }catch(e){spent++;rows.push({symbol,score:dbNum(c?.score),stars:c?.stars==null?null:Number(c.stars),source:'Reddit/X/Stocktwits Search',ts:c?Number(c.ts):null,cached:!!c,error:String(e.message||e)});}
   }
-  const data={configured:true,state:'ok',rows,cacheMinutes:20,note:'Crowd Pulse sucht vorrangig Reddit, X und Stocktwits. Er misst frische Aufmerksamkeit/Quellenbreite, nicht Wahrheit oder Kaufqualität; 0 % BUY-Gewicht.',ts:Date.now(),version:APP_VERSION};
-  crowdMemo={ts:Date.now(),key,data};return data;
+  if(spent>0) await crowdBudgetAdd(env,spent);
+
+  const after=Math.max(0,quota.left-spent);
+  const data={configured:true,state:after<=0&&stale.length>spent?'quota':'ok',rows,
+    cacheMinutes:Math.round(CROWD_TTL_MS/60_000),
+    quota:{month:quota.month,used:quota.used+spent,budget:quota.budget,left:after,spentThisCall:spent,
+           pending:Math.max(0,stale.length-spent),ttlHours:Math.round(CROWD_TTL_MS/3_600_000),persistent:quota.persistent},
+    note:'Crowd Pulse sucht vorrangig Reddit, X und Stocktwits. Er misst frische Aufmerksamkeit/Quellenbreite, nicht Wahrheit oder Kaufqualität; 0 % BUY-Gewicht. Jede echte Abfrage kostet SerpAPI-Kontingent, deshalb wird pro Aufruf nur eine Handvoll Symbole aufgefrischt.',
+    ts:now,version:APP_VERSION};
+  crowdMemo={ts:now,key,data};return data;
 }
 
 
@@ -3413,7 +3505,8 @@ export default {
     }
 
     if (url.pathname === '/api/crowd') {
-      try { const d=await crowdPulse(env,url.searchParams.get('symbols'),url.searchParams.get('force') === '1'); if(env.DB&&d.rows?.length) ctx.waitUntil(d1StoreCrowd(env,d.rows).catch(()=>{})); return json(d,200,{ 'cache-control':'no-store' }); }
+      try { const d=await crowdPulse(env,url.searchParams.get('symbols'),url.searchParams.get('force') === '1'); const fresh=(d.rows||[]).filter(x=>x&&x.cached===false&&Number.isFinite(Number(x.score)));
+             if(env.DB&&fresh.length) ctx.waitUntil(d1StoreCrowd(env,fresh).catch(()=>{})); return json(d,200,{ 'cache-control':'no-store' }); }
       catch (e) { return json({state:'error',configured:!!env.SERPAPI_KEY,error:e.message||String(e),rows:[],version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
     }
 

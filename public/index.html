@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.6.4</title>
+<title>FusionPulse 3.6.5</title>
 </head>
 <body>
 
@@ -208,6 +208,7 @@
   <label title="Mindestabstand vom Einstieg bis TP2. Zu enge Ziele sind bei manueller Flatex-Ausführung schwer handelbar.">Minimaler Kursweg bis TP2 (%)<input id="sMinTp2Pct" type="number" min="0" max="20" step="0.25"></label>
   <label>Steuersatz für Gewinnschätzung (%) · Österreich KESt = 27,5<input id="sTax" type="number" min="0" max="60" step="0.1"></label>
   <label title="Maximales Risiko über ALLE gleichzeitig offenen Positionen zusammen, in Prozent des Kapitals. Das Risiko je Trade oben begrenzt nur den einzelnen Trade — fünf gleichzeitige Trades zu je 0,75 % ergeben 3,75 % Gesamtrisiko. Standard 2,25 % entspricht drei parallelen Trades. Wird automatisch nie kleiner als das Einzeltrade-Risiko.">Gesamt-Risikobudget über alle offenen Positionen (%)<input id="sPortfolioRisk" type="number" min="0.25" max="20" step="0.25"></label>
+  <label title="Wie viele Aktien der Crowd/Search-Sensor beobachtet. Jede Abfrage kostet SerpAPI-Kontingent — beim kostenlosen Tarif stehen nur rund 100 Suchen im MONAT zur Verfügung. 6 Symbole bedeuten, dass jedes etwa alle 6 Stunden aufgefrischt werden kann und das Kontingent den Monat übersteht. Höhere Werte verbrauchen es entsprechend schneller; der Server bremst zusätzlich hart ab, wenn das Budget zur Neige geht.">Crowd/Search: Anzahl beobachteter Aktien<input id="sCrowdLimit" type="number" min="1" max="15" step="1"></label>
   <label class="row" title="Wenn eingeschaltet: sobald das Gesamt-Risikobudget für einen weiteren Trade nicht mehr reicht, wird keine neue BUY-Freigabe mehr erteilt (bestehende Positionen bleiben unberührt, ein Ausstieg wird nie blockiert). Ausgeschaltet warnt die Portfolio-Kachel nur. Diese Sperre kann ausschließlich abwerten und niemals ein BUY erzeugen."><input id="sPortfolioGuard" type="checkbox"> 🧮 Budget-Sperre: kein neues BUY bei ausgeschöpftem Gesamtrisiko</label>
 
   <h3>Anzeigeumfang</h3>

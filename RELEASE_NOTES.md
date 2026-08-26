@@ -1,3 +1,38 @@
+# FusionPulse v3.6.5 · SerpAPI-Budgetwaechter (dringend)
+
+## Befund: ein Handelstag haette das Monatskontingent verbrannt
+Nach dem Hinterlegen des Freitarif-Schluessels waere Folgendes passiert:
+
+- `crowdPulse()` suchte **alle** angefragten Symbole neu, bis zu 15 pro Aufruf.
+- Der einzige Schutz war `crowdMemo` — eine Variable **im Arbeitsspeicher des Workers**. Cloudflare-Isolates sind kurzlebig und es laufen viele parallel; der Cache greift also unzuverlaessig. Bei kaltem Isolate: 15 Suchen.
+- Der Client rief alle 20 Minuten ab, beim manuellen Refresh mit `force=1` — und `force` umging den Cache **vollstaendig**.
+- Die D1-Tabelle `crowd_cache` existierte, wurde aber nur **beschrieben** und nie gelesen.
+
+Rechnung: 100 Freisuchen im Monat, geteilt durch 15 Symbole = **6,6 vollstaendige Laeufe im ganzen Monat**. Ein einziger Handelstag mit offener App haette das Kontingent aufgebraucht, vermutlich in der ersten Stunde.
+
+## Drei Schichten, jede fuer sich fail-closed
+1. **D1-Cache wird jetzt gelesen.** `d1ReadCrowd()` holt gespeicherte Staende, die Isolate-Neustarts ueberleben. Jedes Symbol wird hoechstens alle **6 Stunden** neu gesucht.
+2. **Hartes Monatsbudget** in `fp_meta` (`serpapi_quota`), Standard **90** — bewusst unter dem Freitarif-Limit von 100, mit Reserve. Monatswechsel setzt automatisch zurueck. Ist das Budget erschoepft, werden **keine** Abfragen mehr gemacht und **keine Werte geschaetzt**.
+3. **Hoechstens 3 echte Abfragen je Aufruf.** Die aeltesten Symbole zuerst, damit nichts dauerhaft haengenbleibt. `force=1` umgeht das Budget **nicht** und respektiert einen Mindestabstand von einer Stunde.
+
+Ueber `SERPAPI_MONTHLY_BUDGET` in den Cloudflare-Variablen laesst sich das Budget anheben, falls du auf einen bezahlten Tarif wechselst.
+
+## Nebenbei repariert
+- **Client fragt sparsamer**: statt bis zu 15 jetzt standardmaessig **6** Symbole (einstellbar 1–15), Favoriten zuerst. Die Einstellung nennt die Kostenfolge direkt.
+- **Kontingent ist sichtbar**, nicht im Kleingedruckten: „Crowd/Search aktiv · 3 Symbole mit Messwerten · Kontingent 12/90 im 2026-08, 78 frei". Kann der Zaehler nicht persistiert werden (keine D1-Verbindung), steht das als Unsicherheit dabei.
+- **Beschleunigung kommt jetzt vom Server**, gerechnet gegen den vorherigen gespeicherten Wert desselben Symbols — eine echte Aenderung statt einer Schaetzung. Die clientseitige Notloesung aus 3.6.1 bleibt als Rueckfall bestehen.
+- **Nur echte Neuabfragen** werden in den Cache zurueckgeschrieben. Sonst haette sich ein alter Wert bei jedem Abruf selbst verjuengt und waere nie abgelaufen.
+
+## Eine Sicherheitsregel wurde strenger, nicht schwaecher
+Der Test verlangte seit 3.0, dass Crowd-Werte vor jeder neuen Abfrage invalidiert werden. Die alte Umsetzung loeschte pauschal die gerade angefragten Symbole — Symbole, die aus der Liste fielen, blieben dagegen **ewig** haengen. Pauschales Loeschen geht jetzt nicht mehr, weil der Server bewusst zwischengespeicherte Staende liefert.
+
+Ersetzt durch `crowdPrune()`: alles laeuft ueber **Alter** ab, unabhaengig davon, ob es noch angefragt wird — und ein Wert ohne Zeitstempel wird fail-closed entfernt. Das erfasst mehr Faelle als vorher. Die Aenderung ist im Testcode begruendet.
+
+## Nachweis
+Zwei Negativkontrollen: Budgetgrenze entfernt → Suite faellt. Ablauflogik auf „nur ohne Zeitstempel" reduziert → Suite faellt. Alle **14** Suiten gruen, SHA-Bloecke identisch.
+
+---
+
 # FusionPulse v3.6.4 · Datenstand, Zeitzonen, Aktienplan, Heatmap-Spuren
 
 ## 1. „Sind das After-Hours-Daten?" — die wichtigste Frage des Tages

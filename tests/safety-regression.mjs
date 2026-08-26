@@ -55,7 +55,16 @@ assert.equal(noVolStock.executability,null,'Executability ohne Volumenbasis muss
 const app=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
 assert.match(app,/const soundEligible = fresh\.key==='live' && tr\.marketOk && tr\.ok/,'Aktien-Ton muss Live-Freshness und Marktphase prüfen');
 assert.match(app,/v!=null && Number\.isFinite\(Number\(v\)\)/,'Detailfaktoren müssen null-sicher sein und null explizit als n.v. behandeln');
-assert.match(app,/crowdMap\.delete\(sym\)/,'Crowd-Werte müssen vor einer neuen Abfrage invalidiert werden');
+/* v3.6.5: Die Regel bleibt (Crowd-Werte duerfen nicht ueber ihre Gueltigkeit
+   hinaus stehenbleiben), die Umsetzung wurde STRENGER. Vorher wurden nur die
+   gerade angefragten Symbole pauschal geloescht — Symbole, die aus der Liste
+   fielen, blieben ewig haengen. Jetzt laeuft alles ueber Alter ab, unabhaengig
+   davon, ob es noch angefragt wird. Pauschales Loeschen ist ausserdem nicht
+   mehr moeglich, weil der Server bewusst zwischengespeicherte Staende liefert,
+   um das SerpAPI-Kontingent zu schonen. */
+assert.match(app,/function crowdPrune\(maxAgeMs\)/,'Crowd-Werte brauchen eine Ablauflogik');
+assert.match(app,/if\(!ts\|\|now-ts>max\)\{ crowdMap\.delete\(sym\); removed\+\+; \}/,'Abgelaufene Crowd-Werte müssen entfernt werden');
+assert.match(app,/crowdPrune\(\);/,'Die Ablauflogik muss vor jeder neuen Abfrage laufen');
 assert.match(app,/\$\{eur\(eurVal, d\)\}.*\(\$\{usd\(usdVal, d\)\}\)/s,'Aktienkurse müssen EUR zuerst und USD in Klammern anzeigen');
 
 
@@ -885,3 +894,80 @@ console.log('✓ FusionPulse v3.6.3 focus-metrics/situation glossary regressions
 }
 
 console.log('✓ FusionPulse v3.6.4 session/timezone/plan/trail regressions: OK');
+
+// ---------------------------------------------------------------------------
+// v3.6.5 · SerpAPI-Budgetwaechter. Der Nutzer hat einen Freitarif-Schluessel
+// hinterlegt; ohne diese Schicht haette EIN Handelstag das Monatskontingent
+// verbraucht. Hier wird der Worker-Code strukturell geprueft, weil er ohne
+// echten D1-Kontext nicht ausfuehrbar ist — plus die Client-Ablauflogik
+// funktional am laufenden Client.
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url),'utf8');
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url),'utf8');
+
+  // -- Der D1-Cache muss GELESEN werden, nicht nur beschrieben.
+  //    Genau das war der Fehler: crowd_cache war reines Schreibziel, und
+  //    crowdMemo lebt nur im Isolate — also faktisch kein Cache.
+  assert.match(w, /async function d1ReadCrowd\(env,syms\)/, 'Der Crowd-Cache muss auch gelesen werden');
+  assert.match(w, /const cache=await d1ReadCrowd\(env,syms\)/, 'crowdPulse muss den persistenten Cache nutzen');
+  assert.ok(w.indexOf('SELECT symbol,ts,score,stars,accel,interest,source FROM crowd_cache') > 0,
+    'Der Cache muss per SQL gelesen werden, nicht aus dem Arbeitsspeicher');
+
+  // -- Hartes Monatsbudget, das auch "force" nicht umgehen kann.
+  assert.match(w, /async function crowdBudgetRead\(env\)/, 'Es braucht eine Budget-Erfassung');
+  assert.match(w, /async function crowdBudgetAdd\(env,n\)/, 'Verbrauch muss gezaehlt werden');
+  assert.match(w, /'serpapi_quota'/, 'Das Budget muss persistent in fp_meta liegen');
+  assert.match(w, /const allowed=Math\.max\(0,Math\.min\(CROWD_MAX_FETCH_CALL, quota\.left, stale\.length\)\)/,
+    'Die Zahl echter Abfragen muss durch das Restbudget begrenzt sein');
+  assert.match(w, /const ttl=force\?CROWD_TTL_FORCED_MS:CROWD_TTL_MS/,
+    'Auch ein erzwungener Abruf braucht einen Mindestabstand');
+  assert.ok(/CROWD_TTL_FORCED_MS\s*=\s*60\*60_000/.test(w), 'Der erzwungene Mindestabstand muss mindestens eine Stunde betragen');
+  assert.ok(/CROWD_MAX_FETCH_CALL\s*=\s*3/.test(w), 'Pro Aufruf duerfen nur wenige echte Abfragen laufen');
+  const budget = /CROWD_DEFAULT_BUDGET\s*=\s*(\d+)/.exec(w);
+  assert.ok(budget && Number(budget[1]) < 100, `Das Standardbudget muss unter dem Freitarif-Limit liegen, ist ${budget?.[1]}`);
+
+  // -- Bei erschoepftem Budget wird NICHTS geschaetzt.
+  assert.match(w, /SerpAPI-Monatsbudget erschöpft; es wird bewusst nichts geschätzt/,
+    'Bei erschoepftem Budget muss das ausdruecklich dastehen statt eines Ersatzwerts');
+  assert.match(w, /state:after<=0&&stale\.length>spent\?'quota':'ok'/, 'Der erschoepfte Zustand muss eigens gemeldet werden');
+
+  // -- Nur echte Neuabfragen duerfen in den Cache zurueckgeschrieben werden,
+  //    sonst verjuengt sich ein alter Wert bei jedem Abruf selbst.
+  assert.match(w, /x\.cached===false&&Number\.isFinite\(Number\(x\.score\)\)/,
+    'Zurueckgelesene Cache-Werte duerfen nicht erneut gespeichert werden');
+
+  // -- Client: weniger Symbole, einstellbar, und Kontingent sichtbar.
+  assert.ok(C.DEFAULTS.crowdSymbolLimit <= 8, `Standardmaessig duerfen nur wenige Symbole beobachtet werden, sind ${C.DEFAULTS.crowdSymbolLimit}`);
+  assert.match(html, /id="sCrowdLimit"/, 'Die Symbolzahl muss einstellbar sein');
+  assert.match(html, /100 Suchen im MONAT/, 'Die Kostenfolge muss bei der Einstellung dastehen');
+  C.crowdMeta = { configured:true, state:'ok', quota:{month:'2026-08',used:42,budget:90,left:48,ttlHours:6,pending:2,persistent:true} };
+  C.crowdMap = new Map([['AAA',{symbol:'AAA',score:30,_ts:Date.now()}]]);
+  const st = C.crowdStatus();
+  assert.match(st.label, /Kontingent 42\/90/, 'Das Kontingent muss in der Statuszeile stehen, nicht im Kleingedruckten');
+  assert.match(st.detail, /48 frei/, 'Der Rest muss beziffert sein');
+  C.crowdMeta = { configured:true, state:'quota', quota:{month:'2026-08',used:90,budget:90,left:0,ttlHours:6,pending:5,persistent:true} };
+  const ex = C.crowdStatus();
+  assert.equal(ex.ok, false, 'Erschoepftes Budget ist kein Normalzustand');
+  assert.match(ex.detail, /keine Werte geschätzt/, 'Auch hier darf nichts erfunden werden');
+  // Fehlende Persistenz muss als Unsicherheit benannt werden, nicht verschwiegen.
+  C.crowdMeta = { configured:true, state:'ok', quota:{month:'2026-08',used:5,budget:90,left:85,ttlHours:6,pending:0,persistent:false} };
+  assert.match(C.crowdStatus().detail, /kann.*höher liegen/, 'Ohne D1 muss die Unsicherheit des Zaehlers dastehen');
+
+  // -- Ablauflogik: nichts darf ueber die Gueltigkeit hinaus stehenbleiben.
+  C.crowdMeta = { quota:{ttlHours:6} };
+  const now = Date.now();
+  C.crowdMap = new Map([
+    ['FRESH',{symbol:'FRESH',score:50,_ts:now-60_000}],
+    ['OLD',  {symbol:'OLD',  score:70,_ts:now-13*60*60_000}],
+    ['NOTS', {symbol:'NOTS', score:20}],
+  ]);
+  const removed = C.crowdPrune();
+  assert.equal(removed, 2, 'Abgelaufene und zeitstempellose Werte muessen entfernt werden');
+  assert.ok(C.crowdMap.has('FRESH'), 'Gueltige Werte duerfen nicht verworfen werden');
+  assert.ok(!C.crowdMap.has('OLD'), 'Ein 13 Stunden alter Wert ist bei 6 h Gueltigkeit abgelaufen');
+  assert.ok(!C.crowdMap.has('NOTS'), 'Ohne Zeitstempel gilt fail-closed: entfernen');
+}
+
+console.log('✓ FusionPulse v3.6.5 serpapi-budget/crowd-cache regressions: OK');

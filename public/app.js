@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.6.4 — Frontend
+   FusionPulse v3.6.5 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -78,6 +78,8 @@ const DEFAULTS = {
   // v3.5.9 · Modul 2: Gesamt-Risikobudget ueber ALLE offenen Positionen (nicht je Trade)
   // und Klumpungswarnung. Default 3x das Einzeltrade-Risiko = drei parallele Trades.
   portfolioRiskPct: 2.25, portfolioGuard: false,
+  // v3.6.5: SerpAPI-Freitarif = 100 Suchen/Monat. Weniger Symbole = laenger nutzbar.
+  crowdSymbolLimit: 6,
   mutedPairs: [], mutedStocks: [], favoritePairs: [], favoriteStocks: [], stockOrder: [], components: [...ALL_COMPONENTS], stockSound: true,
 };
 const storedSettings = (() => { try { return JSON.parse(localStorage.getItem('fp.settings') || '{}'); } catch { return {}; } })();
@@ -428,6 +430,7 @@ const GLOSS = {
   tickerSym:'Kürzel (Ticker) = der Kurzname, unter dem eine Aktie an der Börse gehandelt wird. Das ist KEINE Kennzahl wie CRV oder RVOL, sondern nur ein Name: AAPL steht für Apple, SOFI für SoFi Technologies. Das Kürzel ist NICHT eindeutig über alle Börsen hinweg: derselbe Buchstabencode kann anderswo ein völlig anderes Papier bezeichnen. Deshalb steht der volle Firmenname immer daneben.',
 
   /* --- Zeit & Datenstand (v3.6.4) --- */
+  serpQuota:'SerpAPI ist der Dienst, über den FusionPulse misst, wie viel gerade über eine Aktie geredet wird (Reddit, X, Stocktwits). Jede Messung eines Symbols ist eine bezahlte Suchanfrage. Der kostenlose Tarif erlaubt rund 100 Suchen im MONAT — nicht pro Tag. Deshalb wird jedes Symbol höchstens alle sechs Stunden neu gemessen, pro Abruf werden nur wenige aufgefrischt, und bei erschöpftem Budget hört die App auf zu fragen, statt Werte zu erfinden.',
   dataFreshness:'Zwei verschiedene Zeitpunkte, die leicht verwechselt werden. „Abfrage 12:28" heißt nur: um 12:28 hat FusionPulse zuletzt beim Datenanbieter nachgesehen. „Kurs vom 25.08., reguläre US-Sitzung" heißt: so alt ist der Kurs selbst. Wenn die US-Börse geschlossen ist, liefert auch die frischeste Abfrage den letzten Schlusskurs — die Aktie sieht dann aktuell aus, ist es aber nicht. Deshalb steht der Datenstand jetzt getrennt daneben.',
   tradingHours:'Die US-Börse arbeitet in New Yorker Zeit (ET). Umgerechnet auf unsere Zeit: Premarket ab etwa 10:00, Eröffnung 15:30, regulärer Handel bis 22:00, After Hours bis 02:00 nachts. Im Winter jeweils eine Stunde später, weil die USA und Europa die Zeitumstellung an unterschiedlichen Terminen machen. Die App rechnet das automatisch um und zeigt beide Zeiten.',
 
@@ -1430,7 +1433,7 @@ const GLOSS_GROUPS = [
   {title:'Kursmuster (das, was Modul 0 stummschalten kann)', keys:['pullback','breakout','squeeze','reclaim','elliott','relative']},
   {title:'Analyseverfahren (die Häkchen oben)',              keys:['vwap','ema21','rs','mtf','volume','book']},
   {title:'Kennzahlen im Fokusfenster',                        keys:['score','maturity','situationScore','lifecyclePhase','execScore','sectorTag']},
-  {title:'Zeit & Datenstand',                                 keys:['dataFreshness','tradingHours']},
+  {title:'Zeit & Datenstand',                                 keys:['dataFreshness','tradingHours','serpQuota']},
   {title:'Erkannte Kursereignisse (Situation Engine)',        keys:['sit_squeeze','sit_breakoutStart','sit_breakoutPressure','sit_reclaim','sit_pullbackHold','sit_acceleration','sit_nearHigh','sit_openingDrive','sit_watch']},
   {title:'Bewertung eines Trades',                            keys:['crv','planEff','rMultiple','expectancy','atr','rvol','notional','spread','slippage','tickerSym']},
   {title:'Selbstauswertung (Modul 0)',                        keys:['sampleN','inSample','oos','wilson','overfit','multiTest','mute','hysterese']},
@@ -1449,6 +1452,7 @@ const GLOSS_LABEL = {
   portfolioBudget:'Gesamt-Risikobudget', cluster:'Klumpenrisiko', diversify:'Streuung / Diversifikation',
   stopReal:'Warum das echte Risiko höher ist',
   dataFreshness:'Datenstand vs. Abfragezeit', tradingHours:'US-Handelszeiten in unserer Zeit',
+  serpQuota:'SerpAPI-Kontingent (Crowd/Search)',
   score:'Score (0–10)', maturity:'Reife (0–100 %)', situationScore:'Situation (0–100)',
   lifecyclePhase:'Phase (PREP / IGNITION / CONFIRM / LATE)', execScore:'Ausführbarkeit (0–10)',
   sectorTag:'Branche / Sektor',
@@ -1855,10 +1859,16 @@ function crowdStatus(){
   if(m.state==='error') return {ok:false,tone:'err',label:'Crowd/Search: Abruf fehlgeschlagen',
     detail:`Der Abruf lief auf einen Fehler: ${String(m.error||'unbekannt')}. Es werden bewusst keine Ersatzwerte erfunden.`};
   const withData=[...crowdMap.values()].filter(x=>Number.isFinite(Number(x.score))).length;
-  if(!withData) return {ok:false,tone:'wait',label:'Crowd/Search: noch keine Messwerte',
-    detail:'Die Abfrage lief, hat aber für keines der beobachteten Symbole verwertbare Treffer geliefert. Der Tacho bleibt leer, statt eine Null zu behaupten.'};
-  return {ok:true,tone:'ok',label:`Crowd/Search aktiv · ${withData} Symbol${withData===1?'':'e'} mit Messwerten`,
-    detail:`Quelle: ${m.rows?.[0]?.source||'Community Search'}. Misst frische Aufmerksamkeit der letzten 24 Stunden, nicht Stimmung und nicht Kaufqualität. 0 % Gewicht im BUY-Score.`};
+  // v3.6.5: Kontingent gehoert in die Statuszeile, nicht ins Kleingedruckte.
+  const q=m.quota||null;
+  const qTxt=q?` · Kontingent ${q.used}/${q.budget} im ${q.month}, ${q.left} frei`:'';
+  const qDetail=q?` SerpAPI-Kontingent: ${q.used} von ${q.budget} Suchen in diesem Monat verbraucht, ${q.left} frei. Jedes Symbol wird höchstens alle ${q.ttlHours} Stunden neu gesucht, pro Abruf werden nur wenige aufgefrischt${q.pending?`; ${q.pending} warten noch`:''}. Beim Freitarif sind 100 Suchen im Monat verfügbar — deshalb diese Sparsamkeit.${q.persistent?'':' ACHTUNG: Der Zähler kann gerade nicht dauerhaft gespeichert werden (keine D1-Verbindung), der echte Verbrauch kann höher liegen.'}`:'';
+  if(m.state==='quota') return {ok:false,tone:'err',label:`Crowd/Search: Monatsbudget erschöpft${qTxt}`,
+    detail:`Das SerpAPI-Kontingent für diesen Monat ist aufgebraucht. Es werden bewusst keine weiteren Abfragen gemacht und keine Werte geschätzt. Vorhandene Werte stammen aus dem Zwischenspeicher.${qDetail}`};
+  if(!withData) return {ok:false,tone:'wait',label:`Crowd/Search: noch keine Messwerte${qTxt}`,
+    detail:`Die Abfrage lief, hat aber noch keine verwertbaren Werte geliefert — entweder gab es keine Treffer, oder die Symbole warten noch auf ihre erste Abfrage. Der Tacho bleibt leer, statt eine Null zu behaupten.${qDetail}`};
+  return {ok:true,tone:'ok',label:`Crowd/Search aktiv · ${withData} Symbol${withData===1?'':'e'} mit Messwerten${qTxt}`,
+    detail:`Quelle: ${m.rows?.[0]?.source||'Community Search'}. Misst frische Aufmerksamkeit der letzten 24 Stunden — nicht Stimmung, nicht Kaufqualität. 0 % Gewicht im BUY-Score.${qDetail}`};
 }
 function renderCrowdStatus(){
   const el=$('#crowdStatus'); if(!el) return;
@@ -1867,11 +1877,36 @@ function renderCrowdStatus(){
   el.innerHTML=`<b title="${esc(st.detail)}">${st.ok?'📡':st.tone==='off'?'🔌':st.tone==='err'?'⚠':'⏳'} ${esc(st.label)}</b><small>${esc(st.detail)}</small>`;
 }
 
+/** Entfernt abgelaufene Crowd-Werte. Fail-closed: im Zweifel loeschen. */
+function crowdPrune(maxAgeMs){
+  const ttlH=Number(crowdMeta?.quota?.ttlHours)||6;
+  const max=Number(maxAgeMs)||ttlH*2*60*60_000;
+  const now=Date.now(); let removed=0;
+  for(const [sym,v] of [...crowdMap.entries()]){
+    const ts=Number(v?._ts||v?.ts||0);
+    if(!ts||now-ts>max){ crowdMap.delete(sym); removed++; }
+  }
+  return removed;
+}
+
 async function loadCrowd(force=false){
   const req=++crowdReqSeq;
-  const symbols=[...new Set([...(S.favoriteStocks||[]),...openingRows.slice(0,5).map(r=>r.symbol),...stockRows.slice(0,12).map(r=>r.symbol)])].slice(0,15);
+  /* v3.6.5: Weniger Symbole je Abfrage. Beim Freitarif sind 100 Suchen im
+     MONAT verfuegbar — 15 Symbole je Lauf waeren nach sechs Laeufen aufgebraucht.
+     Favoriten zuerst, dann die aussichtsreichsten Titel. Der Server frischt
+     ohnehin nur wenige davon wirklich auf, der Rest kommt aus dem Cache. */
+  const symbols=[...new Set([...(S.favoriteStocks||[]),...openingRows.slice(0,2).map(r=>r.symbol),...stockRows.slice(0,6).map(r=>r.symbol)])]
+    .filter(Boolean).slice(0, Math.max(1, Math.min(15, Number(S.crowdSymbolLimit ?? DEFAULTS.crowdSymbolLimit))));
   if(!symbols.length)return;
-  for(const sym of symbols)crowdMap.delete(sym);
+  /* Invalidierung (Sicherheitsregel seit 3.0): ein Crowd-Wert darf nie ueber
+     seine Gueltigkeit hinaus stehenbleiben. Bis 3.6.4 wurde dafuer pauschal
+     alles geloescht — das geht jetzt nicht mehr, weil der Server bewusst
+     zwischengespeicherte Staende liefert und ein leeres Feld dann eine
+     Verschlechterung waere. Stattdessen wird gezielt entfernt:
+     alles, was aelter ist als die doppelte Server-Gueltigkeit. Das ist
+     strenger als vorher, weil es auch Symbole erfasst, die gar nicht mehr
+     angefragt werden und sonst ewig haengengeblieben waeren. */
+  crowdPrune();
   try{const q=new URLSearchParams({symbols:symbols.join(',')});if(S.token)q.set('t',S.token);if(force)q.set('force','1');const r=await fetch('/api/crowd?'+q,{cache:'no-store'});const d=await r.json();if(req!==crowdReqSeq)return;crowdMeta=d;
     for(const x of d.rows||[]){
       const ts=Number(x.ts||d.ts||Date.now());
@@ -2827,6 +2862,7 @@ function openSettings() {
   if ($('#sClaudeMode')) $('#sClaudeMode').checked = !!S.claudeMode;
   if ($('#sPortfolioRisk')) $('#sPortfolioRisk').value = S.portfolioRiskPct ?? DEFAULTS.portfolioRiskPct;
   if ($('#sPortfolioGuard')) $('#sPortfolioGuard').checked = !!S.portfolioGuard;
+  if ($('#sCrowdLimit')) $('#sCrowdLimit').value = S.crowdSymbolLimit ?? DEFAULTS.crowdSymbolLimit;
   $$('#sComponents input[data-comp]').forEach((c) => { c.checked = S.components.includes(c.dataset.comp); });
   updateCountsInfo();
   loadTiingoQuota();
@@ -2889,6 +2925,7 @@ function applySettings() {
   // v3.5.9: Gesamtbudget mindestens ein Einzeltrade-Risiko, sonst waere sofort alles gesperrt.
   S.portfolioRiskPct = Math.min(20, Math.max(Number(S.riskPct||0), +$('#sPortfolioRisk')?.value || DEFAULTS.portfolioRiskPct));
   S.portfolioGuard = !!$('#sPortfolioGuard')?.checked;
+  S.crowdSymbolLimit = Math.min(15, Math.max(1, +$('#sCrowdLimit')?.value || DEFAULTS.crowdSymbolLimit));
   const picked = $$('#sComponents input[data-comp]').filter((c) => c.checked).map((c) => c.dataset.comp);
   S.components = picked.length ? picked : [...ALL_COMPONENTS];
   saveSettings(); applyTheme(); applyAnalysisView(); renderAnalysisMethods(); render(); renderStocks();

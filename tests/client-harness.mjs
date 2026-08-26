@@ -85,7 +85,7 @@ export function loadClient(overrides = {}) {
   get crowdMap(){return crowdMap;}, set crowdMap(v){crowdMap=v;},
   get crowdHistory(){return crowdHistory;}, set crowdHistory(v){crowdHistory=v;},
   get refreshHistory(){return refreshHistory;}, set refreshHistory(v){refreshHistory=v;},
-  trackRefresh, dataSession, withLocalTime, etClockToLocal, nyDeltaMinutes, localTzLabel,
+  trackRefresh, crowdPrune, dataSession, withLocalTime, etClockToLocal, nyDeltaMinutes, localTzLabel,
   stockOrderPlan, orderPlan,
   get focusStock(){return focusStock;}, set focusStock(v){focusStock=v;}
 };`;
