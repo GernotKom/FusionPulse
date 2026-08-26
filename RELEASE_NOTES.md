@@ -1,3 +1,53 @@
+# FusionPulse v3.6.4 · Datenstand, Zeitzonen, Aktienplan, Heatmap-Spuren
+
+## 1. „Sind das After-Hours-Daten?" — die wichtigste Frage des Tages
+Nein, und genau das war unsichtbar. Im Screenshot stand:
+
+> AKTUELLER SCAN · Abfrage 12:28:52 · Daten 2026-08-25T19:55:00.000Z
+
+Zwei voellig verschiedene Zeitpunkte, die sich wie einer lesen. „Abfrage 12:28" heisst nur, wann FusionPulse zuletzt beim Anbieter nachgesehen hat. Der Kurs selbst stammt vom **Vortag, 15:55 New Yorker Zeit** — also aus der regulaeren Sitzung kurz vor Schluss. Wenn die Boerse zu ist, liefert auch die frischeste Abfrage den letzten Schlusskurs. Die Aktie sieht dann tagesaktuell aus und ist es nicht.
+
+Neu steht der Datenstand getrennt und im Klartext daneben:
+
+> 🕒 **Kurs vom 25.08.: regulaere US-Sitzung · 15:55 ET (21:55) · 15,4 Std. alt**
+
+Farbcodiert: gruen bei frisch, gelb bei aelter, orange sobald die Daten nicht mehr von heute sind. Der Mouseover sagt ausdruecklich „Das ist NICHT von heute" und erklaert den Unterschied zwischen Abfragezeit und Kursalter. Die Sitzung wird benannt — regulaer, Premarket, After Hours oder ausserhalb der Handelszeiten. Ohne Zeitstempel wird gar nichts behauptet.
+
+Dieselbe Zeile steht jetzt auch in jeder Aktienzeile der Liste, nicht nur im Fokusfenster.
+
+## 2. ET bekommt ueberall unsere Zeit dazu
+„Premarket 04:00–08:00 ET" ist von hier aus nicht direkt nutzbar. Jede ET-Angabe wird jetzt automatisch ergaenzt:
+
+> Premarket 04:00–08:00 ET **(10:00–14:00 MESZ)**
+
+Die Umrechnung nutzt die echte Zonendifferenz statt eines festen Offsets — wichtig, weil die USA und Europa die Zeitumstellung an unterschiedlichen Terminen machen und der Abstand zeitweise fuenf statt sechs Stunden betraegt. Der Statusbadge nennt zusaetzlich alle vier Sessiongrenzen in unserer Zeit.
+
+## 3. Aktien haben jetzt auch einen Plan-Knopf
+Krypto hatte den seit jeher, Aktien nicht — ohne erkennbaren Grund. Dabei ist gerade bei Aktien das Abtippen von Entry, Stop und zwei Zielen in die Broker-Maske die fehleranfaelligste Stelle des ganzen Ablaufs.
+
+**⧉ Plan** in der Fokus-Karte kopiert alles: Entry, Stop, TP1/TP2 in EUR und USD, Stueckzahl, CRV, Netto-Gewinne, Verlust am Stop, Datenstand. Und der Text ist ehrlich: liegt keine Freigabe vor, steht `← KEINE KAUF-FREIGABE` direkt hinter der Kopfzeile und der Hinweis wird am Ende wiederholt. Ausserdem: „EUR-Betraege sind umgerechnet, KEINE Tradegate-Kurse."
+
+## 4. Warum ist SOFI immer gestrichelt umrandet?
+Das ist die 3.6.1-Markierung: **hohler Punkt mit gestricheltem Ring = Kursmuster in Ordnung, aber der Trade lohnt sich nicht.** Sie war nur nirgends erklaert. Unter der Heatmap steht jetzt eine Legende mit allen drei Zustaenden — voller Punkt, hohler Punkt, gruene Spur — jeweils mit ausfuehrlichem Mouseover.
+
+## 5. Heatmap-Spuren zeigen die Richtung
+Gute Idee, umgesetzt. Die Spur eines Titels wird jetzt nach **Bewegungsrichtung** eingefaerbt:
+- **Gruen mit Pfeilspitze**: wandert nach rechts oben — Muster wird sauberer UND besser handelbar. Das ist die Ecke, in der ein Trade ueberhaupt erst moeglich wird.
+- **Gelb**: seitliche Bewegung. **Grau gestrichelt**: zurueck nach links unten. **Blass**: steht still.
+- Die Spur des gerade ausgewaehlten Titels wird zusaetzlich dicker gezeichnet.
+
+Mit einer Einschraenkung, die im Mouseover steht: das ist eine **Bewegungs-, keine Ertragsaussage**. Auch ein Titel, der sauber nach rechts oben wandert, kann wirtschaftlich uninteressant bleiben — deshalb bleibt die hohle Punktdarstellung davon unberuehrt.
+
+## 6. Ticker-Erklaerung entschaerft
+Berechtigt: „SOFI" wirkte im Glossar wie eine Kennzahl neben CRV und RVOL. Der Eintrag sagt jetzt zuerst, dass es **keine** Kennzahl ist, sondern nur ein Kurzname — AAPL fuer Apple, SOFI fuer SoFi Technologies.
+
+## Ein Testfehler, den ich selbst gebaut hatte
+Die erste Fassung der Zeitzonen-Pruefung leitete die erwartete Uhrzeit aus **derselben Funktion** ab, die sie pruefen sollte. Die Negativkontrolle (fester Offset statt echter Zonenrechnung) ist deshalb nicht gefallen — der Test war tautologisch. Jetzt wird unabhaengig der echte Zeitpunkt gesucht, dessen New Yorker Wanduhr 09:30 zeigt, und lokal formatiert. Damit faellt die Negativkontrolle korrekt.
+
+Alle **13** Suiten gruen, SHA-Bloecke identisch. Test zusaetzlich unter `TZ=Europe/Vienna` und `TZ=America/Chicago` gefahren.
+
+---
+
 # FusionPulse v3.6.3 · Die Kennzahlen im Fokusfenster erklaeren sich jetzt
 
 ## Die Luecke

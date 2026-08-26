@@ -870,3 +870,32 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .sf-tags i{font-style:normal;opacity:.45;text-decoration:none}
 .sf-tags abbr.gl{text-decoration-color:color-mix(in srgb,var(--dim) 55%,transparent)}
 .sr-nums span[title]{cursor:help}
+
+/* ==== v3.6.4 · Heatmap-Spuren, Datenstand, Legende ========================= */
+/* Bewegungsrichtung: rechts oben ist die Ecke, in der ein Trade moeglich wird. */
+.stockmapwrap .trailwrap .stocktrail{stroke:var(--dim2);opacity:.28}
+.stockmapwrap .dir-sweet .stocktrail{stroke:var(--green);opacity:.85;stroke-width:1.8}
+.stockmapwrap .dir-back .stocktrail{stroke:#52647d;opacity:.3;stroke-dasharray:2 2.5}
+.stockmapwrap .dir-side .stocktrail{stroke:var(--yellow);opacity:.42}
+.stockmapwrap .dir-flat .stocktrail{opacity:.18}
+.stockmapwrap .trailhead{fill:var(--green);opacity:.9}
+.stockmapwrap .trailwrap.focus .stocktrail{stroke-width:2.4;opacity:1}
+.stockmapwrap .trailwrap.focus .trailhead{opacity:1}
+.stockmapwrap .trailwrap.focus:not(.dir-sweet) .stocktrail{stroke:var(--fg);opacity:.75}
+
+/* Legende: erklaert die beiden Punktformen, die sonst raten lassen. */
+.maplegend2{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:7px;font-size:9px;color:var(--dim);line-height:1.4}
+.maplegend2 span{display:inline-flex;align-items:center;gap:4px;cursor:help}
+.maplegend2 i{display:inline-block;width:9px;height:9px;border-radius:50%;flex:0 0 9px}
+.maplegend2 i.full{background:var(--green)}
+.maplegend2 i.hollow{background:transparent;border:1.5px dashed var(--yellow)}
+.maplegend2 i.arrow{width:12px;height:2px;border-radius:0;background:var(--green)}
+
+/* Datenstand: die wichtigste Zeile im Fokusfenster. */
+.data-session{cursor:help;font-weight:600}
+.data-session.ok{color:var(--green)}
+.data-session.aged{color:var(--yellow)}
+.data-session.old{color:#f09a68}
+.data-session.warn{color:var(--red)}
+.stock-updated.ds-old,.stock-updated.ds-warn{color:#f09a68}
+#stockFocusPlan{cursor:pointer}

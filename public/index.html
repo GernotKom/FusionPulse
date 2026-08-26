@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.6.3</title>
+<title>FusionPulse 3.6.4</title>
 </head>
 <body>
 
@@ -162,6 +162,11 @@
       <aside class="stockmapwrap">
         <div class="maphead" title="Beide Achsen sind technisch. Wirtschaftlichkeit steckt in der Punktfarbe, nicht in der Position."><span>Musterqualität ↑</span><span class="mdim">Handelbarkeit →</span></div>
         <svg id="stockMap" viewBox="0 0 200 200" title="Aktien-Heatmap. Nach oben: wie sauber das Kursmuster ist. Nach rechts: wie gut sich der Titel praktisch handeln lässt (Spread, Liquidität, Ausführbarkeit).&#10;&#10;WICHTIG: Beide Achsen messen nur Technik. Ob sich ein Trade wirtschaftlich lohnt, steht NICHT in der Position, sondern in der Farbe: voller Punkt = auch wirtschaftlich tragfähig, hohler Punkt mit gestricheltem Ring = gutes Muster, aber der Plan bringt zu wenig.&#10;&#10;Kreisgröße = Setup-Stärke, Schweif = bisherige Entwicklung. Mouseover auf einen Punkt zeigt Netto-Potenzial und CRV."></svg>
+        <div class="maplegend2">
+          <span title="Voller Punkt: Musterqualität und Ausführbarkeit stimmen UND der Trade lohnt sich wirtschaftlich — Netto-Potenzial und Chance-Risiko-Verhältnis liegen über deinen Grenzen."><i class="full"></i>wirtschaftlich tragfähig</span>
+          <span title="Hohler Punkt mit gestricheltem Ring: Das Kursmuster ist in Ordnung, aber der Trade lohnt sich nicht — zu wenig Gewinnpotenzial im Verhältnis zu Risiko und Gebühren, oder der Kursweg bis zum Ziel ist zu kurz. Das ist der häufigste Fall und kein Fehler."><i class="hollow"></i>Muster ok, Plan zu klein</span>
+          <span title="Grüne Spur mit Pfeilspitze: Der Titel wandert in den letzten 2 Stunden nach rechts oben — das Muster wird sauberer UND besser handelbar. Das ist die Richtung, in der ein Trade überhaupt erst möglich wird. Es ist eine Bewegungs-, keine Ertragsaussage."><i class="arrow"></i>wandert nach rechts oben</span>
+        </div>
       </aside>
     </div>
     <div id="stockGroups" class="stockgroups"></div>

@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.6.3 — Frontend
+   FusionPulse v3.6.4 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -425,7 +425,11 @@ const GLOSS = {
   notional:'Kaufsumme (Notional): Was du insgesamt investierst — Stückzahl × Kurs. Nicht zu verwechseln mit dem Risiko: das ist nur der Teil, den du bis zum Stop verlieren kannst, üblicherweise ein kleiner Bruchteil davon.',
   slippage:'Slippage: Die Differenz zwischen dem Kurs, den du siehst, und dem, den du tatsächlich bekommst. Entsteht, weil sich der Kurs zwischen Klick und Ausführung bewegt. Wird hier als Reserve geschätzt, nicht gemessen.',
   spread:'Spread: Der Abstand zwischen Kauf- und Verkaufskurs. Diese Differenz zahlst du sofort beim Einstieg — bei eng gehandelten Titeln kann sie einen kleinen Trade allein unwirtschaftlich machen.',
-  tickerSym:'Kürzel (Ticker), unter dem die Aktie an der US-Börse gehandelt wird — z. B. SOFI für SoFi Technologies. Das Kürzel ist NICHT eindeutig über alle Börsen hinweg: derselbe Buchstabencode kann anderswo ein völlig anderes Papier bezeichnen. Deshalb steht der volle Firmenname immer daneben.',
+  tickerSym:'Kürzel (Ticker) = der Kurzname, unter dem eine Aktie an der Börse gehandelt wird. Das ist KEINE Kennzahl wie CRV oder RVOL, sondern nur ein Name: AAPL steht für Apple, SOFI für SoFi Technologies. Das Kürzel ist NICHT eindeutig über alle Börsen hinweg: derselbe Buchstabencode kann anderswo ein völlig anderes Papier bezeichnen. Deshalb steht der volle Firmenname immer daneben.',
+
+  /* --- Zeit & Datenstand (v3.6.4) --- */
+  dataFreshness:'Zwei verschiedene Zeitpunkte, die leicht verwechselt werden. „Abfrage 12:28" heißt nur: um 12:28 hat FusionPulse zuletzt beim Datenanbieter nachgesehen. „Kurs vom 25.08., reguläre US-Sitzung" heißt: so alt ist der Kurs selbst. Wenn die US-Börse geschlossen ist, liefert auch die frischeste Abfrage den letzten Schlusskurs — die Aktie sieht dann aktuell aus, ist es aber nicht. Deshalb steht der Datenstand jetzt getrennt daneben.',
+  tradingHours:'Die US-Börse arbeitet in New Yorker Zeit (ET). Umgerechnet auf unsere Zeit: Premarket ab etwa 10:00, Eröffnung 15:30, regulärer Handel bis 22:00, After Hours bis 02:00 nachts. Im Winter jeweils eine Stunde später, weil die USA und Europa die Zeitumstellung an unterschiedlichen Terminen machen. Die App rechnet das automatisch um und zeigt beide Zeiten.',
 
   /* --- Kopfzeile der Fokus-Karte (v3.6.3) --- */
   score:'Score 0–10: die Gesamtnote des Kursmusters. Sie fasst zusammen, wie viele der aktivierten Analyseverfahren gerade dasselbe Bild zeigen — Trend, VWAP-Lage, Volumen, Elliott und so weiter. Hoch heißt: die Verfahren sind sich einig. Sie sagt NICHTS darüber, ob sich der Trade wirtschaftlich lohnt; das steht in CRV und Netto-Potenzial.',
@@ -818,6 +822,36 @@ function orderPlan(r) {
     s ? `TP1 50 % netto*  ${eur(s.netProfit1, 2)} · TP2 Rest 50 % netto*  ${eur(s.netProfit2, 2)}` : '',
     s ? `Gesamtplan netto*  ${eur(s.planNet, 2)}  (*Steuerschätzung ${S.taxPct}%)` : '',
   ].filter(Boolean).join('\n');
+}
+
+/* v3.6.4: Krypto hatte seit jeher einen Plan-Kopierknopf, Aktien nicht —
+   ohne erkennbaren Grund. Gerade bei Aktien ist das Abtippen von Entry, Stop
+   und zwei Zielen in die Broker-Maske die fehleranfaelligste Stelle des ganzen
+   Ablaufs. Der Text nennt auch ausdruecklich, was NICHT freigegeben ist. */
+function stockOrderPlan(r){
+  const sz=stockSizing(r), tr=stockTradeability(r), hl=stockHeadline(r), ds=dataSession(r);
+  const buy=stockLevel(r)===3;
+  const px=(u,e)=>e!=null?`${eur(e,2)} (${usd(u,2)})`:usd(u,2);
+  return [
+    `${r.symbol} — ${r.securityName||r.name||''}`.trim(),
+    `${hl.icon} ${hl.text}${buy?'':'  ← KEINE KAUF-FREIGABE'}`,
+    r.setup?`Setup  ${r.setup}${r.situationType?` · ${r.situationType}`:''}`:'',
+    '',
+    `Entry  ${px(r.entryUsd,r.entryEur)}`,
+    `Stop   ${px(r.stopUsd,r.stopEur)}`,
+    `TP1    ${px(r.tp1Usd,r.tp1Eur)}   (50 % verkaufen)`,
+    `TP2    ${px(r.tp2Usd,r.tp2Eur)}   (Rest verkaufen)`,
+    sz?`Größe  ${eur(sz.notional,2)}  ≈ ${Math.floor(sz.qty)} Stück`:'',
+    '',
+    `${S.claudeMode?'Plan-CRV':'Struktur-CRV'}  ${num(tr.netCrv,2)} : 1${Number(tr.netCrv)<Number(tr.minCrv||0)?'  [unter deiner Grenze]':''}`,
+    `Weg bis TP2  ${num(tr.tp2Pct,2)} %`,
+    sz?`TP1 netto ${eur(sz.tp1Net,2)} · TP2 netto ${eur(sz.tp2Net,2)} · Gesamtplan netto ${eur(sz.planNet,2)}`:'',
+    sz?`Verlust am Stop inkl. Kosten  ${eur(sz.stopLossAfterCosts,2)}`:'',
+    '',
+    `Datenstand: ${ds.label}`,
+    'EUR-Beträge sind umgerechnet, KEINE Tradegate-Kurse. Vor der Order den echten Kurs am Handelsplatz prüfen.',
+    buy?'':'Hinweis: FusionPulse gibt diesen Trade aktuell NICHT frei. Grund siehe Kopfzeile oben.',
+  ].filter(x=>x!==undefined&&x!==null).join('\n');
 }
 
 async function copy(text, el) {
@@ -1346,11 +1380,29 @@ function stockHeatmap(shown) {
     const a=pts[i],b=pts[j],dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||.1,m=a.rad+b.rad+3;
     if(d<m){const q=(m-d)*.16,ux=dx/d,uy=dy/d;a.x-=ux*q;a.y-=uy*q;b.x+=ux*q;b.y+=uy*q;}
   }
+  /* v3.6.4: Die Spur sagt jetzt, WOHIN sich ein Titel bewegt. Nach rechts oben
+     = Muster wird sauberer UND besser handelbar; das ist die Ecke, in der ein
+     Trade ueberhaupt erst moeglich wird. Solche Spuren werden gruen und mit
+     Pfeilspitze gezeichnet, ruecklaeufige gedaempft. Die Spur des gerade
+     ausgewaehlten Titels wird zusaetzlich hervorgehoben.
+     WICHTIG: das ist eine Bewegungs-, keine Ertragsaussage — auch ein Titel,
+     der sauber nach rechts oben wandert, kann wirtschaftlich uninteressant
+     bleiben. Deshalb bleibt die hohle Punktdarstellung davon unberuehrt. */
+  const focusSym=String(focusStock||'').toUpperCase();
   const trails = pts.map(({r}) => {
     const h=(r._history||[]).filter(x=>Date.now()-x.ts<=HISTORY_WINDOW_MS).slice(-8);
     if(h.length<2) return '';
-    const points=h.map(x=>`${g(Number(x.executability||0)).toFixed(1)},${(200-g(Number(x.quality||0))).toFixed(1)}`).join(' ');
-    return `<polyline class="stocktrail ${r.light}" points="${points}"/>`;
+    const xy=h.map(x=>({x:g(Number(x.executability||0)),y:200-g(Number(x.quality||0))}));
+    const points=xy.map(p=>`${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+    const a0=xy[0], a1=xy[xy.length-1];
+    const dx=a1.x-a0.x, dy=a0.y-a1.y;            // dy>0 = nach oben
+    const move=Math.hypot(dx,dy);
+    const dir = move<6 ? 'flat' : (dx>=-2 && dy>=-2 && (dx+dy)>4) ? 'sweet' : (dx+dy)<-4 ? 'back' : 'side';
+    const isFocus=String(r.symbol||'').toUpperCase()===focusSym;
+    const head = dir==='sweet'
+      ? `<polygon class="trailhead" points="${(a1.x).toFixed(1)},${(a1.y).toFixed(1)} ${(a1.x-4.6).toFixed(1)},${(a1.y+2.4).toFixed(1)} ${(a1.x-2.4).toFixed(1)},${(a1.y+4.6).toFixed(1)}"/>`
+      : '';
+    return `<g class="trailwrap dir-${dir}${isFocus?' focus':''}"><polyline class="stocktrail ${r.light}" points="${points}"/>${head}<title>${esc(`${r.symbol}: ${dir==='sweet'?'wandert Richtung rechts oben — Muster wird sauberer und besser handelbar':dir==='back'?'bewegt sich zurück nach links unten — Muster verliert an Qualität oder Handelbarkeit':dir==='flat'?'steht seit zwei Stunden praktisch still':'bewegt sich seitlich'}. Bewegungsrichtung der letzten 2 Stunden, keine Ertragsaussage.`)}</title></g>`;
   }).join('');
   svg.innerHTML=`<rect class="stockbg" x="0" y="0" width="200" height="200" rx="8"/><rect class="quad qa" x="100" y="0" width="100" height="100"/><rect class="quad qb" x="0" y="0" width="100" height="100"/><rect class="quad qc" x="100" y="100" width="100" height="100"/><rect class="quad qd" x="0" y="100" width="100" height="100"/><line class="ax" x1="100" y1="0" x2="100" y2="200"/><line class="ax" x1="0" y1="100" x2="200" y2="100"/><text class="quad-label ql-tr" x="151" y="11">MUSTER STARK<tspan class="ql2" x="151" dy="7.4">gut handelbar</tspan></text><text class="quad-label ql-tl" x="49" y="11">MUSTER STARK<tspan class="ql2" x="49" dy="7.4">schwer handelbar</tspan></text><text class="quad-label ql-br" x="151" y="187">MUSTER SCHWACH<tspan class="ql2" x="151" dy="7.4">gut handelbar</tspan></text><text class="quad-label ql-bl" x="49" y="187">MUSTER SCHWACH<tspan class="ql2" x="49" dy="7.4">schwer handelbar</tspan></text>${trails}`+
     /* v3.6.1: Die Punktfarbe folgt jetzt der Kopf-Bewertung statt allein r.light,
@@ -1378,6 +1430,7 @@ const GLOSS_GROUPS = [
   {title:'Kursmuster (das, was Modul 0 stummschalten kann)', keys:['pullback','breakout','squeeze','reclaim','elliott','relative']},
   {title:'Analyseverfahren (die Häkchen oben)',              keys:['vwap','ema21','rs','mtf','volume','book']},
   {title:'Kennzahlen im Fokusfenster',                        keys:['score','maturity','situationScore','lifecyclePhase','execScore','sectorTag']},
+  {title:'Zeit & Datenstand',                                 keys:['dataFreshness','tradingHours']},
   {title:'Erkannte Kursereignisse (Situation Engine)',        keys:['sit_squeeze','sit_breakoutStart','sit_breakoutPressure','sit_reclaim','sit_pullbackHold','sit_acceleration','sit_nearHigh','sit_openingDrive','sit_watch']},
   {title:'Bewertung eines Trades',                            keys:['crv','planEff','rMultiple','expectancy','atr','rvol','notional','spread','slippage','tickerSym']},
   {title:'Selbstauswertung (Modul 0)',                        keys:['sampleN','inSample','oos','wilson','overfit','multiTest','mute','hysterese']},
@@ -1395,6 +1448,7 @@ const GLOSS_LABEL = {
   mute:'Stummschalten', hysterese:'Hysterese', riskPerTrade:'Risiko je Trade',
   portfolioBudget:'Gesamt-Risikobudget', cluster:'Klumpenrisiko', diversify:'Streuung / Diversifikation',
   stopReal:'Warum das echte Risiko höher ist',
+  dataFreshness:'Datenstand vs. Abfragezeit', tradingHours:'US-Handelszeiten in unserer Zeit',
   score:'Score (0–10)', maturity:'Reife (0–100 %)', situationScore:'Situation (0–100)',
   lifecyclePhase:'Phase (PREP / IGNITION / CONFIRM / LATE)', execScore:'Ausführbarkeit (0–10)',
   sectorTag:'Branche / Sektor',
@@ -1912,6 +1966,88 @@ function renderMarketGainers(){
   el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
 }
 
+/* ==== v3.6.4 · US-Handelszeiten in unserer Zeit + ehrlicher Datenstand ======
+   Zwei Rueckmeldungen aus dem Betrieb:
+   (a) "ET" ist fuer uns hier nicht direkt nutzbar — ueberall die lokale Zeit
+       dazuschreiben, statt vom Nutzer Kopfrechnen zu verlangen.
+   (b) Aktien werden angezeigt, obwohl der Premarket noch nicht laeuft. Der
+       Zeitstempel "Abfrage 12:28" liest sich dann wie ein tagesaktueller Kurs,
+       obwohl die Daten vom Schluss des Vortages stammen. Der Scan IST aktuell —
+       die Daten sind es nicht. Genau das muss dastehen.                      */
+const NY_TZ='America/New_York';
+function tzWallMinutes(tz,d){
+  const f=new Intl.DateTimeFormat('en-US',{timeZone:tz,hour12:false,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+  const p=Object.fromEntries(f.formatToParts(d).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));
+  return Date.UTC(+p.year,+p.month-1,+p.day,+(p.hour==='24'?'0':p.hour),+p.minute);
+}
+/** Differenz lokale Zeit minus New Yorker Zeit, in Minuten (DST-sicher). */
+function nyDeltaMinutes(d=new Date()){
+  const local=tzWallMinutes(Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC',d);
+  return Math.round((local-tzWallMinutes(NY_TZ,d))/60_000);
+}
+const localTzLabel=()=>{
+  try{ return new Intl.DateTimeFormat('de-DE',{timeZoneName:'short'}).formatToParts(new Date()).find(x=>x.type==='timeZoneName')?.value||'lokal'; }
+  catch{ return 'lokal'; }
+};
+/** "09:30" (ET) -> "15:30" in unserer Zeit. */
+function etClockToLocal(hhmm,d=new Date()){
+  const m=/^(\d{1,2}):(\d{2})$/.exec(String(hhmm||'').trim()); if(!m) return null;
+  const total=(+m[1]*60+ +m[2]+nyDeltaMinutes(d)+1440*2)%1440;
+  return `${String(Math.floor(total/60)).padStart(2,'0')}:${String(total%60).padStart(2,'0')}`;
+}
+/** Ergaenzt jede "hh:mm ET"-Angabe in einem Text um unsere Ortszeit. */
+function withLocalTime(text){
+  const t=String(text||''); if(!/\bET\b/.test(t)) return t;
+  const tz=localTzLabel();
+  return t.replace(/(\d{1,2}:\d{2})(?:\s*[–-]\s*(\d{1,2}:\d{2}))?\s*ET/g,(all,a,b)=>{
+    const la=etClockToLocal(a), lb=b?etClockToLocal(b):null;
+    if(!la) return all;
+    return `${all} (${la}${lb?'–'+lb:''} ${tz})`;
+  });
+}
+
+/** Zu welcher US-Handelssitzung gehoert ein Datenzeitstempel? Klartext statt ET-Rätsel. */
+const ET_SESSIONS=[
+  {from:240, to:480, key:'premarket-early', name:'früher Premarket'},
+  {from:480, to:570, key:'premarket',       name:'Premarket'},
+  {from:570, to:660, key:'opening',         name:'Eröffnung (erste 90 Minuten)'},
+  {from:660, to:960, key:'regular',         name:'reguläre US-Sitzung'},
+  {from:960, to:1200,key:'after',           name:'After Hours'},
+];
+function dataSession(r){
+  const raw=String(r?.updated||'').trim();
+  if(!raw) return {known:false,label:'Datenstand unbekannt',tone:'warn',
+    detail:'Zu diesem Titel liegt kein Zeitstempel der Kursdaten vor. Ohne Datenstand gibt es bewusst keine Kauf-Freigabe.'};
+  const t=Date.parse(/[Zz]|[+-]\d{2}:?\d{2}$/.test(raw)?raw:raw.replace(' ','T')+'Z');
+  if(!Number.isFinite(t)) return {known:false,label:'Datenstand nicht lesbar',tone:'warn',
+    detail:`Der Zeitstempel „${raw}" konnte nicht interpretiert werden.`};
+  const d=new Date(t);
+  const f=new Intl.DateTimeFormat('en-US',{timeZone:NY_TZ,hour12:false,weekday:'short',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+  const p=Object.fromEntries(f.formatToParts(d).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));
+  const etMin=(+p.hour===24?0:+p.hour)*60+ +p.minute;
+  const sess=ET_SESSIONS.find(x=>etMin>=x.from&&etMin<x.to);
+  const etClock=`${String(p.hour).padStart(2,'0')}:${p.minute}`;
+  const localClock=new Intl.DateTimeFormat('de-DE',{hour:'2-digit',minute:'2-digit',hour12:false}).format(d);
+  const localDate=new Intl.DateTimeFormat('de-DE',{day:'2-digit',month:'2-digit'}).format(d);
+  const ageMin=Math.max(0,Math.round((Date.now()-t)/60_000));
+  const sameDay=new Intl.DateTimeFormat('de-DE',{day:'2-digit',month:'2-digit'}).format(new Date())===localDate;
+  const ageTxt = ageMin<90 ? `${ageMin} Min. alt`
+    : ageMin<48*60 ? `${(ageMin/60).toFixed(1).replace('.',',')} Std. alt`
+    : `${Math.round(ageMin/1440)} Tage alt`;
+  const name=sess?sess.name:'außerhalb der Handelszeiten';
+  const tone = !sess ? 'warn' : (sameDay && ageMin<=30) ? 'ok' : (sameDay ? 'aged' : 'old');
+  const label = sameDay
+    ? `Kurs aus: ${name} · ${etClock} ET (${localClock}) · ${ageTxt}`
+    : `Kurs vom ${localDate}: ${name} · ${etClock} ET (${localClock}) · ${ageTxt}`;
+  const detail = [
+    `Diese Kursdaten stammen aus der Sitzung „${name}" am ${localDate} um ${etClock} ET — bei uns ${localClock} Uhr (${localTzLabel()}). Sie sind ${ageTxt}.`,
+    sameDay ? '' : 'ACHTUNG: Das ist NICHT von heute. Seitdem wurde an der US-Börse nicht mehr gehandelt (oder die Sitzung hat noch nicht begonnen). Der Zeitstempel der Abfrage sagt nur, wann FusionPulse zuletzt nachgesehen hat — nicht, dass sich der Kurs seither bewegt hätte.',
+    !sess ? 'Der Zeitpunkt liegt außerhalb regulärer Handelszeiten; solche Kurse entstehen bei sehr dünnem Handel und sind entsprechend unzuverlässig.' : '',
+    'Vor einer Order immer den tatsächlichen Kurs an deiner Handelsbörse prüfen.'
+  ].filter(Boolean).join(' ');
+  return {known:true,label,tone,detail,sameDay,ageMin,session:sess?.key||null,sessionName:name};
+}
+
 function focusQuoteMeta(r){
   const p=Number(r?.livePriceUsd), age=Number(r?.liveQuoteAgeSec);
   const has=Number.isFinite(p)&&p>0, ok=has&&r?.liveQuoteOk===true;
@@ -1952,9 +2088,12 @@ function renderStocks() {
   const shown=[...stockFiltered].sort((a,b)=>filter==='favorites'?((stockOrderIndex(a.symbol)-stockOrderIndex(b.symbol))||(Number(b.score)||0)-(Number(a.score)||0)):((Number(stockFreshness(b).key==='live')-Number(stockFreshness(a).key==='live'))||(Number(b.preSignalMaturity)||0)-(Number(a.preSignalMaturity)||0)||(Number(b.radarRank)||0)-(Number(a.radarRank)||0)||(Number(b.score)||0)-(Number(a.score)||0))).slice(0,S.stockCount);
   const scanned=stockMeta.scanned??stockRows.length, universeLabel=stockMeta.universeLabel||stockMeta.universe||21, stateKey=stockMeta.state||(stockRows.length?'ok':'unknown');
   const phase=stockMeta.market?.label||'';
-  st.textContent=(stateKey==='ok'?'Aktienfeed':STATE_TEXT[stateKey]||'Status unbekannt')+(phase?` · ${phase}`:'');
+  const phaseLocal=withLocalTime(phase); // v3.6.4: ET-Angaben um unsere Ortszeit ergaenzen
+  st.textContent=(stateKey==='ok'?'Aktienfeed':STATE_TEXT[stateKey]||'Status unbekannt')+(phaseLocal?` · ${phaseLocal}`:'');
   st.className='badge '+(STATE_TONE[stateKey]==='ok'?'ok':STATE_TONE[stateKey]==='warn'?'warn':'err');
-  st.title=`${stockMeta.source||stockMeta.provider||'US-Aktienfeed'}. ${phase||''}\nAußerhalb der regulären US-Börsenzeit sind Analysen Vorbereitung und keine Live-BUY-Freigabe.`;
+  st.title=withLocalTime(`${stockMeta.source||stockMeta.provider||'US-Aktienfeed'}. ${stockMeta.market?.help||''} ${phase||''}`)
+    +`\n\nUS-Handelszeiten in unserer Zeit (${localTzLabel()}): Premarket ab ${etClockToLocal('04:00')}, Eröffnung ${etClockToLocal('09:30')}, regulärer Handel bis ${etClockToLocal('16:00')}, After Hours bis ${etClockToLocal('20:00')}.`
+    +`\n\nAußerhalb der regulären US-Börsenzeit sind Analysen Vorbereitung und keine Live-BUY-Freigabe. Angezeigte Kurse stammen dann aus der letzten Sitzung — der Zeitstempel der Abfrage sagt nur, wann zuletzt nachgesehen wurde.`;
   trackRefresh(stockMeta?.refreshedSymbols||[]); // v3.6.1: Frequenz je Titel mitzaehlen
   if(counts){const rc=stockMeta.discovery?.radar?.candidates?.length||0,bc=stockMeta.discovery?.boats?.candidates?.length||0;counts.textContent=`${stockMeta.updatedThisCycle!=null?stockMeta.updatedThisCycle+' aktualisiert · ':''}${scanned} geladen / ${universeLabel} Universum · ${shown.length} angezeigt · ${rc?'RADAR '+rc+' · ':''}${bc?'BOATS '+bc+' · ':''}★ ${(S.favoriteStocks||[]).length} · Abfrage ${clock(stockMeta.ts)}`;}
   const srcLabel=$('#stockSourceLabel'); if(srcLabel)srcLabel.textContent=String(stockMeta.source||stockMeta.provider||'US-Aktienfeed').includes('Tiingo')?'Tiingo IEX, US-Markt (Primary)':'Twelve Data, US-Markt (Fallback)';
@@ -1969,16 +2108,17 @@ function renderStocks() {
   if(topBox){if(!top)topBox.innerHTML=search?`<div class="stockfocus-empty">Keine geladene Aktie passend zu „${esc(search)}“. Enter oder 🔎 lädt den Titel direkt.</div>`:(filter==='favorites'?'<div class="stockfocus-empty">Noch keine Aktien-Favoriten. Mit ☆ neben einem Titel hinzufügen.</div>':'');else{
     const sz=stockSizing(top), buy=stockLevel(top)===3, tr=stockTradeability(top), opp=stockOpportunity(top), qm=focusQuoteMeta(top); const struct=Number(top.structurePct||0);
     const hl=stockHeadline(top); // v3.5.8 P0: Kopfzeile darf der Opportunity-Zeile nicht widersprechen
-    topBox.innerHTML=`<div class="stockfocus-card ${hl.light}${buy?' buy':''}"><div class="sf-focus-main"><div class="sf-title"><div><small title="Das große Fenster zeigt immer genau einen Titel im Detail — den zuletzt angeklickten oder, wenn du nichts ausgewählt hast, den aktuell aussichtsreichsten. Es wird bevorzugt nachgeladen, siehe Frequenzanzeige in der Zeile darunter.">AUSGEWÄHLTE AKTIE · ${esc(top.symbol)}</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button><b title="${esc(gloss('tickerSym'))}">${esc(top.symbol)}</b><a class="gfinance focus-link" href="${googleFinanceUrl(top)}" target="_blank" rel="noopener" title="${esc(top.symbol)} in Google Finance in einem neuen Tab öffnen">Google Finance ↗</a></h3><div class="focus-livebar ${qm.cls}"><b>${qm.label}</b><span>Kurs ${focusDisplayPrice(top)}</span><span>Quote ${qm.when}</span><span>${esc(qm.src+qm.scope)}</span>${qm.age!=null?`<span>${qm.age}s alt</span>`:''}<span>${esc(stockUpdateLabel(top))}</span>${(()=>{const rr=refreshRate(top.symbol);return `<span class="focus-freq${rr.rel!=null&&rr.rel>=1.6?' hot':rr.rel!=null&&rr.rel<=0.6?' cold':''}" title="${esc(rr.detail)}">↻ ${esc(rr.label)}</span>`;})()}<button type="button" id="stockFocusRefresh" title="Diese Aktie neu abfragen; der autonome Whole-Market-Scan bleibt serverseitig.">↻ Aktie</button></div><span class="company-name" title="Vollständiger Firmenname. Warum sinnvoll? Der Ticker allein kann leicht mit ähnlich benannten Wertpapieren verwechselt werden.">${esc((top.securityName&&top.securityName!==top.symbol)?top.securityName:(top.name&&top.name!==top.symbol?top.name:'Firmenname wird noch geladen'))}</span><small class="company-focus" title="Kurzbeschreibung des operativen Fokus aus den verfügbaren Unternehmens-Metadaten. Warum sinnvoll? Sie hilft einzuordnen, wodurch die Aktie wirtschaftlich bewegt werden kann.">${esc((top.companyDescription||'').slice(0,220)||((top.sector&&top.sector!=='Discovery')?top.sector:'Unternehmensfokus noch nicht verifiziert'))}${(!top.companyDescription||!/candidate|program|pipeline|therapy|therapeutic|device|platform|drug/i.test(top.companyDescription))?' · Lead Program/Candidate nicht verifiziert':''}</small><small class="company-exchange" title="Primäres Listing laut verfügbaren Metadaten. Warum sinnvoll? Die Hauptbörse hilft bei Handelszeiten, Liquidität und Dateninterpretation. Höchstes aktuelles Volumen wird nur behauptet, wenn es tatsächlich gemessen werden kann.">Börse: ${esc(top.exchange||'n.v.')}</small><small class="analysis-inline" title="Tatsächlich aktive Analyse-/Sicherheitsmethoden. Situation Engine priorisiert nur Kandidaten und verändert BUY nicht."><b>Analyse:</b> ${esc(analysisMethodsText())}</small><span class="sf-tags">${gl(top.sector,'sectorTag')}<i> · </i>${gl('Score '+num(top.score,1),'score')}${top.preSignalMaturity!=null?`<i> · </i>${gl('Reife '+Math.round(top.preSignalMaturity)+'%','maturity')}`:''}${top.situationType?`<i> · </i>${gl('Situation '+top.situationType,null,glossForSituation(top.situationType))}<i> </i>${gl(Math.round(Number(top.situationScore)||0)+'/100','situationScore')}`:''}${top.radarLifecycle&&top.radarLifecycle!=='WATCH'?`<i> · </i>${gl('Phase '+top.radarLifecycle,'lifecyclePhase')}`:''}</span></div><strong class="sf-verdict hl-${hl.light}" title="${esc(hl.title)}">${hl.icon} ${esc(hl.text)}</strong></div><div class="sf-grid"><span title="Aktueller Kurs. „Live-Quote" heißt: gerade frisch abgefragt. „Analyse-/Fallbackpreis" heißt: der letzte Kurs aus dem Analysedatensatz, möglicherweise einige Minuten alt — vor einer Order immer den echten Kurs bei deinem Broker prüfen.">Kurs <b>${focusDisplayPrice(top)}</b><small>${qm.ok?' Live-Quote':' Analyse-/Fallbackpreis'}</small></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span title="Der geplante Kaufkurs. Darüber zu kaufen verschlechtert das Chance-Risiko-Verhältnis, weil der Stop dann weiter entfernt liegt.">Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span title="${esc('Stop-Loss: der Kurs, bei dem der Trade beendet wird, um den Verlust zu begrenzen. Er sitzt bewusst außerhalb der normalen Tagesschwankung. '+gloss('atr'))}">Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span title="Take Profit 1: hier wird planmäßig die halbe Position verkauft. Das sichert einen Teil des Gewinns, bevor der Kurs drehen kann.">TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span title="Take Profit 2: hier wird die verbleibende halbe Position verkauft. Das eigentliche Ziel des Trades.">TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Im FusionPulse-Modus ist dies das Netto-CRV bis zum gemessenen Strukturziel. Im Claude-Modus bleibt die dort definierte Plan-CRV-Logik unverändert.">${S.claudeMode?'Plan-CRV':'Struktur-CRV'} <b>${num(tr.netCrv,1)} : 1${Number(tr.netCrv)<Number(tr.minCrv||0)?' · zu niedrig':''}</b></span><span title="50/50-Plan nach geschätzten Fixkosten und Ausführungsreserve. Eigene Effizienzkennzahl; nicht mit dem Struktur-CRV verwechseln.">Plan-Effizienz <b>${sz?num(sz.planCrvAfterCosts,2)+' : 1':'–'}${!S.claudeMode&&sz&&sz.planCrvAfterCosts<FUSION_MIN_PLAN_EFFICIENCY?' · zu niedrig':''}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Strukturpotenzial = geschätzter technisch plausibler Kursweg bis zum nächsten relevanten Widerstand/Ziel aus Chart-, Elliott-/Fibonacci- und Marktstruktur. Das ist kein erwarteter Gewinn und allein kein Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}${crowdConfirmGauge(top)}</span></div><div class="opportunity-watch ${opp.ready?'ready':'waiting'}"><b>${buy?'BUY FREIGEGEBEN':opp.label}</b><span>${opp.why?esc(opp.why):(opp.reasons.length?esc(opp.reasons.join(' · ')):'Wartet auf Qualität, CRV, Kursweg und wirtschaftlich relevantes Gewinnpotenzial.')}</span></div>${positionPanel(top)}<div class="intraday-chart" title="Kursverlauf. Intraday nutzt 5-Minuten-/IEX-Daten; längere Zeiträume werden passend aggregiert nachgeladen. Warum sinnvoll? Elliott-Strukturen sehen auf verschiedenen Zeitebenen unterschiedlich aus; der längere Chart liefert Kontext, aber kein BUY allein."><span>Chart · <select id="stockChartRange" title="Zeitraum wählen. Warum sinnvoll? Kurz zeigt Entry-Struktur, lang zeigt den übergeordneten Elliott-/Trend-Kontext.">${['5','10','30','60','120','180','240','300','1T','5T','1Wo','3Mo','6Mo','12Mo'].map(m=>`<option value="${m}"${String(m)===String(stockChartMinutes)?' selected':''}>${/^\d+$/.test(m)?m+' min':m}</option>`).join('')}</select></span>${spark((stockChartCache.get(top.symbol+'|'+stockChartMinutes)?.rows?.map(x=>x.c)||(top.intraday||[]).slice(-Math.max(1,Math.ceil((Number(stockChartMinutes)||120)/5)))),420,76)}</div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<div class="stock-interpret"><b>Was hat sich geändert? · Interpretation</b><span>${top.whyNow?.length?`Warum jetzt? ${esc(top.whyNow.join(' · '))} · `:''}${esc(stockInterpretation(top))}</span><small>Radar/Crowd/Search dienen nur der Discovery · 0 % BUY-Gewicht</small></div><small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} ${buyGateHint(top)}</small></div>${stockLadder(top)}</div>`;
+    topBox.innerHTML=`<div class="stockfocus-card ${hl.light}${buy?' buy':''}"><div class="sf-focus-main"><div class="sf-title"><div><small title="Das große Fenster zeigt immer genau einen Titel im Detail — den zuletzt angeklickten oder, wenn du nichts ausgewählt hast, den aktuell aussichtsreichsten. Es wird bevorzugt nachgeladen, siehe Frequenzanzeige in der Zeile darunter.">AUSGEWÄHLTE AKTIE · ${esc(top.symbol)}</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button><b title="${esc(gloss('tickerSym'))}">${esc(top.symbol)}</b><a class="gfinance focus-link" href="${googleFinanceUrl(top)}" target="_blank" rel="noopener" title="${esc(top.symbol)} in Google Finance in einem neuen Tab öffnen">Google Finance ↗</a></h3><div class="focus-livebar ${qm.cls}"><b>${qm.label}</b><span>Kurs ${focusDisplayPrice(top)}</span><span>Quote ${qm.when}</span><span>${esc(qm.src+qm.scope)}</span>${qm.age!=null?`<span>${qm.age}s alt</span>`:''}${(()=>{const ds=dataSession(top);return `<span class="data-session ${ds.tone}" title="${esc(ds.detail)}">🕒 ${esc(ds.label)}</span>`;})()}<span title="${esc('Wann FusionPulse zuletzt nachgesehen hat, und wie frisch die gelieferten Daten dabei waren. ACHTUNG: eine frische Abfrage bedeutet NICHT automatisch einen frischen Kurs — wenn die Börse zu ist, liefert auch die neueste Abfrage den letzten Schlusskurs.')}">${esc(stockUpdateLabel(top))}</span>${(()=>{const rr=refreshRate(top.symbol);return `<span class="focus-freq${rr.rel!=null&&rr.rel>=1.6?' hot':rr.rel!=null&&rr.rel<=0.6?' cold':''}" title="${esc(rr.detail)}">↻ ${esc(rr.label)}</span>`;})()}<button type="button" id="stockFocusPlan" title="${esc('Kompletten Tradeplan in die Zwischenablage kopieren: Entry, Stop, beide Ziele, Stückzahl, CRV und Datenstand. Zum Übertragen in die Ordermaske deines Brokers — spart das fehleranfällige Abtippen. Der Text sagt ausdrücklich dazu, wenn FusionPulse den Trade NICHT freigibt.')}">⧉ Plan</button><button type="button" id="stockFocusRefresh" title="Diese Aktie neu abfragen; der autonome Whole-Market-Scan bleibt serverseitig.">↻ Aktie</button></div><span class="company-name" title="Vollständiger Firmenname. Warum sinnvoll? Der Ticker allein kann leicht mit ähnlich benannten Wertpapieren verwechselt werden.">${esc((top.securityName&&top.securityName!==top.symbol)?top.securityName:(top.name&&top.name!==top.symbol?top.name:'Firmenname wird noch geladen'))}</span><small class="company-focus" title="Kurzbeschreibung des operativen Fokus aus den verfügbaren Unternehmens-Metadaten. Warum sinnvoll? Sie hilft einzuordnen, wodurch die Aktie wirtschaftlich bewegt werden kann.">${esc((top.companyDescription||'').slice(0,220)||((top.sector&&top.sector!=='Discovery')?top.sector:'Unternehmensfokus noch nicht verifiziert'))}${(!top.companyDescription||!/candidate|program|pipeline|therapy|therapeutic|device|platform|drug/i.test(top.companyDescription))?' · Lead Program/Candidate nicht verifiziert':''}</small><small class="company-exchange" title="Primäres Listing laut verfügbaren Metadaten. Warum sinnvoll? Die Hauptbörse hilft bei Handelszeiten, Liquidität und Dateninterpretation. Höchstes aktuelles Volumen wird nur behauptet, wenn es tatsächlich gemessen werden kann.">Börse: ${esc(top.exchange||'n.v.')}</small><small class="analysis-inline" title="Tatsächlich aktive Analyse-/Sicherheitsmethoden. Situation Engine priorisiert nur Kandidaten und verändert BUY nicht."><b>Analyse:</b> ${esc(analysisMethodsText())}</small><span class="sf-tags">${gl(top.sector,'sectorTag')}<i> · </i>${gl('Score '+num(top.score,1),'score')}${top.preSignalMaturity!=null?`<i> · </i>${gl('Reife '+Math.round(top.preSignalMaturity)+'%','maturity')}`:''}${top.situationType?`<i> · </i>${gl('Situation '+top.situationType,null,glossForSituation(top.situationType))}<i> </i>${gl(Math.round(Number(top.situationScore)||0)+'/100','situationScore')}`:''}${top.radarLifecycle&&top.radarLifecycle!=='WATCH'?`<i> · </i>${gl('Phase '+top.radarLifecycle,'lifecyclePhase')}`:''}</span></div><strong class="sf-verdict hl-${hl.light}" title="${esc(hl.title)}">${hl.icon} ${esc(hl.text)}</strong></div><div class="sf-grid"><span title="Aktueller Kurs. „Live-Quote" heißt: gerade frisch abgefragt. „Analyse-/Fallbackpreis" heißt: der letzte Kurs aus dem Analysedatensatz, möglicherweise einige Minuten alt — vor einer Order immer den echten Kurs bei deinem Broker prüfen.">Kurs <b>${focusDisplayPrice(top)}</b><small>${qm.ok?' Live-Quote':' Analyse-/Fallbackpreis'}</small></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span title="Der geplante Kaufkurs. Darüber zu kaufen verschlechtert das Chance-Risiko-Verhältnis, weil der Stop dann weiter entfernt liegt.">Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span title="${esc('Stop-Loss: der Kurs, bei dem der Trade beendet wird, um den Verlust zu begrenzen. Er sitzt bewusst außerhalb der normalen Tagesschwankung. '+gloss('atr'))}">Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span title="Take Profit 1: hier wird planmäßig die halbe Position verkauft. Das sichert einen Teil des Gewinns, bevor der Kurs drehen kann.">TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span title="Take Profit 2: hier wird die verbleibende halbe Position verkauft. Das eigentliche Ziel des Trades.">TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Im FusionPulse-Modus ist dies das Netto-CRV bis zum gemessenen Strukturziel. Im Claude-Modus bleibt die dort definierte Plan-CRV-Logik unverändert.">${S.claudeMode?'Plan-CRV':'Struktur-CRV'} <b>${num(tr.netCrv,1)} : 1${Number(tr.netCrv)<Number(tr.minCrv||0)?' · zu niedrig':''}</b></span><span title="50/50-Plan nach geschätzten Fixkosten und Ausführungsreserve. Eigene Effizienzkennzahl; nicht mit dem Struktur-CRV verwechseln.">Plan-Effizienz <b>${sz?num(sz.planCrvAfterCosts,2)+' : 1':'–'}${!S.claudeMode&&sz&&sz.planCrvAfterCosts<FUSION_MIN_PLAN_EFFICIENCY?' · zu niedrig':''}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Strukturpotenzial = geschätzter technisch plausibler Kursweg bis zum nächsten relevanten Widerstand/Ziel aus Chart-, Elliott-/Fibonacci- und Marktstruktur. Das ist kein erwarteter Gewinn und allein kein Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}${crowdConfirmGauge(top)}</span></div><div class="opportunity-watch ${opp.ready?'ready':'waiting'}"><b>${buy?'BUY FREIGEGEBEN':opp.label}</b><span>${opp.why?esc(opp.why):(opp.reasons.length?esc(opp.reasons.join(' · ')):'Wartet auf Qualität, CRV, Kursweg und wirtschaftlich relevantes Gewinnpotenzial.')}</span></div>${positionPanel(top)}<div class="intraday-chart" title="Kursverlauf. Intraday nutzt 5-Minuten-/IEX-Daten; längere Zeiträume werden passend aggregiert nachgeladen. Warum sinnvoll? Elliott-Strukturen sehen auf verschiedenen Zeitebenen unterschiedlich aus; der längere Chart liefert Kontext, aber kein BUY allein."><span>Chart · <select id="stockChartRange" title="Zeitraum wählen. Warum sinnvoll? Kurz zeigt Entry-Struktur, lang zeigt den übergeordneten Elliott-/Trend-Kontext.">${['5','10','30','60','120','180','240','300','1T','5T','1Wo','3Mo','6Mo','12Mo'].map(m=>`<option value="${m}"${String(m)===String(stockChartMinutes)?' selected':''}>${/^\d+$/.test(m)?m+' min':m}</option>`).join('')}</select></span>${spark((stockChartCache.get(top.symbol+'|'+stockChartMinutes)?.rows?.map(x=>x.c)||(top.intraday||[]).slice(-Math.max(1,Math.ceil((Number(stockChartMinutes)||120)/5)))),420,76)}</div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<div class="stock-interpret"><b>Was hat sich geändert? · Interpretation</b><span>${top.whyNow?.length?`Warum jetzt? ${esc(top.whyNow.join(' · '))} · `:''}${esc(stockInterpretation(top))}</span><small>Radar/Crowd/Search dienen nur der Discovery · 0 % BUY-Gewicht</small></div><small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} ${buyGateHint(top)}</small></div>${stockLadder(top)}</div>`;
     topBox.querySelector('[data-favstock]')?.addEventListener('click',e=>toggleStockFavorite(top.symbol,e));
     topBox.querySelector('#stockChartRange')?.addEventListener('change',async e=>{stockChartMinutes=String(e.target.value||'120');const k=top.symbol+'|'+stockChartMinutes,hit=stockChartCache.get(k);if(!hit||Date.now()-Number(hit.ts||0)>120_000){try{const q=new URLSearchParams({symbol:top.symbol,range:stockChartMinutes});if(S.token)q.set('t',S.token);const rr=await fetchWithTimeout('/api/stock-chart?'+q,{cache:'no-store'},10_000);const dd=await rr.json();if(dd?.rows?.length)stockChartCache.set(k,{...dd,ts:Date.now()});}catch{}}renderStocks();});
     topBox.querySelector('#stockFocusRefresh')?.addEventListener('click',async()=>{await searchStockNow(top.symbol,true);renderStocks();});
+    topBox.querySelector('#stockFocusPlan')?.addEventListener('click',e=>copy(stockOrderPlan(top),e.target));
     bindPositionControls(top); monitorPosition(top);
   }}
   const groups=new Map();
   if(filter==='favorites') groups.set('★ Favoritendepot',shown);
   else for(const r of shown){if(!groups.has(r.sector))groups.set(r.sector,[]);groups.get(r.sector).push(r);}
-  box.innerHTML=[...groups.entries()].map(([sector,arr])=>`<section class="stock-sector${filter==='favorites'?' flat-favorites':''}">${filter==='favorites'?'':`<h3>${esc(sector)}</h3>`}${arr.map(r=>{const buy=stockLevel(r)===3,tone=stockStrength(r),tr=stockTradeability(r),sz=stockSizing(r),dm=stockDisplayMeta(r);const hl=stockHeadline(r);return `<div class="stockrow ${r.light} tone-${tone}${buy?' buy':''}${signalIsHot('stock',r.symbol)?' signal-hot':''}" draggable="true" data-sym="${esc(r.symbol)}"><div class="sr-head"><button class="draghandle" type="button" title="Aktienfenster ziehen und neu anordnen" aria-label="Aktienfenster neu anordnen">⋮⋮</button><b class="sr-tic" title="${esc(gloss('tickerSym'))}">${esc(r.symbol)}</b><button class="favbtn ${isFavStock(r.symbol)?'on':''}" data-favstock="${esc(r.symbol)}" title="${isFavStock(r.symbol)?'Aus Favoriten/Depot entfernen':'Zu Favoriten/Depot hinzufügen'}">${isFavStock(r.symbol)?'★':'☆'}</button><a class="gfinance mini" href="${googleFinanceUrl(r)}" target="_blank" rel="noopener" title="${esc(r.symbol)} in Google Finance öffnen">G↗</a><button class="rowmute" data-mutestock="${esc(r.symbol)}">${isStockMuted(r.symbol)?'🔇':'🔊'}</button></div><div class="sr-name"><b>${esc(dm.name)}</b><small>${esc(dm.theme)}</small></div><div class="sr-nums"><span title="Netto-CRV des 50/50-Tradeplans nach geschätzten Flatex/Tradegate-Kosten.">${num(sz?.planCrvAfterCosts ?? r.netCRV,1)} : 1</span><i>·</i><span title="${esc(gloss('score'))}">Score ${num(r.score,1)}</span>${r.preSignalMaturity!=null?`<i>·</i><span title="${esc(gloss('maturity'))}">Reife ${Math.round(r.preSignalMaturity)}%</span>`:''}${r.situationType?`<i>·</i><span title="${esc(glossForSituation(r.situationType)+' '+gloss('situationScore'))}">${esc(r.situationType)} ${Math.round(Number(r.situationScore)||0)}/100</span>`:''}<i>·</i><span title="Kursweg bis TP2">TP2 ${num(tr.tp2Pct,1)}%</span></div><div class="sr-verdict hl-${hl.light}" title="${esc(hl.title)}">${hl.icon} ${esc(hl.text)}</div><div class="sr-px">${stockPx(r.priceUsd,r.priceEur)}${sz?`<small> · ${buy?'Plan netto '+eur(sz.planNet,0):'keine Kauf-Freigabe'}</small>`:''}</div><div class="sr-hist" title="120-Minuten-Signalverlauf">${stockStatusBand(r)}</div>${crowdGauge(r.symbol,true)}${crowdConfirmGauge(r,true)}<small class="stock-updated fresh-${stockFreshness(r).key}">${esc(stockUpdateLabel(r))}</small>${edgeStrip(r)}${stockPeek(r)}</div>`}).join('')}</section>`).join('');
+  box.innerHTML=[...groups.entries()].map(([sector,arr])=>`<section class="stock-sector${filter==='favorites'?' flat-favorites':''}">${filter==='favorites'?'':`<h3>${esc(sector)}</h3>`}${arr.map(r=>{const buy=stockLevel(r)===3,tone=stockStrength(r),tr=stockTradeability(r),sz=stockSizing(r),dm=stockDisplayMeta(r);const hl=stockHeadline(r);return `<div class="stockrow ${r.light} tone-${tone}${buy?' buy':''}${signalIsHot('stock',r.symbol)?' signal-hot':''}" draggable="true" data-sym="${esc(r.symbol)}"><div class="sr-head"><button class="draghandle" type="button" title="Aktienfenster ziehen und neu anordnen" aria-label="Aktienfenster neu anordnen">⋮⋮</button><b class="sr-tic" title="${esc(gloss('tickerSym'))}">${esc(r.symbol)}</b><button class="favbtn ${isFavStock(r.symbol)?'on':''}" data-favstock="${esc(r.symbol)}" title="${isFavStock(r.symbol)?'Aus Favoriten/Depot entfernen':'Zu Favoriten/Depot hinzufügen'}">${isFavStock(r.symbol)?'★':'☆'}</button><a class="gfinance mini" href="${googleFinanceUrl(r)}" target="_blank" rel="noopener" title="${esc(r.symbol)} in Google Finance öffnen">G↗</a><button class="rowmute" data-mutestock="${esc(r.symbol)}">${isStockMuted(r.symbol)?'🔇':'🔊'}</button></div><div class="sr-name"><b>${esc(dm.name)}</b><small>${esc(dm.theme)}</small></div><div class="sr-nums"><span title="Netto-CRV des 50/50-Tradeplans nach geschätzten Flatex/Tradegate-Kosten.">${num(sz?.planCrvAfterCosts ?? r.netCRV,1)} : 1</span><i>·</i><span title="${esc(gloss('score'))}">Score ${num(r.score,1)}</span>${r.preSignalMaturity!=null?`<i>·</i><span title="${esc(gloss('maturity'))}">Reife ${Math.round(r.preSignalMaturity)}%</span>`:''}${r.situationType?`<i>·</i><span title="${esc(glossForSituation(r.situationType)+' '+gloss('situationScore'))}">${esc(r.situationType)} ${Math.round(Number(r.situationScore)||0)}/100</span>`:''}<i>·</i><span title="Kursweg bis TP2">TP2 ${num(tr.tp2Pct,1)}%</span></div><div class="sr-verdict hl-${hl.light}" title="${esc(hl.title)}">${hl.icon} ${esc(hl.text)}</div><div class="sr-px">${stockPx(r.priceUsd,r.priceEur)}${sz?`<small> · ${buy?'Plan netto '+eur(sz.planNet,0):'keine Kauf-Freigabe'}</small>`:''}</div><div class="sr-hist" title="120-Minuten-Signalverlauf">${stockStatusBand(r)}</div>${crowdGauge(r.symbol,true)}${crowdConfirmGauge(r,true)}${(()=>{const ds=dataSession(r);return `<small class="stock-updated fresh-${stockFreshness(r).key} ds-${ds.tone}" title="${esc(ds.detail+' | '+stockUpdateLabel(r))}">${esc(ds.label)}</small>`;})()}${edgeStrip(r)}${stockPeek(r)}</div>`}).join('')}</section>`).join('');
   box.querySelectorAll('[data-mutestock]').forEach(b=>b.addEventListener('click',e=>toggleStockMute(b.dataset.mutestock,e)));
   box.querySelectorAll('.stockrow[data-sym]').forEach(row=>row.addEventListener('click',e=>{
     if(e.target.closest('button,a') || row.classList.contains('dragging')) return;

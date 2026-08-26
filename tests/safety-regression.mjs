@@ -797,3 +797,91 @@ console.log('✓ FusionPulse v3.6.1 coin-headline/heatmap/crowd/glossary regress
 }
 
 console.log('✓ FusionPulse v3.6.3 focus-metrics/situation glossary regressions: OK');
+
+// ---------------------------------------------------------------------------
+// v3.6.4 · Fuenf Rueckmeldungen aus dem Betrieb: ET ohne Ortszeit, Kurse aus
+// der Vortagssitzung die wie tagesaktuell aussehen, fehlender Plan-Knopf bei
+// Aktien, unerklaerte gestrichelte Punkte, Spuren ohne Richtungsaussage.
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url),'utf8');
+  const css  = fs.readFileSync(new URL('../public/style.css',  import.meta.url),'utf8');
+  C.S.equity = 5000; C.S.riskPct = 0.75; C.S.claudeMode = true;
+
+  // -- ET-Angaben bekommen ueberall unsere Ortszeit dazu.
+  const withLocal = C.withLocalTime('Premarket 04:00–08:00 ET');
+  assert.notEqual(withLocal, 'Premarket 04:00–08:00 ET', 'ET-Zeiten muessen um die Ortszeit ergaenzt werden');
+  assert.match(withLocal, /\(\d{2}:\d{2}–\d{2}:\d{2} /, 'Die Ortszeit muss als Spanne in Klammern erscheinen');
+  assert.equal(C.withLocalTime('kein Zeitbezug'), 'kein Zeitbezug', 'Texte ohne ET duerfen nicht veraendert werden');
+  /* Die Gegenrechnung muss UNABHAENGIG sein. Ein erster Entwurf hat die
+     erwartete Zeit aus derselben Funktion abgeleitet, die geprueft werden
+     sollte — die Negativkontrolle (fester Offset statt Zonenrechnung) ist
+     deshalb NICHT gefallen. Jetzt wird der echte Zeitpunkt gesucht, dessen
+     New Yorker Wanduhr 09:30 zeigt, und unabhaengig lokal formatiert. */
+  const nyWall = (ms) => {
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',hour12:false,
+      hour:'2-digit',minute:'2-digit'}).formatToParts(new Date(ms))
+      .filter(x=>x.type!=='literal').map(x=>[x.type,+x.value]));
+    return (p.hour===24?0:p.hour)*60 + p.minute;
+  };
+  const nyDate = new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',
+    year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+  let inst = Date.parse(`${nyDate}T09:30:00Z`);
+  for (let i=0;i<4;i++) inst += ((9*60+30) - nyWall(inst)) * 60_000;   // konvergiert in 2 Schritten
+  assert.equal(nyWall(inst), 9*60+30, 'Der gesuchte Zeitpunkt muss in New York 09:30 sein');
+  const expected = new Intl.DateTimeFormat('de-DE',{hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(inst));
+  assert.equal(C.etClockToLocal('09:30'), expected,
+    'Die Ortszeit der US-Eroeffnung muss DST-sicher aus der echten Zonendifferenz kommen, nicht aus einem festen Offset');
+
+  // -- Datenstand: ein Kurs vom Vortag darf nicht wie tagesaktuell aussehen.
+  //    Fixture: gestern 19:55 UTC = 15:55 ET = regulaere Sitzung, kurz vor Schluss.
+  const y = new Date(Date.now() - 24*60*60_000);
+  const iso = (d,h,m)=>new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate(),h,m)).toISOString();
+  const stale = C.dataSession({ updated: iso(y,19,55) });
+  assert.equal(stale.known, true, 'Der Zeitstempel muss lesbar sein');
+  assert.equal(stale.sameDay, false, 'Ein Kurs vom Vortag darf nicht als heutig gelten');
+  assert.match(stale.label, /^Kurs vom /, 'Das Datum muss im Label stehen, wenn die Daten nicht von heute sind');
+  assert.match(stale.detail, /NICHT von heute/, 'Es muss ausdruecklich dastehen, dass die Daten nicht von heute sind');
+  assert.match(stale.detail, /wann FusionPulse zuletzt nachgesehen/, 'Der Unterschied Abfrage vs. Kursalter muss erklaert sein');
+  assert.match(stale.label, /ET \(\d{2}:\d{2}\)/, 'Die Sitzungszeit muss in ET UND unserer Zeit stehen');
+  assert.equal(stale.session, 'regular', '15:55 ET gehoert in die regulaere Sitzung');
+  // Ohne Zeitstempel wird nichts behauptet.
+  const none = C.dataSession({});
+  assert.equal(none.known, false, 'Ohne Zeitstempel darf kein Datenstand behauptet werden');
+  assert.match(none.detail, /keine Kauf-Freigabe/, 'Fehlender Datenstand muss fail-closed begruendet sein');
+  assert.match(app, /class="data-session \$\{ds\.tone\}"/, 'Der Datenstand muss im Fokusfenster erscheinen');
+
+  // -- Aktien brauchen denselben Plan-Kopierknopf wie Krypto.
+  assert.match(app, /id="stockFocusPlan"/, 'Die Aktien-Fokuskarte braucht einen Plan-Knopf');
+  assert.match(app, /function stockOrderPlan\(r\)/, 'Es muss einen Aktien-Orderplan geben');
+  assert.match(app, /stockFocusPlan'\)\?\.addEventListener\('click',e=>copy\(stockOrderPlan\(top\),e\.target\)\)/, 'Der Plan-Knopf muss den Aktienplan kopieren');
+  C.stockMeta = { ts:Date.now(), refreshedSymbols:['PLN'], market:{key:'regular'} };
+  const row = { symbol:'PLN', name:'Plan Inc.', securityName:'Plan Incorporated', sector:'Tech',
+    light:'green', score:8.3, verdict:'Kauf-Setup · Claude', setup:'Pullback', situationType:'PULLBACK',
+    claude:{light:'green',score:8.3,verdict:'Kauf-Setup · Claude',expectancyR:0.3,blockers:[]},
+    entryEur:25.00, stopEur:24.90, tp1Eur:25.20, tp2Eur:25.40, priceEur:25.00,
+    entryUsd:29.25, stopUsd:29.13, tp1Usd:29.48, tp2Usd:29.72, priceUsd:29.25,
+    netCRV:1.1, tp2Pct:1.6, updated:new Date().toISOString().slice(0,19).replace('T',' '), marketPhase:'regular' };
+  const plan = C.stockOrderPlan(row);
+  for (const needle of [/Entry\s/, /Stop\s/, /TP1\s/, /TP2\s/, /Größe/, /Datenstand:/]) {
+    assert.match(plan, needle, `Der Aktienplan muss ${needle} enthalten`);
+  }
+  // Der Plan muss ehrlich sein, wenn kein BUY vorliegt.
+  assert.equal(C.stockLevel(row), 2, 'Fixture darf keine Freigabe haben');
+  assert.match(plan, /KEINE KAUF-FREIGABE/, 'Ein Plan ohne Freigabe muss das im Text sagen');
+  assert.match(plan, /NICHT frei/, 'Der Hinweis am Ende muss die fehlende Freigabe wiederholen');
+  assert.match(plan, /KEINE Tradegate-Kurse/, 'Die EUR-Umrechnung muss im kopierten Text als solche gekennzeichnet sein');
+
+  // -- Heatmap: gestrichelte Punkte und Spurrichtung sind erklaert.
+  assert.match(html, /class="maplegend2"/, 'Die Heatmap braucht eine Legende');
+  assert.match(html, /Muster ok, Plan zu klein/, 'Der hohle Punkt muss in der Legende erklaert sein');
+  assert.match(html, /wandert nach rechts oben/, 'Die gruene Spur muss in der Legende erklaert sein');
+  assert.match(app, /const dir = move<6 \? 'flat'/, 'Die Spur muss eine Richtung bestimmen');
+  assert.match(app, /class="trailwrap dir-\$\{dir\}/, 'Die Richtung muss die Darstellung steuern');
+  assert.match(app, /keine Ertragsaussage/, 'Die Spur muss klarstellen, dass sie keinen Ertrag verspricht');
+  assert.match(css, /\.dir-sweet \.stocktrail\{stroke:var\(--green\)/, 'Bewegung nach rechts oben muss gruen gezeichnet werden');
+  assert.match(css, /\.trailwrap\.focus \.stocktrail\{stroke-width:2\.4/, 'Die Spur des ausgewaehlten Titels muss hervorgehoben sein');
+}
+
+console.log('✓ FusionPulse v3.6.4 session/timezone/plan/trail regressions: OK');
