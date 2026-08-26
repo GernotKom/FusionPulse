@@ -314,3 +314,24 @@ console.log('✓ FusionPulse v3.5.5 aladdin market-intelligence regressions: OK'
   assert.match(app,/Teilverkauf buchen/,'Restposition nach TP1 muss dokumentierbar sein');
 }
 console.log('✓ FusionPulse v3.5.6 VL heatmap/position/alarm regressions: OK');
+
+// v3.5.7 Paket A: Stummschalten + Rehabilitation. Unterdrueckt BUY, kein Score-Eingriff.
+{
+  assert.match(workerText,/PAKET A · MODUL 0 SCHARF/,'Paket-A-Block muss vorhanden sein');
+  assert.match(workerText,/async function muteSetup\(env, setup, reason\)/,'muteSetup muss existieren');
+  assert.match(workerText,/async function unmuteSetup\(env, setup\)/,'unmuteSetup muss existieren');
+  assert.match(workerText,/REENABLE_POINT: 52/,'Reaktivierungs-Schwelle (Punkt) muss ueber Abschaltung (40) liegen – Hysterese');
+  assert.match(workerText,/REENABLE_WILSON: 45/,'Reaktivierungs-Schwelle (Wilson) muss ueber Abschaltung (33) liegen – Hysterese');
+  assert.match(workerText,/MIN_MUTE_MS: 5\*24\*60\*60_000/,'Mindest-Stummdauer (5 Tage) muss gelten');
+  assert.match(workerText,/url\.pathname === '\/api\/attribution\/mute'/,'Mute-Route muss existieren');
+  // Gestummte Setups duerfen NICHT gleichzeitig in disable-Empfehlungen stehen (Doppelung).
+  assert.match(workerText,/evaluated\.filter\(b=>!b\.muted &&/,'disable-Empfehlungen muessen gestummte Setups ausschliessen');
+  // Client: Stummliste muss die BUY-Freigabe unterdruecken.
+  assert.match(app,/let mutedSetupSet = new Set\(\)/,'Client muss Stummliste fuehren');
+  assert.match(app,/&& !muted\) \? 3/,'stockLevel muss BUY (Stufe 3) fuer gestummte Setups unterdruecken');
+  assert.match(app,/async function muteSetupAction/,'Client muss Stummschalt-Aktion haben');
+  // Rehabilitation braucht mehr OOS-Evidenz als eine normale Bewertung.
+  assert.match(workerText,/oosN>=REHAB\.REENABLE_OOS_MIN/,'Rehabilitation muss genug OOS-Episoden verlangen');
+}
+
+console.log('✓ FusionPulse v3.5.7 mute/rehabilitation regressions: OK');

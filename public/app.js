@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.5.6 — Frontend
+   FusionPulse v3.5.7 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -351,12 +351,19 @@ function stockTradeability(r) {
     && planOk;
   return { ok, tp2Pct, netProfit, netCrv:gateCrv, structuralCrv, planEfficiency, planOk, marketOk, minNet, minCrv, minPlanEfficiency:FUSION_MIN_PLAN_EFFICIENCY, claude };
 }
+/* Paket A: Menge der stummgeschalteten Setups (aus /api/attribution).
+   Ein stummes Setup wird nie auf BUY (Stufe 3) gehoben – aber weiterhin
+   angezeigt (Stufe 2/1), damit du es beobachten kannst. Kein Score-Eingriff. */
+let mutedSetupSet = new Set();
+function setupOf(r){ return String(r?.situation || r?.situationType || r?.setup || '').trim(); }
 const stockLevel = (r) => {
   const t = stockTradeability(r);
   const fresh = stockFreshness(r);
   const minScore = (S.claudeMode && r.claude) ? CLAUDE_MIN_SCORE_STOCK : FUSION_MIN_SCORE_STOCK;
-  // Safety: missing/stale data can never promote a row to BUY.
-  return (r.light === 'green' && r.score >= minScore && t.ok && fresh.key === 'live') ? 3
+  const muted = mutedSetupSet.has(setupOf(r));
+  // Safety: missing/stale data OR a muted setup can never promote a row to BUY.
+  return (r.light === 'green' && r.score >= minScore && t.ok && fresh.key === 'live' && !muted) ? 3
+    : muted && r.light === 'green' ? 1 // gestummtes Gruen wird zur Beobachtung zurueckgestuft
     : r.light === 'green' ? 2 : r.light === 'yellow' ? 1 : 0;
 };
 
@@ -1233,11 +1240,22 @@ async function loadAttribution(){
     const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
     const r=await fetchWithTimeout('/api/attribution?'+q,{cache:'no-store'},10_000);
     attributionData=await r.json()||{};
+    // Paket A: Stummliste in das Set uebernehmen, das stockLevel liest.
+    mutedSetupSet = new Set((attributionData.mutedSetups||[]).map(m=>String(m.setup||'').trim()));
+    renderStocks(); // Freigabe-Suppression sofort wirksam machen
   }catch(e){ attributionData={configured:true,state:'error',error:String(e.message||e)}; }
   renderAttribution();
 }
 function attrBadge(v){
   return v==='overfit'?'🟥 Overfit':v==='disable'?'🟧 Abschalten?':v==='weak-watch'?'🟨 Schwach·beobachten':v==='keep'?'🟩 Edge hält':'⬜ Sammelt';
+}
+/* Paket A: Setup stummschalten / reaktivieren (serverseitig persistiert). */
+async function muteSetupAction(setup, action){
+  try{
+    const q=new URLSearchParams(); q.set('setup',setup); q.set('action',action||'mute'); if(S.token)q.set('t',S.token);
+    await fetchWithTimeout('/api/attribution/mute?'+q,{cache:'no-store'},10_000);
+    await loadAttribution(); // Ansicht + Suppression aktualisieren
+  }catch(e){ /* still, kein UI-Bruch */ }
 }
 function renderAttribution(){
   const el=$('#attributionReport'); if(!el)return;
@@ -1246,14 +1264,26 @@ function renderAttribution(){
   if(d.state==='error'){ el.innerHTML=`<b>🔬 Selbstauswertung (Modul 0)</b> <small class="err">Fehler: ${esc(d.error||'unbekannt')}</small>`; return; }
   const buckets=Array.isArray(d.buckets)?d.buckets:[];
   const recs=Array.isArray(d.disableRecommendations)?d.disableRecommendations:[];
-  const rows=buckets.slice(0,10).map(b=>{
+  const reRecs=Array.isArray(d.reenableRecommendations)?d.reenableRecommendations:[];
+  const mutedList=Array.isArray(d.mutedSetups)?d.mutedSetups:[];
+  const rows=buckets.slice(0,12).map(b=>{
     const oos=b.oos?`${b.oos.pct}% <em>(Wilson ${b.oos.wilson}%, n=${b.oosN})</em>`:'–';
     const ins=b.inSample?`${b.inSample.pct}%`:'–';
-    return `<tr class="attr-${b.verdict?.status||'sammelt'}"><td>${esc(b.key)}</td><td>${b.n}</td><td>${ins}</td><td>${oos}</td><td title="${esc(b.verdict?.reason||'')}">${attrBadge(b.verdict?.status)}</td></tr>`;
+    const mutedBadge=b.muted?` <span class="attr-muted-badge" title="gestummt seit ${b.mutedDays} Tagen – läuft im Hintergrund weiter">🔇 ${b.mutedDays}T</span>`:'';
+    // Aktions-Button: gestummtes Setup reaktivieren, sonst (bei disable/overfit) stummschalten.
+    let action='';
+    if(b.muted) action=`<button class="attr-btn" data-unmute="${esc(b.key)}">reaktivieren</button>`;
+    else if(b.verdict?.status==='disable'||b.verdict?.status==='overfit') action=`<button class="attr-btn warn" data-mute="${esc(b.key)}">stummschalten</button>`;
+    return `<tr class="attr-${b.verdict?.status||'sammelt'}${b.muted?' attr-is-muted':''}"><td>${esc(b.key)}${mutedBadge}</td><td>${b.n}</td><td>${ins}</td><td>${oos}</td><td title="${esc(b.verdict?.reason||'')}">${attrBadge(b.verdict?.status)}</td><td>${action}</td></tr>`;
   }).join('');
-  el.innerHTML=`<b>🔬 Selbstauswertung · Modul 0</b> <small>ehrliche Out-of-Sample-Bilanz je Setup · Empfehlungen, keine Auto-Abschaltung · verändert keinen Score</small>`+
-    (buckets.length?`<div class="attr-wrap"><table class="attr-table"><thead><tr><th>Setup</th><th>n</th><th>In-Sample</th><th>Out-of-Sample</th><th>Wächter</th></tr></thead><tbody>${rows}</tbody></table></div>`:`<span class="hint">Noch keine ausgewerteten Setups im ${d.horizonDays||21}-Tage-Fenster. Der Wächter urteilt erst ab ${d.guard?.MIN_SAMPLE||20} Episoden je Setup.</span>`)+
-    (recs.length?`<div class="attr-recs"><b>⚠ Abschalt-Empfehlungen (${recs.length})</b>${recs.map(r=>`<span title="${esc(r.reason)}">${esc(r.setup)}: ${r.status}</span>`).join('')}<small>Diese Empfehlungen basieren auf Out-of-Sample-Evidenz mit Mehrfachtest-Korrektur (${d.multiTestPenalty||0} pp strenger). Du entscheidest, nicht die App.</small></div>`:`<small>Keine Abschalt-Empfehlung – kein Setup ist out-of-sample klar durchgefallen.</small>`);
+  el.innerHTML=`<b>🔬 Selbstauswertung · Modul 0</b> <small>ehrliche Out-of-Sample-Bilanz je Setup · Stummschalten unterdrückt BUY, Auswertung läuft im Hintergrund weiter · kein Score-Eingriff</small>`+
+    (buckets.length?`<div class="attr-wrap"><table class="attr-table"><thead><tr><th>Setup</th><th>n</th><th>In-Sample</th><th>Out-of-Sample</th><th>Wächter</th><th>Aktion</th></tr></thead><tbody>${rows}</tbody></table></div>`:`<span class="hint">Noch keine ausgewerteten Setups im ${d.horizonDays||21}-Tage-Fenster. Der Wächter urteilt erst ab ${d.guard?.MIN_SAMPLE||20} Episoden je Setup.</span>`)+
+    (reRecs.length?`<div class="attr-recs reenable"><b>🔔 Wiedereinschalt-Empfehlungen (${reRecs.length})</b>${reRecs.map(r=>`<span title="${esc(r.reason)}">${esc(r.setup)} (Wilson ${r.oosWilson}%)</span>`).join('')}<small>Diese Setups waren gestummt und haben sich out-of-sample über die (höhere) Reaktivierungs-Schwelle erholt.</small></div>`:'')+
+    (recs.length?`<div class="attr-recs"><b>⚠ Abschalt-Empfehlungen (${recs.length})</b>${recs.map(r=>`<span title="${esc(r.reason)}">${esc(r.setup)}: ${r.status}</span>`).join('')}<small>Basiert auf Out-of-Sample-Evidenz mit Mehrfachtest-Korrektur (${d.multiTestPenalty||0} pp strenger). Du entscheidest – Button „stummschalten" in der Tabelle.</small></div>`:`<small>Keine Abschalt-Empfehlung – kein Setup ist out-of-sample klar durchgefallen.</small>`)+
+    (mutedList.length?`<div class="attr-muted-list"><b>🔇 Aktuell gestummt (${mutedList.length})</b>${mutedList.map(m=>`<span>${esc(m.setup)} · ${m.mutedDays}T</span>`).join('')}<small>Gestummte Setups erzeugen kein BUY, werden aber weiter ausgewertet (Cron läuft im Hintergrund).</small></div>`:'');
+  // Button-Handler
+  el.querySelectorAll('[data-mute]').forEach(b=>b.addEventListener('click',()=>muteSetupAction(b.dataset.mute,'mute')));
+  el.querySelectorAll('[data-unmute]').forEach(b=>b.addEventListener('click',()=>muteSetupAction(b.dataset.unmute,'unmute')));
 }
 
 function renderExperimental(){

@@ -2255,6 +2255,77 @@ function bucketStats(episodes){
     stopRateAll:stopRate(episodes), medianMaxAll:medianMax(episodes),
   };
 }
+/* ============================================================================
+   PAKET A · MODUL 0 SCHARF: Stummschalten + Rehabilitation (v3.5.7, additiv)
+   ----------------------------------------------------------------------------
+   "Abschalten" bedeutet NICHT loeschen, sondern STUMMSCHALTEN: das Setup wird
+   nicht mehr als BUY vorgeschlagen, aber die Auswertung laeuft im Hintergrund
+   weiter (der Cron sammelt jede Minute Snapshots, unabhaengig vom PC). Dadurch
+   kann ein gestummtes Setup, das sich out-of-sample wieder erholt, eine
+   Wiedereinschalt-Empfehlung ausloesen.
+
+   HYSTERESE gegen Flackern: Die Wiedereinschalt-Huerde liegt bewusst HOEHER als
+   die Abschalt-Huerde. Sonst wuerde Stichprobenrauschen das System nervoes
+   zwischen an/aus springen lassen. Ausserdem gilt eine Mindest-Stummdauer,
+   bevor ueberhaupt ueber Rehabilitation nachgedacht wird.
+
+   Die Stummliste liegt in D1 (fp_meta key 'muted_setups'), damit sie
+   serverseitig gilt - der Cron/Scan respektiert sie auch bei geschlossener PWA.
+   Sie veraendert KEINEN Score; sie unterdrueckt nur die BUY-Freigabe fuer
+   betroffene Setups (reine Anzeige-/Freigabeschicht).
+   ============================================================================ */
+const REHAB = {
+  MIN_MUTE_MS: 5*24*60*60_000,   // erst nach 5 Tagen Stummschaltung ueber Rehab nachdenken
+  REENABLE_POINT: 52,            // OOS-Punktschaetzung >= 52 % (Abschaltung war < 40 %)
+  REENABLE_WILSON: 45,           // UND Wilson-Untergrenze >= 45 % (Abschaltung war < 33 %)
+  REENABLE_OOS_MIN: 15,          // UND mindestens so viele neue OOS-Episoden
+};
+let mutedMemo={map:null,ts:0};
+async function readMutedSetups(env){
+  if(mutedMemo.map && Date.now()-mutedMemo.ts<30_000) return mutedMemo.map;
+  const map={};
+  if(env?.DB){
+    try{
+      await ensureD1Schema(env);
+      const row=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind('muted_setups').first();
+      if(row?.value){ const p=JSON.parse(row.value); if(p&&typeof p==='object') Object.assign(map,p); }
+    }catch(e){ console.warn(JSON.stringify({event:'muted_read_failed',message:String(e?.message||e),ts:Date.now()})); }
+  }
+  mutedMemo={map,ts:Date.now()};
+  return map;
+}
+async function writeMutedSetups(env, map){
+  mutedMemo={map,ts:Date.now()};
+  if(!env?.DB) return map;
+  try{
+    await ensureD1Schema(env);
+    await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts')
+      .bind('muted_setups',JSON.stringify(map),Date.now()).run();
+  }catch(e){ console.warn(JSON.stringify({event:'muted_write_failed',message:String(e?.message||e),ts:Date.now()})); }
+  return map;
+}
+/** Setup stummschalten (Grund + Zeitstempel festhalten). */
+async function muteSetup(env, setup, reason){
+  const key=String(setup||'').trim(); if(!key) return {ok:false,error:'kein Setup angegeben'};
+  const map=await readMutedSetups(env);
+  map[key]={mutedTs:Date.now(),reason:String(reason||'manuell')};
+  await writeMutedSetups(env,map);
+  return {ok:true,muted:key,map};
+}
+/** Stummschaltung aufheben (Rehabilitation bestaetigt oder manuell). */
+async function unmuteSetup(env, setup){
+  const key=String(setup||'').trim(); if(!key) return {ok:false,error:'kein Setup angegeben'};
+  const map=await readMutedSetups(env);
+  if(map[key]) delete map[key];
+  await writeMutedSetups(env,map);
+  return {ok:true,unmuted:key,map};
+}
+/** Ist ein Setup aktuell stummgeschaltet? (fuer die BUY-Freigabe im Scan) */
+function isSetupMuted(mutedMap, setup){
+  const key=String(setup||'').trim();
+  return !!(mutedMap && mutedMap[key]);
+}
+
 /** Kernauswertung: gruppiert resolved Snapshots nach Setup und Lifecycle,
  *  liefert je Bucket eine ehrliche Bewertung inkl. Guard-Verdikt. */
 async function claudeAttribution(env){
@@ -2308,15 +2379,40 @@ async function claudeAttribution(env){
   };
   const evaluated=buckets.map(b=>({...b,verdict:verdictFor(b)}))
     .sort((a,b)=>(b.oos?.wilson??-1)-(a.oos?.wilson??-1)||b.n-a.n);
-  const disableRecs=evaluated.filter(b=>b.verdict.status==='disable'||b.verdict.status==='overfit')
+  // Stummliste einlesen und je Bucket den Mute-Status + Rehabilitations-Pruefung anhaengen.
+  const muted=await readMutedSetups(env);
+  const now=Date.now();
+  for(const b of evaluated){
+    const m=muted[b.key];
+    b.muted = !!m;
+    b.mutedSince = m?.mutedTs || null;
+    b.mutedDays = m?.mutedTs ? Math.floor((now-m.mutedTs)/86400000) : null;
+    // Rehabilitation: nur fuer gestummte Setups, nach Mindest-Stummdauer, mit
+    // HOEHEREN Schwellen als die Abschaltung (Hysterese) und genug neuer OOS-Evidenz.
+    b.rehabEligible=false;
+    if(m && (now-m.mutedTs)>=REHAB.MIN_MUTE_MS && b.oos){
+      const oosP=b.oos.pct??0, oosW=b.oos.wilson??0, oosN=b.oosN||0;
+      if(oosP>=REHAB.REENABLE_POINT && oosW>=REHAB.REENABLE_WILSON && oosN>=REHAB.REENABLE_OOS_MIN){
+        b.rehabEligible=true;
+        b.rehabReason=`gestummt seit ${b.mutedDays} T · OOS wieder ${oosP}% (Wilson ${oosW}%, n=${oosN}) ueber Reaktivierungs-Schwelle ${REHAB.REENABLE_POINT}%/${REHAB.REENABLE_WILSON}% – Wiedereinschaltung empfohlen`;
+      }
+    }
+  }
+  // Abschalt-Empfehlungen: nur fuer NICHT bereits gestummte Setups (sonst doppelt).
+  const disableRecs=evaluated.filter(b=>!b.muted && (b.verdict.status==='disable'||b.verdict.status==='overfit'))
     .map(b=>({setup:b.key,status:b.verdict.status,reason:b.verdict.reason,n:b.n,oosWilson:b.oos?.wilson??null}));
+  // Wiedereinschalt-Empfehlungen fuer erholte gestummte Setups.
+  const reenableRecs=evaluated.filter(b=>b.rehabEligible)
+    .map(b=>({setup:b.key,reason:b.rehabReason,mutedDays:b.mutedDays,oosWilson:b.oos?.wilson??null}));
+  const mutedList=Object.entries(muted).map(([setup,m])=>({setup,mutedSince:m.mutedTs,mutedDays:Math.floor((now-m.mutedTs)/86400000),reason:m.reason}));
   return {
     configured:true, state:'ok', version:APP_VERSION,
     horizonDays:Math.round(ATTR.HISTORY_MS/86400000),
     totalEpisodes:rows.length, testableSetups:testable.length,
-    multiTestPenalty:bonferroniBump, guard:ATTR,
+    multiTestPenalty:bonferroniBump, guard:ATTR, rehab:REHAB,
     buckets:evaluated, disableRecommendations:disableRecs,
-    note:'Reine Auswertung aufgeloester Outcomes. Empfehlungen, keine Auto-Abschaltung. Veraendert keinen Score.',
+    reenableRecommendations:reenableRecs, mutedSetups:mutedList,
+    note:'Reine Auswertung aufgeloester Outcomes. Stummschalten unterdrueckt BUY-Freigabe, veraendert keinen Score. Auswertung laeuft im Hintergrund weiter (Cron).',
   };
 }
 
@@ -3289,6 +3385,17 @@ export default {
     if (url.pathname === '/api/attribution') {
       try { return json(await claudeAttribution(env),200,{ 'cache-control':'no-store' }); }
       catch(e) { return json({configured:!!env.DB,state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    // Paket A: Setup stummschalten / reaktivieren. Unterdrueckt nur die BUY-Freigabe,
+    // veraendert keinen Score. Auswertung laeuft im Hintergrund weiter.
+    if (url.pathname === '/api/attribution/mute') {
+      try {
+        const setup=url.searchParams.get('setup'); const reason=url.searchParams.get('reason')||'manuell';
+        const action=url.searchParams.get('action')||'mute';
+        const res = action==='unmute' ? await unmuteSetup(env,setup) : await muteSetup(env,setup,reason);
+        return json({...res,version:APP_VERSION},res.ok?200:400,{ 'cache-control':'no-store' });
+      } catch(e) { return json({ok:false,error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
     }
 
     // Modul 1: Aladdin-Style Market Intelligence. Marktmeinung ueber vorhandenem

@@ -1,3 +1,21 @@
+# FusionPulse v3.5.7 · Paket A: Modul 0 wird scharf (Stummschalten + Rehabilitation)
+
+## Was neu ist
+Modul 0 war bisher reine Anzeige. Jetzt kannst du seine Abschalt-Empfehlungen tatsaechlich annehmen – aber mit einem entscheidenden Unterschied zum simplen "Loeschen":
+
+**"Abschalten" heisst STUMMSCHALTEN, nicht loeschen.** Ein gestummtes Setup wird nicht mehr als BUY vorgeschlagen (kein gruenes Signal), aber die Auswertung laeuft im Hintergrund weiter – der Cron sammelt jede Minute Snapshots, unabhaengig davon, ob dein PC laeuft. Dadurch kann ein gestummtes Setup, das sich wieder erholt, eine Wiedereinschalt-Empfehlung ausloesen.
+
+## Der Lebenszyklus
+1. **Stummschalten:** Button an jeder Abschalt-/Overfit-Empfehlung in der Modul-0-Tabelle. Das Setup bekommt ein 🔇-Badge und erzeugt kein BUY mehr (wird auf "beobachten" zurueckgestuft, nicht ausgeblendet).
+2. **Weiterlaufen:** Gestummte Setups bleiben in der Tabelle mit laufender Statistik sichtbar. Der Cron wertet sie weiter aus.
+3. **Rehabilitation:** Erholt sich ein gestummtes Setup out-of-sample, erscheint eine 🔔 Wiedereinschalt-Empfehlung mit Reaktivieren-Button.
+
+## Hysterese gegen Flackern (wichtig)
+Die Wiedereinschalt-Huerde liegt bewusst HOEHER als die Abschalt-Huerde: Reaktivierung erst ab OOS-Punktschaetzung ≥ 52 % UND Wilson-Untergrenze ≥ 45 % (Abschaltung war < 40 %/< 33 %), mit mindestens 15 neuen OOS-Episoden UND einer Mindest-Stummdauer von 5 Tagen. Ohne diese Hysterese wuerde Stichprobenrauschen das System nervoes zwischen an/aus springen lassen. Im Funktionsnachweis bestaetigt: ein vor 1 Stunde gestummtes Setup ist nicht reaktivierbar (Mindestdauer greift), ein vor 6 Tagen gestummtes mit OOS-Wilson 90 % wird korrekt zur Wiedereinschaltung empfohlen.
+
+## Sicherheit
+Die Stummliste liegt serverseitig in D1 (gilt auch bei geschlossener PWA), unterdrueckt nur die BUY-Freigabe und veraendert KEINEN Score. Alle vier SHA-256-Bloecke des Claude-Modus sind nach dem Einbau verifiziert identisch. Neue Routen: /api/attribution/mute.
+
 # FusionPulse v3.5.6 · kumulative VL-Integration
 
 ## Neu umgesetzt
