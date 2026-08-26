@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.6.0</title>
+<title>FusionPulse 3.6.1</title>
 </head>
 <body>
 
@@ -142,6 +142,7 @@
       </select>
     </div>
     <div id="depotStrip" class="depotstrip" title="Deine mit ★ markierten Aktien. Damit kannst du dein bestehendes Depot bzw. eine persönliche Watchlist abbilden."></div>
+    <div id="crowdStatus" class="crowd-status" title="Zustand des Crowd/Search-Sensors. Der Tacho bleibt bewusst leer, statt Werte zu erfinden, wenn keine Daten abrufbar sind."></div>
     <section id="portfolioRisk" class="portfolio-card" title="Modul 2: Gesamt-Risiko ueber alle offenen Positionen und Klumpungswarnung. Rechnet zusammen, was das Einzeltrade-Risiko fuer sich nicht zeigt. Veraendert keinen Score."></section>
     <div id="marketGainers" class="openingpanel" title="Verifizierte Common-Stock-Kandidaten aus dem Tiingo-IEX-Whole-Market-Radar. Unabhängig von Favoriten; Discovery בלבד; Elliott-Deep-Scan entscheidet über Qualität."></div>
     <div id="extendedWatch" class="openingpanel" title="Pre-/After-Hours-Beobachtung. Warum sinnvoll? Auffällige Bewegungen außerhalb der Hauptsession können Kandidaten fürs Opening liefern, sind wegen dünnerer Liquidität aber noch kein BUY."></div>
@@ -213,6 +214,11 @@
 
   <h3>Analyseverfahren</h3>
   <p class="hint">Abgeschaltete Verfahren gehen <b>nicht</b> als negativ in den Score ein. Die verbleibenden Gewichte werden neu normiert.</p>
+  <h3>📖 Glossar · alle Begriffe erklärt</h3>
+  <p class="gloss-intro" title="Dieselben Texte, die überall in der App als Mouseover hinterlegt sind — hier gesammelt und durchsuchbar, damit man sie nicht suchen muss.">Jeder Fachbegriff der App in normaler Sprache. Tippe einen Begriff ein oder klapp einen Eintrag auf. Dieselben Texte erscheinen auch als Mouseover an der jeweiligen Stelle.</p>
+  <label>Begriff suchen<input id="glossarySearch" type="search" placeholder="z. B. CRV, Wilson, Klumpen, Pullback" autocomplete="off"></label>
+  <div id="glossaryList" class="gloss-list"></div>
+
   <p class="complist-note" title="Diese Häkchen bestimmen, welche Verfahren überhaupt in die Bewertung einfließen. Sie sind etwas völlig anderes als die Schalter in der Selbstauswertung (Modul 0): dort schaltest du ganze Kursmuster stumm, hier schaltest du Messmethoden ab. Mouseover auf jede Zeile erklärt das jeweilige Verfahren in normaler Sprache.">Welche Verfahren sollen den Score berechnen? Mouseover über eine Zeile erklärt, was das Verfahren misst. <b>Nicht verwechseln</b> mit den Schaltern in der Selbstauswertung (Modul 0) — die betreffen ganze Kursmuster, nicht die Messmethoden.</p>
   <div class="complist" id="sComponents">
     <label class="row" title="VWAP = volumengewichteter Durchschnittspreis. Der Durchschnittskurs des Tages, bei dem große Umsätze stärker zählen als kleine — also der Preis, den der Markt im Schnitt tatsächlich bezahlt hat. Liegt der Kurs darüber, sind die Käufer im Vorteil. Dient hier als Anker für die Einstiegszone."><input type="checkbox" data-comp="vwap"> VWAP (kurz/lang)</label>

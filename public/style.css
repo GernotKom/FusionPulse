@@ -826,3 +826,35 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .complist-note{margin:.2rem 0 .55rem;font-size:.72rem;line-height:1.5;color:var(--dim);cursor:help}
 .pf-budget span,.pf-bar,.pf-warn{cursor:help}
 .sr-tic{cursor:help}
+
+/* v3.6.1: Punkte, deren Muster gut ist, deren Trade sich aber wirtschaftlich
+   nicht lohnt, werden hohl gezeichnet. Voll = auch wirtschaftlich tragfaehig. */
+.dot.econ-weak .core{fill:transparent;stroke:currentColor;stroke-width:1.6;stroke-dasharray:2.5 2}
+.dot.econ-weak text{opacity:.75}
+#map .quad-label,#stockMap .quad-label{font-size:5.4px;letter-spacing:.3px}
+#map .quad-label.ql-tr,#stockMap .quad-label.ql-tr{text-anchor:end}
+#map .quad-label.ql-br,#stockMap .quad-label.ql-br{text-anchor:end}
+#map .quad-label.ql-tl,#stockMap .quad-label.ql-tl{text-anchor:start}
+#map .quad-label.ql-bl,#stockMap .quad-label.ql-bl{text-anchor:start}
+
+/* ==== v3.6.1 · Crowd-Status, Glossar-Panel, Scope-Frequenz ================= */
+.crowd-status{margin:8px 0;padding:.5rem .65rem;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
+.crowd-status b{display:block;font-size:.8rem;cursor:help}
+.crowd-status small{display:block;margin-top:.25rem;font-size:.7rem;color:var(--dim);line-height:1.5}
+.crowd-status.off{border-style:dashed}
+.crowd-status.off b{color:var(--dim)}
+.crowd-status.err{border-color:color-mix(in srgb,var(--red) 50%,var(--line))}
+.crowd-status.err b{color:var(--red)}
+.crowd-status.wait b{color:var(--yellow)}
+.crowd-status.ok b{color:var(--green)}
+.gloss-intro{font-size:.74rem;color:var(--dim);line-height:1.5;margin:.2rem 0 .5rem;cursor:help}
+.gloss-list{max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:.5rem .6rem;background:var(--panel)}
+.gloss-group h4{margin:.5rem 0 .3rem;font-size:.74rem;color:var(--dim);letter-spacing:.4px;text-transform:uppercase}
+.gloss-group:first-child h4{margin-top:0}
+.gloss-item{border-bottom:1px solid var(--line);padding:.3rem 0}
+.gloss-item:last-child{border-bottom:0}
+.gloss-item summary{cursor:pointer;font-size:.8rem;list-style:revert}
+.gloss-item p{margin:.35rem 0 .45rem;font-size:.75rem;color:var(--dim);line-height:1.55}
+.focus-freq{cursor:help}
+.focus-freq.hot{color:var(--green)}
+.focus-freq.cold{color:var(--dim)}

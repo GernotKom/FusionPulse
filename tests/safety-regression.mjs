@@ -302,10 +302,18 @@ console.log('✓ FusionPulse v3.5.5 aladdin market-intelligence regressions: OK'
 
 // v3.5.6 VL-Integration: Heatmap/Position/Alarm. Claude/Aladdin-Methodik bleibt unberuehrt.
 {
-  assert.match(app,/STARK · ATTRAKTIV/,'Heatmap muss den attraktiven Quadranten direkt beschriften');
-  assert.match(app,/FRÜH · INTERESSANT/,'Heatmap muss den fruehen Quadranten direkt beschriften');
-  assert.match(app,/ÜBERDEHNT · SPÄT/,'Heatmap muss den spaeten Quadranten direkt beschriften');
-  assert.match(app,/SCHWACH · UNINTERESSANT/,'Heatmap muss den schwachen Quadranten direkt beschriften');
+  /* BEWUSSTE AENDERUNG in v3.6.1 (vorher: "STARK · ATTRAKTIV" usw.).
+     Der Nutzer hat berichtet, dass Titel im Feld "STARK · ATTRAKTIV" standen,
+     obwohl ihr Plan netto kaum etwas brachte. Zu Recht: BEIDE Achsen der Karte
+     messen Technik (Musterqualitaet hoch, Ausfuehrbarkeit rechts) — die
+     Wirtschaftlichkeit steckt in keiner von beiden. "ATTRAKTIV" war damit eine
+     Aussage, die die Karte gar nicht treffen kann. Die Anforderung bleibt
+     bestehen (alle vier Quadranten beschriftet), nur ohne die Fehldeutung. */
+  assert.match(app,/MUSTER STARK · GUT HANDELBAR/,'Heatmap muss den starken, gut handelbaren Quadranten beschriften');
+  assert.match(app,/MUSTER STARK · SCHWER HANDELBAR/,'Heatmap muss den starken, schwer handelbaren Quadranten beschriften');
+  assert.match(app,/MUSTER SCHWACH · GUT HANDELBAR/,'Heatmap muss den schwachen, gut handelbaren Quadranten beschriften');
+  assert.match(app,/MUSTER SCHWACH · SCHWER HANDELBAR/,'Heatmap muss den schwachen, schwer handelbaren Quadranten beschriften');
+  assert.doesNotMatch(app,/STARK · ATTRAKTIV/,'Die Karte darf nicht "attraktiv" behaupten — sie misst keine Wirtschaftlichkeit');
   assert.match(app,/const POSITION_STORE_KEY='fp\.stockPositions\.v1'/,'Reale Positionen muessen persistent verwaltet werden');
   assert.match(app,/function positionMetrics\(r,p\)/,'Reale Ausfuehrung muss einen eigenen Tradeplan berechnen');
   assert.match(app,/technische Marken werden nicht zur CRV-Rettung verschoben/,'Positions-UI muss explizit verhindern, dass SL\/TP zur CRV-Rettung verschoben werden');
@@ -627,3 +635,103 @@ console.log('✓ FusionPulse v3.5.9 portfolio-risk/cluster regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.6.0 glossary/plain-language regressions: OK');
+
+// ---------------------------------------------------------------------------
+// v3.6.1 · Krypto-Kopfzeile (P2b), Heatmap-Ehrlichkeit, Crowd-Diagnose,
+// sichtbares Glossar und Scope-Frequenz. Alles funktional am laufenden Client.
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url),'utf8');
+  const css  = fs.readFileSync(new URL('../public/style.css',  import.meta.url),'utf8');
+  C.S.equity = 5000; C.S.riskPct = 0.75; C.S.minCrvCoin = 2.0; C.S.claudeMode = false;
+
+  // ---- P2b: Krypto-Kopfzeile darf nicht mehr allein an r.light haengen.
+  const coin = (over={}) => ({ pair:'TST-EUR', light:'green', verdict:'Kauf-Setup',
+    quality:8.1, executability:7.4, netCRV:1.1, inZone:true,
+    entry:100, stop:98, tp1:101, tp2:102, price:100, ...over });
+
+  const weak = C.coinHeadline(coin());
+  assert.equal(C.buyReady(coin()), false, 'Ein Coin unter der CRV-Grenze darf keine Freigabe haben');
+  assert.notEqual(weak.light, 'green', 'P2b: unwirtschaftlicher Coin darf keine gruene Kopfzeile behalten');
+  assert.equal(weak.kind, 'economic', 'Der Grund muss als wirtschaftlich benannt werden');
+  assert.doesNotMatch(weak.text, /Kauf-Setup/, 'Die Kopfzeile darf nicht mehr "Kauf-Setup" sagen');
+
+  const outOfZone = C.coinHeadline(coin({ netCRV:3.4, inZone:false }));
+  assert.equal(outOfZone.kind, 'zone', 'Ausserhalb der Einstiegszone muss als eigener Grund erscheinen');
+  assert.notEqual(outOfZone.light, 'green', 'Ausserhalb der Zone darf die Kopf-Ampel nicht gruen bleiben');
+
+  const good = C.coinHeadline(coin({ netCRV:3.4, inZone:true }));
+  assert.equal(good.text, 'BUY', 'Ein echter Krypto-BUY muss weiterhin als BUY erscheinen');
+  assert.equal(good.light, 'green', 'Ein echter Krypto-BUY darf nicht faelschlich abgewertet werden');
+
+  // Fail-closed: dieselbe Klemme wie bei Aktien, ueber alle Ampelzustaende.
+  for (const lt of ['red','yellow','green']) {
+    const h = C.coinHeadline(coin({ light:lt, netCRV:3.4, inZone:true }));
+    assert.ok(C.HEADLINE_RANK[h.light] <= C.HEADLINE_RANK[lt], `Krypto-Kopfzeile darf ${lt} nicht aufwerten`);
+  }
+  assert.doesNotMatch(app, /class="dot light-\$\{r\.light\}/, 'Kartenpunkte duerfen die Farbe nicht mehr direkt aus r.light lesen');
+
+  // ---- Heatmap: beide Achsen sind technisch, das muss dranstehen.
+  assert.match(app, /function stockHeatmapMark\(r\)/, 'Heatmap braucht eine eigene, ehrliche Punktbewertung');
+  assert.match(app, /Beide Achsen der Karte messen nur Technik/, 'Der Mouseover muss die Grenze der Karte benennen');
+  assert.match(css, /\.dot\.econ-weak \.core\{fill:transparent/, 'Wirtschaftlich schwache Punkte muessen sichtbar anders gezeichnet sein');
+  C.stockMeta = { ts:Date.now(), refreshedSymbols:['MRG'], market:{key:'regular'} };
+  const marginal = { symbol:'MRG', name:'Marginal Inc.', sector:'Tech', light:'green', score:8.4,
+    verdict:'Kauf-Setup · FusionPulse', executability:8.2,
+    entryEur:25.00, stopEur:24.90, tp1Eur:25.20, tp2Eur:25.40, priceEur:25.00,
+    entryUsd:29.25, stopUsd:29.13, tp1Usd:29.48, tp2Usd:29.72, priceUsd:29.25,
+    netCRV:1.1, tp2Pct:1.6, setup:'Pullback', situationType:'PULLBACK',
+    updated:new Date().toISOString().slice(0,19).replace('T',' '), marketPhase:'regular' };
+  const mark = C.stockHeatmapMark(marginal);
+  assert.equal(mark.weak, true, 'Ein technisch starker, wirtschaftlich schwacher Titel muss als schwach markiert werden');
+  assert.notEqual(mark.light, 'green', 'Er darf in der Karte nicht gruen leuchten');
+  assert.match(mark.tip, /Plan netto/, 'Der Mouseover muss das Netto-Potenzial nennen');
+
+  // ---- Crowd: der Grund fuer den toten Tacho muss sichtbar sein, nicht nur im Tooltip.
+  C.crowdMeta = { configured:false, state:'nokey' }; C.crowdMap = new Map();
+  const off = C.crowdStatus();
+  assert.equal(off.ok, false, 'Ohne Schluessel darf kein Messwert behauptet werden');
+  assert.match(off.label, /SERPAPI/, 'Der fehlende Schluessel muss beim Namen genannt werden');
+  assert.match(off.detail, /kein Defekt/, 'Es muss klargestellt sein, dass das kein Fehler ist');
+  assert.match(off.detail, /kostenpflichtig/, 'Die Kostenfolge muss VOR dem Besorgen des Schluessels dastehen');
+  C.crowdMeta = { state:'error', error:'timeout' };
+  assert.equal(C.crowdStatus().tone, 'err', 'Ein Abruffehler muss als solcher erscheinen');
+  assert.match(html, /id="crowdStatus"/, 'Die Statuszeile muss im Markup existieren');
+  assert.match(app, /renderCrowdStatus\(\)/, 'Die Statuszeile muss bei jedem Render aktualisiert werden');
+
+  // ---- Crowd-Beschleunigung: war serverseitig hart null, wird jetzt gerechnet.
+  assert.match(app, /const CROWD_HIST_KEY='fp\.crowdHistory\.v1'/, 'Crowd-Verlauf muss lokal gefuehrt werden');
+  const t0 = Date.now();
+  C.crowdHistory = { ACC: [ {t:t0-90*60_000, v:20}, {t:t0-60*60_000, v:28} ] };
+  const accel = C.crowdTrack('ACC', 50, t0);
+  assert.ok(Number.isFinite(accel) && accel > 0, `Beschleunigung muss aus dem Verlauf berechenbar sein, ist ${accel}`);
+  C.crowdHistory = {};
+  assert.equal(C.crowdTrack('NEU', 50, t0), null, 'Ohne Referenzpunkt darf keine Beschleunigung erfunden werden');
+
+  // ---- Scope-Frequenz: gemessen, nicht geschaetzt.
+  C.refreshHistory = {};
+  assert.equal(C.refreshRate('LEER').perHour, null, 'Ohne genug Messpunkte darf keine Frequenz behauptet werden');
+  assert.match(C.refreshRate('LEER').detail, /nichts hochgerechnet/, 'Die Zurueckhaltung muss begruendet sein');
+  const now = Date.now();
+  C.refreshHistory = {
+    FOK: Array.from({length:12},(_,i)=>now-i*5*60_000),
+    AND: [now-50*60_000, now-25*60_000, now-5*60_000],
+  };
+  const rr = C.refreshRate('FOK');
+  assert.ok(rr.perHour > 0, 'Beobachtete Frequenz muss berechnet werden');
+  assert.ok(rr.rel > 1.5, `Der engmaschiger gescannte Titel muss als solcher erkannt werden (rel=${rr.rel})`);
+  assert.match(rr.label, /engmaschiger als der Rest/, 'Der Vergleich muss im Klartext dastehen');
+  assert.match(app, /class="focus-freq/, 'Die Frequenz muss im Fokusfenster angezeigt werden');
+
+  // ---- Glossar sichtbar und vollstaendig gruppiert.
+  assert.match(html, /id="glossaryList"/, 'Das Glossar braucht einen sichtbaren Ort');
+  assert.match(html, /id="glossarySearch"/, 'Das Glossar muss durchsuchbar sein');
+  const grouped = new Set(C.GLOSS_GROUPS.flatMap(g=>g.keys));
+  for (const k of Object.keys(C.GLOSS)) {
+    assert.ok(grouped.has(k), `Glossareintrag "${k}" fehlt in der sichtbaren Liste`);
+    assert.ok(C.GLOSS_LABEL[k], `Glossareintrag "${k}" braucht eine lesbare Ueberschrift`);
+  }
+}
+
+console.log('✓ FusionPulse v3.6.1 coin-headline/heatmap/crowd/glossary regressions: OK');

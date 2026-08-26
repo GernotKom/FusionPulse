@@ -1,3 +1,50 @@
+# FusionPulse v3.6.1 · Krypto-Konsistenz, ehrliche Heatmap, Crowd-Diagnose, sichtbares Glossar
+
+## 1. Warum heute alles „stark und attraktiv" war und trotzdem nichts brachte
+Berechtigte Beobachtung — und derselbe Fehler wie bei SOFI, nur zum dritten Mal an anderer Stelle.
+
+Die Heatmap hat **zwei Achsen, und beide messen Technik**: Musterqualitaet nach oben, Ausfuehrbarkeit nach rechts. Wirtschaftlichkeit — CRV, Netto-Potenzial, Kursweg — steckt in **keiner von beiden**. Das Feld oben rechts hiess trotzdem „STARK · ATTRAKTIV". Diese Beschriftung hat etwas behauptet, das die Karte gar nicht messen kann.
+
+Behoben:
+- Quadranten heissen jetzt, was sie sind: **MUSTER STARK · GUT HANDELBAR** statt „STARK · ATTRAKTIV". Kein Wort mehr, das nach Ertrag klingt.
+- Die **Punktfarbe folgt der Kopfbewertung** statt allein `r.light`. Ein technisch starker, wirtschaftlich schwacher Titel leuchtet nicht mehr gruen.
+- Punkte mit gutem Muster, aber unwirtschaftlichem Plan werden **hohl gezeichnet** (gestrichelter Ring). Voll = auch wirtschaftlich tragfaehig.
+- Der Mouseover nennt jetzt **Plan netto und CRV** und sagt ausdruecklich: beide Achsen messen nur Technik, ob sich der Trade lohnt steht in der Farbe.
+
+Der alte Test bestand auf den irrefuehrenden Labels. Er wurde bewusst ersetzt, mit Begruendung im Testcode — plus einem Guard, der verhindert, dass „ATTRAKTIV" zurueckkehrt.
+
+## 2. Krypto: P2b erledigt
+`coinHeadline(r)` gebaut, dieselbe Mechanik wie bei Aktien: dieselbe Fail-closed-Klemme, kann nur abwerten. Die Krypto-Karte faerbte Punkte bisher allein nach `r.light`, waehrend `buyReady()` die echte Freigabe prueft. Jetzt konsistent, mit drei benannten Gruenden: **CRV zu niedrig**, **nicht in der Einstiegszone**, **keine Kauf-Freigabe**.
+
+Die Krypto-Karte hat ausserdem die Quadranten-Beschriftung der Aktien-Heatmap bekommen — inklusive des bisher fehlenden vierten Feldes.
+
+## 3. Crowd-Tacho: warum er nie ausgeschlagen hat
+**Kein Defekt, sondern ein fehlender Schluessel — schlecht kommuniziert.** `crowdPulse()` im Worker steigt ohne `SERPAPI_KEY` sofort aus und liefert fuer jedes Symbol `score:null`. Der Client blendet dann die Nadel aus. Der Grund stand ausschliesslich im Mouseover.
+
+Jetzt gibt es eine **sichtbare Statuszeile** ueber den Aktien: „Crowd/Search inaktiv – kein SERPAPI-Schluessel hinterlegt", mit der Klarstellung, dass das kein Fehler ist. Und mit der Kostenwahrheit **bevor** man losgeht: SerpAPI ist kostenpflichtig, der Gratis-Tarif liegt bei rund 100 Abfragen im Monat, FusionPulse fragt bis zu 15 Symbole je Lauf ab — fuer Dauerbetrieb reicht das nicht.
+
+**Zweiter Befund, unabhaengig davon:** Der Worker setzte `accel:null` hart in jeder Zeile, waehrend `stockInterpretation()` auf `accel>=8` prueft. Toter Zweig, konnte nie feuern — auch mit gueltigem Schluessel nicht. Die Beschleunigung wird jetzt **clientseitig** aus einer lokalen Verlaufsablage gerechnet (Aenderung je Stunde gegen einen mindestens 45 Minuten alten Referenzpunkt). Ohne Referenzpunkt: `null`, keine erfundene Null.
+
+## 4. Glossar: jetzt auffindbar
+Berechtigte Frage — es war bisher **nur** ueber Mouseover erreichbar. Wer nicht weiss, wo eine Erklaerung liegt, findet sie nicht.
+
+In den Einstellungen gibt es jetzt **📖 Glossar · alle Begriffe erklaert**: durchsuchbar, in fuenf Gruppen (Kursmuster, Analyseverfahren, Trade-Bewertung, Selbstauswertung, Portfolio-Risiko), zum Aufklappen. Dieselbe Quelle wie die Mouseover-Texte — kein Duplikat, das auseinanderlaufen kann. Ein Test erzwingt, dass **jeder** Glossareintrag auch in der sichtbaren Liste auftaucht.
+
+## 5. Scope-Fenster: Aktualisierungsfrequenz sichtbar
+Neben dem Zeitstempel steht jetzt „↻ ≈ 4,2×/h · engmaschiger als der Rest". Gemessen aus den tatsaechlich beobachteten Aktualisierungen, verglichen mit dem Median aller beobachteten Titel. Unter drei Messpunkten oder bei zu kurzem Beobachtungsfenster steht „Frequenz wird noch gemessen" — es wird bewusst nichts hochgerechnet.
+
+## Kosten
+Alles rein clientseitig. **Keine zusaetzlichen Tiingo-, Twelve-Data- oder Cloudflare-Abfragen.** Der einzige Posten, der Geld kostet, waere ein SerpAPI-Schluessel — und der ist optional.
+
+## Nachweis
+Ein echter Laufzeitfehler kam beim Testen ans Licht: die Crowd-Beschleunigung nutzte `r1()`, eine **Worker**-Hilfsfunktion, die es im Client gar nicht gibt. Im Browser haette das bei jedem Crowd-Laden eine Exception geworfen. Genau dafuer ist der Harness da, der `app.js` wirklich ausfuehrt statt nur Regex zu pruefen.
+
+Zwei Negativkontrollen gefahren: Krypto-Punktfarbe wieder auf `r.light` zurueckgedreht → Suite faellt. Beschleunigung ohne Referenzpunkt als 0 statt null → Suite faellt.
+
+Alle **11** Suiten gruen, `npm run check` gruen, alle vier SHA-256-Bloecke unabhaengig nachgerechnet und identisch. Kein Score veraendert, keine Schwelle angefasst.
+
+---
+
 # FusionPulse v3.6.0 · Laien-Erklaerungen: ein Glossar statt verstreuter Halbsaetze
 
 ## Das Problem

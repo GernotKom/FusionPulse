@@ -79,7 +79,13 @@ export function loadClient(overrides = {}) {
   get stockPositions(){return stockPositions;}, set stockPositions(v){stockPositions=v;},
   portfolioExposure, portfolioBlocksNewBuy, portfolioBudgetEur, sectorOfSymbol, positionRiskEur,
   stockStrength, DEFAULTS,
-  GLOSS, gloss, gl, glossForSetup
+  GLOSS, gloss, gl, glossForSetup, GLOSS_GROUPS, GLOSS_LABEL,
+  coinHeadline, buyReady, sizing, stockHeatmapMark, crowdStatus, crowdTrack, refreshRate,
+  get crowdMeta(){return crowdMeta;}, set crowdMeta(v){crowdMeta=v;},
+  get crowdMap(){return crowdMap;}, set crowdMap(v){crowdMap=v;},
+  get crowdHistory(){return crowdHistory;}, set crowdHistory(v){crowdHistory=v;},
+  get refreshHistory(){return refreshHistory;}, set refreshHistory(v){refreshHistory=v;},
+  trackRefresh
 };`;
   const src = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   vm.createContext(ctx);
