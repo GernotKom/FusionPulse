@@ -816,3 +816,13 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 .pf-warn.cost{border-style:dashed;color:var(--dim)}
 .pf-warn.unknown{color:var(--dim);border-style:dashed}
 .pf-note{display:block;margin-top:.55rem;font-size:.68rem;color:var(--dim);line-height:1.5;cursor:help}
+
+/* ==== v3.6.0 · Glossar-Markierung ========================================== */
+/* Begriffe mit Mouseover-Erklaerung bekommen eine dezente gepunktete Linie,
+   damit erkennbar ist, WO eine Erklaerung hinterlegt ist. */
+abbr.gl{text-decoration:underline dotted color-mix(in srgb,var(--dim) 70%,transparent);text-underline-offset:3px;cursor:help;border:0}
+abbr.gl:hover{text-decoration-color:var(--fg)}
+.attr-table th{cursor:help}
+.complist-note{margin:.2rem 0 .55rem;font-size:.72rem;line-height:1.5;color:var(--dim);cursor:help}
+.pf-budget span,.pf-bar,.pf-warn{cursor:help}
+.sr-tic{cursor:help}

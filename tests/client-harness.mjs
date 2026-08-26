@@ -78,7 +78,8 @@ export function loadClient(overrides = {}) {
   get stockRows(){return stockRows;}, set stockRows(v){stockRows=v;},
   get stockPositions(){return stockPositions;}, set stockPositions(v){stockPositions=v;},
   portfolioExposure, portfolioBlocksNewBuy, portfolioBudgetEur, sectorOfSymbol, positionRiskEur,
-  stockStrength, DEFAULTS
+  stockStrength, DEFAULTS,
+  GLOSS, gloss, gl, glossForSetup
 };`;
   const src = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   vm.createContext(ctx);

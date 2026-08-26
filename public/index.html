@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.5.9</title>
+<title>FusionPulse 3.6.0</title>
 </head>
 <body>
 
@@ -213,16 +213,17 @@
 
   <h3>Analyseverfahren</h3>
   <p class="hint">Abgeschaltete Verfahren gehen <b>nicht</b> als negativ in den Score ein. Die verbleibenden Gewichte werden neu normiert.</p>
+  <p class="complist-note" title="Diese Häkchen bestimmen, welche Verfahren überhaupt in die Bewertung einfließen. Sie sind etwas völlig anderes als die Schalter in der Selbstauswertung (Modul 0): dort schaltest du ganze Kursmuster stumm, hier schaltest du Messmethoden ab. Mouseover auf jede Zeile erklärt das jeweilige Verfahren in normaler Sprache.">Welche Verfahren sollen den Score berechnen? Mouseover über eine Zeile erklärt, was das Verfahren misst. <b>Nicht verwechseln</b> mit den Schaltern in der Selbstauswertung (Modul 0) — die betreffen ganze Kursmuster, nicht die Messmethoden.</p>
   <div class="complist" id="sComponents">
-    <label class="row" title="VWAP: volumengewichteter Durchschnittspreis. Anker für Einstiegszone und Regimefilter."><input type="checkbox" data-comp="vwap"> VWAP (kurz/lang)</label>
-    <label class="row" title="EMA21: exponentieller Durchschnitt über 21 Perioden; zusammen mit EMA9/EMA50 die Trendstaffelung."><input type="checkbox" data-comp="ema21"> EMA21 / Trendstaffelung</label>
-    <label class="row" title="Relative Stärke: Entwicklung des Coins gegenüber Bitcoin, volatilitätsnormiert."><input type="checkbox" data-comp="rs"> Relative Stärke vs. BTC</label>
-    <label class="row" title="Momentum und Multi-Timeframe: 5m, 15m und 1h aus demselben Datensatz, ohne Zusatz-Requests."><input type="checkbox" data-comp="mtf"> Momentum / Multi-Timeframe</label>
-    <label class="row" title="Volumen: z-Score der jüngsten Umsätze gegen ein disjunktes Basisfenster."><input type="checkbox" data-comp="volume"> Volumen (z-Score)</label>
-    <label class="row" title="Orderbuch: Imbalance, Tiefe, Spread und Slippage. Abschalten spart pro Scan bis zu 10 API-Abfragen."><input type="checkbox" data-comp="book"> Orderbuch / Imbalance</label>
-    <label class="row" title="Breakout/Squeeze: Kompression der Bollinger-Bandbreite und Auflösung nach oben."><input type="checkbox" data-comp="squeeze"> Breakout / Squeeze</label>
-    <label class="row" title="Pullback: Der Kurs ist zuerst gestiegen und kommt danach ein Stück zurück. Das kann eine günstigere zweite Einstiegschance sein, wenn der Aufwärtstrend wieder bestätigt wird. Ein Pullback allein ist noch kein Kaufsignal."><input type="checkbox" data-comp="pullback"> Pullback</label>
-    <label class="row" title="Elliott-Wellen-Heuristik: Impuls-/Korrekturstruktur aus Swing-Extremen, Trendstaffelung und Fibonacci-nahem Rücksetzer."><input type="checkbox" data-comp="elliott"> Elliott-Wellen</label>
+    <label class="row" title="VWAP = volumengewichteter Durchschnittspreis. Der Durchschnittskurs des Tages, bei dem große Umsätze stärker zählen als kleine — also der Preis, den der Markt im Schnitt tatsächlich bezahlt hat. Liegt der Kurs darüber, sind die Käufer im Vorteil. Dient hier als Anker für die Einstiegszone."><input type="checkbox" data-comp="vwap"> VWAP (kurz/lang)</label>
+    <label class="row" title="EMA = exponentieller gleitender Durchschnitt: eine geglättete Kurslinie, bei der die jüngsten Kurse stärker zählen als ältere. Liegen die kurze (EMA9), mittlere (EMA21) und lange Linie (EMA50) sauber übereinander, spricht das für einen intakten Trend. Das nennt man Trendstaffelung."><input type="checkbox" data-comp="ema21"> EMA21 / Trendstaffelung</label>
+    <label class="row" title="Relative Stärke: Läuft dieser Coin besser als Bitcoin? Bereinigt um die unterschiedliche Schwankungsbreite, damit ein von Natur aus wilder Coin nicht automatisch stärker aussieht. Beantwortet: bewegt er sich aus eigener Kraft oder nur, weil der ganze Markt läuft? Bestätigungsfaktor, kein eigenständiges Kaufsignal."><input type="checkbox" data-comp="rs"> Relative Stärke vs. BTC</label>
+    <label class="row" title="Multi-Timeframe = mehrere Zeitebenen gleichzeitig betrachten (5 Minuten, 15 Minuten, 1 Stunde). Ein Signal, das nur auf einer einzigen Ebene gut aussieht, ist oft Zufall. Kostet hier keine zusätzlichen API-Abfragen, weil alle drei Ebenen aus denselben Daten gerechnet werden."><input type="checkbox" data-comp="mtf"> Momentum / Multi-Timeframe</label>
+    <label class="row" title="Volumen = wie viele Stücke tatsächlich gehandelt wurden. Wichtig, weil eine Kursbewegung ohne Umsatz wenig aussagt — sie kann von wenigen Orders stammen. Verglichen wird gegen einen früheren, nicht überlappenden Zeitraum, damit &quot;viel&quot; auch wirklich viel ist und nicht nur der eigene Anstieg gespiegelt wird."><input type="checkbox" data-comp="volume"> Volumen (z-Score)</label>
+    <label class="row" title="Orderbuch = die Liste aller offenen Kauf- und Verkaufsangebote. Zeigt, ob mehr Käufer oder Verkäufer warten (Imbalance), wie teuer Ein- und Ausstieg werden (Spread) und ob deine eigene Order den Kurs bewegen würde (Slippage). Nur bei Krypto verfügbar. Abschalten spart pro Scan bis zu 10 API-Abfragen."><input type="checkbox" data-comp="book"> Orderbuch / Imbalance</label>
+    <label class="row" title="Squeeze = die Schwankungen sind ungewöhnlich klein geworden, der Kurs staut sich auf. Breakout = er löst sich daraus nach oben. Die Kompression sagt, dass eine größere Bewegung wahrscheinlich wird — die Richtung sagt sie NICHT voraus. Timing-Hinweis, keine Prognose."><input type="checkbox" data-comp="squeeze"> Breakout / Squeeze</label>
+    <label class="row" title="Pullback (Rücksetzer): Der Kurs ist zuerst gestiegen und gibt danach ein Stück nach. Die Idee ist, günstiger einzusteigen als am Hoch — aber nur, wenn der Aufwärtstrend danach wieder anspringt. Ein Rücksetzer allein ist kein Kaufsignal: er kann genauso gut der Anfang einer Trendwende sein."><input type="checkbox" data-comp="pullback"> Pullback</label>
+    <label class="row" title="Elliott-Wellen: der Versuch, Kursverläufe in wiederkehrende Wellen zu zerlegen — Schub nach oben, Korrektur zurück, wieder Schub. FusionPulse beschriftet keine Wellen von Hand, sondern rechnet daraus eine Kennzahl von 0 bis 10. Fachlich umstrittene Methode, deshalb bewusst nur einer von mehreren Bausteinen und nie allein entscheidend."><input type="checkbox" data-comp="elliott"> Elliott-Wellen</label>
   </div>
   <div class="actions compact">
     <button id="sCompAll">Alle aktivieren</button>

@@ -1,3 +1,43 @@
+# FusionPulse v3.6.0 · Laien-Erklaerungen: ein Glossar statt verstreuter Halbsaetze
+
+## Das Problem
+Die App war voller Tooltips — geschrieben fuer jemanden, der die Begriffe schon kennt. „z-Score der juengsten Umsaetze gegen ein disjunktes Basisfenster" erklaert nichts, es uebersetzt Fachjargon in anderen Fachjargon. Und an den neuen Stellen (Modul-0-Schalter, Portfolio-Kachel, Kopfzeile) fehlten sie zum Teil ganz. Wer „RECLAIM" nicht kennt, kann nicht entscheiden, ob er es stummschalten soll.
+
+## Was neu ist: ein zentrales Glossar
+`GLOSS` in `public/app.js` — **ein** Ort fuer jede Erklaerung, statt derselbe Begriff an fuenf Stellen in fuenf Varianten. Jeder Eintrag folgt derselben Regel:
+
+1. Erst in normaler Sprache sagen, **was** es ist.
+2. Dann sagen, **wozu** es hier dient.
+3. Wo es sinnvoll ist: sagen, was es ausdruecklich **nicht** bedeutet.
+
+Der letzte Punkt ist der wichtigste. Beispiele:
+- **Squeeze**: sagt, dass eine groessere Bewegung wahrscheinlich wird — die Richtung sagt er NICHT voraus.
+- **In-Sample**: auf diesen Daten sieht jede Regel gut aus, sie wurde ja daran gebaut. Die Zahl allein ist wertlos.
+- **Erwartungswert**: sagt nicht, dass DIESER Trade gewinnt, sondern dass es sich lohnt, ihn oft zu wiederholen.
+- **Kaufsumme**: nicht zu verwechseln mit dem Risiko — das ist nur der Bruchteil bis zum Stop.
+
+Erklaerte Begriffe bekommen eine dezente gepunktete Unterstreichung (`<abbr class="gl">`), damit man sieht, **wo** ueberhaupt eine Erklaerung hinterlegt ist.
+
+## Wo es jetzt greift
+- **Modul-0-Schalter**: Der Tooltip sagt nicht mehr nur „stummschalten", sondern erklaert, WAS da geschaltet wird — „Was ist RECLAIM? Der Kurs holt sich eine wichtige Marke zurueck, die er vorher verloren hatte …" plus den Hinweis, dass Stummschalten nicht Loeschen bedeutet.
+- **Modul-0-Tabelle**: Alle Spaltenkoepfe (n, In-Sample, Out-of-Sample, Waechter) und die Setup-Namen selbst.
+- **Portfolio-Kachel**: Gebunden, Budget, Ausgeschoepft, jeder Sektor-Chip, jede Warnung — inklusive der Erklaerung, warum das echte Risiko hoeher liegt als die Positionsgroesse rechnet.
+- **Kopfzeile**: Alle fuenf Bloeckierungsgruende neu formuliert. Statt „Musterqualitaet ok, aber Ausfuehrbarkeit nicht erfuellt" jetzt „Das Kursmuster sieht gut aus, aber die Grenzen, die du dir selbst gesetzt hast, sind nicht erfuellt — sie stehen in den Einstellungen".
+- **Ticker-Kuerzel**: SOFI & Co. erklaeren jetzt, dass das Kuerzel nicht boersenuebergreifend eindeutig ist und deshalb der volle Firmenname danebensteht.
+- **Analysemethoden in den Einstellungen**: alle neun neu geschrieben. Aus „VWAP: volumengewichteter Durchschnittspreis. Anker fuer Einstiegszone und Regimefilter" wurde „der Durchschnittskurs des Tages, bei dem grosse Umsaetze staerker zaehlen als kleine — also der Preis, den der Markt im Schnitt tatsaechlich bezahlt hat. Liegt der Kurs darueber, sind die Kaeufer im Vorteil."
+
+## Ebenen-Verwechslung noch einmal adressiert
+Ueber der Komponentenliste steht jetzt ein Vorspann, der ausdruecklich sagt: **Nicht verwechseln** mit den Schaltern in der Selbstauswertung. Hier schaltest du Messmethoden ab, dort ganze Kursmuster stumm. Das war die Verwirrung aus v3.5.7 — jetzt an beiden Enden erklaert, nicht nur an einem.
+
+## Funktionsnachweis
+Die Tests pruefen nicht nur, ob ein Tooltip **existiert** — das waere billig. Sie pruefen, dass Fachbegriffe **aufgeloest** statt wiederholt werden (CRV muss „Chance-Risiko-Verhaeltnis" enthalten, ATR muss „Schwankungsbreite" enthalten), dass jede Erklaerung mindestens 80 Zeichen hat, dass jede Analysemethode mindestens 120 Zeichen bekommt, dass die vier haeufigsten Fehldeutungen explizit adressiert sind, und dass die alten Rohbegriffe („z-Score der", „volatilitaetsnormiert", „Bollinger-Bandbreite") nicht unerklaert zurueckkehren.
+
+Zwei Negativkontrollen gefahren: ein Tooltip, der den Fachbegriff nur wiederholt → Suite faellt. Der Setup-Schalter ohne Bedeutungserklaerung → Suite faellt.
+
+Alle **10** Suiten gruen. Kein Score veraendert, keine Schwelle angefasst, alle vier SHA-256-Bloecke unabhaengig nachgerechnet und identisch.
+
+---
+
 # FusionPulse v3.5.9 · Modul 2: Portfolio-Risiko & Klumpung (Paket B, Teil 1)
 
 ## Die Luecke

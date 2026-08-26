@@ -545,3 +545,85 @@ console.log('✓ FusionPulse v3.5.8 headline/economic-consistency regressions: O
 }
 
 console.log('✓ FusionPulse v3.5.9 portfolio-risk/cluster regressions: OK');
+
+// ---------------------------------------------------------------------------
+// v3.6.0 · Laien-Erklaerungen. Ein Tooltip, den nur versteht wer den Begriff
+// schon kennt, ist kein Tooltip. Deshalb wird hier nicht nur die EXISTENZ
+// geprueft, sondern auch, dass Fachbegriffe aufgeloest statt wiederholt werden.
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url),'utf8');
+  const css  = fs.readFileSync(new URL('../public/style.css',  import.meta.url),'utf8');
+
+  // -- Glossar existiert und ist eine einzige Quelle.
+  assert.ok(Object.keys(C.GLOSS).length >= 25, `Glossar muss die verwendeten Begriffe abdecken, hat ${Object.keys(C.GLOSS).length}`);
+  for (const [k,v] of Object.entries(C.GLOSS)) {
+    assert.ok(v.length >= 80, `Glossareintrag "${k}" ist zu knapp fuer eine echte Erklaerung (${v.length} Zeichen)`);
+  }
+
+  // -- Fachbegriffe muessen AUFGELOEST werden, nicht nur wiederholt.
+  //    Jeder Eintrag nennt das Kuerzel und erklaert es im selben Text.
+  assert.match(C.gloss('crv'), /Chance-Risiko-Verh/, 'CRV muss ausgeschrieben werden');
+  assert.match(C.gloss('vwap'), /Durchschnittspreis/, 'VWAP muss ausgeschrieben werden');
+  assert.match(C.gloss('ema21'), /gleitender Durchschnitt/, 'EMA muss ausgeschrieben werden');
+  assert.match(C.gloss('atr'), /Schwankungsbreite/, 'ATR muss in normaler Sprache erklaert sein');
+  assert.match(C.gloss('oos'), /nie gesehen|frische Daten/i, 'Out-of-Sample muss in normaler Sprache erklaert sein');
+  assert.match(C.gloss('rMultiple'), /Einheit Risiko/, 'R-Vielfaches muss erklaert sein');
+  assert.match(C.gloss('tickerSym'), /SOFI/, 'Das Ticker-Kuerzel muss am konkreten Beispiel erklaert sein');
+
+  // -- Setup-Namen aus Modul 0 muessen alle eine Erklaerung finden.
+  for (const key of ['PULLBACK','RECLAIM','SQUEEZE','BREAKOUT','ELLIOTT','RELATIVE_STRENGTH']) {
+    const t = C.glossForSetup(key);
+    assert.ok(t.length >= 80, `Setup "${key}" braucht eine Laien-Erklaerung`);
+  }
+  // Auch ein unbekannter Setup-Name darf nie ohne Erklaerung dastehen.
+  assert.ok(C.glossForSetup('IRGENDWAS_NEUES').length >= 60, 'Unbekannte Setups brauchen einen sinnvollen Fallback-Text');
+
+  // -- Die Erklaerung muss auch sagen, was NICHT gemeint ist (haeufigste Fehldeutung).
+  assert.match(C.gloss('squeeze'), /NICHT voraus|keine Richtungsprognose/i, 'Squeeze muss klarstellen, dass er keine Richtung vorhersagt');
+  assert.match(C.gloss('inSample'), /wertlos|allein/i, 'In-Sample muss vor Fehldeutung warnen');
+  assert.match(C.gloss('expectancy'), /NICHT/, 'Erwartungswert muss klarstellen, dass er nichts ueber den Einzeltrade sagt');
+  assert.match(C.gloss('notional'), /Nicht zu verwechseln|nicht die Kaufsumme/i, 'Kaufsumme muss vom Risiko abgegrenzt werden');
+
+  // -- gl() erzeugt eine erkennbare, bedienbare Markierung.
+  const tag = C.gl('PULLBACK', null, C.glossForSetup('PULLBACK'));
+  assert.match(tag, /^<abbr class="gl" title="/, 'Begriffe muessen als <abbr class="gl"> mit title gerendert werden');
+  assert.match(tag, /PULLBACK<\/abbr>$/, 'Das Label muss sichtbar bleiben');
+  assert.equal(C.gl('XYZ','gibtesnicht'), 'XYZ', 'Ohne Glossareintrag darf keine leere Erklaerung vorgegaukelt werden');
+  assert.match(css, /abbr\.gl\{[^}]*cursor:help/, 'Erklaerte Begriffe muessen als solche erkennbar sein');
+
+  // -- Modul 0: Tabellenkopf, Setup-Zelle und Schalter erklaeren sich.
+  assert.match(app, /<th title="\$\{esc\(gloss\('sampleN'\)\)\}">n<\/th>/, 'Spalte n braucht eine Erklaerung');
+  assert.match(app, /<th title="\$\{esc\(gloss\('inSample'\)\)\}">In-Sample/, 'Spalte In-Sample braucht eine Erklaerung');
+  assert.match(app, /<th title="\$\{esc\(gloss\('oos'\)\)\}">Out-of-Sample/, 'Spalte Out-of-Sample braucht eine Erklaerung');
+  assert.match(app, /const meaning = glossForSetup\(b\.key\)/, 'Der Schalter muss die Bedeutung des Setups kennen');
+  assert.match(app, /Was ist \$\{b\.key\}\?/, 'Der Schalter-Tooltip muss erklaeren, WAS er da schaltet');
+  assert.match(app, /\$\{gl\(b\.key,null,meaning\)\}/, 'Der Setup-Name in der Tabelle muss erklaert sein');
+
+  // -- Modul 2: jede Kennzahl der Kachel hat eine Erklaerung.
+  assert.match(app, /gloss\('portfolioBudget'\)/, 'Gesamt-Risikobudget muss erklaert sein');
+  assert.match(app, /gloss\('cluster'\)/, 'Klumpenrisiko muss erklaert sein');
+  assert.match(app, /gloss\('stopReal'\)/, 'Der Kostenaufschlag am Stop muss erklaert sein');
+
+  // -- Ticker: SOFI & Co. bekommen ihre Erklaerung.
+  assert.match(app, /class="sr-tic" title="\$\{esc\(gloss\('tickerSym'\)\)\}"/, 'Das Ticker-Kuerzel in der Aktienzeile muss erklaert sein');
+
+  // -- Einstellungen: Analysemethoden in normaler Sprache, ohne unerklaerten Jargon.
+  const compBlock = html.slice(html.indexOf('id="sComponents"'), html.indexOf('</div>', html.indexOf('id="sComponents"')));
+  assert.doesNotMatch(compBlock, /z-Score der/, 'Rohbegriff "z-Score" darf nicht unerklaert stehen bleiben');
+  assert.doesNotMatch(compBlock, /volatilitätsnormiert/, 'Rohbegriff "volatilitätsnormiert" darf nicht unerklaert stehen bleiben');
+  assert.doesNotMatch(compBlock, /Bollinger-Bandbreite/, 'Rohbegriff "Bollinger-Bandbreite" darf nicht unerklaert stehen bleiben');
+  for (const comp of ['vwap','ema21','rs','mtf','volume','book','squeeze','pullback','elliott']) {
+    const i = compBlock.indexOf(`data-comp="${comp}"`);
+    assert.ok(i > 0, `Komponente ${comp} muss existieren`);
+    const label = compBlock.lastIndexOf('<label', i);
+    const title = /title="([^"]*)"/.exec(compBlock.slice(label, i))?.[1] || '';
+    assert.ok(title.length >= 120, `Erklaerung fuer "${comp}" ist zu knapp fuer einen Laien (${title.length} Zeichen)`);
+  }
+  // Die Ebenen-Verwechslung (Methoden vs. Setup-Typen) muss auch hier adressiert sein.
+  assert.match(html, /class="complist-note"/, 'Die Komponentenliste braucht einen erklaerenden Vorspann');
+  assert.match(html, /Nicht verwechseln<\/b> mit den Schaltern in der Selbstauswertung/, 'Der Vorspann muss die beiden Schalter-Ebenen abgrenzen');
+}
+
+console.log('✓ FusionPulse v3.6.0 glossary/plain-language regressions: OK');
