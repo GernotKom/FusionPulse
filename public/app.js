@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.5.7 — Frontend
+   FusionPulse v3.5.9 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -75,6 +75,9 @@ const DEFAULTS = {
   theme: 'dark', taxPct: 27.5, analysisMode: 'composite', coinCount: 12, stockCount: 12,
   maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0, minNetProfitStock: 30, minTp2PctStock: 2.0,
   claudeMode: false, stockDeep: 20,
+  // v3.5.9 · Modul 2: Gesamt-Risikobudget ueber ALLE offenen Positionen (nicht je Trade)
+  // und Klumpungswarnung. Default 3x das Einzeltrade-Risiko = drei parallele Trades.
+  portfolioRiskPct: 2.25, portfolioGuard: false,
   mutedPairs: [], mutedStocks: [], favoritePairs: [], favoriteStocks: [], stockOrder: [], components: [...ALL_COMPONENTS], stockSound: true,
 };
 const storedSettings = (() => { try { return JSON.parse(localStorage.getItem('fp.settings') || '{}'); } catch { return {}; } })();
@@ -351,6 +354,108 @@ function stockTradeability(r) {
     && planOk;
   return { ok, tp2Pct, netProfit, netCrv:gateCrv, structuralCrv, planEfficiency, planOk, marketOk, minNet, minCrv, minPlanEfficiency:FUSION_MIN_PLAN_EFFICIENCY, claude };
 }
+/* ==== v3.5.9 · MODUL 2: Portfolio-Risiko & Klumpung (Paket B, Teil 1) ========
+   Frage, die bisher niemand gestellt hat: Jeder Trade fuer sich haelt 0,75 %
+   Risiko ein — aber was passiert, wenn fuenf davon gleichzeitig offen sind und
+   alle vier am selben Faktor haengen? Dann ist das Einzeltrade-Risiko eine
+   Illusion. Diese Schicht rechnet das zusammen.
+
+   Additiv im Sinne von Invariante 3: sie veraendert KEINEN Score. Die
+   Budget-Sperre ist standardmaessig AUS und kann, wenn eingeschaltet, nur
+   ABWERTEN (BUY unterdruecken) — nie eine Freigabe erzeugen.
+
+   Ehrlichkeitsgrenze: „Korrelation" ist hier eine Sektor-Naeherung, kein
+   gerechneter Korrelationskoeffizient. Zwei Titel im selben Sektor koennen
+   gegenlaeufig sein; zwei aus verschiedenen Sektoren koennen am selben
+   Zinsfaktor haengen. Das wird im UI so gesagt, nicht verschwiegen.        */
+const PORTFOLIO_CLUSTER_WARN_PCT = 50;  // Risikoanteil eines Sektors, ab dem gewarnt wird
+const PORTFOLIO_BUDGET_WARN_PCT  = 80;  // Auslastung, ab der gewarnt wird
+const portfolioBudgetEur = () => Math.max(0, Number(S.equity||0) * (Number(S.portfolioRiskPct ?? DEFAULTS.portfolioRiskPct)/100));
+
+/** Sektor eines Symbols aus den geladenen Zeilen. Unbekannt bleibt unbekannt. */
+function sectorOfSymbol(sym){
+  const k=String(sym||'').trim().toUpperCase();
+  const row=(stockRows||[]).find(r=>String(r?.symbol||'').toUpperCase()===k);
+  const sec=String(row?.sector||'').trim();
+  return (!sec || sec==='Discovery') ? null : sec;
+}
+
+/** Risiko einer offenen Position bis zum technischen Stop, inkl. Ausfuehrungskosten.
+ *  Ohne geladene Zeile (kein Stop bekannt) wird NICHT geschaetzt, sondern als
+ *  unbewertbar zurueckgegeben — fail-closed statt schoengerechnet. */
+function positionRiskEur(sym){
+  const k=posKey(sym), p=activePosition(k);
+  if(!p) return null;
+  const row=(stockRows||[]).find(r=>String(r?.symbol||'').toUpperCase()===k);
+  const m=row?positionMetrics(row,p):null;
+  if(m && Number.isFinite(Number(m.stopLoss))){
+    const priceRisk=(Number.isFinite(Number(m.stop))&&Number(m.stop)>0)?Math.max(0,(Number(m.entry)-Number(m.stop))*Number(m.rest)):null;
+    return {risk:Number(m.stopLoss), priceRisk, notional:Number(m.notional)||0, known:true};
+  }
+  const notional=Number(p.entryEur||0)*Number(p.restQty??p.qty??0);
+  return {risk:null, notional, known:false};
+}
+
+/** Gesamtbild: ausgeschoepftes Risiko, Klumpung, offene Punkte. */
+function portfolioExposure(){
+  const budget=portfolioBudgetEur();
+  const perTrade=Math.max(0, Number(S.equity||0)*(Number(S.riskPct||0)/100));
+  const items=[]; let unknownCount=0, unknownNotional=0;
+  for(const sym of Object.keys(stockPositions||{})){
+    if(!activePosition(sym)) continue;
+    const pr=positionRiskEur(sym); if(!pr) continue;
+    if(!pr.known){ unknownCount++; unknownNotional+=pr.notional; }
+    items.push({symbol:posKey(sym), risk:pr.known?pr.risk:null, priceRisk:pr.known?pr.priceRisk:null,
+                notional:pr.notional, sector:sectorOfSymbol(sym), known:pr.known});
+  }
+  const usedRisk=items.reduce((a,x)=>a+(Number(x.risk)||0),0);
+  const usedPriceRisk=items.reduce((a,x)=>a+(Number(x.priceRisk)||0),0);
+  const usedPct=budget>0?(usedRisk/budget)*100:0;
+  const freeRisk=Math.max(0,budget-usedRisk);
+  /* Befund v3.5.9: Das Einzeltrade-Risiko (equity x riskPct) ist REINES
+     Kursrisiko. Am Stop verlierst du zusaetzlich die Ausfuehrungskosten beider
+     Seiten — aus 37,50 EUR werden real eher 60–65 EUR. Ein Budget aus n x 37,50
+     EUR waere deshalb systematisch zu optimistisch. Die Restkapazitaet wird
+     darum gegen das REALE Risiko je Trade gerechnet; der Aufschlag stammt, wenn
+     moeglich, aus den eigenen offenen Positionen statt aus einer Annahme. */
+  const knownItems=items.filter(x=>x.known&&Number(x.risk)>0);
+  const costFactor=knownItems.length&&usedPriceRisk>0?Math.max(1,usedRisk/usedPriceRisk)
+    :(perTrade>0?1+(STOCK_ORDER_FIXED_EUR*2)/perTrade:1);
+  const perTradeReal=perTrade*costFactor;
+  const slotsLeft=perTradeReal>0?Math.floor(freeRisk/perTradeReal):0;
+
+  // Klumpung nach Sektor, gewichtet nach RISIKO (nicht nach Kaufsumme —
+  // Risiko ist die Groesse, die im Stressfall gleichzeitig schlagend wird).
+  const bySector=new Map();
+  for(const it of items){
+    if(!it.known) continue;
+    const key=it.sector||'Sektor unbekannt';
+    bySector.set(key,(bySector.get(key)||0)+Number(it.risk||0));
+  }
+  const sectors=[...bySector.entries()].map(([sector,risk])=>({sector,risk,pct:usedRisk>0?(risk/usedRisk)*100:0,
+    n:items.filter(i=>i.known&&(i.sector||'Sektor unbekannt')===sector).length}))
+    .sort((a,b)=>b.risk-a.risk);
+  const top=sectors[0]||null;
+  const clustered=!!(top && top.n>=2 && top.pct>=PORTFOLIO_CLUSTER_WARN_PCT && top.sector!=='Sektor unbekannt');
+
+  const budgetWarn=budget>0 && usedPct>=PORTFOLIO_BUDGET_WARN_PCT;
+  const budgetFull=budget>0 && usedRisk>=budget;
+  return {budget,perTrade,perTradeReal,costFactor,items,usedRisk,usedPriceRisk,usedPct,freeRisk,slotsLeft,
+          sectors,top,clustered,budgetWarn,budgetFull,unknownCount,unknownNotional,
+          guard:!!S.portfolioGuard};
+}
+
+/** Sperrt die Budget-Sperre neue BUYs? Nur wenn ausdruecklich eingeschaltet.
+ *  Kann ausschliesslich abwerten (Invariante 1). Bereits offene Positionen
+ *  bleiben unberuehrt — die Sperre verhindert Zukauf, nie einen Ausstieg. */
+function portfolioBlocksNewBuy(r){
+  if(!S.portfolioGuard) return false;
+  const k=posKey(r?.symbol);
+  if(activePosition(k)) return false; // schon offen: nicht doppelt bestrafen
+  const px=portfolioExposure();
+  return px.budget>0 && px.freeRisk < px.perTradeReal;
+}
+
 /* Paket A: Menge der stummgeschalteten Setups (aus /api/attribution).
    Ein stummes Setup wird nie auf BUY (Stufe 3) gehoben – aber weiterhin
    angezeigt (Stufe 2/1), damit du es beobachten kannst. Kein Score-Eingriff. */
@@ -361,9 +466,12 @@ const stockLevel = (r) => {
   const fresh = stockFreshness(r);
   const minScore = (S.claudeMode && r.claude) ? CLAUDE_MIN_SCORE_STOCK : FUSION_MIN_SCORE_STOCK;
   const muted = mutedSetupSet.has(setupOf(r));
-  // Safety: missing/stale data OR a muted setup can never promote a row to BUY.
-  return (r.light === 'green' && r.score >= minScore && t.ok && fresh.key === 'live' && !muted) ? 3
-    : muted && r.light === 'green' ? 1 // gestummtes Gruen wird zur Beobachtung zurueckgestuft
+  // v3.5.9: Gesamt-Risikobudget erschoepft (nur bei eingeschalteter Sperre).
+  const overBudget = portfolioBlocksNewBuy(r);
+  // Safety: missing/stale data, a muted setup OR an exhausted risk budget can
+  // never promote a row to BUY. Alle drei koennen ausschliesslich abwerten.
+  return (r.light === 'green' && r.score >= minScore && t.ok && fresh.key === 'live' && !muted && !overBudget) ? 3
+    : (muted || overBudget) && r.light === 'green' ? 1 // zurueckgestuft, nicht ausgeblendet
     : r.light === 'green' ? 2 : r.light === 'yellow' ? 1 : 0;
 };
 
@@ -822,7 +930,74 @@ function stockOpportunity(r){
   else if(f.key!=='live') why='Daten sind nicht live – keine Opportunity-Freigabe.';
   else if(!opportunityPhase) why='Marktphase ist für eine Opportunity-Freigabe nicht aktiv.';
   if(claude&&!ready&&Array.isArray(r.claude.blockers)&&r.claude.blockers.length&&!why) why=r.claude.blockers.join(' · ');
-  return {ready,tier,label,why,reasons:reasons.slice(0,3),distance:Math.max(0,minScore-score),minNet};
+  /* v3.5.8 (P0): Grundtyp der Blockade – EINE Wahrheitsquelle fuer die Kopfzeile.
+     Rein additiv: keine Schwelle, kein Score, keine technische Marke wird beruehrt.
+     Reihenfolge bewusst wirtschaftlich-zuerst: genau dieser Fall (gruenes Muster,
+     aber CRV/Netto zu klein) hat den SOFI-Widerspruch erzeugt. */
+  const econFail = !sz || !(net>=minNet) || !(crv>=minCrv) || !(tp2>=minTp2) || (!claude && !(planEff>=FUSION_MIN_PLAN_EFFICIENCY));
+  const blockKind = ready ? null
+    : (!sz ? 'data'
+    : econFail ? 'economic'
+    : f.key!=='live' ? 'data'
+    : !opportunityPhase ? 'phase'
+    : score<minScore ? 'quality'
+    : !tr.ok ? 'executability'
+    : 'quality');
+  return {ready,tier,label,why,blockKind,reasons:reasons.slice(0,3),distance:Math.max(0,minScore-score),minNet};
+}
+
+/* ---- v3.5.8 · P0-Fix: Kopfzeile vs. wirtschaftliche Bewertung ---------------
+   Befund (SOFI, 26.8., v3.5.6): Die Kopfzeile las `r.light`/`r.verdict` direkt und
+   schrieb "🟢 Kauf-Setup · Claude", waehrend die Opportunity-Zeile darunter
+   "UNINTERESSANT · nur 54 € – fuer Aufwand/Risiko zu klein" sagte. Der gruene Punkt
+   bewertete NUR die Musterqualitaet, nie die Wirtschaftlichkeit.
+
+   Diese Funktion ist reine ANZEIGELOGIK:
+   - Sie veraendert weder Score noch BUY-Gate noch Entry/Stop/TP (Invarianten 2–4).
+   - Sie darf gegenueber `r.light` nur ABWERTEN, niemals aufwerten (Invariante 1,
+     fail-closed). Die Klemme unten erzwingt das strukturell.                    */
+const HEADLINE_RANK = { red:0, muted:1, yellow:1, green:2 };
+function modeTagOf(r){ const m=/·\s*(Claude|FusionPulse)\s*$/.exec(String(r?.verdict||'')); return m?` · ${m[1]}`:''; }
+function stockHeadline(r){
+  const light = (r && r.light) || 'red';
+  const cap = HEADLINE_RANK[light] ?? 0;
+  const clamp = (h) => (HEADLINE_RANK[h.light] > cap)
+    ? { ...h, light, icon: VERDICT_ICON[light]||'🔴', text: String(r?.verdict||'') } // darf nie aufwerten
+    : h;
+  if (light !== 'green') return clamp({
+    light, icon: VERDICT_ICON[light]||'🔴', text: String(r?.verdict||''), kind:'pattern',
+    title:'Bewertung des Kursmusters. Eine Kauf-Freigabe verlangt zusaetzlich Ausfuehrbarkeit, Live-Daten und wirtschaftliche Relevanz.'
+  });
+  if (stockLevel(r) === 3) return clamp({
+    light:'green', icon:'🟢', text:'BUY', kind:'buy',
+    title:'Alle Bedingungen erfuellt: Musterqualitaet, Ausfuehrbarkeit, Live-Daten und wirtschaftlich relevantes Netto-Potenzial.'
+  });
+  const tag = modeTagOf(r);
+  if (mutedSetupSet.has(setupOf(r))) return clamp({
+    light:'muted', icon:'🔇', text:`Setup stummgeschaltet · kein BUY${tag}`, kind:'muted',
+    title:'Dieser Setup-Typ ist ueber Modul 0 stummgeschaltet. Das Muster laeuft im Hintergrund weiter, erzeugt aber bewusst keine Kauf-Freigabe.'
+  });
+  if (portfolioBlocksNewBuy(r)) {
+    const px = portfolioExposure();
+    return clamp({ light:'yellow', icon:'🟡', text:`Setup ok · Risikobudget ausgeschoepft${tag}`, kind:'portfolio',
+      title:`Das Muster ist gruen, aber dein Gesamt-Risikobudget ist ausgeschoepft: ${eur(px.usedRisk,0)} von ${eur(px.budget,0)} gebunden, frei nur noch ${eur(px.freeRisk,0)} bei real ${eur(px.perTradeReal,0)} Risiko je Trade (inkl. Ausfuehrungskosten am Stop). Die Budget-Sperre ist in den Einstellungen aktiv und kann dort abgeschaltet werden.` });
+  }
+  const opp = stockOpportunity(r);
+  const detail = opp.why ? ` ${opp.why}` : '';
+  const byKind = {
+    economic:{ text:`Setup ok · wirtschaftlich uninteressant${tag}`,
+      title:`Das technische Muster ist in Ordnung, der Trade lohnt sich wirtschaftlich aber nicht.${detail} Technische Marken werden dafuer NICHT verschoben.` },
+    data:{ text:`Setup ok · Daten nicht belastbar${tag}`,
+      title:`Musterqualitaet ok, aber die Datenlage traegt keine Kauf-Freigabe.${detail}` },
+    phase:{ text:`Setup ok · ausserhalb Handelsfenster${tag}`,
+      title:`Musterqualitaet ok, aber die aktuelle Marktphase gibt keinen Trade frei.${detail}` },
+    executability:{ text:`Setup ok · nicht ausfuehrbar${tag}`,
+      title:`Musterqualitaet ok, aber deine Ausfuehrbarkeitsgrenzen sind nicht erfuellt.${detail}` },
+    quality:{ text:`Setup ok · keine Kauf-Freigabe${tag}`,
+      title:`Das Muster ist gruen, eine oder mehrere Freigabebedingungen fehlen aber noch.${detail}` }
+  };
+  const pick = byKind[opp.blockKind] || byKind.quality;
+  return clamp({ light:'yellow', icon:'🟡', text:pick.text, title:pick.title, kind:opp.blockKind||'quality' });
 }
 
 function stockSizing(r) {
@@ -925,7 +1100,7 @@ function stockPeek(r) {
     <header>
       <b>${esc(r.name)}</b>
       <span class="pk-tic" title="Ticker-Symbol an der US-Börse ${esc(r.exchange)}">${esc(r.symbol)} · ${esc(r.exchange)}</span>
-      <span class="pk-verdict ${r.light}">${VERDICT_ICON[r.light]} ${esc(r.verdict)}</span>
+      ${(()=>{const h=stockHeadline(r);return `<span class="pk-verdict ${h.light}" title="${esc(h.title)}">${h.icon} ${esc(h.text)}</span>`;})()}
     </header>
     <div class="pkgrid">
       ${t('Branche', 'Sektor-Zuordnung innerhalb des Aktien-Universums.', esc(r.sector))}
@@ -994,6 +1169,35 @@ function stockHeatmap(shown) {
     const found=stockRows.some(r=>r.symbol===focusStock); if(!found) await searchStockNow(focusStock);
     $('#stockFocus')?.scrollIntoView({behavior:'smooth',block:'start'});
   }));
+}
+
+/* v3.5.9 · Modul 2 UI: eine Kachel, die ehrlich sagt wie viel Risiko wirklich
+   offen ist und ob alles am selben Faden haengt. Keine Betraege noetig, die
+   nicht ohnehin schon da sind. */
+function renderPortfolioRisk(){
+  const el=$('#portfolioRisk'); if(!el) return;
+  const px=portfolioExposure();
+  const head=`<div class="pf-head"><b>🧮 Portfolio-Risiko &amp; Klumpung</b><small>Summe ueber ALLE offenen Positionen · Sektor-Naeherung, keine gerechnete Korrelation · kein Score-Eingriff</small></div>`;
+  if(!px.items.length){
+    el.innerHTML=head+`<span class="hint">Noch keine aktive Position erfasst. Sobald du im Fokusfenster eine reale Position uebernimmst, wird hier das gebundene Gesamtrisiko und die Klumpung berechnet. Budget: <b>${eur(px.budget,0)}</b> (${num(S.portfolioRiskPct ?? DEFAULTS.portfolioRiskPct,2)} % von ${eur(S.equity,0)}) · das entspricht ${px.perTrade>0?Math.floor(px.budget/px.perTrade):0} parallelen Trades zu je ${eur(px.perTrade,0)}.</span>`;
+    return;
+  }
+  const pctClamped=Math.max(0,Math.min(100,px.usedPct));
+  const barTone=px.budgetFull?'full':px.budgetWarn?'warn':'ok';
+  const bar=`<div class="pf-bar ${barTone}" title="Gebundenes Risiko bis zum technischen Stop, inklusive geschaetzter Ausfuehrungskosten. Nicht die Kaufsumme — die waere deutlich hoeher."><span style="width:${pctClamped.toFixed(1)}%"></span></div>`;
+  const budgetLine=`<div class="pf-budget"><span>Gebunden <b>${eur(px.usedRisk,0)}</b></span><span>Budget <b>${eur(px.budget,0)}</b></span><span>Ausgeschoepft <b>${num(px.usedPct,0)} %</b></span><span title="Wie viele weitere Trades noch ins Budget passen — gerechnet mit dem REALEN Risiko je Trade von ${esc(eur(px.perTradeReal,0))}, nicht mit dem reinen Kursrisiko von ${esc(eur(px.perTrade,0))}.">Noch frei <b>${px.slotsLeft} Trade${px.slotsLeft===1?'':'s'}</b> (${eur(px.freeRisk,0)})</span></div>`;
+
+  const secList=px.sectors.length?`<div class="pf-sectors">${px.sectors.map(sx=>`<span class="pf-sec${px.clustered&&px.top&&sx.sector===px.top.sector?' hot':''}" title="${esc(sx.sector)}: ${esc(eur(sx.risk,0))} gebundenes Risiko aus ${sx.n} Position${sx.n===1?'':'en'}."><b>${esc(sx.sector)}</b> ${num(sx.pct,0)} % · ${sx.n}</span>`).join('')}</div>`:'';
+
+  let warn='';
+  if(px.usedPriceRisk>0 && px.costFactor>1.15) warn+=`<div class="pf-warn cost">💡 <b>Dein Einzeltrade-Risiko ist optimistischer als die Realitaet.</b> Die Positionsgroesse rechnet mit reinem Kursrisiko (${eur(px.usedPriceRisk,0)} gebunden). Am Stop kommen Ausfuehrungskosten dazu — real sind es ${eur(px.usedRisk,0)}, also das ${num(px.costFactor,2)}-fache. Ein Trade zu nominell ${eur(px.perTrade,0)} kostet dich am Stop eher ${eur(px.perTradeReal,0)}. Die Restkapazitaet oben ist deshalb bewusst gegen den realen Wert gerechnet.</div>`;
+  if(px.clustered) warn+=`<div class="pf-warn cluster">⚠ <b>${num(px.top.pct,0)} % deines offenen Risikos haengt an einem Faktor: ${esc(px.top.sector)}</b> (${px.top.n} Positionen). Im Stressfall bewegen sich diese Titel erfahrungsgemaess gemeinsam — dein tatsaechliches Risiko ist dann groesser als die Summe der Einzelrisiken suggeriert.</div>`;
+  if(px.budgetFull) warn+=`<div class="pf-warn full">⛔ Gesamt-Risikobudget vollstaendig ausgeschoepft. ${px.guard?'Die Budget-Sperre ist aktiv: neue BUY-Freigaben werden bis zur Entlastung unterdrueckt.':'Die Budget-Sperre ist AUS — neue BUYs werden weiterhin freigegeben. Einschalten in den Einstellungen.'}</div>`;
+  else if(px.budgetWarn) warn+=`<div class="pf-warn near">⚠ ${num(px.usedPct,0)} % des Gesamt-Risikobudgets sind gebunden. Nach dem naechsten Trade zu ${eur(px.perTrade,0)} waeren es ${num(px.budget>0?((px.usedRisk+px.perTrade)/px.budget)*100:0,0)} %.</div>`;
+  if(px.unknownCount) warn+=`<div class="pf-warn unknown">ℹ ${px.unknownCount} Position${px.unknownCount===1?'':'en'} (${eur(px.unknownNotional,0)} Kaufsumme) ${px.unknownCount===1?'ist':'sind'} nicht bewertbar, weil die Aktie gerade nicht geladen ist und damit kein technischer Stop vorliegt. ${px.unknownCount===1?'Sie ist':'Sie sind'} bewusst NICHT geschaetzt und fehlt in der Summe oben — das gebundene Risiko ist also eher hoeher als angezeigt.</div>`;
+
+  el.innerHTML=head+budgetLine+bar+secList+warn+
+    `<small class="pf-note" title="Was diese Kachel bewusst NICHT tut.">Grundlage sind deine erfassten realen Positionen und die technischen Stops aus der Analyse. Die Klumpung ist eine <b>Sektor-Naeherung</b>: zwei Titel im selben Sektor koennen gegenlaeufig laufen, zwei aus verschiedenen Sektoren am selben Zins- oder Dollarfaktor haengen. Eine echte Preisreihen-Korrelation ist noch nicht gerechnet.${px.guard?'':' Die Budget-Sperre ist derzeit AUS: diese Kachel warnt, blockiert aber nichts.'}</small>`;
 }
 
 function renderDepotStrip() {
@@ -1270,18 +1474,31 @@ function renderAttribution(){
     const oos=b.oos?`${b.oos.pct}% <em>(Wilson ${b.oos.wilson}%, n=${b.oosN})</em>`:'–';
     const ins=b.inSample?`${b.inSample.pct}%`:'–';
     const mutedBadge=b.muted?` <span class="attr-muted-badge" title="gestummt seit ${b.mutedDays} Tagen – läuft im Hintergrund weiter">🔇 ${b.mutedDays}T</span>`:'';
-    // Aktions-Button: gestummtes Setup reaktivieren, sonst (bei disable/overfit) stummschalten.
-    let action='';
-    if(b.muted) action=`<button class="attr-btn" data-unmute="${esc(b.key)}">reaktivieren</button>`;
-    else if(b.verdict?.status==='disable'||b.verdict?.status==='overfit') action=`<button class="attr-btn warn" data-mute="${esc(b.key)}">stummschalten</button>`;
+    /* v3.5.8 (P2): Schalter statt Textlink. Zeigt Zustand UND Aktion in EINEM
+       Element: rechts/an = aktiv, links/aus = gestummt. Jetzt fuer JEDE Zeile,
+       nicht nur bei disable/overfit – du sollst jederzeit eingreifen koennen. */
+    const tTitle = b.muted
+      ? `„${b.key}" ist stummgeschaltet: erzeugt kein BUY, wird aber weiter ausgewertet. Schalter nach rechts = wieder aktiv.`
+      : `„${b.key}" ist aktiv und darf BUY erzeugen. Schalter nach links = stummschalten (Auswertung laeuft weiter).`;
+    const action=`<label class="attr-toggle${b.muted?' is-muted':''}" title="${esc(tTitle)}">`
+      +`<input type="checkbox" data-toggleset="${esc(b.key)}"${b.muted?'':' checked'} aria-label="${esc(tTitle)}">`
+      +`<span class="attr-track"><span class="attr-knob"></span></span>`
+      +`<em>${b.muted?'gestummt':'aktiv'}</em></label>`;
     return `<tr class="attr-${b.verdict?.status||'sammelt'}${b.muted?' attr-is-muted':''}"><td>${esc(b.key)}${mutedBadge}</td><td>${b.n}</td><td>${ins}</td><td>${oos}</td><td title="${esc(b.verdict?.reason||'')}">${attrBadge(b.verdict?.status)}</td><td>${action}</td></tr>`;
   }).join('');
   el.innerHTML=`<b>🔬 Selbstauswertung · Modul 0</b> <small>ehrliche Out-of-Sample-Bilanz je Setup · Stummschalten unterdrückt BUY, Auswertung läuft im Hintergrund weiter · kein Score-Eingriff</small>`+
     (buckets.length?`<div class="attr-wrap"><table class="attr-table"><thead><tr><th>Setup</th><th>n</th><th>In-Sample</th><th>Out-of-Sample</th><th>Wächter</th><th>Aktion</th></tr></thead><tbody>${rows}</tbody></table></div>`:`<span class="hint">Noch keine ausgewerteten Setups im ${d.horizonDays||21}-Tage-Fenster. Der Wächter urteilt erst ab ${d.guard?.MIN_SAMPLE||20} Episoden je Setup.</span>`)+
-    (reRecs.length?`<div class="attr-recs reenable"><b>🔔 Wiedereinschalt-Empfehlungen (${reRecs.length})</b>${reRecs.map(r=>`<span title="${esc(r.reason)}">${esc(r.setup)} (Wilson ${r.oosWilson}%)</span>`).join('')}<small>Diese Setups waren gestummt und haben sich out-of-sample über die (höhere) Reaktivierungs-Schwelle erholt.</small></div>`:'')+
+    (reRecs.length?`<div class="attr-recs reenable"><b>🔔 Wiedereinschalt-Empfehlungen (${reRecs.length})</b>${reRecs.map(r=>`<span class="rec-with-action" title="${esc(r.reason)}">${esc(r.setup)} (Wilson ${r.oosWilson}%) <button class="attr-btn ok" data-unmute="${esc(r.setup)}" title="„${esc(r.setup)}" sofort wieder aktivieren – ohne Umweg über die Tabelle.">▶ reaktivieren</button></span>`).join('')}<small>Diese Setups waren gestummt und haben sich out-of-sample über die (höhere) Reaktivierungs-Schwelle erholt.</small></div>`:'')+
     (recs.length?`<div class="attr-recs"><b>⚠ Abschalt-Empfehlungen (${recs.length})</b>${recs.map(r=>`<span title="${esc(r.reason)}">${esc(r.setup)}: ${r.status}</span>`).join('')}<small>Basiert auf Out-of-Sample-Evidenz mit Mehrfachtest-Korrektur (${d.multiTestPenalty||0} pp strenger). Du entscheidest – Button „stummschalten" in der Tabelle.</small></div>`:`<small>Keine Abschalt-Empfehlung – kein Setup ist out-of-sample klar durchgefallen.</small>`)+
-    (mutedList.length?`<div class="attr-muted-list"><b>🔇 Aktuell gestummt (${mutedList.length})</b>${mutedList.map(m=>`<span>${esc(m.setup)} · ${m.mutedDays}T</span>`).join('')}<small>Gestummte Setups erzeugen kein BUY, werden aber weiter ausgewertet (Cron läuft im Hintergrund).</small></div>`:'');
-  // Button-Handler
+    (mutedList.length?`<div class="attr-muted-list"><b>🔇 Aktuell gestummt (${mutedList.length})</b>${mutedList.map(m=>`<span>${esc(m.setup)} · ${m.mutedDays}T</span>`).join('')}<small>Gestummte Setups erzeugen kein BUY, werden aber weiter ausgewertet (Cron läuft im Hintergrund).</small></div>`:'')+
+    /* v3.5.8 (P2): Ebenen-Klarstellung – Mute und die Analyse-Checkboxen sind zwei
+       verschiedene Dinge. Das war die berechtigte Verwirrung aus v3.5.7. */
+    `<small class="attr-scope-note" title="Zwei getrennte Ebenen. Modul 0 bewertet ganze Setup-TYPEN aus der Erfolgsstatistik. Die Checkboxen in den Einstellungen legen fest, welche Analyseverfahren überhaupt in den Score einfließen.">ℹ️ Der Schalter betrifft <b>Setup-Typen</b> (Pullback, Reclaim, Breakout …) – <b>nicht</b> die Analyse-Komponenten (VWAP, EMA21, MTF …) in den Einstellungen. Beide Ebenen bleiben bewusst getrennt: Stummschalten ändert deine Einstellungen nicht.</small>`;
+  // Schalter- und Button-Handler
+  el.querySelectorAll('[data-toggleset]').forEach(t=>t.addEventListener('change',()=>{
+    // checked = aktiv => unmute; nicht checked = gestummt => mute
+    muteSetupAction(t.dataset.toggleset, t.checked?'unmute':'mute');
+  }));
   el.querySelectorAll('[data-mute]').forEach(b=>b.addEventListener('click',()=>muteSetupAction(b.dataset.mute,'mute')));
   el.querySelectorAll('[data-unmute]').forEach(b=>b.addEventListener('click',()=>muteSetupAction(b.dataset.unmute,'unmute')));
 }
@@ -1425,7 +1642,7 @@ function googleFinanceUrl(row){
 function renderStocks() {
   (stockRows||[]).forEach(claudeOverlayRow); // Claude-Modus-Ansicht idempotent anwenden
   const box=$('#stockGroups'),st=$('#stockState'),counts=$('#stockCounts'); if(!box||!st)return;
-  renderDepotStrip(); renderMarketGainers(); renderExtendedWatch(); renderOpeningPanel();
+  renderDepotStrip(); renderPortfolioRisk(); renderMarketGainers(); renderExtendedWatch(); renderOpeningPanel();
   if(stockMeta.configured===false){box.innerHTML='';st.textContent='Aktien-Datenquelle fehlt';st.className='badge err';if(counts)counts.textContent='Aktienradar nicht konfiguriert';stockHeatmap([]);return;}
   const search=($('#stockQ')?.value||'').trim().toUpperCase(); const filter=$('#stockF')?.value||'';
   let stockFiltered=stockRows.filter(r=>(!search||r.symbol.toUpperCase().includes(search)||String(r.name||'').toUpperCase().includes(search)));
@@ -1450,7 +1667,8 @@ function renderStocks() {
   const top=focusedRow||(!focusStock?shown[0]:null);
   if(topBox){if(!top)topBox.innerHTML=search?`<div class="stockfocus-empty">Keine geladene Aktie passend zu „${esc(search)}“. Enter oder 🔎 lädt den Titel direkt.</div>`:(filter==='favorites'?'<div class="stockfocus-empty">Noch keine Aktien-Favoriten. Mit ☆ neben einem Titel hinzufügen.</div>':'');else{
     const sz=stockSizing(top), buy=stockLevel(top)===3, tr=stockTradeability(top), opp=stockOpportunity(top), qm=focusQuoteMeta(top); const struct=Number(top.structurePct||0);
-    topBox.innerHTML=`<div class="stockfocus-card ${top.light}${buy?' buy':''}"><div class="sf-focus-main"><div class="sf-title"><div><small>AUSGEWÄHLTE AKTIE · ${esc(top.symbol)}</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button><b>${esc(top.symbol)}</b><a class="gfinance focus-link" href="${googleFinanceUrl(top)}" target="_blank" rel="noopener" title="${esc(top.symbol)} in Google Finance in einem neuen Tab öffnen">Google Finance ↗</a></h3><div class="focus-livebar ${qm.cls}"><b>${qm.label}</b><span>Kurs ${focusDisplayPrice(top)}</span><span>Quote ${qm.when}</span><span>${esc(qm.src+qm.scope)}</span>${qm.age!=null?`<span>${qm.age}s alt</span>`:''}<span>${esc(stockUpdateLabel(top))}</span><button type="button" id="stockFocusRefresh" title="Diese Aktie neu abfragen; der autonome Whole-Market-Scan bleibt serverseitig.">↻ Aktie</button></div><span class="company-name" title="Vollständiger Firmenname. Warum sinnvoll? Der Ticker allein kann leicht mit ähnlich benannten Wertpapieren verwechselt werden.">${esc((top.securityName&&top.securityName!==top.symbol)?top.securityName:(top.name&&top.name!==top.symbol?top.name:'Firmenname wird noch geladen'))}</span><small class="company-focus" title="Kurzbeschreibung des operativen Fokus aus den verfügbaren Unternehmens-Metadaten. Warum sinnvoll? Sie hilft einzuordnen, wodurch die Aktie wirtschaftlich bewegt werden kann.">${esc((top.companyDescription||'').slice(0,220)||((top.sector&&top.sector!=='Discovery')?top.sector:'Unternehmensfokus noch nicht verifiziert'))}${(!top.companyDescription||!/candidate|program|pipeline|therapy|therapeutic|device|platform|drug/i.test(top.companyDescription))?' · Lead Program/Candidate nicht verifiziert':''}</small><small class="company-exchange" title="Primäres Listing laut verfügbaren Metadaten. Warum sinnvoll? Die Hauptbörse hilft bei Handelszeiten, Liquidität und Dateninterpretation. Höchstes aktuelles Volumen wird nur behauptet, wenn es tatsächlich gemessen werden kann.">Börse: ${esc(top.exchange||'n.v.')}</small><small class="analysis-inline" title="Tatsächlich aktive Analyse-/Sicherheitsmethoden. Situation Engine priorisiert nur Kandidaten und verändert BUY nicht."><b>Analyse:</b> ${esc(analysisMethodsText())}</small><span>${esc(top.sector)} · Score ${num(top.score,1)}${top.preSignalMaturity!=null?' · Reife '+Math.round(top.preSignalMaturity)+'%':''}${top.situationType?` · Situation ${esc(top.situationType)} ${Math.round(Number(top.situationScore)||0)}/100`:''}${top.radarLifecycle&&top.radarLifecycle!=='WATCH'?` · Phase ${esc(top.radarLifecycle)}`:''}</span></div><strong>${buy?'🟢 BUY':VERDICT_ICON[top.light]+' '+esc(top.verdict)}</strong></div><div class="sf-grid"><span>Kurs <b>${focusDisplayPrice(top)}</b><small>${qm.ok?' Live-Quote':' Analyse-/Fallbackpreis'}</small></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span>Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Im FusionPulse-Modus ist dies das Netto-CRV bis zum gemessenen Strukturziel. Im Claude-Modus bleibt die dort definierte Plan-CRV-Logik unverändert.">${S.claudeMode?'Plan-CRV':'Struktur-CRV'} <b>${num(tr.netCrv,1)} : 1${Number(tr.netCrv)<Number(tr.minCrv||0)?' · zu niedrig':''}</b></span><span title="50/50-Plan nach geschätzten Fixkosten und Ausführungsreserve. Eigene Effizienzkennzahl; nicht mit dem Struktur-CRV verwechseln.">Plan-Effizienz <b>${sz?num(sz.planCrvAfterCosts,2)+' : 1':'–'}${!S.claudeMode&&sz&&sz.planCrvAfterCosts<FUSION_MIN_PLAN_EFFICIENCY?' · zu niedrig':''}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Strukturpotenzial = geschätzter technisch plausibler Kursweg bis zum nächsten relevanten Widerstand/Ziel aus Chart-, Elliott-/Fibonacci- und Marktstruktur. Das ist kein erwarteter Gewinn und allein kein Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}${crowdConfirmGauge(top)}</span></div><div class="opportunity-watch ${opp.ready?'ready':'waiting'}"><b>${buy?'BUY FREIGEGEBEN':opp.label}</b><span>${opp.why?esc(opp.why):(opp.reasons.length?esc(opp.reasons.join(' · ')):'Wartet auf Qualität, CRV, Kursweg und wirtschaftlich relevantes Gewinnpotenzial.')}</span></div>${positionPanel(top)}<div class="intraday-chart" title="Kursverlauf. Intraday nutzt 5-Minuten-/IEX-Daten; längere Zeiträume werden passend aggregiert nachgeladen. Warum sinnvoll? Elliott-Strukturen sehen auf verschiedenen Zeitebenen unterschiedlich aus; der längere Chart liefert Kontext, aber kein BUY allein."><span>Chart · <select id="stockChartRange" title="Zeitraum wählen. Warum sinnvoll? Kurz zeigt Entry-Struktur, lang zeigt den übergeordneten Elliott-/Trend-Kontext.">${['5','10','30','60','120','180','240','300','1T','5T','1Wo','3Mo','6Mo','12Mo'].map(m=>`<option value="${m}"${String(m)===String(stockChartMinutes)?' selected':''}>${/^\d+$/.test(m)?m+' min':m}</option>`).join('')}</select></span>${spark((stockChartCache.get(top.symbol+'|'+stockChartMinutes)?.rows?.map(x=>x.c)||(top.intraday||[]).slice(-Math.max(1,Math.ceil((Number(stockChartMinutes)||120)/5)))),420,76)}</div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<div class="stock-interpret"><b>Was hat sich geändert? · Interpretation</b><span>${top.whyNow?.length?`Warum jetzt? ${esc(top.whyNow.join(' · '))} · `:''}${esc(stockInterpretation(top))}</span><small>Radar/Crowd/Search dienen nur der Discovery · 0 % BUY-Gewicht</small></div><small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} ${buyGateHint(top)}</small></div>${stockLadder(top)}</div>`;
+    const hl=stockHeadline(top); // v3.5.8 P0: Kopfzeile darf der Opportunity-Zeile nicht widersprechen
+    topBox.innerHTML=`<div class="stockfocus-card ${hl.light}${buy?' buy':''}"><div class="sf-focus-main"><div class="sf-title"><div><small>AUSGEWÄHLTE AKTIE · ${esc(top.symbol)}</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button><b>${esc(top.symbol)}</b><a class="gfinance focus-link" href="${googleFinanceUrl(top)}" target="_blank" rel="noopener" title="${esc(top.symbol)} in Google Finance in einem neuen Tab öffnen">Google Finance ↗</a></h3><div class="focus-livebar ${qm.cls}"><b>${qm.label}</b><span>Kurs ${focusDisplayPrice(top)}</span><span>Quote ${qm.when}</span><span>${esc(qm.src+qm.scope)}</span>${qm.age!=null?`<span>${qm.age}s alt</span>`:''}<span>${esc(stockUpdateLabel(top))}</span><button type="button" id="stockFocusRefresh" title="Diese Aktie neu abfragen; der autonome Whole-Market-Scan bleibt serverseitig.">↻ Aktie</button></div><span class="company-name" title="Vollständiger Firmenname. Warum sinnvoll? Der Ticker allein kann leicht mit ähnlich benannten Wertpapieren verwechselt werden.">${esc((top.securityName&&top.securityName!==top.symbol)?top.securityName:(top.name&&top.name!==top.symbol?top.name:'Firmenname wird noch geladen'))}</span><small class="company-focus" title="Kurzbeschreibung des operativen Fokus aus den verfügbaren Unternehmens-Metadaten. Warum sinnvoll? Sie hilft einzuordnen, wodurch die Aktie wirtschaftlich bewegt werden kann.">${esc((top.companyDescription||'').slice(0,220)||((top.sector&&top.sector!=='Discovery')?top.sector:'Unternehmensfokus noch nicht verifiziert'))}${(!top.companyDescription||!/candidate|program|pipeline|therapy|therapeutic|device|platform|drug/i.test(top.companyDescription))?' · Lead Program/Candidate nicht verifiziert':''}</small><small class="company-exchange" title="Primäres Listing laut verfügbaren Metadaten. Warum sinnvoll? Die Hauptbörse hilft bei Handelszeiten, Liquidität und Dateninterpretation. Höchstes aktuelles Volumen wird nur behauptet, wenn es tatsächlich gemessen werden kann.">Börse: ${esc(top.exchange||'n.v.')}</small><small class="analysis-inline" title="Tatsächlich aktive Analyse-/Sicherheitsmethoden. Situation Engine priorisiert nur Kandidaten und verändert BUY nicht."><b>Analyse:</b> ${esc(analysisMethodsText())}</small><span>${esc(top.sector)} · Score ${num(top.score,1)}${top.preSignalMaturity!=null?' · Reife '+Math.round(top.preSignalMaturity)+'%':''}${top.situationType?` · Situation ${esc(top.situationType)} ${Math.round(Number(top.situationScore)||0)}/100`:''}${top.radarLifecycle&&top.radarLifecycle!=='WATCH'?` · Phase ${esc(top.radarLifecycle)}`:''}</span></div><strong class="sf-verdict hl-${hl.light}" title="${esc(hl.title)}">${hl.icon} ${esc(hl.text)}</strong></div><div class="sf-grid"><span>Kurs <b>${focusDisplayPrice(top)}</b><small>${qm.ok?' Live-Quote':' Analyse-/Fallbackpreis'}</small></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span>Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span>Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span>TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span>TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Im FusionPulse-Modus ist dies das Netto-CRV bis zum gemessenen Strukturziel. Im Claude-Modus bleibt die dort definierte Plan-CRV-Logik unverändert.">${S.claudeMode?'Plan-CRV':'Struktur-CRV'} <b>${num(tr.netCrv,1)} : 1${Number(tr.netCrv)<Number(tr.minCrv||0)?' · zu niedrig':''}</b></span><span title="50/50-Plan nach geschätzten Fixkosten und Ausführungsreserve. Eigene Effizienzkennzahl; nicht mit dem Struktur-CRV verwechseln.">Plan-Effizienz <b>${sz?num(sz.planCrvAfterCosts,2)+' : 1':'–'}${!S.claudeMode&&sz&&sz.planCrvAfterCosts<FUSION_MIN_PLAN_EFFICIENCY?' · zu niedrig':''}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Strukturpotenzial = geschätzter technisch plausibler Kursweg bis zum nächsten relevanten Widerstand/Ziel aus Chart-, Elliott-/Fibonacci- und Marktstruktur. Das ist kein erwarteter Gewinn und allein kein Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}${crowdConfirmGauge(top)}</span></div><div class="opportunity-watch ${opp.ready?'ready':'waiting'}"><b>${buy?'BUY FREIGEGEBEN':opp.label}</b><span>${opp.why?esc(opp.why):(opp.reasons.length?esc(opp.reasons.join(' · ')):'Wartet auf Qualität, CRV, Kursweg und wirtschaftlich relevantes Gewinnpotenzial.')}</span></div>${positionPanel(top)}<div class="intraday-chart" title="Kursverlauf. Intraday nutzt 5-Minuten-/IEX-Daten; längere Zeiträume werden passend aggregiert nachgeladen. Warum sinnvoll? Elliott-Strukturen sehen auf verschiedenen Zeitebenen unterschiedlich aus; der längere Chart liefert Kontext, aber kein BUY allein."><span>Chart · <select id="stockChartRange" title="Zeitraum wählen. Warum sinnvoll? Kurz zeigt Entry-Struktur, lang zeigt den übergeordneten Elliott-/Trend-Kontext.">${['5','10','30','60','120','180','240','300','1T','5T','1Wo','3Mo','6Mo','12Mo'].map(m=>`<option value="${m}"${String(m)===String(stockChartMinutes)?' selected':''}>${/^\d+$/.test(m)?m+' min':m}</option>`).join('')}</select></span>${spark((stockChartCache.get(top.symbol+'|'+stockChartMinutes)?.rows?.map(x=>x.c)||(top.intraday||[]).slice(-Math.max(1,Math.ceil((Number(stockChartMinutes)||120)/5)))),420,76)}</div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<div class="stock-interpret"><b>Was hat sich geändert? · Interpretation</b><span>${top.whyNow?.length?`Warum jetzt? ${esc(top.whyNow.join(' · '))} · `:''}${esc(stockInterpretation(top))}</span><small>Radar/Crowd/Search dienen nur der Discovery · 0 % BUY-Gewicht</small></div><small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} ${buyGateHint(top)}</small></div>${stockLadder(top)}</div>`;
     topBox.querySelector('[data-favstock]')?.addEventListener('click',e=>toggleStockFavorite(top.symbol,e));
     topBox.querySelector('#stockChartRange')?.addEventListener('change',async e=>{stockChartMinutes=String(e.target.value||'120');const k=top.symbol+'|'+stockChartMinutes,hit=stockChartCache.get(k);if(!hit||Date.now()-Number(hit.ts||0)>120_000){try{const q=new URLSearchParams({symbol:top.symbol,range:stockChartMinutes});if(S.token)q.set('t',S.token);const rr=await fetchWithTimeout('/api/stock-chart?'+q,{cache:'no-store'},10_000);const dd=await rr.json();if(dd?.rows?.length)stockChartCache.set(k,{...dd,ts:Date.now()});}catch{}}renderStocks();});
     topBox.querySelector('#stockFocusRefresh')?.addEventListener('click',async()=>{await searchStockNow(top.symbol,true);renderStocks();});
@@ -1459,7 +1677,7 @@ function renderStocks() {
   const groups=new Map();
   if(filter==='favorites') groups.set('★ Favoritendepot',shown);
   else for(const r of shown){if(!groups.has(r.sector))groups.set(r.sector,[]);groups.get(r.sector).push(r);}
-  box.innerHTML=[...groups.entries()].map(([sector,arr])=>`<section class="stock-sector${filter==='favorites'?' flat-favorites':''}">${filter==='favorites'?'':`<h3>${esc(sector)}</h3>`}${arr.map(r=>{const buy=stockLevel(r)===3,tone=stockStrength(r),tr=stockTradeability(r),sz=stockSizing(r),dm=stockDisplayMeta(r);return `<div class="stockrow ${r.light} tone-${tone}${buy?' buy':''}${signalIsHot('stock',r.symbol)?' signal-hot':''}" draggable="true" data-sym="${esc(r.symbol)}"><div class="sr-head"><button class="draghandle" type="button" title="Aktienfenster ziehen und neu anordnen" aria-label="Aktienfenster neu anordnen">⋮⋮</button><b class="sr-tic">${esc(r.symbol)}</b><button class="favbtn ${isFavStock(r.symbol)?'on':''}" data-favstock="${esc(r.symbol)}" title="${isFavStock(r.symbol)?'Aus Favoriten/Depot entfernen':'Zu Favoriten/Depot hinzufügen'}">${isFavStock(r.symbol)?'★':'☆'}</button><a class="gfinance mini" href="${googleFinanceUrl(r)}" target="_blank" rel="noopener" title="${esc(r.symbol)} in Google Finance öffnen">G↗</a><button class="rowmute" data-mutestock="${esc(r.symbol)}">${isStockMuted(r.symbol)?'🔇':'🔊'}</button></div><div class="sr-name"><b>${esc(dm.name)}</b><small>${esc(dm.theme)}</small></div><div class="sr-nums"><span title="Netto-CRV des 50/50-Tradeplans nach geschätzten Flatex/Tradegate-Kosten.">${num(sz?.planCrvAfterCosts ?? r.netCRV,1)} : 1</span><i>·</i><span>Score ${num(r.score,1)}</span>${r.preSignalMaturity!=null?`<i>·</i><span title="Abstand zur vollständigen Opportunity-Freigabe; kein BUY-Signal.">Reife ${Math.round(r.preSignalMaturity)}%</span>`:''}${r.situationType?`<i>·</i><span title="Situation Engine: reine Discovery-/Priorisierungsinformation, 0 % direktes BUY-Gewicht.">${esc(r.situationType)} ${Math.round(Number(r.situationScore)||0)}/100</span>`:''}<i>·</i><span title="Kursweg bis TP2">TP2 ${num(tr.tp2Pct,1)}%</span></div><div class="sr-verdict" title="${tr.ok?'Praktisch ausführbar nach deinen Grenzen.':'Noch nicht praktisch ausführbar: Marktphase, Mindestgewinn oder Mindestkursweg nicht erfüllt.'}">${buy?'🟢 BUY':VERDICT_ICON[r.light]+' '+esc(r.verdict)}</div><div class="sr-px">${stockPx(r.priceUsd,r.priceEur)}${sz?`<small> · ${buy?'Plan netto '+eur(sz.planNet,0):'keine Kauf-Freigabe'}</small>`:''}</div><div class="sr-hist" title="120-Minuten-Signalverlauf">${stockStatusBand(r)}</div>${crowdGauge(r.symbol,true)}${crowdConfirmGauge(r,true)}<small class="stock-updated fresh-${stockFreshness(r).key}">${esc(stockUpdateLabel(r))}</small>${edgeStrip(r)}${stockPeek(r)}</div>`}).join('')}</section>`).join('');
+  box.innerHTML=[...groups.entries()].map(([sector,arr])=>`<section class="stock-sector${filter==='favorites'?' flat-favorites':''}">${filter==='favorites'?'':`<h3>${esc(sector)}</h3>`}${arr.map(r=>{const buy=stockLevel(r)===3,tone=stockStrength(r),tr=stockTradeability(r),sz=stockSizing(r),dm=stockDisplayMeta(r);const hl=stockHeadline(r);return `<div class="stockrow ${r.light} tone-${tone}${buy?' buy':''}${signalIsHot('stock',r.symbol)?' signal-hot':''}" draggable="true" data-sym="${esc(r.symbol)}"><div class="sr-head"><button class="draghandle" type="button" title="Aktienfenster ziehen und neu anordnen" aria-label="Aktienfenster neu anordnen">⋮⋮</button><b class="sr-tic">${esc(r.symbol)}</b><button class="favbtn ${isFavStock(r.symbol)?'on':''}" data-favstock="${esc(r.symbol)}" title="${isFavStock(r.symbol)?'Aus Favoriten/Depot entfernen':'Zu Favoriten/Depot hinzufügen'}">${isFavStock(r.symbol)?'★':'☆'}</button><a class="gfinance mini" href="${googleFinanceUrl(r)}" target="_blank" rel="noopener" title="${esc(r.symbol)} in Google Finance öffnen">G↗</a><button class="rowmute" data-mutestock="${esc(r.symbol)}">${isStockMuted(r.symbol)?'🔇':'🔊'}</button></div><div class="sr-name"><b>${esc(dm.name)}</b><small>${esc(dm.theme)}</small></div><div class="sr-nums"><span title="Netto-CRV des 50/50-Tradeplans nach geschätzten Flatex/Tradegate-Kosten.">${num(sz?.planCrvAfterCosts ?? r.netCRV,1)} : 1</span><i>·</i><span>Score ${num(r.score,1)}</span>${r.preSignalMaturity!=null?`<i>·</i><span title="Abstand zur vollständigen Opportunity-Freigabe; kein BUY-Signal.">Reife ${Math.round(r.preSignalMaturity)}%</span>`:''}${r.situationType?`<i>·</i><span title="Situation Engine: reine Discovery-/Priorisierungsinformation, 0 % direktes BUY-Gewicht.">${esc(r.situationType)} ${Math.round(Number(r.situationScore)||0)}/100</span>`:''}<i>·</i><span title="Kursweg bis TP2">TP2 ${num(tr.tp2Pct,1)}%</span></div><div class="sr-verdict hl-${hl.light}" title="${esc(hl.title)}">${hl.icon} ${esc(hl.text)}</div><div class="sr-px">${stockPx(r.priceUsd,r.priceEur)}${sz?`<small> · ${buy?'Plan netto '+eur(sz.planNet,0):'keine Kauf-Freigabe'}</small>`:''}</div><div class="sr-hist" title="120-Minuten-Signalverlauf">${stockStatusBand(r)}</div>${crowdGauge(r.symbol,true)}${crowdConfirmGauge(r,true)}<small class="stock-updated fresh-${stockFreshness(r).key}">${esc(stockUpdateLabel(r))}</small>${edgeStrip(r)}${stockPeek(r)}</div>`}).join('')}</section>`).join('');
   box.querySelectorAll('[data-mutestock]').forEach(b=>b.addEventListener('click',e=>toggleStockMute(b.dataset.mutestock,e)));
   box.querySelectorAll('.stockrow[data-sym]').forEach(row=>row.addEventListener('click',e=>{
     if(e.target.closest('button,a') || row.classList.contains('dragging')) return;
@@ -2151,6 +2369,8 @@ function openSettings() {
   $('#sTax').value = S.taxPct; $('#sMode').value = S.analysisMode;
   $('#sStockSound').checked = !!S.stockSound;
   if ($('#sClaudeMode')) $('#sClaudeMode').checked = !!S.claudeMode;
+  if ($('#sPortfolioRisk')) $('#sPortfolioRisk').value = S.portfolioRiskPct ?? DEFAULTS.portfolioRiskPct;
+  if ($('#sPortfolioGuard')) $('#sPortfolioGuard').checked = !!S.portfolioGuard;
   $$('#sComponents input[data-comp]').forEach((c) => { c.checked = S.components.includes(c.dataset.comp); });
   updateCountsInfo();
   loadTiingoQuota();
@@ -2207,6 +2427,9 @@ function applySettings() {
   S.analysisMode = $('#sMode').value;
   S.stockSound = $('#sStockSound').checked;
   S.claudeMode = !!$('#sClaudeMode')?.checked; // reine Client-/Anzeige-Umschaltung, kostet keine API-Credits
+  // v3.5.9: Gesamtbudget mindestens ein Einzeltrade-Risiko, sonst waere sofort alles gesperrt.
+  S.portfolioRiskPct = Math.min(20, Math.max(Number(S.riskPct||0), +$('#sPortfolioRisk')?.value || DEFAULTS.portfolioRiskPct));
+  S.portfolioGuard = !!$('#sPortfolioGuard')?.checked;
   const picked = $$('#sComponents input[data-comp]').filter((c) => c.checked).map((c) => c.dataset.comp);
   S.components = picked.length ? picked : [...ALL_COMPONENTS];
   saveSettings(); applyTheme(); applyAnalysisView(); renderAnalysisMethods(); render(); renderStocks();

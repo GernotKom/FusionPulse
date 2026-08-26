@@ -404,6 +404,20 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 .stockrow.red.tone-1{background:color-mix(in srgb,var(--red) 4%,transparent)}
 .stockrow.red.tone-2{background:color-mix(in srgb,var(--red) 8%,transparent)}
 .stockrow.red.tone-3{background:color-mix(in srgb,var(--red) 12%,transparent)}
+/* v3.5.8 P0: Verdict-Farbe folgt der Kopf-Headline, nicht der Zeilenampel.
+   Hoehere Spezifitaet als .stockrow.<light> .sr-verdict, damit ein gruenes
+   Muster mit unwirtschaftlichem Plan nicht mehr gruen "Kauf" signalisiert. */
+.stockrow .sr-verdict.hl-green{color:var(--green)}
+.stockrow .sr-verdict.hl-yellow{color:var(--yellow)}
+.stockrow .sr-verdict.hl-red{color:var(--red)}
+.stockrow .sr-verdict.hl-muted{color:var(--dim)}
+.pk-verdict.muted{color:var(--dim)}
+.sf-title>strong.sf-verdict{cursor:help}
+.sf-title>strong.hl-green{color:var(--green)}
+.sf-title>strong.hl-yellow{color:var(--yellow)}
+.sf-title>strong.hl-red{color:var(--red)}
+.sf-title>strong.hl-muted{color:var(--dim)}
+.stockfocus-card.muted{border-color:var(--line2)}
 .stockrow.green .sr-verdict{color:var(--green)}
 .stockrow.yellow .sr-verdict{color:var(--yellow)}
 .stockrow.red .sr-verdict{color:var(--red)}
@@ -758,9 +772,47 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 .attr-btn:hover{background:rgba(255,255,255,.08)}
 .attr-btn.warn{border-color:rgba(230,140,50,.5);color:#e0a055}
 .attr-muted-badge{font-size:.7rem;opacity:.75}
+/* v3.5.8 P2: Schieberegler pro Setup-Zeile. Rechts/gruen = aktiv (darf BUY
+   erzeugen), links/grau = gestummt. Zustand und Aktion in EINEM Element. */
+.attr-btn.ok{border-color:color-mix(in srgb,var(--green) 50%,var(--line));color:var(--green)}
+.attr-toggle{display:inline-flex;align-items:center;gap:.4rem;cursor:pointer;user-select:none}
+.attr-toggle input{position:absolute;opacity:0;width:0;height:0}
+.attr-toggle .attr-track{position:relative;width:34px;height:18px;border-radius:999px;background:var(--line2,#444);border:1px solid var(--line,#333);transition:background .15s ease}
+.attr-toggle .attr-knob{position:absolute;top:1px;left:1px;width:14px;height:14px;border-radius:50%;background:var(--dim,#999);transition:transform .15s ease,background .15s ease}
+.attr-toggle input:checked+.attr-track{background:color-mix(in srgb,var(--green) 45%,transparent);border-color:color-mix(in srgb,var(--green) 60%,var(--line))}
+.attr-toggle input:checked+.attr-track .attr-knob{transform:translateX(16px);background:var(--green)}
+.attr-toggle input:focus-visible+.attr-track{outline:2px solid var(--green);outline-offset:2px}
+.attr-toggle em{font-style:normal;font-size:.7rem;color:var(--dim);min-width:4.6em}
+.attr-toggle.is-muted em{color:var(--dim);opacity:.85}
+.attr-scope-note{display:block;margin-top:.55rem;padding:.45rem .6rem;border:1px dashed var(--line2,#444);border-radius:.5rem;font-size:.72rem;color:var(--dim);cursor:help;line-height:1.45}
+.rec-with-action{display:inline-flex;align-items:center;gap:.4rem}
 .attr-table tr.attr-is-muted td{opacity:.6}
 .attr-recs.reenable{background:rgba(60,200,120,.10)}
 .attr-recs.reenable span{background:rgba(60,200,120,.18)}
 .attr-muted-list{margin-top:.5rem;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}
 .attr-muted-list span{background:rgba(150,150,150,.15);border-radius:.4rem;padding:.15rem .5rem;font-size:.8rem}
 .attr-muted-list small{flex-basis:100%;opacity:.65}
+
+/* ==== v3.5.9 · Modul 2: Portfolio-Risiko & Klumpung ======================== */
+.portfolio-card{margin:10px 0;padding:11px 13px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}
+.portfolio-card .pf-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:.5rem}
+.portfolio-card .pf-head b{font-size:.95rem}
+.portfolio-card .pf-head small,.portfolio-card .hint{color:var(--dim);font-size:.72rem;line-height:1.5}
+.pf-budget{display:flex;flex-wrap:wrap;gap:.45rem;margin:.6rem 0 .4rem}
+.pf-budget span{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.35rem .55rem;font-size:.66rem;color:var(--dim)}
+.pf-budget b{display:block;color:var(--fg);font-size:.82rem;margin-top:2px}
+.pf-bar{position:relative;height:9px;border-radius:999px;background:var(--panel);border:1px solid var(--line);overflow:hidden}
+.pf-bar>span{display:block;height:100%;background:var(--green);transition:width .2s ease}
+.pf-bar.warn>span{background:var(--yellow)}
+.pf-bar.full>span{background:var(--red)}
+.pf-sectors{display:flex;flex-wrap:wrap;gap:.35rem;margin:.55rem 0}
+.pf-sec{font-size:.68rem;color:var(--dim);background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.25rem .55rem;cursor:help}
+.pf-sec b{color:var(--fg)}
+.pf-sec.hot{border-color:color-mix(in srgb,var(--yellow) 60%,var(--line));color:var(--yellow)}
+.pf-warn{margin-top:.45rem;padding:.5rem .6rem;border-radius:.5rem;font-size:.74rem;line-height:1.5;border:1px solid var(--line2)}
+.pf-warn.cluster{border-color:color-mix(in srgb,var(--yellow) 55%,var(--line));background:color-mix(in srgb,var(--yellow) 8%,transparent)}
+.pf-warn.near{border-color:color-mix(in srgb,var(--yellow) 40%,var(--line))}
+.pf-warn.full{border-color:color-mix(in srgb,var(--red) 55%,var(--line));background:color-mix(in srgb,var(--red) 8%,transparent)}
+.pf-warn.cost{border-style:dashed;color:var(--dim)}
+.pf-warn.unknown{color:var(--dim);border-style:dashed}
+.pf-note{display:block;margin-top:.55rem;font-size:.68rem;color:var(--dim);line-height:1.5;cursor:help}

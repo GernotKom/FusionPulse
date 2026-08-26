@@ -1,3 +1,82 @@
+# FusionPulse v3.5.9 · Modul 2: Portfolio-Risiko & Klumpung (Paket B, Teil 1)
+
+## Die Luecke
+Jeder einzelne Trade haelt brav 0,75 % Risiko ein. Fuenf gleichzeitig offene Trades halten dann 3,75 % — und wenn vier davon im selben Sektor haengen, ist auch das noch geschoent, weil sie im Stressfall gemeinsam fallen. Bisher hat das nichts in der App zusammengerechnet. Das Einzeltrade-Risiko war eine korrekte Zahl mit einer irrefuehrenden Bedeutung.
+
+## Was neu ist
+Eine Kachel im Aktien-Tab (`🧮 Portfolio-Risiko & Klumpung`), die drei Dinge sagt:
+
+1. **Gebundenes Gesamtrisiko** ueber alle erfassten realen Positionen, gegen ein neues, explizit einstellbares **Gesamt-Risikobudget** (Standard 2,25 % = drei parallele Trades). Balken, Prozentwert, und wie viele Trades noch reinpassen.
+2. **Klumpung nach Sektor, risikogewichtet** — nicht nach Stueckzahl und nicht nach Kaufsumme, sondern nach dem Risiko, das im Stressfall gleichzeitig schlagend wird. Ab 50 % Anteil und mindestens zwei Positionen: „⚠ X % deines offenen Risikos haengt an einem Faktor".
+3. **Was nicht bewertbar ist**, wird ausgewiesen statt geschaetzt. Eine Position, deren Aktie gerade nicht geladen ist, hat keinen bekannten technischen Stop — sie faellt aus der Summe heraus und wird explizit genannt, mit dem Hinweis, dass das echte Risiko damit eher hoeher liegt als angezeigt. Fail-closed statt schoengerechnet.
+
+## Nebenbefund beim Bau: dein Einzeltrade-Risiko ist optimistischer als die Realitaet
+Beim Rechnen an echten Fixtures ist aufgefallen: `equity x riskPct` ist **reines Kursrisiko**. Am Stop verlierst du zusaetzlich die Ausfuehrungskosten beider Seiten. Bei 5.000 € und 0,75 % werden aus nominell 37,50 € real eher **63 €** — Faktor 1,69 im getesteten Fall. Ein Budget aus „n × 37,50 €" waere also systematisch zu optimistisch gewesen.
+
+Konsequenz: Die Restkapazitaet wird gegen das **reale** Risiko je Trade gerechnet, und der Aufschlag stammt nicht aus einer Annahme, sondern aus deinen eigenen offenen Positionen. Die Kachel zeigt den Faktor offen an, statt ihn in einer Konstante zu verstecken.
+
+Drei parallele Trades zu je „0,75 %" sprengen ein 2,25-%-Budget deshalb rechnerisch — 157 % Auslastung. Das ist kein Rechenfehler der Kachel, sondern genau der Punkt, den sie sichtbar machen soll.
+
+## Budget-Sperre: optional, und sie kann nur abwerten
+Neu in den Einstellungen: **„Budget-Sperre: kein neues BUY bei ausgeschoepftem Gesamtrisiko"**.
+- **Standardmaessig AUS.** Ohne sie warnt die Kachel nur und aendert am Verhalten nichts — der ChatGPT-Strang bleibt unberuehrt.
+- Eingeschaltet unterdrueckt sie neue BUY-Freigaben (Rueckstufung auf „beobachten", nicht ausblenden), sobald das Budget fuer einen weiteren Trade nicht mehr reicht.
+- Sie kann **ausschliesslich abwerten**, nie eine Freigabe erzeugen — dieselbe Mechanik wie beim Stummschalten, im Test ueber alle Ampelzustaende geprueft.
+- Bereits offene Positionen sind ausgenommen: die Sperre verhindert Zukauf, blockiert aber niemals einen Ausstieg.
+- Die Kopfzeile nennt den Grund: **🟡 Setup ok · Risikobudget ausgeschoepft**, mit den konkreten Zahlen im Tooltip.
+
+## Ehrlichkeitsgrenze (steht so im UI)
+„Korrelation" ist hier eine **Sektor-Naeherung**, kein gerechneter Korrelationskoeffizient. Zwei Titel im selben Sektor koennen gegenlaeufig laufen; zwei aus verschiedenen Sektoren koennen am selben Zins- oder Dollarfaktor haengen. Eine echte Preisreihen-Korrelation kostet zusaetzliche Tiingo-Last und ist bewusst noch nicht gebaut — sie steht als offener Punkt, nicht als stillschweigend erledigt.
+
+## Sicherheit
+Kein Score veraendert. Keine technische Marke verschoben. Keine bestehende Schwelle angefasst. Alle vier SHA-256-Bloecke des Claude-Modus unabhaengig nachgerechnet und identisch. Alle **9** Testsuiten gruen, `npm run check` gruen.
+
+Zwei Negativkontrollen gefahren: Klumpung nach Stueckzahl statt Risiko gewichtet → Suite faellt. Unbewertbares Risiko geschaetzt statt ausgewiesen → Suite faellt. Die Tests koennen die jeweiligen Fehler also tatsaechlich sehen.
+
+---
+
+# FusionPulse v3.5.8 · P0: Kopfzeile und Wirtschaftlichkeit sagen wieder dasselbe
+
+## Der Befund (SOFI, 26.8., v3.5.6)
+Die Fokus-Karte zeigte oben gross **"🟢 Kauf-Setup · Claude"** (Score 8,3, PULLBACK 74/100), waehrend direkt darunter stand: Plan-CRV 1,1:1 "zu niedrig", Weg TP2 nur 1,6 %, Gesamtplan netto 54 € — und die Opportunity-Zeile sagte klar "UNINTERESSANT · nur 54 € – fuer Aufwand/Risiko zu klein".
+
+**Ursache:** Die Kopfzeile las stur `r.light` und `r.verdict`. Beide bewerten ausschliesslich die **Musterqualitaet**. Die wirtschaftliche Pruefung (CRV, Netto-Potenzial, Kursweg) lief voellig getrennt in `stockOpportunity()` und hatte auf die Kopf-Ampel keinerlei Einfluss. Der gruene Punkt hat also nie behauptet, was der Nutzer verstaendlicherweise gelesen hat — aber genau das ist der Fehler: eine Anzeige, die man falsch lesen MUSS, ist eine falsche Anzeige. Sie verfuehrt zu einem Trade, den das System selbst im Kleingedruckten ablehnt.
+
+## Der Fix
+Neu ist `stockHeadline(r)` — eine **reine Anzeigefunktion**, die Musterqualitaet, Freigabe-Status und wirtschaftliche Bewertung zu EINER Aussage zusammenfuehrt. Statt "🟢 Kauf-Setup · Claude" steht im SOFI-Fall jetzt:
+
+> **🟡 Setup ok · wirtschaftlich uninteressant · Claude**
+> (Tooltip: "Das technische Muster ist in Ordnung, der Trade lohnt sich wirtschaftlich aber nicht. Plan-CRV 1,1:1 liegt unter 1,6:1. Technische Marken werden dafuer NICHT verschoben.")
+
+Die Kopfzeile unterscheidet jetzt fuenf Gruende: `economic` (CRV/Netto/Kursweg), `data` (nicht live), `phase` (ausserhalb Handelsfenster), `executability`, `quality`. Der Grundtyp kommt aus `stockOpportunity().blockKind` — **eine** Wahrheitsquelle, keine zweite Schwellenlogik.
+
+Umgestellt sind alle drei Anzeigestellen: Fokus-Karte, Aktienzeile und Peek-Karte. Die Farbe folgt mit (gruener Rahmen/gruene Schrift verschwinden bei Abwertung).
+
+## Was ausdruecklich NICHT passiert ist
+- **Kein Score veraendert.** Die Musterbewertung bleibt gruen — sie ist ja korrekt.
+- **Keine technische Marke verschoben.** Entry/Stop/TP1/TP2 sind unangetastet (Invariante 4). Der Trade wird nicht "passend gerechnet", er wird ehrlich als unattraktiv beschrieben.
+- **Keine Schwelle veraendert.** Weder Claude- noch FusionPulse-Gates wurden angefasst.
+- **Alle vier SHA-256-Bloecke unabhaengig nachgeprueft und identisch.**
+
+## Fail-closed strukturell erzwungen
+`HEADLINE_RANK` + eine Klemme in `stockHeadline` sorgen dafuer, dass die Kopfzeile gegenueber `r.light` nur **abwerten**, niemals aufwerten kann. Ein gelbes oder rotes Muster kann durch keinen Pfad eine gruene Kopfzeile bekommen (Invariante 1). Das ist im Test ueber alle drei Ampelzustaende geprueft.
+
+Zusaetzlich: ein ueber Modul 0 **gestummtes** Setup zeigt im Kopf jetzt "🔇 Setup stummgeschaltet · kein BUY" statt weiterhin "Kauf-Setup" — derselbe Widerspruch, nur eine Ebene tiefer.
+
+## P2 · Modul 0 bekommt echte Schalter
+- Jede Setup-Zeile hat statt des Textlinks einen **Schieberegler**: rechts/gruen = aktiv, links/grau = gestummt. Zustand und Aktion in einem Element, und jetzt fuer **jede** Zeile — nicht mehr nur bei Abschalt-Empfehlung.
+- Die 🔔 Wiedereinschalt-Empfehlung hat einen eigenen Direktbutton ("▶ reaktivieren"), man muss nicht mehr die Tabelle suchen.
+- Neue Klarstellung im UI: Der Schalter betrifft **Setup-Typen** (Pullback, Reclaim, Breakout …), **nicht** die Analyse-Komponenten (VWAP, EMA21, MTF …) in den Einstellungen. Beide Ebenen bleiben getrennt — das war korrekt so, aber nicht kommuniziert.
+
+## Funktionsnachweis (kein Regex-Versprechen)
+Neu ist `tests/client-harness.mjs`: `public/app.js` wird in einer VM mit gestubbten Browser-APIs **wirklich ausgefuehrt**. Die neue 8. Testsuite baut den SOFI-Fall numerisch nach (Entry 25,00 / Stop 24,90 / TP1 25,20 / TP2 25,40 bei 5.000 € Kapital und 0,75 % Risiko → Plan-CRV 1,16:1, Weg TP2 1,6 %, Gesamtplan netto 54 €) und prueft die Kopfzeile am laufenden Code.
+
+Gegenprobe eingebaut: ein wirtschaftlich tragfaehiger Trade (netto 448 €, Plan-CRV 9,6:1) zeigt weiterhin **🟢 BUY**. Negativkontrolle gefahren: mit kuenstlich zurueckgedrehtem Fix faellt die Suite — der Test kann den Fehler also tatsaechlich sehen.
+
+Alle 8 Suiten gruen. `npm run check` gruen.
+
+---
+
 # FusionPulse v3.5.7 · Paket A: Modul 0 wird scharf (Stummschalten + Rehabilitation)
 
 ## Was neu ist

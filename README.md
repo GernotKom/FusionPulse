@@ -1,4 +1,4 @@
-# FusionPulse v3.5.7
+# FusionPulse v3.5.9
 
 **Aktueller Stand:** v3.5.6 integriert die kumulative Pflicht-VL in die aktuelle v3.5.5-Arbeitsbasis, ohne Claude- oder Aladdin-Bewertungsmethodik zu verändern. Neu im FokusScope sind reale Positionsübernahme (Kaufkurs EUR/Tradegate + Stückzahl), sofortige SL/TP1/TP2-/Netto-CRV-/€-Berechnung, Teilverkauf/Restposition und persistente Verkaufsalarme. Die Aktien-Heatmap ist deutlich größer, besitzt direkt beschriftete Quadranten und behält Trails/Dynamik. Bereits vorhandene Refresh-/Freshness-/Methoden-/Learning-/Aladdin-Schichten bleiben erhalten und werden durch Safety-Regressionen geschützt. Vor Produktivfreigabe bleibt der UI-Smoke-Test nach Deployment verpflichtend.
 

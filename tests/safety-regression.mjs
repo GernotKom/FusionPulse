@@ -328,10 +328,220 @@ console.log('✓ FusionPulse v3.5.6 VL heatmap/position/alarm regressions: OK');
   assert.match(workerText,/evaluated\.filter\(b=>!b\.muted &&/,'disable-Empfehlungen muessen gestummte Setups ausschliessen');
   // Client: Stummliste muss die BUY-Freigabe unterdruecken.
   assert.match(app,/let mutedSetupSet = new Set\(\)/,'Client muss Stummliste fuehren');
-  assert.match(app,/&& !muted\) \? 3/,'stockLevel muss BUY (Stufe 3) fuer gestummte Setups unterdruecken');
+  // v3.5.9: stockLevel prueft zusaetzlich das Gesamt-Risikobudget. Die Mute-Bedingung
+  // muss dabei erhalten bleiben — beide duerfen ausschliesslich abwerten.
+  assert.match(app,/!muted && !overBudget\) \? 3/,'stockLevel muss BUY (Stufe 3) fuer gestummte Setups weiterhin unterdruecken');
   assert.match(app,/async function muteSetupAction/,'Client muss Stummschalt-Aktion haben');
   // Rehabilitation braucht mehr OOS-Evidenz als eine normale Bewertung.
   assert.match(workerText,/oosN>=REHAB\.REENABLE_OOS_MIN/,'Rehabilitation muss genug OOS-Episoden verlangen');
 }
 
 console.log('✓ FusionPulse v3.5.7 mute/rehabilitation regressions: OK');
+
+// ---------------------------------------------------------------------------
+// v3.5.8 · P0: Kopfzeile darf der wirtschaftlichen Bewertung nicht widersprechen.
+// Anders als die Suiten oben wird der Client hier WIRKLICH ausgefuehrt
+// (tests/client-harness.mjs), damit das nicht nur ein Regex-Versprechen ist.
+// Alle Fixtures sind eigens fuer diesen Befund gebaut.
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const nowSql = () => new Date().toISOString().slice(0,19).replace('T',' ');
+
+  /** Basis: Entry 25,00 / Stop 24,90 => 375 Stueck bei 37,50 EUR Risiko (5.000 EUR, 0,75 %). */
+  const row = (over={}) => ({
+    symbol:'SOFI', name:'SoFi Technologies', sector:'Financials',
+    light:'green', score:8.3, verdict:'Kauf-Setup · Claude',
+    claude:{ light:'green', score:8.3, verdict:'Kauf-Setup · Claude', expectancyR:0.31, blockers:[] },
+    entryEur:25.00, stopEur:24.90, tp1Eur:25.20, tp2Eur:25.40, priceEur:25.02,
+    entryUsd:29.25, stopUsd:29.13, tp1Usd:29.48, tp2Usd:29.72, priceUsd:29.27,
+    netCRV:1.1, tp2Pct:1.6, relVol:1.7,
+    setup:'Pullback', situationType:'PULLBACK', situationScore:74,
+    updated: nowSql(), marketPhase:'regular', ...over
+  });
+  const live = (sym='SOFI') => { C.stockMeta = { ts:Date.now(), refreshedSymbols:[sym], market:{key:'regular'} }; };
+
+  C.S.claudeMode = true;
+  C.mutedSetupSet = new Set();
+  live();
+
+  // -- 1) Der reproduzierte SOFI-Fall (Screenshots 26.8., v3.5.6).
+  const sofi = row();
+  const sz = C.stockSizing(sofi), opp = C.stockOpportunity(sofi), hl = C.stockHeadline(sofi);
+  assert.ok(Math.abs(sz.planNet - 54) < 3, `Fixture muss den 54-EUR-Plan reproduzieren, ist ${sz.planNet.toFixed(1)}`);
+  assert.ok(Math.abs(sz.planCrvAfterCosts - 1.1) < 0.12, `Fixture muss Plan-CRV ~1,1:1 reproduzieren, ist ${sz.planCrvAfterCosts.toFixed(2)}`);
+  assert.equal(sofi.light, 'green', 'Musterqualitaet bleibt gruen – der Score wird NICHT angefasst');
+  assert.equal(C.stockLevel(sofi), 2, 'Es gab und gibt keine BUY-Freigabe fuer diesen Trade');
+  assert.equal(opp.blockKind, 'economic', 'Blockade muss als wirtschaftlich erkannt werden');
+  assert.equal(hl.light, 'yellow', 'P0: Kopf-Ampel darf bei unwirtschaftlichem Plan nicht mehr gruen sein');
+  assert.equal(hl.kind, 'economic', 'Kopfzeile muss den wirtschaftlichen Grund fuehren');
+  assert.doesNotMatch(hl.text, /Kauf-Setup/, 'P0: Kopfzeile darf nicht mehr "Kauf-Setup" sagen, wenn der Trade sich nicht lohnt');
+  assert.match(hl.text, /wirtschaftlich uninteressant/, 'Kopfzeile muss den Widerspruch benennen statt ihn zu verstecken');
+  assert.match(hl.text, /· Claude/, 'Die Modus-Kennzeichnung darf durch den Fix nicht verlorengehen');
+  // Technische Marken bleiben unangetastet (Invariante 4).
+  assert.equal(sofi.entryEur, 25.00); assert.equal(sofi.stopEur, 24.90);
+  assert.equal(sofi.tp1Eur, 25.20);  assert.equal(sofi.tp2Eur, 25.40);
+  assert.equal(sofi.score, 8.3, 'Der Score darf durch reine Anzeigelogik nicht veraendert werden');
+
+  // -- 2) Gegenprobe: ein wirtschaftlich tragfaehiger Trade MUSS weiter BUY zeigen.
+  //       Sonst waere der Fix eine stille Feature-Abschaltung.
+  const good = row({ tp1Eur:26.00, tp2Eur:27.50, tp1Usd:30.42, tp2Usd:32.18, tp2Pct:10, netCRV:3.2 });
+  const gz = C.stockSizing(good), gh = C.stockHeadline(good);
+  assert.ok(gz.planNet >= 120, `Gegenprobe muss ueber der Claude-Schwelle liegen, ist ${gz.planNet.toFixed(0)} EUR`);
+  assert.equal(C.stockLevel(good), 3, 'Gegenprobe muss eine echte BUY-Freigabe sein');
+  assert.equal(gh.light, 'green', 'Ein echter BUY darf nicht faelschlich abgewertet werden');
+  assert.equal(gh.text, 'BUY', 'Echter BUY muss unveraendert als BUY erscheinen');
+
+  // -- 3) Fail-closed: die Kopfzeile darf NIEMALS besser sein als r.light (Invariante 1).
+  for (const lt of ['red','yellow','green']) {
+    const h = C.stockHeadline(row({ light:lt, verdict:'Test · Claude' }));
+    assert.ok(C.HEADLINE_RANK[h.light] <= C.HEADLINE_RANK[lt],
+      `Kopfzeile darf ${lt} nicht aufwerten (wurde ${h.light})`);
+  }
+  assert.notEqual(C.stockHeadline(row({ light:'yellow' })).light, 'green', 'Gelbes Muster darf nie gruene Kopfzeile bekommen');
+  assert.notEqual(C.stockHeadline(row({ light:'red' })).light, 'green', 'Rotes Muster darf nie gruene Kopfzeile bekommen');
+
+  // -- 4) Stumme Setups (Paket A) duerfen im Kopf nicht als Kauf-Setup erscheinen.
+  C.mutedSetupSet = new Set(['PULLBACK']);
+  const muted = C.stockHeadline(good);
+  assert.equal(muted.kind, 'muted', 'Gestummtes Setup muss im Kopf als stumm erkennbar sein');
+  assert.doesNotMatch(muted.text, /Kauf-Setup|^BUY/, 'Gestummtes Setup darf keinen Kauf-Eindruck erzeugen');
+  assert.notEqual(muted.light, 'green', 'Gestummtes Setup darf keine gruene Kopf-Ampel behalten');
+  C.mutedSetupSet = new Set();
+
+  // -- 5) Nicht-live Daten: gruenes Muster, aber Datenlage traegt keine Freigabe.
+  C.stockMeta = { ts:0, refreshedSymbols:[], market:{key:'regular'} };
+  const stale = C.stockHeadline(row({ tp1Eur:26.00, tp2Eur:27.50, tp2Pct:10, updated:'2020-01-01 12:00:00' }));
+  assert.notEqual(stale.light, 'green', 'Stale Daten duerfen keine gruene Kopfzeile erzeugen (fail-closed)');
+  assert.equal(stale.kind, 'data', 'Stale Daten muessen als Datenproblem benannt werden');
+  live();
+
+  // -- 6) Ausserhalb des Handelsfensters darf die Kopfzeile ebenfalls nicht "Kauf" rufen.
+  C.stockMeta = { ts:Date.now(), refreshedSymbols:['SOFI'], market:{key:'closed'} };
+  const closed = C.stockHeadline(row({ tp1Eur:26.00, tp2Eur:27.50, tp2Pct:10 }));
+  assert.notEqual(closed.light, 'green', 'Geschlossener Markt darf keine gruene Kauf-Kopfzeile erzeugen');
+  live();
+
+  // -- 7) Render-Guards: alle drei Anzeigestellen muessen ueber stockHeadline laufen.
+  assert.match(app, /function stockHeadline\(r\)/, 'stockHeadline muss existieren');
+  assert.doesNotMatch(app, /VERDICT_ICON\[top\.light\]/, 'Fokus-Karte darf die Ampel nicht mehr direkt aus r.light lesen');
+  assert.doesNotMatch(app, /VERDICT_ICON\[r\.light\] *\+/, 'Aktienzeile/Peek duerfen die Ampel nicht mehr direkt aus r.light lesen');
+  assert.match(app, /<strong class="sf-verdict hl-\$\{hl\.light\}"/, 'Fokus-Kopf muss die Headline-Ampel rendern');
+  assert.match(app, /<div class="sr-verdict hl-\$\{hl\.light\}"/, 'Aktienzeile muss die Headline-Ampel rendern');
+  assert.match(app, /class="pk-verdict \$\{h\.light\}"/, 'Peek-Kopf muss die Headline-Ampel rendern');
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url),'utf8');
+  assert.match(css, /\.stockrow \.sr-verdict\.hl-yellow\{color:var\(--yellow\)\}/, 'Abgewertete Kopfzeile muss auch farblich abgewertet sein');
+
+  // -- 8) P2: Schalter statt Textlink in Modul 0 (vom Nutzer explizit gewuenscht).
+  assert.match(app, /data-toggleset="\$\{esc\(b\.key\)\}"/, 'Jede Setup-Zeile muss einen Schalter statt eines Textlinks haben');
+  assert.match(app, /\$\{b\.muted\?'':' checked'\}/, 'Schalterstellung muss den Zustand abbilden: aktiv = rechts/an');
+  assert.match(app, /muteSetupAction\(t\.dataset\.toggleset, t\.checked\?'unmute':'mute'\)/, 'Schalter muss aktiv=unmute / gestummt=mute abbilden');
+  assert.doesNotMatch(app, /data-unmute="\$\{esc\(b\.key\)\}">reaktivieren</, 'Der alte Textlink darf nicht zurueckkehren');
+  assert.match(app, /reenable[\s\S]{0,600}data-unmute="\$\{esc\(r\.setup\)\}"/, 'Wiedereinschalt-Empfehlung braucht einen eigenen Direktbutton');
+  assert.match(app, /attr-scope-note[\s\S]{0,400}Setup-Typen/, 'UI muss klarstellen, dass Mute Setup-TYPEN betrifft');
+  assert.match(app, /attr-scope-note[\s\S]{0,600}nicht<\/b> die Analyse-Komponenten/, 'UI muss die Abgrenzung zu den Analyse-Checkboxen benennen');
+  const css2 = fs.readFileSync(new URL('../public/style.css', import.meta.url),'utf8');
+  assert.match(css2, /\.attr-toggle input:checked\+\.attr-track/, 'Schalter braucht einen sichtbaren Ein-Zustand');
+  assert.match(css2, /translateX\(16px\)/, 'Schalterknopf muss im aktiven Zustand nach rechts wandern');
+}
+
+console.log('✓ FusionPulse v3.5.8 headline/economic-consistency regressions: OK');
+
+// ---------------------------------------------------------------------------
+// v3.5.9 · Modul 2: Portfolio-Risiko & Klumpung (Paket B, Teil 1).
+// Funktional gegen den laufenden Client geprueft, eigene Fixtures.
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  C.S.equity = 5000; C.S.riskPct = 0.75; C.S.portfolioRiskPct = 2.25; C.S.portfolioGuard = false;
+  C.S.claudeMode = true; C.mutedSetupSet = new Set();
+
+  const rows = [
+    { symbol:'AAA', sector:'Technologie', entryEur:25.00, stopEur:24.90, tp1Eur:26.00, tp2Eur:27.50, priceEur:25.00 },
+    { symbol:'BBB', sector:'Technologie', entryEur:50.00, stopEur:49.00, tp1Eur:52.00, tp2Eur:55.00, priceEur:50.00 },
+    { symbol:'CCC', sector:'Healthcare',  entryEur:10.00, stopEur: 9.50, tp1Eur:11.00, tp2Eur:12.00, priceEur:10.00 },
+  ];
+  C.stockRows = rows;
+  C.stockPositions = {
+    AAA:{active:true, entryEur:25, qty:375, restQty:375},
+    BBB:{active:true, entryEur:50, qty:37,  restQty:37},
+    CCC:{active:true, entryEur:10, qty:60,  restQty:60},
+  };
+
+  const px = C.portfolioExposure();
+  assert.equal(px.budget, 112.5, 'Gesamtbudget muss equity x portfolioRiskPct sein');
+  assert.equal(px.items.length, 3, 'Alle aktiven Positionen muessen erfasst werden');
+  assert.ok(px.usedRisk > px.usedPriceRisk, 'Reales Risiko muss ueber dem reinen Kursrisiko liegen (Ausfuehrungskosten)');
+  assert.ok(px.costFactor > 1.15, `Kostenfaktor muss den Aufschlag sichtbar machen, ist ${px.costFactor.toFixed(2)}`);
+  assert.ok(px.perTradeReal > px.perTrade, 'Reales Risiko je Trade muss ueber dem nominellen liegen');
+  assert.ok(px.budgetFull, 'Drei parallele Trades muessen ein 2,25-%-Budget rechnerisch sprengen');
+
+  // Klumpung: risikogewichtet, nicht nach Stueckzahl oder Kaufsumme.
+  assert.equal(px.top.sector, 'Technologie', 'Groesster Risikoblock muss der Technologie-Sektor sein');
+  assert.ok(px.top.pct >= 50, `Klumpungsanteil muss ueber der Warnschwelle liegen, ist ${px.top.pct.toFixed(0)} %`);
+  assert.equal(px.clustered, true, 'Zwei Positionen mit >50 % Risikoanteil muessen als Klumpung gelten');
+  const sum = px.sectors.reduce((a,x)=>a+x.pct,0);
+  assert.ok(Math.abs(sum-100) < 0.01, 'Sektor-Anteile muessen sich auf 100 % addieren');
+
+  // Ein einzelner Titel ist keine Klumpung (sonst waere jede erste Position eine Warnung).
+  C.stockPositions = { AAA:{active:true, entryEur:25, qty:375, restQty:375} };
+  assert.equal(C.portfolioExposure().clustered, false, 'Eine einzelne Position darf keine Klumpungswarnung ausloesen');
+
+  // Unbewertbare Position wird NICHT geschaetzt, sondern ausgewiesen (fail-closed).
+  C.stockPositions = { ZZZ:{active:true, entryEur:80, qty:20, restQty:20} };
+  const unknown = C.portfolioExposure();
+  assert.equal(unknown.unknownCount, 1, 'Position ohne geladene Zeile muss als unbewertbar gezaehlt werden');
+  assert.equal(unknown.usedRisk, 0, 'Unbewertbares Risiko darf NICHT geschaetzt in die Summe einfliessen');
+  assert.ok(unknown.unknownNotional > 0, 'Die Kaufsumme der unbewertbaren Position muss trotzdem sichtbar sein');
+
+  // -- Budget-Sperre: standardmaessig AUS, und sie darf nur abwerten.
+  C.stockRows = rows;
+  C.stockPositions = {
+    AAA:{active:true, entryEur:25, qty:375, restQty:375},
+    BBB:{active:true, entryEur:50, qty:37,  restQty:37},
+  };
+  C.stockMeta = { ts:Date.now(), refreshedSymbols:['DDD'], market:{key:'regular'} };
+  const cand = {
+    symbol:'DDD', name:'Kandidat', sector:'Energie', light:'green', score:8.3, verdict:'Kauf-Setup · Claude',
+    claude:{ light:'green', score:8.3, verdict:'Kauf-Setup · Claude', expectancyR:0.4, blockers:[] },
+    entryEur:25.00, stopEur:24.90, tp1Eur:26.00, tp2Eur:27.50, priceEur:25.00,
+    entryUsd:29.25, stopUsd:29.13, tp1Usd:30.42, tp2Usd:32.18, priceUsd:29.25,
+    netCRV:3.2, tp2Pct:10, relVol:1.7, setup:'Pullback', situationType:'PULLBACK',
+    updated:new Date().toISOString().slice(0,19).replace('T',' '), marketPhase:'regular'
+  };
+  C.S.portfolioGuard = false;
+  assert.equal(C.portfolioBlocksNewBuy(cand), false, 'Ohne eingeschaltete Sperre darf nichts blockiert werden');
+  assert.equal(C.stockLevel(cand), 3, 'Default-Verhalten muss unveraendert bleiben (kein stiller Eingriff)');
+  assert.equal(C.stockHeadline(cand).text, 'BUY', 'Default-Kopfzeile muss unveraendert BUY sein');
+
+  C.S.portfolioGuard = true;
+  assert.equal(C.portfolioBlocksNewBuy(cand), true, 'Bei erschoepftem Budget muss die aktive Sperre greifen');
+  assert.equal(C.stockLevel(cand), 1, 'Gesperrtes Gruen wird zurueckgestuft, nicht ausgeblendet');
+  const gh = C.stockHeadline(cand);
+  assert.equal(gh.kind, 'portfolio', 'Kopfzeile muss das Risikobudget als Grund nennen');
+  assert.notEqual(gh.light, 'green', 'Gesperrter Kandidat darf keine gruene Kopf-Ampel behalten');
+  assert.doesNotMatch(gh.text, /^BUY/, 'Gesperrter Kandidat darf nicht als BUY erscheinen');
+
+  // Die Sperre darf NIE aufwerten und nie einen bestehenden Trade behindern.
+  for (const lt of ['red','yellow']) {
+    const h = C.stockHeadline({ ...cand, light:lt, verdict:'Test · Claude' });
+    assert.ok(C.HEADLINE_RANK[h.light] <= C.HEADLINE_RANK[lt], `Sperre darf ${lt} nicht aufwerten`);
+  }
+  C.stockPositions = { ...C.stockPositions, DDD:{active:true, entryEur:25, qty:375, restQty:375} };
+  assert.equal(C.portfolioBlocksNewBuy(cand), false, 'Eine bereits offene Position darf nicht zusaetzlich gesperrt werden');
+  C.S.portfolioGuard = false;
+
+  // Default-Sicherheit: die Sperre ist ausgeliefert AUS (kein Eingriff in den ChatGPT-Strang).
+  assert.equal(C.DEFAULTS.portfolioGuard, false, 'Budget-Sperre muss standardmaessig ausgeschaltet sein');
+  assert.ok(C.DEFAULTS.portfolioRiskPct >= C.DEFAULTS.riskPct, 'Gesamtbudget darf nie unter dem Einzeltrade-Risiko liegen');
+
+  // UI-Guards
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url),'utf8');
+  assert.match(html, /id="portfolioRisk"/, 'Portfolio-Kachel muss im Markup existieren');
+  assert.match(html, /id="sPortfolioRisk"/, 'Gesamtbudget muss einstellbar sein');
+  assert.match(html, /id="sPortfolioGuard"/, 'Budget-Sperre muss einstellbar sein');
+  assert.match(app, /renderDepotStrip\(\); renderPortfolioRisk\(\);/, 'Kachel muss bei jedem Aktien-Render aktualisiert werden');
+  assert.match(app, /Sektor-Naeherung/, 'Die Naeherungs-Grenze muss im UI ehrlich benannt sein');
+}
+
+console.log('✓ FusionPulse v3.5.9 portfolio-risk/cluster regressions: OK');

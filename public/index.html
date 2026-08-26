@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.5.7</title>
+<title>FusionPulse 3.5.9</title>
 </head>
 <body>
 
@@ -142,6 +142,7 @@
       </select>
     </div>
     <div id="depotStrip" class="depotstrip" title="Deine mit ★ markierten Aktien. Damit kannst du dein bestehendes Depot bzw. eine persönliche Watchlist abbilden."></div>
+    <section id="portfolioRisk" class="portfolio-card" title="Modul 2: Gesamt-Risiko ueber alle offenen Positionen und Klumpungswarnung. Rechnet zusammen, was das Einzeltrade-Risiko fuer sich nicht zeigt. Veraendert keinen Score."></section>
     <div id="marketGainers" class="openingpanel" title="Verifizierte Common-Stock-Kandidaten aus dem Tiingo-IEX-Whole-Market-Radar. Unabhängig von Favoriten; Discovery בלבד; Elliott-Deep-Scan entscheidet über Qualität."></div>
     <div id="extendedWatch" class="openingpanel" title="Pre-/After-Hours-Beobachtung. Warum sinnvoll? Auffällige Bewegungen außerhalb der Hauptsession können Kandidaten fürs Opening liefern, sind wegen dünnerer Liquidität aber noch kein BUY."></div>
     <div id="openingPanel" class="openingpanel" title="Premarket-/Opening-Momentum über Alpaca. Im kostenlosen IEX-Feed ist die Live-Abdeckung auf IEX beschränkt; vor 08:00 ET gibt es dort keine Live-Daten."></div>
@@ -200,6 +201,8 @@
   <label title="Verhindert rechnerisch gute, aber praktisch zu kleine Trades. FusionPulse Adaptiv nimmt zusätzlich mindestens 1,25 % der tatsächlichen Positionsgröße als dynamische Untergrenze; der alte 350-€-Default wird einmalig auf 75 € migriert.">Minimaler Netto-Gewinn im Tradeplan (€)<input id="sMinNetProfit" type="number" min="0" step="25"></label>
   <label title="Mindestabstand vom Einstieg bis TP2. Zu enge Ziele sind bei manueller Flatex-Ausführung schwer handelbar.">Minimaler Kursweg bis TP2 (%)<input id="sMinTp2Pct" type="number" min="0" max="20" step="0.25"></label>
   <label>Steuersatz für Gewinnschätzung (%) · Österreich KESt = 27,5<input id="sTax" type="number" min="0" max="60" step="0.1"></label>
+  <label title="Maximales Risiko über ALLE gleichzeitig offenen Positionen zusammen, in Prozent des Kapitals. Das Risiko je Trade oben begrenzt nur den einzelnen Trade — fünf gleichzeitige Trades zu je 0,75 % ergeben 3,75 % Gesamtrisiko. Standard 2,25 % entspricht drei parallelen Trades. Wird automatisch nie kleiner als das Einzeltrade-Risiko.">Gesamt-Risikobudget über alle offenen Positionen (%)<input id="sPortfolioRisk" type="number" min="0.25" max="20" step="0.25"></label>
+  <label class="row" title="Wenn eingeschaltet: sobald das Gesamt-Risikobudget für einen weiteren Trade nicht mehr reicht, wird keine neue BUY-Freigabe mehr erteilt (bestehende Positionen bleiben unberührt, ein Ausstieg wird nie blockiert). Ausgeschaltet warnt die Portfolio-Kachel nur. Diese Sperre kann ausschließlich abwerten und niemals ein BUY erzeugen."><input id="sPortfolioGuard" type="checkbox"> 🧮 Budget-Sperre: kein neues BUY bei ausgeschöpftem Gesamtrisiko</label>
 
   <h3>Anzeigeumfang</h3>
   <label title="Wie viele Coins der Worker vertieft analysiert. Mehr Coins erzeugen mehr externe API-Abfragen pro Scan.">Coins scannen (tief analysieren, 4–20)<input id="sDeep" type="number" min="4" max="20" step="1"></label>
