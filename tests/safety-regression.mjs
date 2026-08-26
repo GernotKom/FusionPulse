@@ -309,10 +309,19 @@ console.log('✓ FusionPulse v3.5.5 aladdin market-intelligence regressions: OK'
      Wirtschaftlichkeit steckt in keiner von beiden. "ATTRAKTIV" war damit eine
      Aussage, die die Karte gar nicht treffen kann. Die Anforderung bleibt
      bestehen (alle vier Quadranten beschriftet), nur ohne die Fehldeutung. */
-  assert.match(app,/MUSTER STARK · GUT HANDELBAR/,'Heatmap muss den starken, gut handelbaren Quadranten beschriften');
-  assert.match(app,/MUSTER STARK · SCHWER HANDELBAR/,'Heatmap muss den starken, schwer handelbaren Quadranten beschriften');
-  assert.match(app,/MUSTER SCHWACH · GUT HANDELBAR/,'Heatmap muss den schwachen, gut handelbaren Quadranten beschriften');
-  assert.match(app,/MUSTER SCHWACH · SCHWER HANDELBAR/,'Heatmap muss den schwachen, schwer handelbaren Quadranten beschriften');
+  /* Hotfix v3.6.2: Labels sind jetzt zweizeilig (Titel + tspan), weil die
+     einzeilige Langfassung ineinandergelaufen ist und die Punkte ueberlagert
+     hat. Geprueft wird deshalb das Paar aus Zeile 1 und Zeile 2, nicht der
+     zusammengesetzte String. */
+  const quadPairs = [...app.matchAll(/class="quad-label ql-(tr|tl|br|bl)"[^>]*>([^<]+)<tspan[^>]*>([^<]+)</g)]
+    .map(m=>({q:m[1], l1:m[2].trim(), l2:m[3].trim()}));
+  assert.ok(quadPairs.length>=8,`Beide Heatmaps brauchen alle vier Quadranten beschriftet, gefunden: ${quadPairs.length}`);
+  for(const p of quadPairs){
+    assert.match(p.l1,/^MUSTER (STARK|SCHWACH)$/,`Zeile 1 von ${p.q} muss die Musterqualitaet nennen`);
+    assert.match(p.l2,/^(gut|schwer) handelbar$/,`Zeile 2 von ${p.q} muss die Handelbarkeit nennen`);
+    assert.ok(p.l1.length<=16 && p.l2.length<=17,`Label ${p.q} ist zu lang und laeuft in den Nachbarn (${p.l1}/${p.l2})`);
+  }
+  for(const q of ['tr','tl','br','bl']) assert.ok(quadPairs.filter(p=>p.q===q).length===2,`Quadrant ${q} muss in beiden Karten genau einmal beschriftet sein`);
   assert.doesNotMatch(app,/STARK · ATTRAKTIV/,'Die Karte darf nicht "attraktiv" behaupten — sie misst keine Wirtschaftlichkeit');
   assert.match(app,/const POSITION_STORE_KEY='fp\.stockPositions\.v1'/,'Reale Positionen muessen persistent verwaltet werden');
   assert.match(app,/function positionMetrics\(r,p\)/,'Reale Ausfuehrung muss einen eigenen Tradeplan berechnen');

@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.6.1</title>
+<title>FusionPulse 3.6.2</title>
 </head>
 <body>
 
@@ -74,8 +74,8 @@
   <section id="focus" class="focus"></section>
 
   <aside class="mapwrap">
-    <div class="maphead"><span>Qualität ↑</span><span class="mdim">Handelbarkeit →</span></div>
-    <svg id="map" viewBox="0 0 200 200"></svg>
+    <div class="maphead" title="Beide Achsen sind technisch. Wirtschaftlichkeit steckt in der Punktfarbe, nicht in der Position."><span>Musterqualität ↑</span><span class="mdim">Handelbarkeit →</span></div>
+    <svg id="map" viewBox="0 0 200 200" title="Krypto-Heatmap. Nach oben: wie sauber das Kursmuster ist. Nach rechts: wie gut sich der Coin praktisch handeln lässt (Spread, Orderbuchtiefe, Slippage).&#10;&#10;WICHTIG: Beide Achsen messen nur Technik. Ob sich ein Trade lohnt, steht NICHT in der Position, sondern in der Farbe: voller Punkt = auch wirtschaftlich tragfähig, hohler Punkt = gutes Muster, aber CRV zu niedrig oder Einstieg nicht in der Zone.&#10;&#10;Mouseover auf einen Punkt zeigt Qualität, Handelbarkeit, CRV und Netto-Potenzial."></svg>
     <div class="maplegend">
       <span><i class="q-handeln"></i>handeln</span>
       <span><i class="q-blockiert"></i>zu teuer</span>
@@ -160,8 +160,8 @@
     <div class="stockstage">
       <div id="stockFocus" class="stockfocus"></div>
       <aside class="stockmapwrap">
-        <div class="maphead"><span>Aktien-Qualität ↑</span><span class="mdim">Handelbarkeit →</span></div>
-        <svg id="stockMap" viewBox="0 0 200 200" title="Aktien-Heatmap: Qualität nach oben, Handelbarkeit nach rechts. Farbe = Status, Kreisgröße = Setup-Stärke, Schweif = gespeicherte Entwicklung. Mouseover zeigt Details."></svg>
+        <div class="maphead" title="Beide Achsen sind technisch. Wirtschaftlichkeit steckt in der Punktfarbe, nicht in der Position."><span>Musterqualität ↑</span><span class="mdim">Handelbarkeit →</span></div>
+        <svg id="stockMap" viewBox="0 0 200 200" title="Aktien-Heatmap. Nach oben: wie sauber das Kursmuster ist. Nach rechts: wie gut sich der Titel praktisch handeln lässt (Spread, Liquidität, Ausführbarkeit).&#10;&#10;WICHTIG: Beide Achsen messen nur Technik. Ob sich ein Trade wirtschaftlich lohnt, steht NICHT in der Position, sondern in der Farbe: voller Punkt = auch wirtschaftlich tragfähig, hohler Punkt mit gestricheltem Ring = gutes Muster, aber der Plan bringt zu wenig.&#10;&#10;Kreisgröße = Setup-Stärke, Schweif = bisherige Entwicklung. Mouseover auf einen Punkt zeigt Netto-Potenzial und CRV."></svg>
       </aside>
     </div>
     <div id="stockGroups" class="stockgroups"></div>

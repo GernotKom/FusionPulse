@@ -1,3 +1,28 @@
+# FusionPulse v3.6.2 · Hotfix: Heatmap-Beschriftung
+
+## Was schiefging
+Mein Fix in 3.6.1 hat die Quadranten-Labels korrekt gemacht, aber unlesbar. Die alten Bezeichnungen waren kurz und mittig ueber dem Quadranten gesetzt — das war gestalterisch die bessere Loesung. Ich habe sie durch lange, randbuendige Einzeiler ersetzt („MUSTER SCHWACH · SCHWER HANDELBAR"), die ineinanderliefen und die Punkte ueberlagerten. Im Screenshot stand am unteren Rand „MUSMUSTERSCHWACHHZSCHWER HANDELBAR". Das war ein Rueckschritt in der Bedienbarkeit, um eine inhaltliche Korrektur zu erkaufen — beides zusammen geht.
+
+## Der Hotfix
+- **Zurueck zur bewaehrten Geometrie**: mittig ueber dem Quadranten (x=151 bzw. 49), nicht randbuendig.
+- **Zweizeilig statt lang**: Zeile 1 `MUSTER STARK` / `MUSTER SCHWACH` in Versalien, Zeile 2 `gut handelbar` / `schwer handelbar` kleiner und gedaempft. Beide Zeilen bleiben deutlich unter der halben Kartenbreite, koennen also nicht mehr kollidieren.
+- **Halo gegen die Punkte**: Kontur in Hintergrundfarbe, damit die Beschriftung auch unter dichten Punktwolken lesbar bleibt.
+- **Farbige Quadranten wiederhergestellt**, inklusive des vierten Feldes, das der Krypto-Karte bisher ganz fehlte. Die Krypto-Karte hatte auch keine Label-Formatierung — die ist jetzt da.
+
+## Die inhaltliche Korrektur bleibt
+Die ausfuehrliche Erklaerung ist nicht verlorengegangen, sie steht jetzt dort, wo Platz ist: im Mouseover der Karte selbst.
+
+> Beide Achsen messen nur Technik. Ob sich ein Trade wirtschaftlich lohnt, steht NICHT in der Position, sondern in der Farbe: voller Punkt = auch wirtschaftlich tragfaehig, hohler Punkt mit gestricheltem Ring = gutes Muster, aber der Plan bringt zu wenig.
+
+Auch die Achsenbeschriftung ist praeziser: „Musterqualitaet ↑" statt „Qualitaet ↑".
+
+## Test angepasst
+Der 3.6.1-Test pruefte die zusammengesetzten Langstrings. Er prueft jetzt das Zeilenpaar — und zusaetzlich eine **Laengengrenze** (Zeile 1 max. 16, Zeile 2 max. 17 Zeichen), damit genau dieser Fehler nicht wiederkommen kann. Ausserdem wird geprueft, dass jeder der vier Quadranten in **beiden** Karten genau einmal beschriftet ist.
+
+Alle 11 Suiten gruen, SHA-Bloecke identisch.
+
+---
+
 # FusionPulse v3.6.1 · Krypto-Konsistenz, ehrliche Heatmap, Crowd-Diagnose, sichtbares Glossar
 
 ## 1. Warum heute alles „stark und attraktiv" war und trotzdem nichts brachte

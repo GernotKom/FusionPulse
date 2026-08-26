@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.6.1 — Frontend
+   FusionPulse v3.6.2 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1318,7 +1318,7 @@ function stockHeatmap(shown) {
     const points=h.map(x=>`${g(Number(x.executability||0)).toFixed(1)},${(200-g(Number(x.quality||0))).toFixed(1)}`).join(' ');
     return `<polyline class="stocktrail ${r.light}" points="${points}"/>`;
   }).join('');
-  svg.innerHTML=`<rect class="stockbg" x="0" y="0" width="200" height="200" rx="8"/><rect class="quad qa" x="100" y="0" width="100" height="100"/><rect class="quad qb" x="0" y="0" width="100" height="100"/><rect class="quad qc" x="100" y="100" width="100" height="100"/><rect class="quad qd" x="0" y="100" width="100" height="100"/><line class="ax" x1="100" y1="0" x2="100" y2="200"/><line class="ax" x1="0" y1="100" x2="200" y2="100"/><text class="quad-label ql-tr" x="151" y="13">MUSTER STARK · GUT HANDELBAR</text><text class="quad-label ql-tl" x="49" y="13">MUSTER STARK · SCHWER HANDELBAR</text><text class="quad-label ql-br" x="151" y="193">MUSTER SCHWACH · GUT HANDELBAR</text><text class="quad-label ql-bl" x="49" y="193">MUSTER SCHWACH · SCHWER HANDELBAR</text>${trails}`+
+  svg.innerHTML=`<rect class="stockbg" x="0" y="0" width="200" height="200" rx="8"/><rect class="quad qa" x="100" y="0" width="100" height="100"/><rect class="quad qb" x="0" y="0" width="100" height="100"/><rect class="quad qc" x="100" y="100" width="100" height="100"/><rect class="quad qd" x="0" y="100" width="100" height="100"/><line class="ax" x1="100" y1="0" x2="100" y2="200"/><line class="ax" x1="0" y1="100" x2="200" y2="100"/><text class="quad-label ql-tr" x="151" y="11">MUSTER STARK<tspan class="ql2" x="151" dy="7.4">gut handelbar</tspan></text><text class="quad-label ql-tl" x="49" y="11">MUSTER STARK<tspan class="ql2" x="49" dy="7.4">schwer handelbar</tspan></text><text class="quad-label ql-br" x="151" y="187">MUSTER SCHWACH<tspan class="ql2" x="151" dy="7.4">gut handelbar</tspan></text><text class="quad-label ql-bl" x="49" y="187">MUSTER SCHWACH<tspan class="ql2" x="49" dy="7.4">schwer handelbar</tspan></text>${trails}`+
     /* v3.6.1: Die Punktfarbe folgt jetzt der Kopf-Bewertung statt allein r.light,
      und der Mouseover nennt das Netto-Potenzial. Vorher konnte ein Titel im
      Feld oben rechts gruen leuchten, waehrend sein Plan netto 20 EUR brachte —
@@ -2428,10 +2428,10 @@ Achtung: beide Achsen sind TECHNISCH. Ob sich der Trade lohnt, steht in der Farb
     <rect class="quad qc" x="100" y="100" width="100" height="100"/>
     <rect class="quad qd" x="0" y="100" width="100" height="100"/>
     <line class="ax" x1="100" y1="0" x2="100" y2="200"/><line class="ax" x1="0" y1="100" x2="200" y2="100"/>
-    <text class="quad-label ql-tr" x="196" y="13">MUSTER STARK · GUT HANDELBAR</text>
-    <text class="quad-label ql-tl" x="4" y="13">MUSTER STARK · SCHWER HANDELBAR</text>
-    <text class="quad-label ql-br" x="196" y="195">MUSTER SCHWACH · GUT HANDELBAR</text>
-    <text class="quad-label ql-bl" x="4" y="195">MUSTER SCHWACH · SCHWER HANDELBAR</text>
+    <text class="quad-label ql-tr" x="151" y="11">MUSTER STARK<tspan class="ql2" x="151" dy="7.4">gut handelbar</tspan></text>
+    <text class="quad-label ql-tl" x="49" y="11">MUSTER STARK<tspan class="ql2" x="49" dy="7.4">schwer handelbar</tspan></text>
+    <text class="quad-label ql-br" x="151" y="187">MUSTER SCHWACH<tspan class="ql2" x="151" dy="7.4">gut handelbar</tspan></text>
+    <text class="quad-label ql-bl" x="49" y="187">MUSTER SCHWACH<tspan class="ql2" x="49" dy="7.4">schwer handelbar</tspan></text>
     ${trails}${dots}`;
   $$('#map .dot').forEach((d) => d.addEventListener('click', () => select(d.dataset.pair, true)));
 }

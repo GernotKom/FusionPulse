@@ -831,11 +831,16 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
    nicht lohnt, werden hohl gezeichnet. Voll = auch wirtschaftlich tragfaehig. */
 .dot.econ-weak .core{fill:transparent;stroke:currentColor;stroke-width:1.6;stroke-dasharray:2.5 2}
 .dot.econ-weak text{opacity:.75}
-#map .quad-label,#stockMap .quad-label{font-size:5.4px;letter-spacing:.3px}
-#map .quad-label.ql-tr,#stockMap .quad-label.ql-tr{text-anchor:end}
-#map .quad-label.ql-br,#stockMap .quad-label.ql-br{text-anchor:end}
-#map .quad-label.ql-tl,#stockMap .quad-label.ql-tl{text-anchor:start}
-#map .quad-label.ql-bl,#stockMap .quad-label.ql-bl{text-anchor:start}
+/* Hotfix v3.6.2: Die 3.6.1-Labels waren zu lang und randbuendig — sie sind
+   ineinandergelaufen und haben die Punkte ueberlagert. Zurueck zur bewaehrten
+   Optik: kurz, mittig ueber dem Quadranten, zweizeilig, mit Halo gegen die
+   Punkte. Die ausfuehrliche Erklaerung steht im Mouseover der Karte. */
+#map .quad-label,#stockMap .quad-label{font:800 6.4px/1 system-ui,sans-serif;letter-spacing:.3px;text-anchor:middle;paint-order:stroke;stroke-width:2.2px;pointer-events:none;opacity:.88}
+#map .quad-label .ql2,#stockMap .quad-label .ql2{font-weight:600;font-size:5.4px;letter-spacing:.2px;opacity:.72}
+#map .quad-label{stroke:#0b1220;fill:var(--dim)}
+#map .qd{fill:#ef5a5a0d}
+#map .ql-tr{fill:var(--green)}#map .ql-tl{fill:var(--yellow)}#map .ql-br{fill:#f09a68}#map .ql-bl{fill:var(--dim2)}
+.stockmapwrap .quad-label .ql2{font-weight:600;font-size:5.4px;letter-spacing:.2px;opacity:.72}
 
 /* ==== v3.6.1 · Crowd-Status, Glossar-Panel, Scope-Frequenz ================= */
 .crowd-status{margin:8px 0;padding:.5rem .65rem;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
