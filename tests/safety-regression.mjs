@@ -1519,3 +1519,79 @@ console.log('✓ FusionPulse v3.9.0 fixed-size/mode-A regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.9.1 ui-reachability/order/broker-availability regressions: OK');
+
+/* ====================================================================
+   v3.9.2 · Navigation, Kachel-Reihenfolge, Kachel-Trennschaerfe,
+   Handelbarkeit in Liste/Detail, Krypto-Mover. Alles ANZEIGE.
+   ==================================================================== */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const idx = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  const pos = (n) => { const i = idx.indexOf(n); assert.ok(i >= 0, `fehlt: ${n}`); return i; };
+
+  // -- Reiter: „Coins" muss existieren, und kein Reiter darf mehr „Radar" heissen
+  //    (das Label sprang auf das Krypto-Fokusfenster und war nicht erratbar).
+  const nav = idx.slice(idx.indexOf('<nav class="viewbar"'), idx.indexOf('</nav>', idx.indexOf('<nav class="viewbar"')));
+  assert.match(nav, />Coins</, 'Reiter „Coins" muss existieren');
+  assert.match(nav, />Coin-Liste</, 'Reiter zur Coin-Trefferliste muss existieren');
+  assert.match(nav, />Aktien</, 'Reiter „Aktien" muss erhalten bleiben');
+  assert.doesNotMatch(nav, />Radar</, 'Der irrefuehrende Reiter „Radar" darf nicht zurueckkehren');
+  // Jedes Sprungziel muss im Markup wirklich vorhanden sein, sonst ist der Reiter tot.
+  for (const m of nav.matchAll(/data-jump="([^"]+)"/g)) {
+    const t = m[1];
+    const exists = t.startsWith('#') ? idx.includes(`id="${t.slice(1)}"`)
+                 : t.startsWith('.') ? idx.includes(`class="${t.slice(1)}"`)
+                 : idx.includes(`<${t}`);
+    assert.ok(exists, `Sprungziel existiert nicht im Markup: ${t}`);
+  }
+
+  // -- Discovery-Kacheln stehen vor Depot/Portfolio/Learning, aber hinter Fokus/Heatmap.
+  assert.ok(pos('<div class="stockstage">') < pos('id="marketGainers"'),
+    'Fokus/Heatmap muss vor den Discovery-Kacheln stehen');
+  assert.ok(pos('id="marketGainers"') < pos('id="depotStrip"'),
+    'Discovery-Kacheln muessen vor dem Depot-Streifen stehen');
+  assert.ok(pos('id="openingPanel"') < pos('id="portfolioRisk"'),
+    'Premarket-Kachel muss vor dem Portfolio-Risiko stehen');
+  assert.ok(pos('id="extendedWatch"') < pos('id="attributionReport"'),
+    'Nachboerse-Kachel muss vor der Selbstauswertung stehen');
+
+  // -- Trennschaerfe: Premarket und Momentum-Mover duerfen nicht mehr gleich heissen.
+  //    Genau diese Verwechslung war die Rueckfrage des Nutzers.
+  assert.match(app, /🚀 Premarket \/ Opening/, 'Die Alpaca-Kachel muss als Premarket benannt sein');
+  assert.match(app, /📡 Momentum-Mover · Situation Radar/, 'Die Tiingo-Kachel muss als Momentum-Mover benannt sein');
+  assert.match(app, /🌙 Nachboerse \/ Extended Hours|🌙 Nachbörse \/ Extended Hours/, 'Die Nachboerse-Kachel muss eindeutig benannt sein');
+  assert.doesNotMatch(app, /<b>🚀 Opening Momentum<\/b>/, 'Der mehrdeutige alte Titel darf nicht zurueckkehren');
+  assert.doesNotMatch(app, /<b>📡 Situation Radar<\/b>/, 'Der mehrdeutige alte Titel darf nicht zurueckkehren');
+
+  // -- flatex-Hinweis jetzt auch in Trefferliste und Detailfenster.
+  assert.match(app, /class="flatex-dot ft-\$\{ft\.tone\}"/, 'Trefferliste braucht das Handelbarkeits-Symbol');
+  const peek = app.slice(app.indexOf('function stockPeek(r) {'), app.indexOf('function stockPeek(r) {') + 1200);
+  assert.match(peek, /flatexTradability/, 'Detailfenster braucht den Handelbarkeits-Hinweis');
+  assert.match(css, /\.flatex-dot\{/, 'Das Symbol in der Trefferliste braucht eine Formatierung');
+  // Unveraendert: reine Anzeige, kein Eingriff.
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(worker, /flatexTradability/, 'Der Hinweis darf serverseitig nichts bewerten');
+
+  // -- Krypto-Mover: darf AUSSCHLIESSLICH gemessene Felder verwenden.
+  //    Ein erfundenes 24-h-Feld waere hier der naheliegende Fehler gewesen.
+  assert.match(app, /function renderCryptoMovers\(\)\{/, 'Krypto-Mover-Kachel muss existieren');
+  assert.ok(idx.includes('id="cryptoMovers"'), 'Krypto-Mover braucht einen Platz im Markup');
+  const cm = app.slice(app.indexOf('function renderCryptoMovers()'), app.indexOf('function render() {'));
+  assert.match(cm, /r\.ret60/, 'Krypto-Mover muss die gemessene 60-Minuten-Bewegung verwenden');
+  assert.doesNotMatch(cm, /change24|chg24|pct24|24hChange/,
+    'Krypto-Mover darf keine 24-Stunden-Zahl verwenden — der Datensatz enthaelt keine');
+  assert.match(cm, /Number\.isFinite\(Number\(r\.ret60\)\)/,
+    'Fail-closed: Coins ohne belastbare Bewegung duerfen nicht in die Kachel');
+  assert.match(cm, /kein Premarket-Aequivalent|kein Premarket-Äquivalent/,
+    'Die Kachel muss ausdruecklich sagen, dass es bei Krypto kein Premarket gibt');
+  assert.match(app, /renderCryptoMovers\(\);/, 'Die Kachel muss im Renderlauf aufgerufen werden');
+
+  // -- Erreichbarkeit: alle horizontalen Scrollbereiche mit Bedienelementen abgesichert.
+  assert.match(css, /\.signal-banner::-webkit-scrollbar,\.signal-content::-webkit-scrollbar\{height:7px\}/,
+    'Die Signalleiste scrollt horizontal und enthaelt Chips — der Balken muss sichtbar sein');
+  assert.match(app, /class="rowmute" data-mutestock="\$\{esc\(r\.symbol\)\}" title=/,
+    'Der Stummschalt-Knopf in der Aktienzeile braucht eine Beschriftung');
+}
+
+console.log('✓ FusionPulse v3.9.2 navigation/tile-order/tile-clarity regressions: OK');

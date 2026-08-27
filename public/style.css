@@ -959,3 +959,21 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .flatex-hint.ft-ok{color:#7fd6a4;border-color:rgba(80,200,140,.35)}
 .flatex-hint.ft-no{color:#e6a06a;border-color:rgba(230,140,50,.35)}
 .flatex-hint.ft-unknown{color:var(--dim,#9aa4b2)}
+
+/* v3.9.2 · Kompaktes Handelbarkeits-Symbol in der Trefferliste. Bewusst nur ein
+   Zeichen mit Tooltip: die Zeile ist ohnehin dicht, und die Aussage ist eine
+   Wahrscheinlichkeit, keine Kennzahl — sie soll keine Zahl verdrängen. */
+.flatex-dot{font-size:.78rem;line-height:1;cursor:help;opacity:.85;margin-left:.15rem}
+.flatex-dot.ft-no{opacity:1}
+.flatex-dot.ft-unknown{opacity:.5}
+
+/* v3.9.2 · Zweiter und dritter Fund des Erreichbarkeits-Audits.
+   Die Signalleiste am unteren Rand scrollt horizontal und enthält anklickbare
+   Signal-Chips. Dasselbe Muster wie beim Wächter-Schalter: Der Scrollbereich
+   existiert, der Balken ist unter macOS unsichtbar — Chips rechts außen sind
+   damit nicht auffindbar. Hier reicht der erzwungene Balken, weil die Chips
+   gleichrangig sind: es gibt keine "wichtigste Spalte", die kleben müsste. */
+.signal-banner,.signal-content{scrollbar-width:thin}
+.signal-banner::-webkit-scrollbar,.signal-content::-webkit-scrollbar{height:7px}
+.signal-banner::-webkit-scrollbar-thumb,.signal-content::-webkit-scrollbar-thumb{background:var(--line,#3a3a3a);border-radius:4px}
+.signal-banner::-webkit-scrollbar-track,.signal-content::-webkit-scrollbar-track{background:transparent}

@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.9.1</title>
+<title>FusionPulse 3.9.2</title>
 </head>
 <body>
 
@@ -63,10 +63,14 @@
 </header>
 <div id="signalBanner" class="signal-banner" aria-live="polite"><div id="signalContent" class="signal-content"><span class="signal-idle"><b>SIGNAL-INFO</b><span>Noch kein neues BUY-/Grün-Signal in dieser Sitzung.</span></span></div><div class="analysis-method-dock" title="Aktuell aktivierte Analyseverfahren. Anzeige verändert keine Gewichtung."><b>ANALYSE</b><span id="analysisMethodsDock">wird geladen…</span></div></div>
 
+<!-- v3.9.2: „Radar“ sprang auf das KRYPTO-Fokusfenster — das war aus dem Label
+     nicht erratbar, und ein eigener Einstieg in die Coin-Trefferliste fehlte ganz.
+     Jetzt heißen die Reiter nach dem, wohin sie führen. -->
 <nav class="viewbar" aria-label="Schnellnavigation">
-  <button data-jump="#focus" title="Springt zur kompakten Radar-/Trade-Ansicht">Radar</button>
-  <button data-jump="#stocks" title="Springt direkt zum Aktienradar und Opening Momentum">Aktien</button>
-  <button data-jump="#experimentalPanel" title="Springt zum Experimental Lab und serverseitigen Learning-Status">Lab / Learning</button>
+  <button data-jump=".stage" title="Springt zum Krypto-Fokusfenster mit Heatmap — der ausgewählte Coin im Detail.">Coins</button>
+  <button data-jump="main" title="Springt zur Coin-Trefferliste unterhalb von Fokus und Heatmap.">Coin-Liste</button>
+  <button data-jump="#stocks" title="Springt zum Aktienradar: Fokusfenster, Heatmap, Situation Radar und Opening Momentum.">Aktien</button>
+  <button data-jump="#experimentalPanel" title="Springt zum Experimental Lab und serverseitigen Learning-Status.">Lab / Learning</button>
 </nav>
 
 <!-- ═══════════════════════════════════ Fokus + Karte nebeneinander ═══ -->
@@ -84,6 +88,12 @@
     </div>
   </aside>
 </div>
+
+<!-- v3.9.2: Gegenstueck zur Aktien-Discovery auf der Krypto-Seite. Ein echtes
+     "Premarket" gibt es bei Krypto nicht — der Markt laeuft durchgehend. Die
+     Kachel zeigt deshalb die tatsaechlich gemessene Kurzfristbewegung und sagt
+     das im Titel auch, statt ein Aktien-Konzept nachzuahmen. -->
+<div id="cryptoMovers" class="openingpanel" title="Coins mit der staerksten gemessenen Kurzfristbewegung aus dem laufenden Scan. Discovery — 0 % BUY-Gewicht."></div>
 
 <section id="sentimentCard" class="sentiment-card" title="Krypto-Stimmungsindex (Fear &amp; Greed) von alternative.me. Misst die Marktstimmung, nicht die Qualität eines Trades — und gilt ausschließlich für Krypto, nicht für Aktien. 0 % Gewicht in Score und Kauf-Freigabe."></section>
 
@@ -160,12 +170,16 @@
         </div>
       </aside>
     </div>
+    <!-- v3.9.2: Discovery-Kacheln stehen jetzt direkt hinter Fokus/Heatmap.
+         Vorher lagen Depot, Crowd und Portfolio dazwischen — also Kontext vor
+         Kandidaten. Reihenfolge folgt jetzt der Arbeitsweise: erst WELCHE Titel
+         sind auffaellig, dann der eigene Bestand, dann der Rueckblick. -->
+    <div id="marketGainers" class="openingpanel" title="Verifizierte Common-Stock-Kandidaten aus dem Tiingo-IEX-Whole-Market-Radar. Unabhängig von Favoriten; Discovery בלבד; Elliott-Deep-Scan entscheidet über Qualität."></div>
+    <div id="openingPanel" class="openingpanel" title="Premarket-/Opening-Momentum über Alpaca. Im kostenlosen IEX-Feed ist die Live-Abdeckung auf IEX beschränkt; vor 08:00 ET gibt es dort keine Live-Daten."></div>
+    <div id="extendedWatch" class="openingpanel" title="Pre-/After-Hours-Beobachtung. Warum sinnvoll? Auffällige Bewegungen außerhalb der Hauptsession können Kandidaten fürs Opening liefern, sind wegen dünnerer Liquidität aber noch kein BUY."></div>
     <div id="depotStrip" class="depotstrip" title="Deine mit ★ markierten Aktien. Damit kannst du dein bestehendes Depot bzw. eine persönliche Watchlist abbilden."></div>
     <div id="crowdStatus" class="crowd-status" title="Zustand des Crowd/Search-Sensors. Der Tacho bleibt bewusst leer, statt Werte zu erfinden, wenn keine Daten abrufbar sind."></div>
     <section id="portfolioRisk" class="portfolio-card" title="Modul 2: Gesamt-Risiko ueber alle offenen Positionen und Klumpungswarnung. Rechnet zusammen, was das Einzeltrade-Risiko fuer sich nicht zeigt. Veraendert keinen Score."></section>
-    <div id="marketGainers" class="openingpanel" title="Verifizierte Common-Stock-Kandidaten aus dem Tiingo-IEX-Whole-Market-Radar. Unabhängig von Favoriten; Discovery בלבד; Elliott-Deep-Scan entscheidet über Qualität."></div>
-    <div id="extendedWatch" class="openingpanel" title="Pre-/After-Hours-Beobachtung. Warum sinnvoll? Auffällige Bewegungen außerhalb der Hauptsession können Kandidaten fürs Opening liefern, sind wegen dünnerer Liquidität aber noch kein BUY."></div>
-    <div id="openingPanel" class="openingpanel" title="Premarket-/Opening-Momentum über Alpaca. Im kostenlosen IEX-Feed ist die Live-Abdeckung auf IEX beschränkt; vor 08:00 ET gibt es dort keine Live-Daten."></div>
     <div class="experimental-grid">
       <section id="learningReport" class="learning-report" title="Was hat FusionPulse im Hintergrund gelernt? Zeigt gespeicherte Beobachtungen und Systemzustände; verändert keine BUY-Regel automatisch."></section>
       <section id="attributionReport" class="learning-report" title="Modul 0: ehrliche Selbstauswertung. Welche Setups hatten out-of-sample tatsächlich einen Vorteil? Der Overfitting-Wächter empfiehlt Abschaltungen, ändert aber nichts automatisch am Score."></section>
