@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.12.0 — Frontend
+   FusionPulse v3.13.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2420,14 +2420,28 @@ function dataSession(r){
 }
 
 function focusQuoteMeta(r){
-  const p=Number(r?.livePriceUsd), age=Number(r?.liveQuoteAgeSec);
-  const has=Number.isFinite(p)&&p>0, ok=has&&r?.liveQuoteOk===true;
+  /* v3.13.0: Seit der Deep-Scan Live-Quotes mitliefert, koennen Zeilen aus dem
+     Server-Zwischenspeicher kommen. `liveQuoteAgeSec` wurde dann zum ZEITPUNKT
+     DES SCANS berechnet und waere hier eine Luege — ein drei Minuten alter Kurs
+     stuende weiterhin mit „8s alt" da. Deshalb wird das Alter aus dem
+     Zeitstempel neu gerechnet, wann immer einer vorliegt, und die
+     Frische-Entscheidung gleich mit. Fail-closed: ohne Zeitstempel bleibt es
+     beim Serverwert, und ohne beides gilt der Kurs als nicht frisch. */
+  const p=Number(r?.livePriceUsd);
+  const ts=Number(r?.liveQuoteTs);
+  const liveAge=Number.isFinite(ts)&&ts>0 ? Math.max(0,Math.round((Date.now()-ts)/1000)) : null;
+  const age=liveAge!=null?liveAge:(Number.isFinite(Number(r?.liveQuoteAgeSec))?Number(r.liveQuoteAgeSec):null);
+  const has=Number.isFinite(p)&&p>0;
+  // Serverurteil gilt weiter, aber ein inzwischen abgelaufener Kurs verliert es.
+  const phaseActive=/premarket|opening|regular|after/.test(String(stockMeta?.market?.key||''));
+  const maxAge=phaseActive?120:900;
+  const ok=has && r?.liveQuoteOk===true && (age==null || age<=maxAge);
   const label=ok?'LIVE / FRISCH':has?'NICHT LIVE / VERALTET':'KEIN LIVE-QUOTE';
   const cls=ok?'live':'stale';
   const when=r?.liveUpdated?clock(r.liveUpdated):'–';
   const src=r?.liveQuoteSource||r?.feed||'n.v.';
   const scope=r?.liveQuoteScope?` · ${r.liveQuoteScope}`:'';
-  return {has,ok,label,cls,when,src,scope,age:Number.isFinite(age)?age:null};
+  return {has,ok,label,cls,when,src,scope,age};
 }
 function focusDisplayPrice(r){
   return Number(r?.livePriceUsd)>0 ? stockPx(r.livePriceUsd,r.livePriceEur) : stockPx(r.priceUsd,r.priceEur);

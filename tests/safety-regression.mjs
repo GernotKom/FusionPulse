@@ -1721,7 +1721,9 @@ console.log('✓ FusionPulse v3.9.3 heatmap-trail regressions: OK');
   const twelve = worker.slice(worker.indexOf('rows.sort((a, b) => b.score - a.score);') - 900, worker.indexOf('rows.sort((a, b) => b.score - a.score);'));
   assert.match(twelve, /applySectorLag\(rows\)/, 'Twelve-Data-Pfad muss den Sektor-Rueckstand berechnen');
   // Tiingo-Zweig (der zuvor fehlende)
-  const tiingo = worker.slice(worker.indexOf("stockMemo={ts:Date.now(),rows,cycle,sig}") - 400, worker.indexOf("stockMemo={ts:Date.now(),rows,cycle,sig}"));
+  // v3.13.0: Fenster vergroessert — dazwischen liegt jetzt der Live-Quote-Stapel.
+  const tiingo = worker.slice(worker.indexOf("stockMemo={ts:Date.now(),rows,cycle,sig}") - 1400, worker.indexOf("stockMemo={ts:Date.now(),rows,cycle,sig}"));
+  assert.ok(tiingo.length > 600, 'Der Tiingo-Abschnitt muss gefunden werden — leerer Slice waere ein blinder Test');
   assert.match(tiingo, /applySectorLag\(rows\)/, 'Tiingo-Pfad muss den Sektor-Rueckstand berechnen — hier fehlte er');
 
   // -- Funktionsnachweis: der Ausdruck wird AUSGEFÜHRT, nicht auf Vorkommen geprüft.
@@ -1974,3 +1976,122 @@ console.log('✓ FusionPulse v3.11.0 attention-pulse/earnings-board regressions:
 }
 
 console.log('✓ FusionPulse v3.12.0 chrome-measure/nav/trail-direction regressions: OK');
+
+/* ====================================================================
+   v3.13.0 · Live-Quote im Deep-Scan.
+   Befund: `freshestStockQuote` lief NUR im manuellen Suchpfad. Jede Zeile
+   aus dem Scanner hatte `liveQuoteOk` undefiniert — die Oberfläche zeigte
+   deshalb dauerhaft „KEIN LIVE-QUOTE", auch mitten in der US-Handelszeit.
+   Der naive Fix (Aufruf je Symbol) hätte 40 Abfragen je Zyklus bedeutet.
+   ==================================================================== */
+{
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  // -- Der Deep-Scan muss Quotes holen. Das war der eigentliche Fehler.
+  const deep = worker.slice(worker.indexOf('applySectorLag(rows);   // v3.10.0 FIX'),
+                            worker.indexOf('stockMemo={ts:Date.now(),rows,cycle,sig}'));
+  assert.ok(deep.length > 300, 'Der Deep-Scan-Abschnitt muss gefunden werden');
+  assert.match(deep, /freshestStockQuotesBatch\(env,rows\.map\(r=>r\.symbol\)\)/,
+    'Der Deep-Scan muss die Live-Quotes im Stapel holen');
+  assert.match(deep, /attachLiveQuotes\(rows,q,fx\)/, 'Die Quotes muessen an die Zeilen gehaengt werden');
+  assert.match(deep, /catch\(e\)\{ console\.warn/, 'Ein Ausfall darf den Scan nicht abbrechen');
+
+  // -- ES DARF NUR EINE Frischelogik geben. Der Einzelabruf muss den Stapel nutzen.
+  //    (Lehre aus v3.10.0: sectorLag lief nur auf einem von zwei Pfaden.)
+  const single = worker.slice(worker.indexOf('async function freshestStockQuote(env,symbol){'),
+                              worker.indexOf('function attachLiveQuotes'));
+  assert.ok(single.length > 80, 'Der Einzelabruf muss gefunden werden');
+  assert.match(single, /freshestStockQuotesBatch\(env,\[sym\]\)/,
+    'Der Einzelabruf muss den Stapel verwenden, nicht eine zweite Implementierung');
+  assert.doesNotMatch(single, /alpacaJSON|tiingoIexSnapshot/,
+    'Im Einzelabruf darf keine eigene Abfragelogik stehen');
+
+  // -- Kostennachweis: GENAU ZWEI Aufrufe, unabhängig von der Symbolzahl.
+  //    Das ist der Grund, warum der Fix überhaupt tragbar ist — deshalb gemessen
+  //    und nicht behauptet.
+  {
+    const src = worker.slice(worker.indexOf('async function freshestStockQuotesBatch'),
+                             worker.indexOf('/* Einzelabruf = Stapel'));
+    assert.ok(src.length > 600, 'Die Stapelfunktion muss gefunden werden');
+    let alpacaCalls = 0, tiingoCalls = 0, alpacaSymbolArg = null;
+    const fn = new Function(
+      'safeRadarSymbol', 'alpacaFeed', 'alpacaFeedLabel', 'alpacaJSON',
+      'tiingoIexSnapshot', 'usMarketPhase', 'classifyQuoteFreshness', 'console',
+      src + '; return freshestStockQuotesBatch;'
+    )(
+      (x) => String(x || '').trim().toUpperCase() || null,
+      () => 'iex',
+      () => 'IEX (Free)',
+      async (_p, params) => { alpacaCalls++; alpacaSymbolArg = params.symbols;
+        return Object.fromEntries(String(params.symbols).split(',')
+          .map(s => [s, { latestTrade: { p: 100, t: new Date().toISOString() } }])); },
+      async () => { tiingoCalls++; return []; },
+      () => ({ key: 'regular' }),
+      (q) => ({ ...q, ageSec: 5, live: true }),
+      { warn() {} }
+    );
+
+    const syms = Array.from({ length: 40 }, (_, i) => `SYM${i}`);
+    const res = await fn({ ALPACA_API_KEY_ID: 'k', ALPACA_API_SECRET_KEY: 's', TIINGO_API_TOKEN: 't' }, syms);
+    assert.equal(alpacaCalls, 1, `40 Symbole duerfen GENAU 1 Alpaca-Abfrage kosten, waren ${alpacaCalls}`);
+    assert.equal(tiingoCalls, 1, `40 Symbole duerfen GENAU 1 Tiingo-Abfrage kosten, waren ${tiingoCalls}`);
+    assert.equal(String(alpacaSymbolArg).split(',').length, 40, 'Alle Symbole muessen in EINEN Aufruf gebuendelt werden');
+    assert.equal(res.size, 40, 'Jedes Symbol muss ein Ergebnis bekommen');
+
+    // Ohne Symbole darf gar nichts abgefragt werden.
+    alpacaCalls = 0; tiingoCalls = 0;
+    const empty = await fn({ ALPACA_API_KEY_ID: 'k', ALPACA_API_SECRET_KEY: 's', TIINGO_API_TOKEN: 't' }, []);
+    assert.equal(empty.size, 0, 'Ohne Symbole kein Ergebnis');
+    assert.equal(alpacaCalls + tiingoCalls, 0, 'Ohne Symbole darf keine Abfrage erfolgen');
+  }
+
+  // -- attachLiveQuotes ist rein additiv: keine Quote heisst unveraenderte Zeile.
+  {
+    const src = worker.slice(worker.indexOf('function attachLiveQuotes'),
+                             worker.indexOf('\n}', worker.indexOf('return hit;')) + 2);
+    const attach = new Function(src + '; return attachLiveQuotes;')();
+    const rows = [{ symbol: 'AAPL', priceUsd: 190 }, { symbol: 'OHNE', priceUsd: 5 }];
+    const q = new Map([['AAPL', { priceUsd: 191.5, ts: 1, updated: 'x', ageSec: 7, source: 'S', scope: 'C', live: true }]]);
+    const hit = attach(rows, q, 0.9);
+    assert.equal(hit, 1, 'Nur Zeilen mit Quote duerfen gezaehlt werden');
+    assert.equal(rows[0].liveQuoteOk, true, 'Die Zeile mit Quote muss sie bekommen');
+    assert.equal(rows[0].livePriceEur.toFixed(2), (191.5 / 0.9).toFixed(2), 'Der Euro-Kurs muss ueber den Kurs umgerechnet werden');
+    assert.equal(rows[1].livePriceUsd, undefined, 'Eine Zeile ohne Quote darf KEINEN erfundenen Wert bekommen');
+    assert.equal(rows[1].liveQuoteOk, undefined, 'Eine Zeile ohne Quote darf nicht als frisch gelten');
+    assert.equal(rows[1].priceUsd, 5, 'Bestehende Felder duerfen nicht veraendert werden');
+  }
+
+  // -- Das Kursalter muss beim ANZEIGEN neu gerechnet werden.
+  //    Sonst zeigt eine zwischengespeicherte Zeile einen alten Kurs als frisch.
+  {
+    const src = app.slice(app.indexOf('function focusQuoteMeta(r){'), app.indexOf('function focusDisplayPrice'));
+    assert.ok(src.length > 400, 'focusQuoteMeta muss gefunden werden');
+    assert.match(src, /Math\.round\(\(Date\.now\(\)-ts\)\/1000\)/,
+      'Das Kursalter muss aus dem Zeitstempel neu gerechnet werden');
+    const mk = new Function('stockMeta', 'clock', src + '; return focusQuoteMeta;');
+    const meta = { market: { key: 'regular' } };
+    const fq = mk(meta, () => '12:00');
+
+    const fresh = fq({ livePriceUsd: 100, liveQuoteTs: Date.now() - 5_000, liveQuoteOk: true, liveQuoteAgeSec: 5 });
+    assert.equal(fresh.ok, true, 'Ein eben geholter Kurs muss frisch sein');
+    assert.ok(fresh.age <= 6, `Das Alter muss aus dem Zeitstempel kommen, war ${fresh.age}`);
+
+    // Der Kern: Server sagte „frisch", der Kurs ist inzwischen 10 Minuten alt.
+    const stale = fq({ livePriceUsd: 100, liveQuoteTs: Date.now() - 600_000, liveQuoteOk: true, liveQuoteAgeSec: 8 });
+    assert.equal(stale.ok, false, 'Ein abgelaufener Kurs darf NICHT mehr als frisch gelten');
+    assert.ok(stale.age > 500, `Das alte Serveralter (8s) darf nicht durchschlagen, war ${stale.age}`);
+    assert.match(stale.label, /VERALTET/, 'Ein abgelaufener Kurs muss als veraltet beschriftet werden');
+
+    const none = fq({ priceUsd: 100 });
+    assert.equal(none.has, false, 'Ohne Live-Kurs darf keiner behauptet werden');
+    assert.match(none.label, /KEIN LIVE-QUOTE/, 'Fehlender Kurs muss als solcher beschriftet werden');
+  }
+
+  // -- Unveraendert: der Live-Quote ist Anzeige, er bewertet nichts.
+  const buyReadyBlock = app.slice(app.indexOf('function buyReady'), app.indexOf('function buyReady') + 1600);
+  assert.doesNotMatch(buyReadyBlock, /livePriceUsd|liveQuoteOk|focusQuoteMeta/,
+    'Der Live-Quote darf die Kauf-Freigabe nicht beeinflussen');
+}
+
+console.log('✓ FusionPulse v3.13.0 live-quote-batch regressions: OK');

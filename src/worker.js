@@ -3542,36 +3542,110 @@ async function tiingoAnalyseOne(env,symbol,sector,comp,minCrv,fx){
 // current executable/reference quote. For a user-selected stock we fetch the
 // freshest available independent quote and expose source + timestamp. Missing
 // freshness never improves a setup; the UI can therefore label/block stale data.
-async function freshestStockQuote(env,symbol){
-  const sym=safeRadarSymbol(symbol); if(!sym) return null;
-  const candidates=[];
-  const add=(price,ts,source,scope)=>{
-    const p=Number(price),ms=ts?Date.parse(ts):NaN;
-    if(Number.isFinite(p)&&p>0)candidates.push({priceUsd:p,ts:Number.isFinite(ms)?ms:null,updated:ts||null,source,scope});
-  };
-  if(env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY){
-    try{
-      const feed=alpacaFeed(env),d=await alpacaJSON('/v2/stocks/snapshots',{symbols:sym,feed},env),snap=d?.[sym];
-      if(snap){
-        add(snap.latestTrade?.p,snap.latestTrade?.t,`Alpaca ${alpacaFeedLabel(env)}`,feed==='sip'?'konsolidierter US-Feed':'IEX-Teilmarkt');
-        add(snap.minuteBar?.c,snap.minuteBar?.t,`Alpaca ${alpacaFeedLabel(env)}`,feed==='sip'?'konsolidierter US-Feed':'IEX-Teilmarkt');
-      }
-    }catch(e){console.warn(JSON.stringify({event:'stock_fresh_quote_alpaca_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));}
-  }
-  if(env.TIINGO_API_TOKEN){
-    try{
-      const arr=await tiingoIexSnapshot(env,sym),x=arr?.[0];
-      if(x)add(x.tngoLast??x.last??x.lastPrice,x.timestamp||x.lastSaleTimestamp||x.quoteTimestamp||x.lastUpdated, 'Tiingo IEX','IEX-Teilmarkt');
-    }catch(e){console.warn(JSON.stringify({event:'stock_fresh_quote_tiingo_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));}
-  }
-  if(!candidates.length)return null;
-  candidates.sort((a,b)=>(b.ts||0)-(a.ts||0));
-  const q=candidates[0],ageSec=q.ts?Math.max(0,Math.round((Date.now()-q.ts)/1000)):null;
+//
+/* ==== v3.13.0 · BEFUND UND UMBAU ============================================
+   `freshestStockQuote` wurde an genau ZWEI Stellen aufgerufen — beide im
+   manuellen Suchpfad (`tiingoStockLookup`). Der automatische Deep-Scan hat sie
+   NIE aufgerufen. Jede Zeile aus dem Scanner hatte deshalb `liveQuoteOk`
+   undefiniert, und die Oberflaeche zeigte folgerichtig „KEIN LIVE-QUOTE" —
+   selbst waehrend der US-Handelszeit, selbst fuer den Titel im Fokusfenster.
+
+   Der naive Fix waere gewesen, die Funktion je Symbol im Scan aufzurufen: bei
+   20 Titeln also 20 Alpaca- plus 20 Tiingo-Abfragen pro Zyklus. Das haette das
+   API-Budget gesprengt.
+
+   Entscheidend ist eine Eigenschaft, die im Bestand schon vorhanden war:
+   `tiingoIexSnapshot` holt `/iex` fuer den GESAMTEN Markt in einem Aufruf und
+   filtert erst danach lokal. Und Alpacas `/v2/stocks/snapshots` nimmt eine
+   Symbolliste entgegen. Beide Quellen sind also von Natur aus Stapelabfragen.
+
+   Deshalb: eine Stapelfunktion, die pro Durchlauf GENAU ZWEI Aufrufe macht —
+   unabhaengig davon, ob 1 oder 100 Titel abgefragt werden. Der Einzelabruf ist
+   nur noch ein Aufruf des Stapels mit einem Symbol, damit es weiterhin genau
+   EINE Frischelogik gibt und nicht zwei, die auseinanderlaufen koennen.
+   (Genau dieser Fehler war `sectorLag` in v3.10.0: eine Kennzahl, die nur auf
+   einem von zwei Pfaden gerechnet wurde.)
+
+   Unveraendert: Frische verbessert NIE ein Setup. Die Werte sind reine Anzeige,
+   sie fliessen in keinen Score und in keine Kauf-Freigabe.                    */
+function classifyQuoteFreshness(q){
+  const ageSec=q.ts?Math.max(0,Math.round((Date.now()-q.ts)/1000)):null;
   const phase=usMarketPhase();
   const active=['premarket-early','premarket','opening','regular','after'].includes(phase.key);
   const live=active ? (ageSec!=null && ageSec<=120) : (ageSec!=null && ageSec<=900);
   return {...q,ageSec,live,marketPhase:phase.key};
 }
+
+async function freshestStockQuotesBatch(env,rawSymbols){
+  const syms=[...new Set((Array.isArray(rawSymbols)?rawSymbols:String(rawSymbols||'').split(','))
+    .map(x=>safeRadarSymbol(x)).filter(Boolean))].slice(0,100);
+  const out=new Map();
+  if(!syms.length) return out;
+  const bucket=new Map();   // symbol -> Kandidatenliste
+  const add=(sym,price,ts,source,scope)=>{
+    const p=Number(price),ms=ts?Date.parse(ts):NaN;
+    if(!Number.isFinite(p)||p<=0) return;
+    const a=bucket.get(sym)||[]; a.push({priceUsd:p,ts:Number.isFinite(ms)?ms:null,updated:ts||null,source,scope});
+    bucket.set(sym,a);
+  };
+
+  // --- Alpaca: EIN Aufruf fuer alle Symbole ---------------------------------
+  if(env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY){
+    try{
+      const feed=alpacaFeed(env);
+      const d=await alpacaJSON('/v2/stocks/snapshots',{symbols:syms.join(','),feed},env);
+      const scope=feed==='sip'?'konsolidierter US-Feed':'IEX-Teilmarkt';
+      for(const sym of syms){
+        const snap=d?.[sym]; if(!snap) continue;
+        add(sym,snap.latestTrade?.p,snap.latestTrade?.t,`Alpaca ${alpacaFeedLabel(env)}`,scope);
+        add(sym,snap.minuteBar?.c,snap.minuteBar?.t,`Alpaca ${alpacaFeedLabel(env)}`,scope);
+      }
+    }catch(e){console.warn(JSON.stringify({event:'stock_fresh_quote_alpaca_failed',count:syms.length,message:String(e?.message||e),ts:Date.now()}));}
+  }
+
+  // --- Tiingo: EIN Aufruf, /iex liefert ohnehin den ganzen Markt -------------
+  if(env.TIINGO_API_TOKEN){
+    try{
+      const arr=await tiingoIexSnapshot(env,syms.join(','));
+      for(const x of (arr||[])){
+        const sym=String(x?.ticker||x?.symbol||'').toUpperCase();
+        if(!sym) continue;
+        add(sym,x.tngoLast??x.last??x.lastPrice,x.timestamp||x.lastSaleTimestamp||x.quoteTimestamp||x.lastUpdated,'Tiingo IEX','IEX-Teilmarkt');
+      }
+    }catch(e){console.warn(JSON.stringify({event:'stock_fresh_quote_tiingo_failed',count:syms.length,message:String(e?.message||e),ts:Date.now()}));}
+  }
+
+  for(const [sym,cands] of bucket){
+    if(!cands.length) continue;
+    cands.sort((a,b)=>(b.ts||0)-(a.ts||0));
+    out.set(sym,classifyQuoteFreshness(cands[0]));
+  }
+  return out;
+}
+
+/* Einzelabruf = Stapel mit einem Symbol. Bewusst KEINE zweite Implementierung. */
+async function freshestStockQuote(env,symbol){
+  const sym=safeRadarSymbol(symbol); if(!sym) return null;
+  const m=await freshestStockQuotesBatch(env,[sym]);
+  return m.get(sym)||null;
+}
+
+/* Haengt die Stapel-Quotes an Zeilen. Rein additiv: eine Zeile ohne Quote
+   behaelt ihre Felder unveraendert und wird von der Oberflaeche korrekt als
+   „kein Live-Quote" beschriftet — kein erfundener Wert. */
+function attachLiveQuotes(rows,quotes,fx){
+  let hit=0;
+  for(const r of rows||[]){
+    const q=quotes?.get(String(r?.symbol||'').toUpperCase());
+    if(!q) continue;
+    r.livePriceUsd=q.priceUsd; r.livePriceEur=fx?q.priceUsd/fx:null;
+    r.liveUpdated=q.updated; r.liveQuoteTs=q.ts; r.liveQuoteAgeSec=q.ageSec;
+    r.liveQuoteSource=q.source; r.liveQuoteScope=q.scope; r.liveQuoteOk=!!q.live;
+    hit++;
+  }
+  return hit;
+}
+
 async function tiingoValidation(env,rawSymbols){
   const symbols=[...new Set(String(rawSymbols||'AAPL,NVDA,TSLA').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,3);
   const out={configured:!!env.TIINGO_API_TOKEN,mode:tiingoStocksMode(env),symbols,version:APP_VERSION,tests:{},safe:true};
@@ -3723,7 +3797,20 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   // Hohe Radar-/Setup-Relevanz oben halten; Freshness-Gates bleiben unveraendert.
   const rows=[...safeCarry.values()].sort((a,b)=>(Number(b.preSignalMaturity)||0)-(Number(a.preSignalMaturity)||0)||(Number(b.situationScore)||0)-(Number(a.situationScore)||0)||(Number(b.radarRank)||0)-(Number(a.radarRank)||0)||(Number(b.score)||0)-(Number(a.score)||0)).slice(0,100);
   applySectorLag(rows);   // v3.10.0 FIX: fehlte auf dem primaeren Pfad komplett
+  /* v3.13.0 FIX: Der Deep-Scan hat NIE einen Live-Quote geholt — jede Zeile aus
+     dem Scanner hatte `liveQuoteOk` undefiniert, die Oberflaeche zeigte deshalb
+     dauerhaft „KEIN LIVE-QUOTE". Der Stapelabruf kostet GENAU ZWEI Aufrufe pro
+     Zyklus (Alpaca-Snapshots mit Symbolliste, Tiingo /iex fuer den ganzen Markt),
+     unabhaengig von der Zeilenzahl. Rein additiv, kein Score-Eingriff:
+     scheitert der Abruf, bleiben die Zeilen unveraendert und werden von der
+     Oberflaeche weiterhin korrekt als „kein Live-Quote" beschriftet. */
+  let liveQuoteHits=0;
+  try{
+    const q=await freshestStockQuotesBatch(env,rows.map(r=>r.symbol));
+    liveQuoteHits=attachLiveQuotes(rows,q,fx);
+  }catch(e){ console.warn(JSON.stringify({event:'deep_scan_live_quotes_failed',message:String(e?.message||e),ts:Date.now()})); }
   stockMemo={ts:Date.now(),rows,cycle,sig}; setApiState('stocks',fresh.length?'ok':'stale',fresh.length?null:'Tiingo lieferte keine analysierbaren Bars');
+  stockMemo.liveQuoteHits=liveQuoteHits;   // v3.13.0: stiller Ausfall soll sichtbar sein
   await persistStockScan(env,sig,cycle,rows,{provider:'Tiingo IEX',fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol),queue:{favorites:favPick,recheck:recheckPick,gainers:gainerPick,radar:radarPick,boats:boatsPick,explore},verifiedRadar:(radar.rows||[]).slice(0,20),verifiedBoats:(boats.rows||[]).slice(0,12)});
   return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:radar.universe||12000,universeLabel:`${radar.universe||'12.000+'} Tiingo/IEX`,scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:phase,queue:{favorites:favPick.length,recheck:recheckPick.length,gainers:gainerPick.length,radar:radarPick.length,boats:boatsPick.length,explore:explore.length},discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar.ts,universe:radar.universe,candidates:(radar.rows||[]).slice(0,20),gainers:openingGainers(radar.rows||[]),buyWeight:0,gate:{...radarGateStats}},boats:{source:'Tiingo BOATS',ts:boats.ts,session:boats.session,candidates:(boats.rows||[]).slice(0,15),buyWeight:0}},version:APP_VERSION,note:'Tiingo Primary: Large-Cap Opportunity Lifecycle Radar + BOATS Discovery (beide 0 % direktes BUY-Gewicht) -> adaptive Deep-Scan-Queue -> IEX 5-Min Analyse.'};
 }
