@@ -561,7 +561,7 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 #learningState[data-state="warn"]{border-color:rgba(242,188,67,.55)}
 #learningState[data-state="busy"]{opacity:.8}
 @media (max-width:900px){
-  .viewbar{top:52px;justify-content:center}
+  .viewbar{justify-content:center}   /* v3.12.0: Versatz kommt aus --fp-head-h */
   .viewbar button{flex:1;max-width:190px}
   .stockbadges{display:grid!important;grid-template-columns:1fr;gap:5px}
   .stockstage{grid-template-columns:1fr!important}
@@ -642,10 +642,25 @@ body{padding-bottom:108px}.signal-idle{display:flex;align-items:center;gap:9px;w
 .hclock.fast-tip:hover::after,.hclock.fast-tip:focus-visible::after{transform:translateY(0)}
 @media(max-width:760px){.fast-tip::after{display:none}}
 
-/* v3.3.0 — permanent header + resource/learning transparency */
-body{padding-top:62px}
+/* v3.3.0 — permanent header + resource/learning transparency
+   v3.12.0 · UMBAU: Hier standen feste Pixelwerte (62 px, an anderer Stelle
+   104 px), die die Hoehe der Kopfzeile RATEN mussten. Drei Fehler folgten daraus:
+     1. `body{padding-top:62px}` deckte nur die Kopfzeile ab, nicht die 44 px
+        hohe Reiterleiste darunter — der Inhalt begann zu weit oben und schob
+        sich beim Scrollen unter die Leiste. Das Coin-Fokusfenster ist das erste
+        Element darunter und stiess deshalb als Erstes an.
+     2. Sobald die Kopfzeile umbrach (sie ist `flex-wrap`), stimmte kein einziger
+        der festen Werte mehr.
+     3. Sprungziele landeten hinter der Leiste, die man gerade angeklickt hatte.
+   Jetzt wird die tatsaechliche Hoehe zur Laufzeit gemessen und in --fp-head-h /
+   --fp-nav-h geschrieben (siehe measureChrome() in app.js). Die Werte hier sind
+   nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
+:root{--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px}
+body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
-.viewbar{top:62px!important}
+.viewbar{top:var(--fp-head-h)!important;position:sticky}
+/* Jedes Sprungziel muss unter der Leiste hervorkommen, nicht dahinter. */
+[id],.stage,.stockstage{scroll-margin-top:calc(var(--fp-chrome-h) + 10px)}
 .resource-strip{display:flex;flex-direction:column;min-width:122px;max-width:190px;padding:4px 7px;border:1px solid var(--line);border-radius:8px;background:var(--panel);font-size:9px;line-height:1.2}
 .resource-strip b{font-size:9px!important}.resource-strip span{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .resource-strip.warn{border-color:#f2c01577}.resource-strip.err{border-color:#ef5a5a88}
@@ -654,7 +669,7 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 .learning-report .lr-grid span{padding:6px;border:1px solid var(--line);border-radius:8px;font-size:9px;color:var(--dim)}
 .learning-report .lr-grid b{display:block;color:var(--fg);font-size:12px}
 .learning-report small{color:var(--dim)}
-@media(max-width:760px){body{padding-top:104px}.resource-strip{order:8;min-width:100%;max-width:none}.viewbar{top:104px!important}.learning-report .lr-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:760px){.resource-strip{order:8;min-width:100%;max-width:none}.learning-report .lr-grid{grid-template-columns:repeat(2,1fr)}}   /* v3.12.0: die festen 104 px sind entfallen — gemessen statt geraten */
 .company-name{display:block!important;font-size:11px!important;color:var(--fg)!important;margin-top:1px}.company-focus,.company-exchange{display:block;font-size:9px;color:var(--dim);max-width:620px;line-height:1.25;margin-top:2px}
 
 /* v3.3.1 — Stabilisierung: verständliche Funktionalitätsampel, Suche, Signal-Herkunft */
@@ -1040,3 +1055,41 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
    alles andere bleibt ruhig, sonst verliert die Hervorhebung ihren Zweck. */
 .earn-row.soon{border-color:rgba(230,140,50,.5);background:rgba(230,140,50,.07)}
 .earn-row.soon .earn-when{color:#e6a06a}
+
+/* v3.12.0 · Zweistufige Reiterleiste.
+   Die Hauptbereiche bleiben immer gleich, damit sie als Orientierung taugen;
+   die Rubriken darunter wechseln. Beide Zeilen zusammen sind flacher als eine
+   umgebrochene Zeile mit dreizehn gleichrangigen Reitern — und die Leiste soll
+   Platz sparen, nicht welchen fressen. */
+.viewbar{flex-direction:column;align-items:stretch;gap:5px}
+.vb-main{display:flex;gap:8px;flex-wrap:wrap}
+/* reach-audit-ok: .vb-sub — Umbruch wäre hier falsch: eine zweite Zeile Rubriken
+   macht die klebende Leiste hoch und frisst genau den Platz, den sie sichtbar
+   halten soll. Die Chips sind gleichrangig, es gibt also auch keine "wichtigste
+   Spalte", die kleben müsste. Der Scrollbalken ist erzwungen sichtbar, und die
+   Rubriken sind zusätzlich über die drei Hauptbereiche erreichbar. */
+.vb-sub{display:flex;gap:5px;overflow-x:auto;scrollbar-width:thin;padding-bottom:1px}
+.vb-sub::-webkit-scrollbar{height:6px}
+.vb-sub::-webkit-scrollbar-thumb{background:var(--line,#3a3a3a);border-radius:3px}
+.vb-sub::-webkit-scrollbar-track{background:transparent}
+.vb-tab[aria-selected="true"]{border-color:rgba(140,200,255,.85);color:var(--fg,#e6edf3);font-weight:700}
+.vb-sec{flex:0 0 auto;font-size:10.5px;padding:3px 8px;border:1px solid var(--line,#2a2a2a);
+  border-radius:999px;background:transparent;color:var(--dim,#9aa4b2);cursor:pointer;white-space:nowrap}
+.vb-sec:hover{border-color:rgba(140,200,255,.5);color:var(--fg,#e6edf3)}
+/* Der aktive Abschnitt: eine dauerhaft sichtbare Leiste, die nicht zeigt wo man
+   ist, wäre nur eine Knopfreihe. */
+.vb-sec.on{border-color:rgba(140,200,255,.9);color:#8fd4ff;font-weight:700}
+@media(max-width:760px){.vb-main{justify-content:center}.vb-sec{font-size:10px;padding:3px 7px}}
+
+/* v3.12.0 · Richtung an JEDER Spur, nicht nur an den grünen.
+   Vorher trugen ausschließlich Aufwärtsspuren Kürzel und Pfeilspitze — abwärts
+   laufende Striche waren namenlos und richtungslos. Die Farbe trägt die Aussage
+   jetzt mit: grün nach rechts oben (Muster wird sauberer und handelbarer),
+   gedämpftes Orange nach links unten (verliert an Qualität), grau seitwärts.
+   Bewusst nicht Rot für abwärts: das ist eine Beobachtung, kein Alarm. */
+.stockmapwrap .trailhead.dir-sweet{fill:var(--green)}
+.stockmapwrap .trailhead.dir-back{fill:#e6a06a;opacity:.85}
+.stockmapwrap .trailhead.dir-side{fill:var(--dim2,#7d8da3);opacity:.75}
+.stockmapwrap .trailtag.dir-sweet{fill:var(--green)}
+.stockmapwrap .trailtag.dir-back{fill:#e6a06a;opacity:.9}
+.stockmapwrap .trailtag.dir-side{fill:var(--dim,#9aa4b2);opacity:.85}

@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.11.0</title>
+<title>FusionPulse 3.12.0</title>
 </head>
 <body>
 
@@ -63,14 +63,19 @@
 </header>
 <div id="signalBanner" class="signal-banner" aria-live="polite"><div id="signalContent" class="signal-content"><span class="signal-idle"><b>SIGNAL-INFO</b><span>Noch kein neues BUY-/Grün-Signal in dieser Sitzung.</span></span></div><div class="analysis-method-dock" title="Aktuell aktivierte Analyseverfahren. Anzeige verändert keine Gewichtung."><b>ANALYSE</b><span id="analysisMethodsDock">wird geladen…</span></div></div>
 
-<!-- v3.9.2: „Radar“ sprang auf das KRYPTO-Fokusfenster — das war aus dem Label
-     nicht erratbar, und ein eigener Einstieg in die Coin-Trefferliste fehlte ganz.
-     Jetzt heißen die Reiter nach dem, wohin sie führen. -->
+<!-- v3.12.0 · Zweistufige Navigation.
+     Der Wunsch war, alle Rubriken oben erreichbar zu machen. Dreizehn Reiter passen
+     auf einem 13-Zoll-Bildschirm aber nicht in eine Zeile, und zwei Zeilen fressen
+     den Platz, den die Leiste eigentlich sichtbar halten soll. Deshalb: drei
+     Bereiche fest, die Unterrubriken wechseln je nach aktivem Bereich.
+     Der Versatz kommt aus --fp-head-h (gemessen, siehe measureChrome). -->
 <nav class="viewbar" aria-label="Schnellnavigation">
-  <button data-jump=".stage" title="Springt zum Krypto-Fokusfenster mit Heatmap — der ausgewählte Coin im Detail.">Coins</button>
-  <button data-jump="main" title="Springt zur Coin-Trefferliste unterhalb von Fokus und Heatmap.">Coin-Liste</button>
-  <button data-jump="#stocks" title="Springt zum Aktienradar: Fokusfenster, Heatmap, Situation Radar und Opening Momentum.">Aktien</button>
-  <button data-jump="#experimentalPanel" title="Springt zum Experimental Lab und serverseitigen Learning-Status.">Lab / Learning</button>
+  <div class="vb-main" role="tablist">
+    <button data-view="coins"  class="vb-tab" role="tab" aria-selected="true"  title="Krypto: Fokusfenster, Heatmap, Kurzfrist-Mover und Trefferliste.">Coins</button>
+    <button data-view="stocks" class="vb-tab" role="tab" aria-selected="false" title="Aktien: Fokusfenster, Heatmap, Momentum-Mover, Premarket, Sektor-Nachzügler, Quartalszahlen und Depot.">Aktien</button>
+    <button data-view="lab"    class="vb-tab" role="tab" aria-selected="false" title="Auswertung: Learning, Selbstauswertung Modul 0 und Experimental Lab.">Lab / Learning</button>
+  </div>
+  <div class="vb-sub" id="viewSub" aria-label="Rubriken des gewählten Bereichs"></div>
 </nav>
 
 <!-- ═══════════════════════════════════ Fokus + Karte nebeneinander ═══ -->

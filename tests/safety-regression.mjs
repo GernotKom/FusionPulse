@@ -1530,20 +1530,35 @@ console.log('✓ FusionPulse v3.9.1 ui-reachability/order/broker-availability re
   const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
   const pos = (n) => { const i = idx.indexOf(n); assert.ok(i >= 0, `fehlt: ${n}`); return i; };
 
-  // -- Reiter: „Coins" muss existieren, und kein Reiter darf mehr „Radar" heissen
-  //    (das Label sprang auf das Krypto-Fokusfenster und war nicht erratbar).
+  // -- Reiter. In v3.12.0 auf zwei Ebenen umgebaut: die Hauptbereiche stehen im
+  //    Markup, die Rubriken darunter kommen aus VIEW_SECTIONS in app.js.
+  //    Die Absicht des urspruenglichen Tests bleibt: „Coins" muss es geben, das
+  //    irrefuehrende „Radar" nicht, und kein Sprungziel darf ins Leere fuehren.
   const nav = idx.slice(idx.indexOf('<nav class="viewbar"'), idx.indexOf('</nav>', idx.indexOf('<nav class="viewbar"')));
-  assert.match(nav, />Coins</, 'Reiter „Coins" muss existieren');
-  assert.match(nav, />Coin-Liste</, 'Reiter zur Coin-Trefferliste muss existieren');
-  assert.match(nav, />Aktien</, 'Reiter „Aktien" muss erhalten bleiben');
+  assert.match(nav, />Coins</, 'Bereich „Coins" muss existieren');
+  assert.match(nav, />Aktien</, 'Bereich „Aktien" muss existieren');
   assert.doesNotMatch(nav, />Radar</, 'Der irrefuehrende Reiter „Radar" darf nicht zurueckkehren');
-  // Jedes Sprungziel muss im Markup wirklich vorhanden sein, sonst ist der Reiter tot.
-  for (const m of nav.matchAll(/data-jump="([^"]+)"/g)) {
-    const t = m[1];
-    const exists = t.startsWith('#') ? idx.includes(`id="${t.slice(1)}"`)
-                 : t.startsWith('.') ? idx.includes(`class="${t.slice(1)}"`)
-                 : idx.includes(`<${t}`);
-    assert.ok(exists, `Sprungziel existiert nicht im Markup: ${t}`);
+  assert.ok(idx.includes('id="viewSub"'), 'Die Rubrikenzeile braucht einen Platz im Markup');
+
+  // Jedes Sprungziel aus VIEW_SECTIONS muss im Markup wirklich existieren.
+  // Ein Reiter, der ins Leere fuehrt, tut beim Klick nichts — das faellt
+  // niemandem auf und ist genau die Sorte Fehler, die lange ueberlebt.
+  {
+    const block = app.slice(app.indexOf('const VIEW_SECTIONS'), app.indexOf('let activeView'));
+    assert.ok(block.length > 200, 'VIEW_SECTIONS muss gefunden werden — leerer Slice waere ein blinder Test');
+    const sels = [...block.matchAll(/\['([^']+)',\s*'([^']+)'/g)].map(m => m[1]);
+    assert.ok(sels.length >= 12, `Es muessen alle Rubriken verdrahtet sein, gefunden: ${sels.length}`);
+    for (const t of sels) {
+      const exists = t.startsWith('#') ? idx.includes(`id="${t.slice(1)}"`)
+                   : t.startsWith('.') ? idx.includes(`class="${t.slice(1)}"`)
+                   : idx.includes(`<${t}`);
+      assert.ok(exists, `Sprungziel existiert nicht im Markup: ${t}`);
+    }
+    // Die drei Bereiche im Markup muessen zu den Schluesseln in app.js passen.
+    for (const v of ['coins', 'stocks', 'lab']) {
+      assert.ok(block.includes(`${v}:`), `VIEW_SECTIONS fehlt der Bereich ${v}`);
+      assert.ok(nav.includes(`data-view="${v}"`), `Im Markup fehlt der Bereich ${v}`);
+    }
   }
 
   // -- Discovery-Kacheln stehen vor Depot/Portfolio/Learning, aber hinter Fokus/Heatmap.
@@ -1672,8 +1687,12 @@ console.log('✓ FusionPulse v3.9.2 navigation/tile-order/tile-clarity regressio
   // -- Die Aufwaertsspur muss den Titel BENENNEN. Ein Tooltip allein ist in einem
   //    dichten Punktfeld nicht treffbar — das war die Rueckmeldung.
   const stockTrail = app.slice(app.indexOf('const focusSym=String(focusStock'), app.indexOf('svg.innerHTML=`<rect class="stockbg"'));
-  assert.match(stockTrail, /class="trailtag"/, 'Die Aufwaertsspur muss das Kuerzel anzeigen');
-  assert.match(stockTrail, /dir==='sweet'[\s\S]{0,400}trailtag/, 'Das Kuerzel gehoert an die Aufwaertsspur');
+  /* v3.12.0: Die Pruefung galt urspruenglich nur der Aufwaertsspur — das war die
+     halbe Loesung und genau der gemeldete Fehler. Jetzt muss JEDE bewegte Spur
+     Kuerzel und Richtung tragen. */
+  assert.match(stockTrail, /class="trailtag dir-\$\{dir\}"/, 'Jede Spur muss ihr Kuerzel anzeigen');
+  assert.doesNotMatch(stockTrail, /dir==='sweet'\s*\n?\s*\?\s*`<polygon class="trailhead"/,
+    'Die Beschraenkung auf Aufwaertsspuren darf nicht zurueckkehren');
   assert.match(css, /\.stockmapwrap \.trailtag\{/, 'Das Kuerzel braucht eine Formatierung');
   assert.match(css, /\.trailtag\{[^}]*pointer-events:none/, 'Das Kuerzel darf keine Klicks auf die Punkte abfangen');
 }
@@ -1854,3 +1873,104 @@ console.log('✓ FusionPulse v3.10.0 sector-laggard/momentum-context regressions
 }
 
 console.log('✓ FusionPulse v3.11.0 attention-pulse/earnings-board regressions: OK');
+
+/* ====================================================================
+   v3.12.0 · Drei gemeldete Fehler, EINE Ursache bei zweien davon.
+   1. Coin-Fokusfenster stösst beim Scrollen an
+   2. Reiterleiste verschwindet / soll alle Rubriken tragen
+      → beide: feste Pixelwerte statt gemessener Höhe
+   3. Heatmap-Spuren ohne Ticker (nur Aufwärtsspuren waren beschriftet)
+   ==================================================================== */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const idx = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const cssRaw = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  /* Kommentare entfernen: Die Notizen erklaeren die alten Pixelwerte und wuerden
+     die Negativpruefungen sonst faelschlich ausloesen. Geprueft wird der Code. */
+  const css = cssRaw.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // -- Die festen Pixelwerte müssen WEG sein. Sie waren die gemeinsame Ursache.
+  assert.doesNotMatch(css, /body\{padding-top:62px\}/, 'Der geratene 62-px-Abstand darf nicht zurueckkehren');
+  assert.doesNotMatch(css, /body\{padding-top:104px\}/, 'Der geratene 104-px-Abstand darf nicht zurueckkehren');
+  assert.doesNotMatch(css, /\.viewbar\{top:62px!important\}/, 'Fester Leisten-Versatz darf nicht zurueckkehren');
+  assert.doesNotMatch(css, /\.viewbar\{top:104px!important\}/, 'Fester Leisten-Versatz darf nicht zurueckkehren');
+  assert.match(css, /body\{padding-top:var\(--fp-chrome-h\)\}/, 'Der Abstand muss aus der gemessenen Hoehe kommen');
+  assert.match(css, /\.viewbar\{top:var\(--fp-head-h\)!important;position:sticky\}/,
+    'Die Leiste muss kleben und ihren Versatz aus der Messung beziehen');
+  assert.match(css, /scroll-margin-top:calc\(var\(--fp-chrome-h\)/,
+    'Sprungziele muessen unter der Leiste hervorkommen, nicht dahinter landen');
+  assert.match(css, /:root\{--fp-head-h:\d+px;--fp-nav-h:\d+px;--fp-chrome-h:\d+px\}/,
+    'Startwerte fuer den ersten Bildaufbau muessen gesetzt sein');
+
+  // -- Die Messung muss laufen und fail-closed sein.
+  assert.match(app, /function measureChrome\(\)\{/, 'Die Hoehenmessung muss existieren');
+  assert.match(app, /new ResizeObserver\(\(\)=>measureChrome\(\)\)/,
+    'Ein ResizeObserver muss die Hoehe nachfuehren — die Kopfzeile bricht um');
+  const mc = app.slice(app.indexOf('function measureChrome()'), app.indexOf('if(typeof ResizeObserver'));
+  assert.ok(mc.length > 200, 'measureChrome muss gefunden werden — leerer Slice waere ein blinder Test');
+  assert.match(mc, /if\(!h\) return;/, 'Fail-closed: nicht messbar heisst Startwerte behalten, nicht 0 setzen');
+  assert.match(mc, /--fp-chrome-h', \(h\+n\)\+'px'/,
+    'Der Gesamtabstand muss Kopfzeile UND Leiste enthalten — das war der eigentliche Fehler');
+
+  // -- Funktionsnachweis: measureChrome wird AUSGEFÜHRT, nicht auf Text geprüft.
+  {
+    const mkFn = new Function('document', mc + '; return measureChrome;');
+    const set = {};
+    const doc = {
+      querySelector: (sel) => sel === 'body>header' ? { getBoundingClientRect: () => ({ height: 74 }) }
+                            : sel === '.viewbar'    ? { getBoundingClientRect: () => ({ height: 61 }) } : null,
+      documentElement: { style: { setProperty: (k, v) => { set[k] = v; } } },
+    };
+    mkFn(doc)();
+    assert.equal(set['--fp-head-h'], '74px', 'Die Kopfhoehe muss gemessen uebernommen werden');
+    assert.equal(set['--fp-nav-h'], '61px', 'Die Leistenhoehe muss gemessen uebernommen werden');
+    assert.equal(set['--fp-chrome-h'], '135px', 'Der Gesamtabstand muss die SUMME sein, nicht nur der Kopf');
+
+    // Fail-closed: ohne messbare Kopfzeile darf NICHTS gesetzt werden.
+    const set2 = {};
+    const doc2 = {
+      querySelector: (sel) => sel === 'body>header' ? { getBoundingClientRect: () => ({ height: 0 }) } : null,
+      documentElement: { style: { setProperty: (k, v) => { set2[k] = v; } } },
+    };
+    mkFn(doc2)();
+    assert.deepEqual(set2, {}, 'Ohne messbare Hoehe darf kein Wert ueberschrieben werden');
+  }
+
+  // -- Zweistufige Navigation: alle Rubriken erreichbar, aktiver Abschnitt markiert.
+  assert.match(app, /function renderViewSub\(\)\{/, 'Die Rubrikenzeile muss gerendert werden');
+  assert.match(app, /function markActiveSection\(\)\{/,
+    'Eine dauerhaft sichtbare Leiste muss zeigen, wo man ist');
+  const rv = app.slice(app.indexOf('function renderViewSub()'), app.indexOf('function setView'));
+  assert.match(rv, /\.filter\(\(\[sel\]\)=>document\.querySelector\(sel\)\)/,
+    'Rubriken ohne Ziel im Markup duerfen gar nicht erst gezeichnet werden');
+  assert.match(css, /\.vb-sec\.on\{/, 'Der aktive Abschnitt braucht eine Markierung');
+  assert.match(css, /\.vb-sub\{[^}]*overflow-x:auto/, 'Die Rubrikenzeile muss bei Platzmangel scrollen');
+  assert.match(css, /\.vb-sub::-webkit-scrollbar\{height:6px\}/,
+    'Auch hier muss der Scrollbalken sichtbar sein — sonst derselbe Fehler wie in Modul 0');
+
+  // -- Heatmap-Spuren: Kürzel und Richtung an JEDER Spur.
+  const st = app.slice(app.indexOf('const focusSym=String(focusStock'), app.indexOf('svg.innerHTML=`<rect class="stockbg"'));
+  assert.ok(st.length > 400, 'Der Spur-Block muss gefunden werden');
+  assert.match(st, /const showTag = move >= MIN_TAG_MOVE/,
+    'Kurze Zappler duerfen kein Kuerzel bekommen, sonst wird das Cluster unlesbar');
+  assert.match(st, /const head = dir==='flat' \? '' :/,
+    'Jede BEWEGTE Spur muss eine Richtung tragen, nicht nur die aufwaerts laufende');
+  assert.match(st, /Math\.atan2\(a1\.y-a0\.y, a1\.x-a0\.x\)/,
+    'Die Pfeilspitze muss in die tatsaechliche Bewegungsrichtung zeigen');
+  assert.match(st, /class="trailtag dir-\$\{dir\}"/, 'Das Kuerzel muss die Richtung mittragen');
+  for (const d of ['sweet', 'back', 'side']) {
+    assert.ok(css.includes(`.trailhead.dir-${d}{`), `Richtung ${d} braucht eine Farbe`);
+    assert.ok(css.includes(`.trailtag.dir-${d}{`), `Kuerzel ${d} braucht eine Farbe`);
+  }
+  /* Abwärts ist eine Beobachtung, kein Alarm — kein Rot.
+     Der erste Versuch prüfte hier auf ein Farbmuster (/#[ef][0-9a-f]{2}[0-5]/)
+     und schlug prompt beim Orange #e6a06a an. Ein Muster zu raten ist bei Farben
+     unbrauchbar; geprüft wird jetzt gegen die konkreten Rottöne der App. */
+  const backFill = (css.match(/\.trailhead\.dir-back\{fill:([^;}]+)/) || [])[1] || '';
+  assert.ok(backFill, 'Die Abwaertsspur braucht eine eigene Farbe');
+  for (const red of ['var(--red)', '#ef5a5a', '#e5484d', 'red']) {
+    assert.notEqual(backFill.trim(), red, 'Abwaerts ist eine Beobachtung und kein Alarm — kein Rot');
+  }
+}
+
+console.log('✓ FusionPulse v3.12.0 chrome-measure/nav/trail-direction regressions: OK');

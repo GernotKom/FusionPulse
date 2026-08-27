@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.11.0 — Frontend
+   FusionPulse v3.12.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1605,10 +1605,28 @@ function stockHeatmap(shown) {
     const move=Math.hypot(dx,dy);
     const dir = move<6 ? 'flat' : (dx>=-2 && dy>=-2 && (dx+dy)>4) ? 'sweet' : (dx+dy)<-4 ? 'back' : 'side';
     const isFocus=String(r.symbol||'').toUpperCase()===focusSym;
-    const head = dir==='sweet'
-      ? `<polygon class="trailhead" points="${(a1.x).toFixed(1)},${(a1.y).toFixed(1)} ${(a1.x-4.6).toFixed(1)},${(a1.y+2.4).toFixed(1)} ${(a1.x-2.4).toFixed(1)},${(a1.y+4.6).toFixed(1)}"/>`
-        + `<text class="trailtag" x="${(a0.x).toFixed(1)}" y="${(a0.y+3.4).toFixed(1)}">${esc(String(r.symbol||'').slice(0,5))}</text>`
-      : '';
+    /* v3.12.0 · BEFUND: Kuerzel und Pfeilspitze hingen an `dir==='sweet'`, also
+       ausschliesslich an AUFWAERTSspuren. Der Nutzer sah in der Heatmap fast nur
+       abwaerts laufende Striche — und die trugen konstruktionsbedingt weder
+       Kuerzel noch Richtung. Seine Meldung „ich sehe nur den Strich und leider
+       nicht den Aktienticker" beschreibt exakt diese halbe Loesung.
+       Die Einschraenkung auf 'sweet' war nie begruendet und faellt weg.
+
+       Zwei Regeln bleiben aber, sonst wird die Karte unlesbar:
+         - Nur Spuren ab MIN_TAG_MOVE bekommen ein Kuerzel. Ein Titel, der kaum
+           wandert, sagt nichts aus und braucht auch keinen Namen — im dichten
+           Cluster wuerden sich sonst fuenfzehn Kuerzel ueberlagern.
+         - Das Kuerzel sitzt am ANFANG der Spur, die Pfeilspitze am ENDE. Damit
+           liest sich jede Spur als „von wo nach wo", statt raten zu lassen,
+           welches Ende das aktuelle ist. */
+    const MIN_TAG_MOVE = 9;
+    const showTag = move >= MIN_TAG_MOVE;
+    // Pfeilspitze in die tatsaechliche Bewegungsrichtung drehen.
+    const ang = Math.atan2(a1.y-a0.y, a1.x-a0.x);
+    const ap = (len,off)=>`${(a1.x-Math.cos(ang-off)*len).toFixed(1)},${(a1.y-Math.sin(ang-off)*len).toFixed(1)}`;
+    const head = dir==='flat' ? '' :
+        `<polygon class="trailhead dir-${dir}" points="${(a1.x).toFixed(1)},${(a1.y).toFixed(1)} ${ap(5.2,.42)} ${ap(5.2,-.42)}"/>`
+      + (showTag ? `<text class="trailtag dir-${dir}" x="${(a0.x).toFixed(1)}" y="${(a0.y+3.4).toFixed(1)}">${esc(String(r.symbol||'').slice(0,5))}</text>` : '');
     return `<g class="trailwrap dir-${dir}${isFocus?' focus':''}"><polyline class="stocktrail ${r.light}" points="${points}"/>${head}<title>${esc(`${r.symbol}: ${dir==='sweet'?'wandert Richtung rechts oben — Muster wird sauberer und besser handelbar':dir==='back'?'bewegt sich zurück nach links unten — Muster verliert an Qualität oder Handelbarkeit':dir==='flat'?'steht seit zwei Stunden praktisch still':'bewegt sich seitlich'}. Die Spur endet an ihrem eigenen Punkt. Bewegungsrichtung der letzten 2 Stunden, keine Ertragsaussage.`)}</title></g>`;
   }).join('');
   svg.innerHTML=`<rect class="stockbg" x="0" y="0" width="200" height="200" rx="8"/><rect class="quad qa" x="100" y="0" width="100" height="100"/><rect class="quad qb" x="0" y="0" width="100" height="100"/><rect class="quad qc" x="100" y="100" width="100" height="100"/><rect class="quad qd" x="0" y="100" width="100" height="100"/><line class="ax" x1="100" y1="0" x2="100" y2="200"/><line class="ax" x1="0" y1="100" x2="200" y2="100"/><text class="quad-label ql-tr" x="151" y="11">MUSTER STARK<tspan class="ql2" x="151" dy="7.4">gut handelbar</tspan></text><text class="quad-label ql-tl" x="49" y="11">MUSTER STARK<tspan class="ql2" x="49" dy="7.4">schwer handelbar</tspan></text><text class="quad-label ql-br" x="151" y="187">MUSTER SCHWACH<tspan class="ql2" x="151" dy="7.4">gut handelbar</tspan></text><text class="quad-label ql-bl" x="49" y="187">MUSTER SCHWACH<tspan class="ql2" x="49" dy="7.4">schwer handelbar</tspan></text>${trails}`+
@@ -3127,6 +3145,53 @@ function momentumContext(symbol){
 
 
 
+
+/* ==== v3.12.0 · Hoehe der festen Kopfleiste MESSEN statt raten ==============
+   Drei gemeldete Fehler hatten dieselbe Ursache: In der CSS standen feste
+   Pixelwerte fuer die Hoehe von Kopfzeile und Reiterleiste (62 px, 104 px,
+   52 px — an vier Stellen, teils mit !important gegeneinander).
+
+     · Das Coin-Fokusfenster stiess beim Scrollen an, weil `body` nur die
+       Kopfzeile abdeckte und die 44 px der Reiterleiste in keiner Rechnung
+       standen.
+     · Die Reiterleiste rutschte unter den Kopf, sobald dieser umbrach — er ist
+       `flex-wrap`, seine Hoehe ist also nicht konstant.
+     · Sprungziele landeten hinter der Leiste, die man gerade angeklickt hatte.
+
+   Ein ResizeObserver misst jetzt beide Elemente und schreibt die echten Werte
+   in CSS-Variablen. Damit stimmt der Abstand auch bei umgebrochener Kopfzeile,
+   bei anderer Schriftgroesse und auf jedem Fenster — ohne dass irgendwo eine
+   Zahl gepflegt werden muss.                                                 */
+function measureChrome(){
+  const head=document.querySelector('body>header');
+  const nav=document.querySelector('.viewbar');
+  if(!head) return;
+  const h=Math.round(head.getBoundingClientRect().height||0);
+  const n=nav?Math.round(nav.getBoundingClientRect().height||0):0;
+  if(!h) return;   // fail-closed: nicht messbar -> Startwerte behalten
+  const root=document.documentElement.style;
+  root.setProperty('--fp-head-h', h+'px');
+  root.setProperty('--fp-nav-h', n+'px');
+  root.setProperty('--fp-chrome-h', (h+n)+'px');
+}
+if(typeof ResizeObserver==='function'){
+  const ro=new ResizeObserver(()=>measureChrome());
+  const attach=()=>{
+    const head=document.querySelector('body>header'), nav=document.querySelector('.viewbar');
+    if(head) ro.observe(head);
+    if(nav) ro.observe(nav);
+    measureChrome();
+  };
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',attach,{once:true});
+  else attach();
+}
+/* Defensiv: Der Testrahmen stellt nur ein Teil-`window` bereit, und ein
+   fehlendes addEventListener darf das gesamte Skript nicht abbrechen lassen. */
+if(typeof window!=='undefined' && typeof window.addEventListener==='function'){
+  window.addEventListener('resize',measureChrome,{passive:true});
+  window.addEventListener('orientationchange',()=>setTimeout(measureChrome,120),{passive:true});
+}
+
 /* ==== v3.11.0 · Quartalszahlen-Tafel nach Sektor ============================
    Wunsch: eine Liste vorausgewaehlter interessanter Aktien mit den nach
    Boersenschluss anstehenden Quartalszahlen, geordnet nach Sektor.
@@ -3691,7 +3756,96 @@ $('#dcopy').onclick = (e) => {
   const r = rows.find((x) => x.pair === selected);
   if (r) copy(orderPlan(r), e.target);
 };
-$$('[data-jump]').forEach(b=>b.onclick=()=>document.querySelector(b.dataset.jump)?.scrollIntoView({behavior:'smooth',block:'start'}));
+/* ==== v3.12.0 · Zweistufige Navigation ======================================
+   Wunsch: alle Rubriken oben erreichbar, Leiste dauerhaft sichtbar.
+
+   Dreizehn Reiter passen auf 13 Zoll nicht in eine Zeile. Deshalb drei feste
+   Bereiche, deren Unterrubriken wechseln. Zwei Dinge sind dabei nicht optional:
+     · Jedes Sprungziel wird VOR dem Zeichnen geprueft. Ein Reiter, der ins Leere
+       fuehrt, tut beim Klick einfach nichts — das faellt niemandem auf und ist
+       genau die Sorte Fehler, die lange ueberlebt.
+     · Der aktive Abschnitt wird beim Scrollen markiert. Eine dauerhaft sichtbare
+       Leiste, die nicht zeigt wo man ist, ist nur eine Knopfreihe.            */
+const VIEW_SECTIONS = {
+  coins: [
+    ['.stage',            'Fokus',        'Krypto-Fokusfenster mit Heatmap — der ausgewählte Coin im Detail.'],
+    ['#cryptoMovers',     'Mover',        'Coins mit der stärksten gemessenen Bewegung der letzten Stunde.'],
+    ['#sentimentCard',    'Stimmung',     'Fear-&-Greed-Index. Reine Einordnung, 0 % BUY-Gewicht.'],
+    ['main',              'Coin-Liste',   'Die vollständige Trefferliste unterhalb von Fokus und Heatmap.'],
+  ],
+  stocks: [
+    ['.stockstage',       'Fokus',        'Aktien-Fokusfenster mit Heatmap.'],
+    ['#marketGainers',    'Mover',        'Momentum-Mover: Bewegung während der laufenden US-Handelszeit.'],
+    ['#sectorLaggards',   'Nachzügler',   'Sektor läuft, Titel hinkt noch — Grund hinzusehen, kein Kaufsignal.'],
+    ['#earningsBoard',    'Zahlen',       'Anstehende Quartalszahlen der beobachteten Titel, nach Sektor.'],
+    ['#openingPanel',     'Premarket',    'Gaps vor der Eröffnung (Alpaca).'],
+    ['#extendedWatch',    'Nachbörse',    'Bewegung nach Handelsschluss.'],
+    ['#depotStrip',       'Depot',        'Deine mit ★ markierten Titel.'],
+    ['#portfolioRisk',    'Risiko',       'Gesamtrisiko über alle offenen Positionen und Klumpungswarnung.'],
+    ['#stockGroups',      'Liste',        'Die vollständige Aktien-Trefferliste.'],
+  ],
+  lab: [
+    ['#learningReport',     'Learning',       'Was im Hintergrund gespeichert und ausgewertet wurde.'],
+    ['#attributionReport',  'Selbstauswertung','Modul 0: ehrliche Out-of-Sample-Bilanz je Setup.'],
+    ['#experimentalPanel',  'Lab',            'Experimentelle Einflussgrößen, 0 % BUY-Gewicht.'],
+    ['#aladdinCard',        'Marktmeinung',   'Hierarchische Marktmeinung aus Regime, Rotation, Breadth und Stress.'],
+  ],
+};
+let activeView = 'coins';
+
+function jumpTo(sel){
+  const el=document.querySelector(sel);
+  if(!el) return false;
+  el.scrollIntoView({behavior:'smooth',block:'start'});
+  return true;
+}
+
+function renderViewSub(){
+  const box=$('#viewSub'); if(!box) return;
+  // Nur Rubriken zeigen, die es im Markup tatsaechlich gibt.
+  const items=(VIEW_SECTIONS[activeView]||[]).filter(([sel])=>document.querySelector(sel));
+  box.innerHTML=items.map(([sel,label,help])=>
+    `<button class="vb-sec" data-jump="${esc(sel)}" title="${esc(help)}">${esc(label)}</button>`).join('');
+  box.querySelectorAll('[data-jump]').forEach(b=>b.addEventListener('click',()=>jumpTo(b.dataset.jump)));
+  markActiveSection();
+}
+
+function setView(v){
+  activeView=v;
+  $$('.vb-tab').forEach(b=>b.setAttribute('aria-selected', String(b.dataset.view===v)));
+  renderViewSub();
+  const first=(VIEW_SECTIONS[v]||[])[0];
+  if(first) jumpTo(first[0]);
+}
+
+/* Markiert die Rubrik, in der man sich gerade befindet. Gemessen gegen die
+   tatsaechliche Hoehe der Leiste, damit die Markierung nicht schon umspringt,
+   waehrend der Abschnitt noch dahinter liegt. */
+function markActiveSection(){
+  const box=$('#viewSub'); if(!box) return;
+  // Defensiv: getComputedStyle fehlt im Testrahmen; der Startwert reicht dort.
+  const chrome=(typeof getComputedStyle==='function'
+    ? parseInt(getComputedStyle(document.documentElement).getPropertyValue('--fp-chrome-h'),10)
+    : NaN) || 106;
+  let current=null;
+  for(const b of box.querySelectorAll('[data-jump]')){
+    const el=document.querySelector(b.dataset.jump); if(!el) continue;
+    if(el.getBoundingClientRect().top - chrome - 14 <= 0) current=b;
+  }
+  box.querySelectorAll('[data-jump]').forEach(b=>b.classList.toggle('on', b===current));
+}
+
+$$('.vb-tab').forEach(b=>b.addEventListener('click',()=>setView(b.dataset.view)));
+renderViewSub();
+let scrollTick=0;
+if(typeof window!=='undefined' && typeof window.addEventListener==='function'){
+  window.addEventListener('scroll',()=>{
+    if(scrollTick) return;
+    scrollTick=(typeof requestAnimationFrame==='function')
+      ? requestAnimationFrame(()=>{ scrollTick=0; markActiveSection(); })
+      : setTimeout(()=>{ scrollTick=0; markActiveSection(); },60);
+  },{passive:true});
+}
 document.body.addEventListener('pointerdown', () => audio(), { once: true });
 
 function applyPrimaryBlockOrder(){

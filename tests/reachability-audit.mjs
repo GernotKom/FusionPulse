@@ -46,6 +46,21 @@ for (const cls of scrollers.keys()) {
   }
 }
 
+/* -- 1b. Dokumentierte Ausnahmen -------------------------------------------
+   Manchmal ist horizontales Scrollen die richtige Antwort und Umbruch die
+   falsche. Damit solche Faelle nicht stillschweigend ignoriert werden, muessen
+   sie in der CSS ausdruecklich begruendet sein:
+
+     /* reach-audit-ok: .klasse — Begruendung *​/
+
+   Ohne Begruendung keine Ausnahme. Das Audit zeigt sie weiterhin an, aber als
+   bewusste Entscheidung statt als offene Frage — und die Begruendung steht
+   dort, wo der naechste Bearbeiter sie findet: neben dem Code.                */
+const exempt = new Map();
+for (const m of css.matchAll(/\/\*\s*reach-audit-ok:\s*\.([a-zA-Z0-9_-]+)\s*[—-]\s*([^*]+)\*\//g)) {
+  exempt.set(m[1], m[2].trim().replace(/\s+/g, ' '));
+}
+
 /* -- 2. Interaktive Elemente je Scrollbereich ------------------------------- */
 const INTERACTIVE = /<(button|input|select|textarea|a\s)|class="[^"]*\b(attr-toggle|favbtn|rowmute|draghandle)\b/;
 const findings = [];
@@ -59,7 +74,7 @@ for (const [cls, s] of scrollers) {
   if (!s.sticky) missing.push('keine sticky-Spalte');
   if (!s.breakpoint) missing.push('kein Umbruch unter Mobilbreite');
   if (!s.scrollbar) missing.push('Scrollbalken nicht erzwungen');
-  findings.push({ cls, missing, ok: missing.length === 0 });
+  findings.push({ cls, missing, ok: missing.length === 0, reason: exempt.get(cls) || null });
 }
 
 /* -- 3. Bericht ------------------------------------------------------------ */
@@ -74,6 +89,12 @@ if (!scrollers.size) {
 let open = 0;
 for (const f of findings) {
   if (f.ok) { console.log(`  OK   .${f.cls} — sticky + Umbruch + sichtbarer Scrollbalken`); continue; }
+  if (f.reason) {
+    // Begruendete Ausnahme: sichtbar bleiben, aber nicht als offene Frage zaehlen.
+    console.log(`  DOK  .${f.cls} — bewusste Ausnahme: ${f.reason}`);
+    console.log(`       (${f.missing.join(', ')} — geprueft und so gewollt)`);
+    continue;
+  }
   open++;
   console.log(`  PRÜF .${f.cls} — ${f.missing.join(', ')}`);
   console.log(`       Frage: Ist jedes Bedienelement in .${f.cls} auf 1280 px und auf 390 px erreichbar,`);
