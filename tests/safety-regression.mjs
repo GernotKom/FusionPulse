@@ -1781,3 +1781,76 @@ console.log('✓ FusionPulse v3.9.3 heatmap-trail regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.10.0 sector-laggard/momentum-context regressions: OK');
+
+/* ====================================================================
+   v3.11.0 · Aufmerksamkeitsimpuls + Quartalszahlen nach Sektor.
+   Beides ANZEIGE. Der Impuls ist zusätzlich auf Sparsamkeit geprüft:
+   ein Dauerblinken wäre technisch korrekt und praktisch wertlos.
+   ==================================================================== */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const idx = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+
+  // -- Impuls: Barrierefreiheit ist nicht verhandelbar.
+  assert.match(css, /@media\(prefers-reduced-motion:reduce\)\{[\s\S]{0,220}\.opcard\.pulse-new\{animation:none/,
+    'Bei „Bewegung reduzieren" darf nichts animiert werden');
+  assert.match(css, /@keyframes fp-attn/, 'Der Impuls braucht eine Animation');
+  assert.match(app, /attentionPulse: true/, 'Der Impuls muss abschaltbar und standardmaessig an sein');
+  assert.ok(idx.includes('id="sPulse"'), 'Der Impuls braucht einen Schalter in den Einstellungen');
+  assert.match(app, /S\.attentionPulse = \$\('#sPulse'\)\.checked/, 'Der Schalter muss gespeichert werden');
+  assert.match(app, /if\(S\.attentionPulse === false\) return ''/, 'Abgeschaltet darf kein Impuls entstehen');
+
+  // -- Sparsamkeit: nur der STAERKSTE und nur einmal pro Sitzung.
+  const pulse = app.slice(app.indexOf('const PULSE_MS'), app.indexOf('/* ==== v3.10.0 · Sektor-Nachzuegler'));
+  assert.ok(pulse.length > 100, 'Der Impuls-Block muss gefunden werden — leerer Slice waere ein blinder Test');
+  assert.match(pulse, /pulsedLaggards\.has\(sym\)/, 'Ein bereits gezeigter Titel darf nicht erneut pulsieren');
+  assert.match(pulse, /pulsedLaggards\.add\(sym\)/, 'Gezeigte Titel muessen gemerkt werden');
+  assert.match(pulse, /setTimeout\([\s\S]{0,180}PULSE_MS\)/, 'Der Impuls muss von selbst enden');
+  const lagFn = app.slice(app.indexOf('function renderSectorLaggards()'), app.indexOf('function renderCryptoMovers()'));
+  assert.match(lagFn, /ix===0 && r\.symbol===pulseSym/,
+    'Nur der staerkste Nachzuegler darf pulsieren — sonst blinkt alles und nichts faellt auf');
+
+  // -- Funktionsnachweis: markAttention wird AUSGEFUEHRT, nicht nur gelesen.
+  {
+    const src = app.slice(app.indexOf('const PULSE_MS'), app.indexOf('\n}', app.indexOf('return \' pulse-new\';')) + 2);
+    const mk = new Function('S', 'document', 'CSS', 'setTimeout',
+      src + '; return markAttention;');
+    const noop = { querySelectorAll: () => [] };
+    const on = mk({ attentionPulse: true }, noop, { escape: (x) => x }, () => {});
+    assert.equal(on('CRWD'), ' pulse-new', 'Ein neuer Titel muss pulsieren');
+    assert.equal(on('CRWD'), '', 'Derselbe Titel darf in der Sitzung NICHT erneut pulsieren');
+    assert.equal(on('VEEV'), ' pulse-new', 'Ein anderer neuer Titel muss pulsieren');
+    const off = mk({ attentionPulse: false }, noop, { escape: (x) => x }, () => {});
+    assert.equal(off('CRWD'), '', 'Abgeschaltet darf nie ein Impuls entstehen');
+  }
+
+  // -- Quartalszahlen-Tafel.
+  assert.ok(idx.includes('id="earningsBoard"'), 'Die Tafel braucht einen Platz im Markup');
+  assert.match(app, /function renderEarningsBoard\(\)\{/, 'Der Renderer muss existieren');
+  assert.match(app, /renderEarningsBoard\(\);/, 'Die Tafel muss im Renderlauf aufgerufen werden');
+  const earn = app.slice(app.indexOf('function renderEarningsBoard()'), app.indexOf('/* ==== v3.11.0 · Aufmerksamkeitsimpuls'));
+  assert.match(earn, /!known\.has\(sym\)/,
+    'Nur analysierte Titel duerfen erscheinen — nur fuer die gibt es einen verifizierten Sektor');
+  assert.match(earn, /const info=earningsFor\(sym\)/,
+    'Die Tafel muss dieselbe Termin-Logik nutzen wie die Warnung, nicht eine zweite eigene');
+  // Jeder Ausfallgrund muss benannt werden, statt leer dazustehen.
+  for (const st of ['nokey', 'empty', 'stale']) {
+    assert.ok(earn.includes(`'${st}'`), `Der Zustand ${st} muss dem Nutzer erklaert werden`);
+  }
+  assert.match(earn, /manuell schlaegt automatisch|src===\(earnData\.manual/,
+    'Manuell gepflegte Termine muessen Vorrang vor automatischen haben');
+  assert.match(earn, /a\.days-b\.days/, 'Innerhalb eines Sektors muss nach Naehe des Termins sortiert werden');
+  assert.match(earn, /keine Richtungsaussage/,
+    'Die Tafel muss sagen, dass ein Termin nichts ueber die Richtung aussagt');
+  assert.match(css, /\.earn-row\.soon\{/, 'Termine binnen 24 h brauchen eine Hervorhebung');
+
+  // -- Unveraendert: beides ist Anzeige, nichts davon bewertet.
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(worker, /markAttention|renderEarningsBoard/, 'Anzeige-Code gehoert nicht in den Worker');
+  const buyReadyBlock = app.slice(app.indexOf('function buyReady'), app.indexOf('function buyReady') + 1600);
+  assert.doesNotMatch(buyReadyBlock, /markAttention|earningsBoard|attentionPulse/,
+    'Weder Impuls noch Terminliste duerfen die Kauf-Freigabe beeinflussen');
+}
+
+console.log('✓ FusionPulse v3.11.0 attention-pulse/earnings-board regressions: OK');

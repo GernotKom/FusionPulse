@@ -1000,3 +1000,43 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .lag-gap{color:#8fd4ff;font-weight:700}
 .lag-flatex{font-size:.7rem;opacity:.85}
 .lag-flatex.ft-no{color:#e6a06a;opacity:1}
+
+/* v3.11.0 · Aufmerksamkeitsimpuls für einen NEUEN Sektor-Nachzügler.
+   Bewusst ein weicher Puls und kein hartes Blinken: Hartes Blinken ist bei
+   längerer Bildschirmarbeit ermüdend, in seltenen Fällen ein Auslöser für
+   photosensitive Reaktionen, und es lässt sich schwer ignorieren, wenn man
+   gerade etwas anderes liest. Der Puls fällt auf, ohne sich aufzudrängen —
+   und er endet nach 24 Sekunden von selbst.
+   `prefers-reduced-motion` ist eine Systemeinstellung des Nutzers und hat
+   Vorrang: dort bleibt der Rahmen statisch hervorgehoben. */
+@keyframes fp-attn{
+  0%,100%{box-shadow:0 0 0 0 rgba(110,180,255,0);border-color:rgba(110,180,255,.32)}
+  50%    {box-shadow:0 0 0 4px rgba(110,180,255,.22);border-color:rgba(140,200,255,.95)}
+}
+.opcard.pulse-new{animation:fp-attn 1.5s ease-in-out infinite;position:relative}
+.opcard.pulse-new::after{
+  content:'NEU';position:absolute;top:-7px;right:-6px;
+  background:#8fd4ff;color:#0d1117;font-size:.58rem;font-weight:800;
+  letter-spacing:.4px;padding:.05rem .28rem;border-radius:4px;pointer-events:none
+}
+@media(prefers-reduced-motion:reduce){
+  .opcard.pulse-new{animation:none;border-color:rgba(140,200,255,.95);box-shadow:0 0 0 2px rgba(110,180,255,.28)}
+}
+
+/* v3.11.0 · Quartalszahlen-Tafel, nach Sektor gruppiert. */
+.earn-sector{margin:.4rem 0 .55rem}
+.earn-sec-name{display:flex;align-items:center;gap:.4rem;font-size:.78rem;letter-spacing:.3px;text-transform:uppercase;color:var(--dim,#9aa4b2);margin:0 0 .25rem}
+.earn-sec-name i{font-style:normal;font-size:.68rem;background:var(--line,#2a2a2a);border-radius:8px;padding:0 .34rem;color:var(--fg,#e6edf3)}
+.earn-rows{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:.3rem}
+.earn-row{display:flex;align-items:center;gap:.4rem;padding:.28rem .45rem;border:1px solid var(--line,#2a2a2a);border-radius:7px;background:transparent;color:inherit;cursor:pointer;text-align:left;font:inherit}
+.earn-row:hover{border-color:rgba(140,200,255,.55)}
+.earn-row b{font-size:.84rem;min-width:3.4em}
+.earn-when{font-size:.72rem;font-weight:700;color:#8fd4ff}
+.earn-date{font-size:.68rem;color:var(--dim,#9aa4b2);margin-left:auto}
+.earn-src{font-size:.68rem;opacity:.55}
+.earn-src.manual{opacity:.95;color:#8fd4ff}
+.earn-ft{font-size:.7rem;opacity:.8}
+/* Termine innerhalb von 24 h sind die einzigen, die farblich herausstechen —
+   alles andere bleibt ruhig, sonst verliert die Hervorhebung ihren Zweck. */
+.earn-row.soon{border-color:rgba(230,140,50,.5);background:rgba(230,140,50,.07)}
+.earn-row.soon .earn-when{color:#e6a06a}

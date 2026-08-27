@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.10.0 — Frontend
+   FusionPulse v3.11.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -75,6 +75,11 @@ const DEFAULTS = {
   theme: 'dark', taxPct: 27.5, analysisMode: 'composite', coinCount: 12, stockCount: 12,
   maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0, minNetProfitStock: 30, minTp2PctStock: 2.0,
   claudeMode: false, stockDeep: 20,
+  /* v3.11.0 · Aufmerksamkeitsimpuls. Standardmaessig AN, aber bewusst sparsam:
+     nur der staerkste NEUE Sektor-Nachzuegler pulsiert, und nur einmal. Wenn
+     alles blinkt, blinkt nichts — der Impuls ist nur so viel wert, wie er
+     selten ist. Abschaltbar, und `prefers-reduced-motion` gewinnt immer. */
+  attentionPulse: true,
   /* v3.9.0 · Positionsgroesse: zwei Modelle, ausdruecklich getrennt.
      'risk'  = bisheriges Verhalten. Risiko je Trade ist die Eingabe (equity x riskPct),
                die Kaufsumme das Ergebnis. Enger Stop -> grosse Position. maxTradeEur deckelt.
@@ -2457,7 +2462,7 @@ function renderStocks() {
   (stockRows||[]).forEach(claudeOverlayRow); // Claude-Modus-Ansicht idempotent anwenden
   (stockRows||[]).forEach(momentumOverlayRow); // v3.9.0: Modus A danach, ebenfalls idempotent
   const box=$('#stockGroups'),st=$('#stockState'),counts=$('#stockCounts'); if(!box||!st)return;
-  renderDepotStrip(); renderPortfolioRisk(); renderCrowdStatus(); renderMarketGainers(); renderExtendedWatch(); renderOpeningPanel(); renderSectorLaggards();
+  renderDepotStrip(); renderPortfolioRisk(); renderCrowdStatus(); renderMarketGainers(); renderExtendedWatch(); renderOpeningPanel(); renderSectorLaggards(); renderEarningsBoard();
   if(stockMeta.configured===false){box.innerHTML='';st.textContent='Aktien-Datenquelle fehlt';st.className='badge err';if(counts)counts.textContent='Aktienradar nicht konfiguriert';stockHeatmap([]);return;}
   const search=($('#stockQ')?.value||'').trim().toUpperCase(); const filter=$('#stockF')?.value||'';
   let stockFiltered=stockRows.filter(r=>(!search||r.symbol.toUpperCase().includes(search)||String(r.name||'').toUpperCase().includes(search)));
@@ -3120,6 +3125,114 @@ function momentumContext(symbol){
   return bits.length?`<span class="mom-context">${bits.join('')}</span>`:'';
 }
 
+
+
+/* ==== v3.11.0 · Quartalszahlen-Tafel nach Sektor ============================
+   Wunsch: eine Liste vorausgewaehlter interessanter Aktien mit den nach
+   Boersenschluss anstehenden Quartalszahlen, geordnet nach Sektor.
+
+   BEWUSSTE BESCHRAENKUNG, damit die Tafel nicht mehr behauptet als sie weiss:
+   Sie zeigt nur Titel, die FusionPulse tatsaechlich analysiert hat. Nur fuer
+   die gibt es einen verifizierten Sektor — und ein Termin ohne Sektor waere in
+   einer nach Sektoren geordneten Liste wertlos. „Vorausgewaehlt" heisst hier
+   also: Favoriten, Radar-Kandidaten und Katalogtitel des laufenden Scans.
+
+   Die automatische Quelle (Twelve Data `earnings_calendar`) ist im Basic-Tarif
+   moeglicherweise nicht enthalten. Wenn sie nichts liefert, sagt die Tafel das
+   ausdruecklich und zeigt weiterhin die manuell gepflegten Termine, statt leer
+   und unerklaert dazustehen.
+
+   Reine Terminliste: 0 % Gewicht in Score und Kauf-Freigabe.                 */
+function renderEarningsBoard(){
+  const el=$('#earningsBoard'); if(!el) return;
+  const head=`<div class="ophead"><b>📅 Quartalszahlen · nach Sektor</b>`
+    +`<span title="Anstehende Termine der Titel, die FusionPulse gerade analysiert. „nB“ = nach Börsenschluss, „vB“ = vor Börsenbeginn. Ein Termin ist keine Richtungsaussage — der Kurs kann danach in beide Richtungen weit laufen.">nächste 14 Tage · beobachtete Titel</span>`
+    +`<small>Terminliste · 0 % BUY-Gewicht</small></div>`;
+
+  if(!earnData){ el.innerHTML=head+'<span class="hint">Terminkalender wird geladen.</span>'; return; }
+
+  const known=new Map((stockRows||[]).map(r=>[String(r.symbol||'').toUpperCase(),r]));
+  const seen=new Map();
+  for(const src of [earnData.manual||[], earnData.auto||[]]){
+    for(const e of src){
+      const sym=String(e?.symbol||'').toUpperCase();
+      if(!sym || !known.has(sym) || seen.has(sym)) continue;   // manuell schlaegt automatisch
+      const info=earningsFor(sym); if(!info) continue;          // nutzt dieselbe 0..14-Tage-Logik
+      seen.set(sym,{...info, row:known.get(sym), manual:src===(earnData.manual||[])});
+    }
+  }
+
+  if(!seen.size){
+    const why = earnData.state==='nokey'
+      ? 'Kein Twelve-Data-Schlüssel hinterlegt. Es werden ausschließlich manuell eingetragene Termine angezeigt — bisher keine.'
+      : earnData.state==='empty'
+      ? 'Der Terminkalender hat geantwortet, aber keine verwertbaren Termine geliefert. Möglicherweise ist er im gebuchten Tarif nicht enthalten. Manuell eingetragene Termine erscheinen hier weiterhin.'
+      : earnData.state==='stale' || earnData.state==='unavailable'
+      ? 'Der Terminkalender war zuletzt nicht erreichbar. Es wird bewusst nichts geschätzt.'
+      : 'Für die aktuell beobachteten Titel steht in den nächsten 14 Tagen kein Termin an.';
+    el.innerHTML=head+`<span class="hint">${esc(why)}</span>`; return;
+  }
+
+  const bySector=new Map();
+  for(const e of seen.values()){
+    const sec=e.row?.sector && e.row.sector!=='Discovery' ? e.row.sector : 'Sektor nicht verifiziert';
+    const a=bySector.get(sec)||[]; a.push(e); bySector.set(sec,a);
+  }
+  // Sektoren mit dem naechstliegenden Termin zuerst — was zuerst kommt, steht oben.
+  const sectors=[...bySector.entries()]
+    .map(([sec,list])=>[sec,list.sort((a,b)=>a.days-b.days||String(a.symbol).localeCompare(String(b.symbol)))])
+    .sort((a,b)=>a[1][0].days-b[1][0].days);
+
+  el.innerHTML=head+sectors.map(([sec,list])=>
+    `<div class="earn-sector"><b class="earn-sec-name">${esc(sec)}<i>${list.length}</i></b><div class="earn-rows">`
+    +list.map(e=>{
+      const ft=flatexTradability(e.row);
+      const when=e.days===0?'heute':e.days===1?'morgen':`in ${e.days} T`;
+      const slot=e.amc?'nB':'vB';
+      return `<button type="button" class="earn-row${e.days<=1?' soon':''}" data-openstock="${esc(e.symbol)}" `
+        +`title="${esc(`${e.symbol} · Quartalszahlen am ${e.date} ${e.amc?'nach Börsenschluss':'vor Börsenbeginn'}, also ${when}. Quelle: ${e.manual?'von dir manuell eingetragen':'automatischer Terminkalender'}. Der Kurs kann danach in BEIDE Richtungen weit laufen — der Termin sagt nichts über die Richtung. Diese Liste verändert weder Score noch Kauf-Freigabe. Vor einer Order gegenprüfen, Unternehmen verschieben Termine gelegentlich.`)}">`
+        +`<b>${esc(e.symbol)}${isFavStock(e.symbol)?' ★':''}</b>`
+        +`<span class="earn-when">${esc(when)} · ${slot}</span>`
+        +`<span class="earn-date">${esc(e.date)}</span>`
+        +`<span class="earn-src${e.manual?' manual':''}" title="${esc(e.manual?'Von dir manuell eingetragen.':'Aus dem automatischen Terminkalender.')}">${e.manual?'✎':'⟳'}</span>`
+        +`<span class="earn-ft ft-${ft.tone}" title="${esc(ft.detail)}">${ft.tone==='ok'?'🏦':ft.tone==='no'?'⛔':'❓'}</span>`
+        +`</button>`;
+    }).join('')+'</div></div>').join('')
+    +`<small class="hint">„nB“ = nach Börsenschluss, „vB“ = vor Börsenbeginn. Ein Termin ist keine Richtungsaussage. Eine Position über die Zahlen zu halten ist eine andere Entscheidung als der hier bewertete Intraday-Plan.</small>`;
+
+  el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>{
+    focusStock=b.dataset.openstock||''; renderStocks();
+    document.querySelector('.stockstage')?.scrollIntoView({behavior:'smooth',block:'start'});
+  }));
+}
+
+/* ==== v3.11.0 · Aufmerksamkeitsimpuls =======================================
+   Wunsch: Empfehlungen dieser Art sollen blinkend hervorgehoben werden.
+
+   Umgesetzt, aber mit einer harten Einschraenkung, weil ein Dauerblinken die
+   eigene Wirkung zerstoert: Wenn bei jedem Scan sechs Karten blinken, ist das
+   nach zwei Minuten Tapete und der Nutzer sieht darueber hinweg. Der Impuls ist
+   nur so viel wert, wie er selten ist.
+
+   Deshalb pulsiert ausschliesslich der STAERKSTE NEUE Nachzuegler:
+     - „neu"      = dieses Symbol hat in dieser Sitzung noch nicht pulsiert
+     - „staerkste" = groesster Rueckstand des aktuellen Durchlaufs
+     - einmalig   = nach PULSE_MS ist Schluss, kein Dauerzustand
+   Ein Titel, der seit zwanzig Minuten hinterherhinkt, ist keine Neuigkeit mehr.
+
+   `prefers-reduced-motion` gewinnt IMMER — das ist eine Systemeinstellung des
+   Nutzers und keine Empfehlung. Zusaetzlich abschaltbar in den Einstellungen.  */
+const PULSE_MS = 24_000;
+const pulsedLaggards = new Set();   // pro Sitzung, absichtlich nicht persistiert
+function markAttention(sym){
+  if(S.attentionPulse === false) return '';
+  if(!sym || pulsedLaggards.has(sym)) return '';
+  pulsedLaggards.add(sym);
+  setTimeout(()=>{ document.querySelectorAll(`.pulse-new[data-openstock="${CSS.escape(sym)}"]`)
+    .forEach(el=>el.classList.remove('pulse-new')); }, PULSE_MS);
+  return ' pulse-new';
+}
+
 /* ==== v3.10.0 · Sektor-Nachzuegler ==========================================
    Anlass ist ein realer Trade des Nutzers: Nach starken NVDA-Zahlen lief die
    Halbleiter-/Security-Nachbarschaft an. CRWD hinkte noch hinterher und war
@@ -3153,11 +3266,14 @@ function renderSectorLaggards(){
     el.innerHTML=head+`<span class="hint">${esc(why)}</span>`; return;
   }
   const cand=rows.sort((a,b)=>Number(b.sectorLag)-Number(a.sectorLag)).slice(0,6);
-  el.innerHTML=head+`<div class="opgrid">${cand.map(r=>{
+  // Nur der erste Eintrag ist der staerkste Rueckstand — nur er darf pulsieren.
+  const pulseSym=cand[0]?.symbol||'';
+  el.innerHTML=head+`<div class="opgrid">${cand.map((r,ix)=>{
     const lag=Number(r.sectorLag), lead=Number(r.sectorLeaderRet15), own=Number(r.ret15);
+    const pulse=(ix===0 && r.symbol===pulseSym)?markAttention(r.symbol):'';
     const ft=flatexTradability(r);
     const why=(r.whyNow||[]).slice(0,2).join(' · ');
-    return `<button type="button" class="opcard ${r.light} lag-card" data-openstock="${esc(r.symbol)}" `
+    return `<button type="button" class="opcard ${r.light} lag-card${pulse}" data-openstock="${esc(r.symbol)}" `
       +`title="${esc(`${r.symbol}: Der Sektor ${r.sector||'?'} läuft mit ${num(lead,2)} % auf 15 Minuten, dieser Titel steht bei ${num(own,2)} %. Rückstand ${num(lag,2)} Punkte über ${r.sectorPeers||0} Vergleichstitel. Das ist ein Grund hinzusehen und ausdrücklich kein Kaufsignal — der Titel kann auch zu Recht zurückbleiben. Klick öffnet ihn im Fokusfenster.`)}">`
       +`<b>${esc(r.symbol)}</b>`
       +`<span class="lag-gap" title="Rückstand auf den Sektor-Anführer in Prozentpunkten.">↑ ${num(lag,1)} Pkt Rückstand</span>`
@@ -3346,6 +3462,7 @@ function openSettings() {
   $('#sStockDeep').value = S.stockDeep || DEFAULTS.stockDeep;
   $('#sWatch').value = S.watch; $('#sToken').value = S.token; $('#sMin').value = S.minQ;
   $('#sZone').checked = S.onlyZone; $('#sTheme').value = S.theme;
+  if($('#sPulse')) $('#sPulse').checked = S.attentionPulse !== false;
   $('#sTax').value = S.taxPct; $('#sMode').value = S.analysisMode;
   $('#sStockSound').checked = !!S.stockSound;
   if ($('#sClaudeMode')) $('#sClaudeMode').checked = !!S.claudeMode;
@@ -3440,6 +3557,7 @@ function applySettings() {
   S.token = $('#sToken').value.trim();
   S.minQ = +$('#sMin').value || 0;
   S.onlyZone = $('#sZone').checked;
+  if($('#sPulse')) S.attentionPulse = $('#sPulse').checked;
   S.theme = $('#sTheme').value;
   S.taxPct = Math.min(60, Math.max(0, +$('#sTax').value || 0));
   S.analysisMode = $('#sMode').value;
@@ -3531,7 +3649,7 @@ document.addEventListener('keydown', (e) => {
 
 renderAnalysisMethods();
 // Freshness-Farben muessen auch dann altern, wenn KEINE neue API-Antwort kommt.
-setInterval(()=>{if(document.visibilityState==='visible'){renderMarketGainers();renderExtendedWatch();renderOpeningPanel();renderSectorLaggards();}},30_000);
+setInterval(()=>{if(document.visibilityState==='visible'){renderMarketGainers();renderExtendedWatch();renderOpeningPanel();renderSectorLaggards();renderEarningsBoard();}},30_000);
 
 /* ------------------------------------------------------------------- Events */
 $('#scan').onclick = async () => {
