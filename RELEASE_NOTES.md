@@ -1,3 +1,213 @@
+# FusionPulse v3.9.0 · Fester Einsatz + Modus A (Momentum)
+
+## Der Anlass
+Der Nutzer hat das Sizing-Modell der App als das benannt, was es war: eine Vorgabe, die nicht zu seiner Arbeitsweise passt.
+
+Woertlich: *„Grundsaetzlich moechte ich pro Trade nicht mehr als zehntausend Euro einsetzen. Die 0,75 % sind mir eigentlich egal, sondern es geht darum, den maximalen Gewinn zu lukrieren. Ich moechte einen Uptrend erkennen, zehntausend Euro einsetzen, den Stop Loss definieren, damit es im Worst Case kein grosser Verlust ist, und bei Glueck ein paar Prozent spaeter verkaufen."*
+
+Das ist die **Umkehrung** des bisherigen Modells:
+
+| | bisher (risikobasiert) | neu (fester Einsatz) |
+|---|---|---|
+| Eingabe | Risiko je Trade (37,50 €) | Kaufsumme (10.000 €) |
+| Ergebnis | Kaufsumme | moeglicher Verlust |
+| enger Stop | **grosse** Position | unveraenderte Position |
+| weiter Stop | kleine Position | **groesserer** Verlust |
+
+Beide Modelle sind legitim. Das risikobasierte ist fuer viele kleine Trades gebaut, das neue fuer wenige manuell begleitete. Die App kann jetzt beides und **sagt in beiden Faellen dieselbe Wahrheit**: was ein Fehlschlag kostet.
+
+## Was sich rechnerisch verschiebt — und warum das Gate umgestellt werden musste
+Bei fester Kaufsumme ist der Gewinn eine reine Funktion des Kursweges. Ein Mindest-Nettogewinn in Euro misst dann nur noch, wie weit das Ziel entfernt liegt — und das misst die Mindest-Zielweite bereits. Die Huerde waere doppelt gezaehlt und trotzdem blind fuer das, worauf es ankommt.
+
+Worauf es ankommt, ist das Verhaeltnis **Zielweite zu Stopweite**. Gerechnet mit den Einstellungen des Nutzers (10.000 €, 11,50 € je Order, 0,15 % Reibung, 27,5 % KESt) und einem Stop 2 % entfernt (Verlust rund 238 €):
+
+| Ziel | Netto-Gewinn | noetige Trefferquote |
+|---|---|---|
+| +2 % (1,0x) | 162 € | 60 % |
+| +3 % (1,5x) | 262 € | 48 % |
+| +4 % (2,0x) | 362 € | 40 % |
+| +5 % (2,5x) | 462 € | 34 % |
+| +6 % (3,0x) | 562 € | 30 % |
+
+Die Asymmetrie kommt daher, dass Gewinne besteuert werden und Verluste die vollen Gebuehren mittragen. Ein Trade mit gleich weitem Ziel und Stop ist deshalb **kein** faires Muenzwurfspiel.
+
+Im Fixmodus gilt darum: **Ziel mindestens 2x Stopweite**, sonst keine Kauf-Freigabe. Dazu eine optionale Obergrenze fuer den Verlust am Stop (Feld „Maximaler Verlust am Stop", 0 schaltet sie ab). Beide Bedingungen koennen **ausschliesslich abwerten** — ein Test weist nach, dass ein abgeschaltetes Limit dasselbe Setup wieder freigibt.
+
+## Modus A · Momentum ist fertig
+Der Handelsmodus-Umschalter steuert jetzt das **Regelwerk**, nicht nur die Anzeige. Vier Dinge sind in Modus A anders:
+
+1. **Kein Ueberdehnungs-Malus.** Der `overextended`-Abzug (−1,35 Punkte ab 3 ATR ueber der EMA21) bestrafte bisher genau die Titel, die gesucht werden. In einem Momentum-Setup ist dieser Abstand die Eintrittskarte, kein Warnsignal.
+2. **Elliott auf 0 %.** Bei einem Gap ohne Wellenhistorie misst die Kennzahl Rauschen. Die frei werdenden 12 Prozentpunkte werden **nicht umverteilt** — das haette den Score ohne neue Information angehoben. Ein Test prueft die Gewichtssumme und faellt bei Umverteilung.
+3. **Eigenes Zielprofil.** Stop unter das Konsolidierungstief nach dem Impuls (mit ATR-Puffer), Ziel als Vielfaches der bisherigen Tagesspanne. Damit faellt der `entry + 8 × risk`-Deckel weg — jener Deckel, der VEEV rechnerisch unmoeglich machte.
+4. **Live-Quote-Pflicht.** Aelter als 10 Minuten heisst: kein Plan. Bei 12 % Tagesbewegung laufen in zehn Minuten leicht 1–2 %; ein Plan auf altem Kurs haette einen Stop, der real schon durchbrochen ist.
+
+Modus A ist ein **additiver dritter Block** im Worker neben `claude` und `fusion`. Ein Test durchsucht beide bestehenden Bloecke und faellt, sobald einer davon den Momentum-Block liest. Der Standardwert ist `off`: wer nichts umstellt, sieht exakt das bisherige Verhalten.
+
+## Zwei Fehler beim Bauen, beide vom Test gefangen
+1. **Der Modus-A-Overlay lag im verriegelten Bereich.** Der Testanker fuer den Claude-Overlay reicht von seinem Kommentarkopf bis `function buyReady`. Mein neuer Code landete dazwischen und aenderte die Pruefsumme, ohne eine Zeile Claude-Code anzufassen. Der Test fiel, der Block wurde nach hinten verschoben. Eine eigene Assertion haelt das jetzt fest, damit der naechste Bearbeiter nicht in dieselbe Grube faellt.
+2. **`const claude = (() => {` kommt zweimal vor** — einmal im Krypto-, einmal im Aktienzweig. Mein Blockmarker traf den falschen, und der Test fiel aus dem falschen Grund. Ein fallender Test ist kein Beweis, solange nicht klar ist, WARUM er faellt.
+
+## Nachweis
+- **18 Suiten gruen** unter `TZ=Europe/Vienna`, `TZ=America/Chicago` und `TZ=UTC`.
+- **Alle vier SHA-256-Bloecke unveraendert**, unabhaengig nachgerechnet mit einem eigenen Extraktor statt dem aus der Testdatei.
+- **Sieben Negativkontrollen**, jede einzeln geprueft — der Fix wurde kuenstlich zurueckgedreht, und die Suite faellt jedes Mal mit der passenden Meldung: Elliott-Umverteilung, Ueberdehnungs-Malus, Live-Quote-Pflicht, Ziel:Stop-Schwelle, Default-Wechsel, fehlender Overlay im Rendern, deaktivierter Liquiditaetsdeckel.
+- **Acht neue Glossareintraege**, jeder nach der Regel „was ist es / wozu dient es / was heisst es ausdruecklich NICHT", jeder im sichtbaren Glossar verdrahtet.
+
+## Was ausdruecklich NICHT gebaut ist
+- **Modus B** (3–6 Monate, Tagesbalken, Elliott stark). Der Umschalter hat den Eintrag bewusst noch nicht.
+- **Die Kalibrierung der 2-Mio.-$-Schwelle** (P-A2). Dafuer braucht es einen Live-Lauf waehrend US-Handelszeit. Weiter zu raten waere derselbe Fehler wie in v3.8.1.
+
+---
+
+# FusionPulse v3.8.2 · P6 Teil 1: Terminwarnung Quartalszahlen
+
+## Der Anlass
+Am 26.8. hat die App VEEV gescannt, analysiert und bewertet — und mit keinem Wort erwaehnt, dass an diesem Abend Quartalszahlen kamen. Der Nutzer sah einen Intraday-Plan mit 1,2 % Zielweite und dem korrekten Urteil „lohnt nicht". Abends bewegte sich die Aktie nach den Zahlen um ein Vielfaches.
+
+Das Urteil ueber den Intraday-Plan war richtig und bleibt es. Der Fehler war ein anderer: **die App hat eine Information verschwiegen, die sie haette haben koennen** — und dadurch eine ANDERE Frage unsichtbar gemacht, die der Nutzer haette stellen wollen. Der Termin stand seit Wochen fest.
+
+## Was neu ist
+Eine Warnung in der Fokus-Karte und in der Kopfzeile:
+
+> ⚠ **Setup ok · Quartalszahlen heute nach Boersenschluss**
+
+Der Mouseover sagt in vier Punkten, was das bedeutet, und ausdruecklich auch, was es **nicht** bedeutet: keine Aussage darueber, ob die Zahlen gut werden, keine Richtung, kein Signal. Nur: eine Position ueber die Zahlen zu halten ist eine andere Entscheidung als das hier bewertete Setup.
+
+## Der Fehler beim Bauen, der die Sache fast wirkungslos gemacht haette
+Ich hatte die Pruefung zunaechst **nach** dem BUY-Zweig platziert. Ein Setup, das alle Bedingungen erfuellt und am selben Abend Zahlen hat — also genau der VEEV-Fall — waere weiter als „🟢 BUY" durchgelaufen. Die Warnung haette exakt den Fall verpasst, fuer den sie gebaut wurde.
+
+Der Test hat es gefangen. Die Pruefung steht jetzt **vor** dem BUY-Zweig, und die Negativkontrolle (zurueckverschieben) laesst die Suite fallen.
+
+## Fail-closed wie ueberall
+- Die Warnung kann **ausschliesslich abwerten**. Ueber alle Ampelzustaende geprueft.
+- Sie ist **kein Gate**: ein Test durchsucht `stockLevel`, `stockOpportunity`, `stockTradeability` und `stockStrength` und faellt, sobald dort der Kalender ausgewertet wird. Anzeige, nicht Bewertung.
+- Termine weiter als einen Tag entfernt warnen sichtbar, blockieren aber nichts. Vergangene Termine verschwinden.
+- Ein veralteter Kalenderstand wird als solcher gekennzeichnet.
+
+## Zwei Quellen, weil eine nicht reicht
+1. **Twelve Data `earnings_calendar`.** Ob dieser Endpunkt im Basic-Tarif enthalten ist, ist nicht dokumentiert. Statt zu raten wird es versucht und der **echte Fehler durchgereicht** — es steht dann sichtbar da: „Sehr wahrscheinlich ist dieser Endpunkt im Basic-Tarif nicht enthalten." Kein stummes Leerbleiben.
+2. **Manuell eingetragene Termine** (`POST /api/earnings`, gespeichert in D1). Funktioniert immer, ohne Tarif und ohne Fremddienst — und hat Vorrang vor dem automatischen Kalender. Der Nutzer schaut ohnehin bei Google Finance nach; ein Termin je Favorit ist schnell eingetragen und gilt ein Quartal.
+
+Der Parser ist bewusst misstrauisch: nur echte Datumsangaben im Format JJJJ-MM-TT werden uebernommen, alles andere verworfen statt hineininterpretiert.
+
+## Noch offen
+Die Eingabemaske fuer manuelle Termine fehlt noch — die Route steht, die Oberflaeche kommt im naechsten Schritt. Ebenso Teil 2 von P6: die Markierung von Ereignistagen im Modul-0-Learning, damit ein Scheitern im Ausnahmezustand nicht in dieselbe Statistik faellt wie eines im ruhigen Markt.
+
+Alle **17** Suiten gruen, SHA-Bloecke identisch.
+
+---
+
+# FusionPulse v3.8.1 · Kalibrierungsfehler im neuen Gitter — und ein Zähler dagegen
+
+## Beinahe-Fehlschlag
+Die Schwelle aus 3.8.0 lautete: **20 Mio. $ Tagesumsatz**. Beim Nachsehen, woher das Volumen kommt, fiel auf: Der Tiingo-Feed liefert das Volumen der **Boerse IEX** — und IEX hat nur rund **2–3 %** des US-Handelsvolumens. Ein Titel mit 500 Mio. $ Gesamtumsatz zeigt dort vielleicht 10–15 Mio. $.
+
+Die Schwelle war also am falschen Massstab kalibriert und haette **fast alles ausgeschlossen**. Die Kandidatenliste waere leer geblieben — und haette wie ein Defekt ausgesehen, obwohl das Gitter genau wie programmiert gearbeitet haette. Der Nutzer haette deployed und wieder nichts gefunden.
+
+Korrigiert auf **2 Mio. $ IEX-Anteil** (entspricht grob 60–100 Mio. $ Gesamtumsatz). Kurs- und Spread-Kriterium sichern die Handelbarkeit zusaetzlich ab.
+
+## Wichtiger als die Zahl: der Zaehler
+Ich kann von hier aus nicht gegen Live-Daten kalibrieren — jede weitere Schaetzung waere geraten. Deshalb zaehlt das Einlassgitter jetzt mit, **woran** Kandidaten scheitern, und zeigt es ueber dem Situation Radar:
+
+> Einlassgitter: 8.412 geprueft → 31 Large Cap + 7 Momentum · abgelehnt: Umsatz 6.204, Bewegung 2.108, Spread 62, Kurs 0
+
+Damit ist eine leere Liste **erklaerbar** statt raetselhaft. Stehen dort dauerhaft 0 Momentum-Kandidaten und scheitert fast alles am Umsatz, ist die Schwelle zu streng — und wir haben die Zahl, mit der wir sie korrigieren, statt weiter zu schaetzen. Ausserhalb der US-Handelszeiten ist eine leere Liste dagegen normal, weil der Tagesumsatz dann noch klein ist; auch das steht im Tooltip.
+
+## Nachweis
+Der Test verlangt jetzt beides: eine Untergrenze, damit das Gitter kein Feigenblatt wird, **und** eine Obergrenze, damit niemand es wieder am Gesamtmarkt kalibriert. Dazu die Pflicht, dass die Zaehler existieren, durchgereicht und angezeigt werden.
+
+Alle **16** Suiten gruen, SHA-Bloecke identisch.
+
+---
+
+# FusionPulse v3.8.0 · Der Grund, warum nie eine Empfehlung kam
+
+## Die Ursachenanalyse
+Seit v3.5.8 habe ich die *Anzeige* von Widerspruechen repariert und dabei nie gefragt, warum es **ueberhaupt nie ein BUY gibt**. Das war der falsche Schwerpunkt. Nachgerechnet:
+
+**Was noetig ist** (10.000 € Einsatz, 11,50 € je Order, 27,5 % KESt): **rund 2,9 % Zielweite** fuer 120 € netto.
+**Was die App lieferte:** VEEV 1,20 % → 29 € netto. SOFI 1,60 % → 59 €.
+
+Faktor zwei bis drei zu klein — systematisch, kein Grenzfall.
+
+**Der Beweis, dass es kein Zufall war:** Im Worker steht `fTp2 = min(rawTarget, entry + 8 × risk)`. Bei VEEV lag der Stop 0,307 % entfernt, acht mal davon sind 2,46 %. Selbst am **absoluten Maximum** des erlaubten Zielbereichs waeren nur 106 € netto herausgekommen — unter der 120-€-Schwelle. VEEV konnte unter keinen Umstaenden eine Freigabe bekommen. Das gilt fuer jeden Titel mit engem Stop, also fuer die meisten.
+
+## Die eigentliche Ursache: das Universum, nicht der Zeitrahmen
+Mein erster Vorschlag (Zeithorizont auf Swing weiten) war falsch. Ein Nachrichten-Mover bewegt sich intraday 10–25 % — da reicht die 3-Stunden-Spanne voellig.
+
+Das Problem war das Einlass-Gate:
+```js
+// inclusion-only gate: unknown/small/micro-cap symbols cannot enter Radar
+const LARGE_CAP_RADAR_SYMBOLS = new Set([ 48 Symbole ]);
+```
+Aus rund **12.000** von Tiingo gescannten Titeln kamen **48** durch, alle Mega-Caps. Eine Apple bewegt sich an einem normalen Tag 0,8 %. Die 1,2 % bei VEEV waren kein Fehler — das ist einfach, was eine Mega-Cap tut. Ein MRNA auf FDA-Nachricht konnte den Radar **nie** von selbst erreichen, obwohl die Daten dafuer laengst vorlagen.
+
+## Was in diesem Paket gebaut ist
+
+### 1. Handelskosten sind einstellbar
+Die Konstante `STOCK_ORDER_FIXED_EUR = 10.75` ist verschwunden. Neu: **Ordergebuehr je Order** und **Spread-/Slippage-Reserve je Seite**, getrennt einstellbar. Standard 11,50 € / 0,15 % — abgestimmt auf flatex-US-Direkthandel statt auf eine veraltete Tradegate-Schaetzung.
+
+Das ist wichtiger als es klingt: die Zahl geht in **jede** Wirtschaftlichkeitsschwelle ein. Ein Test prueft, dass eine Aenderung tatsaechlich durchschlaegt und nicht nur in den Einstellungen steht.
+
+### 2. Das Namensgitter wird messbar
+`largeCapRadarAllowed` bleibt als Einlasspfad. Daneben tritt `momentumRadarAllowed` mit vier **messbaren** Kriterien: Mindestkurs 5 $, Mindest-Dollarumsatz 20 Mio. $, maximaler Spread 0,60 %, Mindestbewegung 3 %. Fehlt ein Wert, gilt fail-closed: kein Einlass.
+
+Das prueft Handelbarkeit direkt, statt sie ueber Bekanntheit zu schaetzen — und es veraltet nicht.
+
+### Eine Sicherheitsregel wurde bewusst geaendert
+Der Test aus v3.4.2 verlangte das Large-Cap-Gate. Die urspruengliche **Absicht** stand im Code-Kommentar: „practical broker tradability rather than maximum candidate count." Die Absicht bleibt, das Mittel wird messbar. Die Aenderung ist im Testcode ausfuehrlich begruendet, und die neuen Schwellen sind gegen Aufweichung abgesichert: der Test faellt, wenn jemand den Mindestumsatz senkt oder den Spread weitet.
+
+## Was noch aussteht
+Modus A ist damit **auffindbar**, aber noch nicht **bewertet**: der `overextended`-Malus („nicht hinterherlaufen") straft weiterhin genau die Titel ab, die gesucht werden, und Elliott hat bei einem Gap ohne Wellenhistorie nichts zu sagen. Beides braucht ein eigenes Bewertungsprofil hinter dem Umschalter. Das ist der naechste Schritt — bewusst nicht mit hineingezwaengt.
+
+## Nachweis
+Ein echter Laufzeitfehler kam beim Testen ans Licht: zwei Stellen in `positionMetrics` nutzten die geloeschte Konstante weiter — das haette im Browser bei jeder Portfolio-Berechnung eine Exception geworfen. Der Harness faengt so etwas, Regex-Tests nicht.
+
+Zwei Negativkontrollen: Mindestumsatz auf 100.000 $ gesenkt → Suite faellt. Ordergebuehr wieder fest verdrahtet → Suite faellt. Alle **16** Suiten gruen, SHA-Bloecke identisch.
+
+---
+
+# FusionPulse v3.7.0 · P3: Krypto-Stimmung (Fear & Greed)
+
+## Zuerst eine Korrektur
+Ich habe zweimal behauptet, `alternative.me` und die Weisses-Haus-Feeds seien durch eine **Cloudflare-Egress-Whitelist blockiert**, die nur du freischalten kannst. **Das war falsch.** Cloudflare Workers duerfen per `fetch()` jede Domain aufrufen; eine solche Whitelist gibt es dort nicht. Ich hatte das mit der Beschraenkung meiner eigenen Arbeitsumgebung verwechselt. Dass dein SerpAPI-Schluessel einfach funktioniert hat, war der Beweis.
+
+**Du musst also nichts tun.** Kein Schluessel, keine Registrierung, keine Freischaltung — nur deployen. Ein Test erzwingt sogar, dass die Funktion keinen Zugangsschluessel verwendet.
+
+## Was neu ist
+Eine Kachel ueber dem Krypto-Bereich:
+
+> 😱 **Krypto-Stimmung: 18/100 · Extreme Angst**
+> (Farbverlaufsbalken von blau/Angst nach rot/Gier mit Markierung)
+> Die Marktteilnehmer sind stark verunsichert und verkaufen eher. · ▼ −6 zum Vortag · **Kontext, kein Signal — 0 % Gewicht in der Kauf-Freigabe.**
+
+Der Index kommt von alternative.me und setzt sich aus Schwankungsbreite, Marktmomentum, Social-Media-Aktivitaet, Bitcoin-Dominanz und Suchtrends zusammen. Er wird **einmal taeglich** neu berechnet — entsprechend genuegsam ist der Abruf (30-Minuten-Cache, halbstuendlicher Client-Takt).
+
+Der Mouseover sagt in fuenf Saetzen, was der Wert ist, was er **nicht** ist, wie er sich zum Vortag und zur Vorwoche entwickelt hat und wie alt der Stand ist.
+
+## Die drei Abgrenzungen, auf die es ankommt
+1. **Er bewertet nichts.** Ein Test durchsucht die Koerper von `stockHeadline`, `coinHeadline`, `stockLevel`, `stockOpportunity`, `stockTradeability` und `stockStrength` und faellt, sobald dort auch nur das Wort „sentiment" auftaucht. Negativkontrolle gefahren.
+2. **Er gilt nur fuer Krypto.** Fuer Aktien hat er keine Aussagekraft — das steht in der Kachel, im Tooltip und im Glossar.
+3. **Er ist nicht das Risk-On/Off-Badge.** Genau diese Verwechslung war der Anlass. Das Badge oben misst **Marktbreite**: den Anteil der gescannten Titel ueber ihrem VWAP. Also was Kurse **tun**, nicht was Marktteilnehmer **fuehlen**. Der Tooltip des Badges sagt das jetzt ausdruecklich und verweist auf die neue Kachel.
+
+## Fail-closed wie ueberall sonst
+- Antwort ohne brauchbaren Zahlenwert → Fehler, kein Ersatzwert.
+- Quelle nicht erreichbar → Rueckfall auf den letzten in D1 gespeicherten Stand, **ausdruecklich als veraltet gekennzeichnet** (gestrichelter Rahmen, „(nicht aktuell)" im Titel).
+- Gar nichts verfuegbar → „Krypto-Stimmung nicht verfuegbar. Es wird bewusst kein Ersatzwert erfunden."
+
+## Drei neue Glossareintraege
+- **Fear & Greed Index** — was er misst und wofuer er nicht gilt.
+- **Antizyklisch denken** — mit der Warnung, die dazugehoert: extreme Angst kann wochenlang extremer werden, bevor sie dreht. Wer allein darauf setzt, greift ins fallende Messer.
+- **Marktbreite** — die Abgrenzung zum Sentiment, samt Hinweis, dass die Basis eine Stichprobe von rund 20 Titeln ist und kein Marktindex.
+
+## Zu Aktien-Sentiment
+Bewusst **nicht** gebaut. Fuer Aktien gibt es keine vergleichbare freie, seriose Einzelquelle. Der CNN Fear & Greed hat keine offene API, und die brauchbaren Alternativen (Put/Call-Ratio, VIX-Terminstruktur, AAII-Umfrage) sind entweder kostenpflichtig, wochentaktig oder nur mit Aufwand seriös interpretierbar. Lieber keine Kennzahl als eine zusammengeschusterte — das steht als offener Punkt in der Uebergabe, nicht als erledigt.
+
+## Nachweis
+Zwei Negativkontrollen: `stockLevel` liest den Index → Suite faellt. Ungueltige Antwort wird mit 50 ersetzt statt abgewiesen → Suite faellt. Alle **15** Suiten gruen, SHA-Bloecke identisch.
+
+---
+
 # FusionPulse v3.6.5 · SerpAPI-Budgetwaechter (dringend)
 
 ## Befund: ein Handelstag haette das Monatskontingent verbrannt

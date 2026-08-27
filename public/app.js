@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.6.5 — Frontend
+   FusionPulse v3.9.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -75,11 +75,26 @@ const DEFAULTS = {
   theme: 'dark', taxPct: 27.5, analysisMode: 'composite', coinCount: 12, stockCount: 12,
   maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0, minNetProfitStock: 30, minTp2PctStock: 2.0,
   claudeMode: false, stockDeep: 20,
+  /* v3.9.0 · Positionsgroesse: zwei Modelle, ausdruecklich getrennt.
+     'risk'  = bisheriges Verhalten. Risiko je Trade ist die Eingabe (equity x riskPct),
+               die Kaufsumme das Ergebnis. Enger Stop -> grosse Position. maxTradeEur deckelt.
+     'fixed' = Kaufsumme ist die Eingabe (fixedTradeEur), das Risiko am Stop ist das ERGEBNIS
+               und wird als Worst-Case-Betrag ausgewiesen statt vorgegeben.
+     Default bleibt 'risk', damit weder der ChatGPT-Strang noch bestehende Nutzer
+     ihr Verhalten aendern (Invariante 9). */
+  sizeMode: 'risk', fixedTradeEur: 10000, maxLossEur: 400,
+  /* v3.9.0 · Handelsmodus. 'off' = unveraendertes Verhalten (Default).
+     'A' = Momentum-Tageshandel, 'B' = Large Cap / Position (noch Konzept). */
+  tradeMode: 'off',
   // v3.5.9 · Modul 2: Gesamt-Risikobudget ueber ALLE offenen Positionen (nicht je Trade)
   // und Klumpungswarnung. Default 3x das Einzeltrade-Risiko = drei parallele Trades.
   portfolioRiskPct: 2.25, portfolioGuard: false,
   // v3.6.5: SerpAPI-Freitarif = 100 Suchen/Monat. Weniger Symbole = laenger nutzbar.
   crowdSymbolLimit: 6,
+  // v3.8.0: Tatsaechliche Handelskosten. flatex US-Direkthandel ~11,50 € je Order;
+  // Tradegate ~7,90 €. Der Reibungswert deckt Spread und Slippage je Seite ab —
+  // an der US-Heimatboerse ~0,15 %, auf Tradegate bei Nebenwerten deutlich mehr.
+  orderFeeEur: 11.50, venueFrictionPct: 0.15,
   mutedPairs: [], mutedStocks: [], favoritePairs: [], favoriteStocks: [], stockOrder: [], components: [...ALL_COMPONENTS], stockSound: true,
 };
 const storedSettings = (() => { try { return JSON.parse(localStorage.getItem('fp.settings') || '{}'); } catch { return {}; } })();
@@ -93,13 +108,30 @@ if(Number(S.minNetProfitStock)===75 && !storedSettings.fusionAdaptive353){S.minN
 // Flatex AT / Tradegate cost model (v3.0.4): public base fee + minimum venue cost
 // per execution. Spread/slippage cannot be known from the Twelve Data candle feed,
 // therefore a separate conservative execution reserve is shown as an estimate.
-const STOCK_ORDER_FIXED_EUR = 10.75; // conservative v3.0.4 estimate for typical 5k–10k executions: 9.90 € flatex example + 0.85 € Tradegate min. external cost
-const STOCK_EXECUTION_FRICTION_PCT = 0.06; // estimated round-trip spread/slippage reserve, not a live Tradegate quote
+/* v3.8.0: Die Ordergebuehr war eine Konstante mit einer Herleitung, die fuer
+   den tatsaechlichen Handelsplatz des Nutzers nicht stimmte (US-Direkthandel
+   bei flatex liegt bei rund 11–12 € je Order, nicht 10,75 €). Da diese Zahl in
+   JEDE Wirtschaftlichkeitsschwelle eingeht, gehoert sie in die Einstellungen —
+   eine falsche Konstante verzerrt sonst alles darueber. Die alten Werte bleiben
+   als Rueckfall, damit nichts kaputtgeht, wenn die Einstellung fehlt. */
+const STOCK_ORDER_FIXED_EUR_DEFAULT = 10.75;
+const STOCK_EXECUTION_FRICTION_PCT_DEFAULT = 0.06;
+const orderFeeEur = () => { const v=Number(S?.orderFeeEur); return Number.isFinite(v)&&v>=0 ? v : STOCK_ORDER_FIXED_EUR_DEFAULT; };
+const venueFrictionPct = () => { const v=Number(S?.venueFrictionPct); return Number.isFinite(v)&&v>=0 ? v : STOCK_EXECUTION_FRICTION_PCT_DEFAULT; };
 const OPPORTUNITY_MIN_NET_EUR = 20; // v3.5.3: kleine absolute Untergrenze; Hauptkalibrierung erfolgt gegen das reale Risikobudget
 const OPPORTUNITY_HIGH_NET_EUR = 500; // priorisierte High-Opportunity, keine Erfolgswahrscheinlichkeit
 
 const FUSION_MIN_SCORE_STOCK = 7.2;
 const FUSION_MIN_PLAN_EFFICIENCY = 0.85; // 50/50-Plan nach Fixkosten muss mindestens 0,85R liefern; NICHT mit Struktur-CRV verwechseln
+/* v3.9.0 · Mindestverhaeltnis Zielweite : Stopweite im Fixbetrags-Modus.
+   Herleitung (10.000 EUR Einsatz, 11,50 EUR je Order, 0,15 % Reibung, 27,5 % KESt):
+   Bei Stop -2 % kostet ein Verlusttrade rund 238 EUR. Ein Gewinntrade bei Ziel +2 %
+   bringt netto rund 162 EUR -> noetige Trefferquote 60 %. Bei Ziel +4 % (= 2x Stop)
+   sind es rund 362 EUR -> noetige Trefferquote 40 %. Die Asymmetrie kommt daher, dass
+   Gewinne besteuert werden und Verluste die vollen Kosten mittragen.
+   2,0 ist damit keine runde Zahl aus Gewohnheit, sondern die Grenze, ab der ein
+   Momentum-Setup mit realistischer Trefferquote ueberhaupt tragfaehig ist. */
+const MIN_REWARD_RISK_FIXED = 2.0;
 const FUSION_MIN_NET_RISK_MULT = 0.75; // v3.5.3: wirtschaftliche Relevanz skaliert am realen Risikobudget, nicht am Notional
 const fusionMinNetEur = (sz) => {
   const riskBudget=Math.max(0,Number(S.equity||0)*(Number(S.riskPct||0)/100));
@@ -372,6 +404,62 @@ function buyReady(r) {
   return r.light === 'green' && r.inZone && Number(r.netCRV || 0) >= minCrv;
 }
 const coinLevel = (r) => (buyReady(r) ? 3 : r.light === 'green' ? 2 : r.light === 'yellow' ? 1 : 0);
+
+/* ---- v3.9.0 Modus-A-Overlay ------------------------------------------------
+   Steht bewusst HIER, hinter `function buyReady`, und nicht neben
+   claudeOverlayRow(): der Testanker fuer den SHA-verriegelten Claude-Overlay
+   reicht von '/* ---- Claude-Modus-Overlay' bis 'function buyReady'. Code in
+   diesem Bereich aendert die Pruefsumme, auch wenn er den Claude-Code selbst
+   nicht anfasst. Genau das ist mir beim ersten Versuch passiert — der Test hat
+   es gefangen, was zeigt, dass die Verriegelung ihren Zweck erfuellt.
+
+   Der Momentum-Overlay ueberschreibt Anzeigefelder nur, wenn Modus A aktiv ist
+   UND der Worker einen Momentum-Block geliefert hat. Alte Caches fallen still
+   ins bisherige Verhalten. Anders als der Claude-Modus, der nur TP2 verschiebt,
+   ersetzt Modus A auch Entry/Stop/TP1 — daher die laengere Feldliste. */
+const MOMENTUM_VIEW_FIELDS = ['light', 'score', 'verdict', 'tp2Usd', 'tp2Eur', 'tp2Pct', 'tp2Source', 'blockers',
+  'entryUsd', 'entryEur', 'stopUsd', 'stopEur', 'tp1Usd', 'tp1Eur'];
+const momentumModeOn = () => String(S?.tradeMode || 'off') === 'A';
+function momentumOverlayRow(r) {
+  if (!r || typeof r !== 'object') return r;
+  if (!r.momBase) { r.momBase = {}; for (const k of MOMENTUM_VIEW_FIELDS) r.momBase[k] = r[k]; }
+  const useMom = momentumModeOn() && !!r.momentum;
+  for (const k of MOMENTUM_VIEW_FIELDS) {
+    const v = useMom ? (r.momentum[k] !== undefined && r.momentum[k] !== null ? r.momentum[k] : r.momBase[k]) : r.momBase[k];
+    if (v === undefined) delete r[k]; else r[k] = v;
+  }
+  r.momentumActive = useMom;
+  return r;
+}
+/* Wird ueberall dort aufgerufen, wo bisher applyAnalysisView() stand. Der
+   Claude-Overlay laeuft zuerst (unveraendert), Modus A danach: das speziellere
+   Regelwerk gewinnt. */
+function applyTradeModeView() {
+  applyAnalysisView();
+  (stockRows || []).forEach(momentumOverlayRow);
+}
+
+/* v3.9.0 · Der Hinweis in den Einstellungen rechnet dem Nutzer VOR, was seine
+   Wahl bedeutet, statt sie nur zu benennen. Im Fixmodus ist die entscheidende
+   Zahl nicht der Einsatz, sondern der Verlust bei typischen Stop-Distanzen —
+   und die steht sonst nirgends, bevor der erste Trade auf dem Schirm ist. */
+function renderSizeModeHint() {
+  const el = $('#sRiskModeHint'); if (!el) return;
+  const fee = orderFeeEur(), fric = venueFrictionPct();
+  if (sizeModeFixed()) {
+    const n = fixedTradeEur();
+    const cost = fee * 2 + n * (fric / 100);
+    const line = (pct) => `Stop ${String(pct).replace('.', ',')} % → Verlust rund ${eur(n * (pct / 100) + cost, 0)}`;
+    el.innerHTML = `Aktiv: <b>fester Einsatz ${eur(n, 0)}</b>. Konto-Equity und Risiko-Prozent steuern die Positionsgröße dann <b>nicht</b> mehr.<br>`
+      + `Was das im Verlustfall bedeutet (inkl. ${eur(cost, 0)} Ausführungskosten): ${line(1)} · ${line(2)} · ${line(4)}.`;
+  } else {
+    const riskEur = Number(S.equity) * (Number(S.riskPct) / 100);
+    const bind = riskEur > 0 && S.maxTradeEur > 0 ? (riskEur / Number(S.maxTradeEur)) * 100 : null;
+    el.innerHTML = `Aktiv: <b>risikobasiert</b>, ${eur(riskEur, 2)} je Trade (${num(S.riskPct, 2)} % von ${eur(S.equity, 0)}).`
+      + (bind ? `<br>Bei einem Stop enger als <b>${num(bind, 2)} %</b> greift der Deckel von ${eur(S.maxTradeEur, 0)}`
+        + (Number(S.maxTradeEur) > Number(S.equity) ? ` — dieser Deckel liegt <b>über</b> deinem Konto und bedeutet dann Wertpapierkredit.` : `.`) : '');
+  }
+}
 function stockTradeability(r) {
   const claude = !!(S.claudeMode && r.claude);
   const sz = stockSizing(r); // Claude-Zweig bleibt unveraendert: Overlay liefert dessen Struktur-TP2.
@@ -387,11 +475,37 @@ function stockTradeability(r) {
   const minCrv = claude ? CLAUDE_MIN_CRV_STOCK : Number(S.minCrvStock || 3);
   const minTp2 = claude ? Math.max(Number(S.minTp2PctStock || 0), 0.6) : Number(S.minTp2PctStock || 0);
   const planOk = claude ? true : planEfficiency >= FUSION_MIN_PLAN_EFFICIENCY;
+
+  /* v3.9.0 · Im Fixmodus ist ein Mindest-Nettogewinn in Euro die falsche Huerde.
+     Bei fester Kaufsumme ist der Gewinn eine reine Funktion des Kursweges — die
+     Schwelle wuerde nur noch messen, wie weit das Ziel weg ist, und zwar doppelt
+     (minTp2 tut das bereits). Was im Fixmodus tatsaechlich ueber Gewinn und
+     Verlust entscheidet, ist das Verhaeltnis von Zielweite zu Stopweite:
+     Ziel >= 2x Stop laesst sich mit rund 34–40 % Trefferquote nach Kosten und
+     KESt gewinnbringend handeln, Ziel = Stop braucht ueber 60 %.
+     Die Schwelle kann ausschliesslich ABWERTEN: sie ersetzt keine bestehende
+     Bedingung, sondern tritt zusaetzlich neben minTp2/minCrv. */
+  const rewardRisk = Number(sz?.rewardRiskRaw ?? 0);
+  const fixed = sizeModeFixed();
+  const minRewardRisk = fixed ? MIN_REWARD_RISK_FIXED : 0;
+  const rewardRiskOk = !fixed || (Number.isFinite(rewardRisk) && rewardRisk >= minRewardRisk);
+  /* Der Mindest-Eurogewinn bleibt im Risikomodus scharf und wird im Fixmodus
+     bewusst NICHT als erfuellt behandelt, sondern durch die haertere Bedingung
+     ersetzt. Fail-closed: fehlt sz, ist nichts erfuellt. */
+  const netOk = fixed ? !!sz : netProfit >= minNet;
+  /* Worst Case: im Fixmodus vom Nutzer deckelbar. Auch das kann nur abwerten. */
+  const maxLoss = Math.max(0, Number(S.maxLossEur || 0));
+  const worstCase = Number(sz?.stopLossAfterCosts ?? NaN);
+  const lossOk = !fixed || !maxLoss || (Number.isFinite(worstCase) && worstCase <= maxLoss);
+
   const ok = marketOk && tp2Pct >= minTp2
-    && netProfit >= minNet
+    && netOk
     && gateCrv >= minCrv
-    && planOk;
-  return { ok, tp2Pct, netProfit, netCrv:gateCrv, structuralCrv, planEfficiency, planOk, marketOk, minNet, minCrv, minPlanEfficiency:FUSION_MIN_PLAN_EFFICIENCY, claude };
+    && planOk
+    && rewardRiskOk
+    && lossOk;
+  return { ok, tp2Pct, netProfit, netCrv:gateCrv, structuralCrv, planEfficiency, planOk, marketOk, minNet, minCrv, minPlanEfficiency:FUSION_MIN_PLAN_EFFICIENCY, claude,
+    fixedSize:fixed, rewardRisk, minRewardRisk, rewardRiskOk, worstCase, maxLoss, lossOk, netOk };
 }
 /* ==== v3.6.0 · GLOSSAR ======================================================
    Ein zentraler Ort fuer jede Erklaerung, statt derselbe Begriff an fuenf
@@ -425,11 +539,24 @@ const GLOSS = {
   atr:'ATR = durchschnittliche Schwankungsbreite. Wie weit sich der Kurs an einem typischen Tag bewegt. Wird hier benutzt, um den Stop weit genug vom Kurs zu setzen — ein Stop innerhalb des normalen Rauschens wird fast sicher ausgelöst, ohne dass die Idee falsch war.',
   rvol:'Relatives Volumen (RVOL): Wie viel heute gehandelt wird im Vergleich zu einem normalen Tag. 2× heißt doppelt so viel Aufmerksamkeit wie üblich. Sagt nichts über die Richtung.',
   notional:'Kaufsumme (Notional): Was du insgesamt investierst — Stückzahl × Kurs. Nicht zu verwechseln mit dem Risiko: das ist nur der Teil, den du bis zum Stop verlieren kannst, üblicherweise ein kleiner Bruchteil davon.',
+  /* v3.9.0 · Begriffe zu Positionsgröße und Handelsmodus. Jeder Eintrag sagt:
+     was ist es, wozu dient es hier, was heißt es ausdrücklich NICHT. */
+  sizeModeRisk:'Risikobasierte Positionsgröße: Du legst fest, wie viel Geld ein einzelner Trade dich im schlechtesten Fall kosten darf (z. B. 0,75 % von 5.000 € = 37,50 €). Die App rechnet daraus rückwärts, wie viele Stück du kaufen musst, damit genau dieser Betrag bis zum Stop auf dem Spiel steht. Folge: Je näher der Stop am Einstieg liegt, desto GRÖSSER wird die Position — bei einem Stop 0,375 % entfernt wären das bereits 10.000 €. Das ist kein Fehler, sondern die Logik des Modells. Es heißt ausdrücklich NICHT, dass dein Verlust auf diesen Betrag begrenzt ist: über Nacht kann ein Kurs unter deinem Stop eröffnen, und dann verlierst du mehr.',
+  sizeModeFixed:'Fester Einsatz: Du legst fest, wie viel Geld du pro Trade investierst (z. B. immer 10.000 €), unabhängig davon, wo der Stop sitzt. Der mögliche Verlust ist dann das Ergebnis und keine Vorgabe — er steht auf jeder Karte als "Verlust am Stop inkl. Kosten". Wozu: Wer manuell handelt und nur wenige Titel pro Tag anfasst, denkt in Einsatzbeträgen, nicht in Risikoprozenten. Es heißt ausdrücklich NICHT, dass das Risiko dadurch verschwindet — es wird nur an anderer Stelle sichtbar, nämlich in der Stop-Distanz.',
+  stopDistance:'Stop-Distanz: Wie weit dein Stop-Kurs prozentual unter dem Einstieg liegt. Bei festem Einsatz ist das die Zahl, die deinen Verlust bestimmt: 10.000 € Einsatz und 2 % Stop-Distanz bedeuten rund 200 € Kursverlust plus etwa 38 € Ausführungskosten. Sie sagt ausdrücklich NICHTS darüber, wie wahrscheinlich es ist, dass der Stop erreicht wird — ein enger Stop wird häufiger ausgelöst, ein weiter kostet mehr, wenn er ausgelöst wird.',
+  rewardRisk:'Ziel : Stop (Chance-Risiko-Verhältnis in Kursweite): Wie oft die Zielentfernung in die Stop-Entfernung passt. Ziel +4 % bei Stop −2 % ergibt 2,0x. Warum das bei festem Einsatz die entscheidende Zahl ist: Gewinne werden mit KESt besteuert, Verluste tragen die vollen Gebühren mit. Bei 1,0x brauchst du über 60 % Trefferquote, um überhaupt bei null zu landen — bei 2,0x reichen rund 40 %. Deshalb gibt die App im Fixmodus unter 2,0x keine Kauf-Freigabe. Es ist ausdrücklich KEINE Vorhersage, dass das Ziel erreicht wird.',
+  maxLoss:'Maximaler Verlust am Stop: Eine von dir gesetzte Obergrenze in Euro für das, was ein einzelner Trade im schlechtesten Fall kosten darf, inklusive aller Ausführungskosten. Setups mit einem so weit entfernten Stop, dass diese Grenze überschritten würde, bekommen keine Freigabe. Die Grenze kann ausschließlich abwerten: sie erzeugt nie eine Kauf-Freigabe, sie entzieht nur eine. 0 schaltet sie ab.',
+  tradeModeA:'Modus A · Momentum-Tageshandel: Ein eigenes Regelwerk für Titel, die HEUTE stark bewegt sind — nach Quartalszahlen, Nachrichten oder einem Gap. Vier Unterschiede zum Positionsmodus: (1) Der Abstand zur EMA21 wird nicht mehr bestraft, denn genau dieser Abstand ist hier das Gesuchte und kein Warnsignal. (2) Elliott-Wellen werden gar nicht verwendet, weil ein Gap ohne Wellenhistorie der Methode keine Grundlage gibt. (3) Der Stop kommt unter das Konsolidierungstief nach dem Impuls, das Ziel ist ein Vielfaches der bisherigen Tagesspanne. (4) Ohne frischen Kurs gibt es keinen Plan. Modus A ist ausdrücklich KEIN besserer Modus, sondern ein anderer — für ruhige Standardwerte über Wochen ist er ungeeignet.',
+  quoteAge:'Kursalter: Wie alt der jüngste verwendete Kurs ist. Der Feed liefert 5-Minuten-Balken, ein Kurs ist also fast immer einige Minuten alt. Wozu die Angabe dient: Bei einem Titel, der am Tag 12 % läuft, bewegen sich in zehn Minuten leicht 1–2 % — ein Plan auf altem Kurs hätte dann einen Stop, der real schon durchbrochen ist. Modus A verweigert deshalb ab 10 Minuten die Freigabe. Ein frischer Kurs bedeutet ausdrücklich NICHT, dass du zu diesem Kurs auch kaufen kannst; das entscheidet dein Handelsplatz.',
+  consolidation:'Konsolidierung: Eine Beruhigungsphase nach einem starken Impuls — der Kurs läuft eine Weile seitwärts, statt weiter zu steigen oder zurückzufallen. Wozu sie hier dient: Ihr Tief ist der einzige Punkt, an dem sich in einem schnellen Momentum-Titel ein sinnvoller Stop definieren lässt. Fällt der Kurs darunter, war der Impuls verkauft. Ohne erkennbare Konsolidierung erstellt Modus A bewusst gar keinen Plan, statt einen Stop zu erfinden.',
   slippage:'Slippage: Die Differenz zwischen dem Kurs, den du siehst, und dem, den du tatsächlich bekommst. Entsteht, weil sich der Kurs zwischen Klick und Ausführung bewegt. Wird hier als Reserve geschätzt, nicht gemessen.',
   spread:'Spread: Der Abstand zwischen Kauf- und Verkaufskurs. Diese Differenz zahlst du sofort beim Einstieg — bei eng gehandelten Titeln kann sie einen kleinen Trade allein unwirtschaftlich machen.',
   tickerSym:'Kürzel (Ticker) = der Kurzname, unter dem eine Aktie an der Börse gehandelt wird. Das ist KEINE Kennzahl wie CRV oder RVOL, sondern nur ein Name: AAPL steht für Apple, SOFI für SoFi Technologies. Das Kürzel ist NICHT eindeutig über alle Börsen hinweg: derselbe Buchstabencode kann anderswo ein völlig anderes Papier bezeichnen. Deshalb steht der volle Firmenname immer daneben.',
 
   /* --- Zeit & Datenstand (v3.6.4) --- */
+  fearGreed:'Fear & Greed Index (Angst-und-Gier-Index): ein Stimmungswert von 0 bis 100 für den Kryptomarkt. 0 = größtmögliche Angst, 100 = größtmögliche Gier. Er wird aus Schwankungsbreite, Marktmomentum, Social-Media-Aktivität, Bitcoin-Dominanz und Suchtrends zusammengesetzt und einmal täglich neu berechnet. WICHTIG: Er misst die Stimmung, nicht die Qualität eines Trades, sagt nichts über einen einzelnen Coin, und er gilt ausschließlich für Krypto — für Aktien hat er keine Aussagekraft. In FusionPulse hat er 0 % Gewicht in Score und Kauf-Freigabe; er ist Kontext, kein Signal.',
+  contrarian:'Antizyklisch (contrarian) denken heißt: gegen die vorherrschende Stimmung handeln — kaufen, wenn alle ängstlich sind, verkaufen, wenn alle euphorisch sind. Historisch lagen Wendepunkte oft in Phasen extremer Stimmung. Daraus folgt aber KEINE Handelsregel: extreme Angst kann wochenlang extremer werden, bevor sie dreht. Wer allein darauf setzt, greift ins fallende Messer.',
+  breadth:'Marktbreite (Breadth): Wie viele Titel einer Auswahl gerade über ihrem Tagesdurchschnittspreis liegen. „Risk-Off · 25 % über VWAP" heißt: nur ein Viertel der gescannten Titel handelt über diesem Durchschnitt. Das misst, was Kurse TUN — nicht, was Marktteilnehmer FÜHLEN. Es ist also kein Sentiment. Außerdem ist die Basis eine Stichprobe von rund 20 Titeln, kein Marktindex.',
   serpQuota:'SerpAPI ist der Dienst, über den FusionPulse misst, wie viel gerade über eine Aktie geredet wird (Reddit, X, Stocktwits). Jede Messung eines Symbols ist eine bezahlte Suchanfrage. Der kostenlose Tarif erlaubt rund 100 Suchen im MONAT — nicht pro Tag. Deshalb wird jedes Symbol höchstens alle sechs Stunden neu gemessen, pro Abruf werden nur wenige aufgefrischt, und bei erschöpftem Budget hört die App auf zu fragen, statt Werte zu erfinden.',
   dataFreshness:'Zwei verschiedene Zeitpunkte, die leicht verwechselt werden. „Abfrage 12:28" heißt nur: um 12:28 hat FusionPulse zuletzt beim Datenanbieter nachgesehen. „Kurs vom 25.08., reguläre US-Sitzung" heißt: so alt ist der Kurs selbst. Wenn die US-Börse geschlossen ist, liefert auch die frischeste Abfrage den letzten Schlusskurs — die Aktie sieht dann aktuell aus, ist es aber nicht. Deshalb steht der Datenstand jetzt getrennt daneben.',
   tradingHours:'Die US-Börse arbeitet in New Yorker Zeit (ET). Umgerechnet auf unsere Zeit: Premarket ab etwa 10:00, Eröffnung 15:30, regulärer Handel bis 22:00, After Hours bis 02:00 nachts. Im Winter jeweils eine Stunde später, weil die USA und Europa die Zeitumstellung an unterschiedlichen Terminen machen. Die App rechnet das automatisch um und zeigt beide Zeiten.',
@@ -570,7 +697,7 @@ function portfolioExposure(){
      moeglich, aus den eigenen offenen Positionen statt aus einer Annahme. */
   const knownItems=items.filter(x=>x.known&&Number(x.risk)>0);
   const costFactor=knownItems.length&&usedPriceRisk>0?Math.max(1,usedRisk/usedPriceRisk)
-    :(perTrade>0?1+(STOCK_ORDER_FIXED_EUR*2)/perTrade:1);
+    :(perTrade>0?1+(orderFeeEur()*2)/perTrade:1);
   const perTradeReal=perTrade*costFactor;
   const slotsLeft=perTradeReal>0?Math.floor(freeRisk/perTradeReal):0;
 
@@ -708,10 +835,10 @@ function positionMetrics(r,p){
   const current=Number(r?.priceEur)||eurLevel(r,'price');
   if(!(entry>0&&qty>0))return null;
   const notional=entry*qty, stopGross=stop?Math.max(0,(entry-stop)*qty):null;
-  const stopCosts=STOCK_ORDER_FIXED_EUR*2+notional*(STOCK_EXECUTION_FRICTION_PCT/100);
+  const stopCosts=orderFeeEur()*2+notional*(venueFrictionPct()/100);
   const stopLoss=stopGross==null?null:stopGross+stopCosts;
   const tp1Gross=tp1?(tp1-entry)*qty:null, tp2Gross=tp2?(tp2-entry)*qty:null;
-  const targetCosts=STOCK_ORDER_FIXED_EUR*2+notional*(STOCK_EXECUTION_FRICTION_PCT/100);
+  const targetCosts=orderFeeEur()*2+notional*(venueFrictionPct()/100);
   const tp1Net=tp1Gross==null?null:Math.max(0,tp1Gross-targetCosts)*(1-S.taxPct/100);
   const tp2Net=tp2Gross==null?null:Math.max(0,tp2Gross-targetCosts)*(1-S.taxPct/100);
   const netCrv=stopLoss&&tp2Net!=null?Math.max(0,tp2Net)/stopLoss:null;
@@ -786,14 +913,23 @@ function beep(kind, muted = false) {
 
 /* ------------------------------------------------------- Positionsgrößen */
 function sizing(r) {
-  const riskEur = S.equity * (S.riskPct / 100);
   const perUnit = r.entry - r.stop;
   if (perUnit <= 0) return null;
-  let notional = (riskEur / perUnit) * r.entry;
-  const rawNotional = notional;
   const caps = [];
+  /* v3.9.0: dasselbe Sizing-Modell wie bei Aktien, damit die App nicht auf zwei
+     Seiten zwei verschiedene Logiken zeigt. Im Fixmodus ist riskEur das Ergebnis. */
+  let notional, riskEur;
+  if (sizeModeFixed()) {
+    notional = fixedTradeEur();
+    riskEur = (perUnit / r.entry) * notional;
+    caps.push('fixedSize');
+  } else {
+    riskEur = S.equity * (S.riskPct / 100);
+    notional = (riskEur / perUnit) * r.entry;
+  }
+  const rawNotional = notional;
   const maxTrade = Math.max(0, Number(S.maxTradeEur || 0));
-  if (maxTrade && notional > maxTrade) { notional = maxTrade; caps.push('maxTrade'); }
+  if (!sizeModeFixed() && maxTrade && notional > maxTrade) { notional = maxTrade; caps.push('maxTrade'); }
   if (r.buyCapacity == null) caps.push('liquidityUnchecked');
   else if (r.buyCapacity > 0 && notional > r.buyCapacity) { notional = r.buyCapacity; caps.push('liquidity'); }
   const qty = notional / r.entry;
@@ -844,12 +980,15 @@ function stockOrderPlan(r){
     `Stop   ${px(r.stopUsd,r.stopEur)}`,
     `TP1    ${px(r.tp1Usd,r.tp1Eur)}   (50 % verkaufen)`,
     `TP2    ${px(r.tp2Usd,r.tp2Eur)}   (Rest verkaufen)`,
-    sz?`Größe  ${eur(sz.notional,2)}  ≈ ${Math.floor(sz.qty)} Stück`:'',
+    sz?`Größe  ${eur(sz.notional,2)}  ≈ ${Math.floor(sz.qty)} Stück${sz.sizeBasis==='fixed'?'  [fester Einsatz]':''}${sz.liquidityCapped?'  [wegen Marktliquidität reduziert]':''}`:'',
     '',
+    r.momentumActive?'Regelwerk  Modus A · Momentum (ohne Elliott, ohne Überdehnungs-Malus)':'',
     `${S.claudeMode?'Plan-CRV':'Struktur-CRV'}  ${num(tr.netCrv,2)} : 1${Number(tr.netCrv)<Number(tr.minCrv||0)?'  [unter deiner Grenze]':''}`,
+    sz&&sz.stopDistancePct!=null?`Stop-Distanz  ${num(sz.stopDistancePct,2)} %`:'',
+    tr.fixedSize&&Number.isFinite(tr.rewardRisk)?`Ziel : Stop  ${num(tr.rewardRisk,2)} x${tr.rewardRiskOk?'':`  [unter ${num(tr.minRewardRisk,1)}x — keine Freigabe]`}`:'',
     `Weg bis TP2  ${num(tr.tp2Pct,2)} %`,
     sz?`TP1 netto ${eur(sz.tp1Net,2)} · TP2 netto ${eur(sz.tp2Net,2)} · Gesamtplan netto ${eur(sz.planNet,2)}`:'',
-    sz?`Verlust am Stop inkl. Kosten  ${eur(sz.stopLossAfterCosts,2)}`:'',
+    sz?`Verlust am Stop inkl. Kosten  ${eur(sz.stopLossAfterCosts,2)}${tr.fixedSize&&tr.maxLoss>0?`  (deine Grenze ${eur(tr.maxLoss,0)}${tr.lossOk?'':' — ÜBERSCHRITTEN, keine Freigabe'})`:''}`:'',
     '',
     `Datenstand: ${ds.label}`,
     'EUR-Beträge sind umgerechnet, KEINE Tradegate-Kurse. Vor der Order den echten Kurs am Handelsplatz prüfen.',
@@ -1177,6 +1316,12 @@ function stockHeadline(r){
     light, icon: VERDICT_ICON[light]||'🔴', text: String(r?.verdict||''), kind:'pattern',
     title:'Bewertung allein des Kursmusters: 🟢 sauber, 🟡 unklar, 🔴 kein Trade.\n\nEine Kauf-Freigabe braucht zusätzlich: aktuelle Daten, offenen Markt, ausreichenden Kursweg und genug Gewinnpotenzial nach Kosten.'
   });
+  /* v3.8.2: MUSS vor dem BUY-Zweig stehen. Ein Setup, das alle Bedingungen
+     erfuellt, aber am selben Abend Zahlen hat, ist genau der Fall, den die
+     Warnung abfangen soll — danach abzufragen waere wirkungslos gewesen. */
+  const ewCrit = earningsWarning(r?.symbol);
+  if (ewCrit && ewCrit.critical) return clamp({
+    light:'yellow', icon:'⚠', text:`Setup ok · Quartalszahlen ${ewCrit.when}${modeTagOf(r)}`, kind:'event', title:ewCrit.detail });
   if (stockLevel(r) === 3) return clamp({
     light:'green', icon:'🟢', text:'BUY', kind:'buy',
     title:'Alle Bedingungen sind gleichzeitig erfüllt: Musterqualität, aktuelle Daten, offener Markt, ausführbare Größe und ein Gewinnpotenzial, das Risiko und Kosten rechtfertigt.\n\nDas ist ein Vorschlag nach deinen eigenen Regeln, keine Prognose. FusionPulse führt nichts automatisch aus.'
@@ -1209,12 +1354,38 @@ function stockHeadline(r){
   return clamp({ light:'yellow', icon:'🟡', text:pick.text, title:pick.title, kind:opp.blockKind||'quality' });
 }
 
+/* v3.9.0 · Welches Sizing-Modell gilt? An EINER Stelle beantwortet, damit
+   Anzeige, Rechnung und Gates nie auseinanderlaufen. */
+const sizeModeFixed = () => String(S?.sizeMode || 'risk') === 'fixed';
+const fixedTradeEur = () => { const v = Number(S?.fixedTradeEur); return Number.isFinite(v) && v > 0 ? v : DEFAULTS.fixedTradeEur; };
+
 function stockSizing(r) {
   if (r.entryEur == null || r.stopEur == null || !(r.entryEur > r.stopEur)) return null;
-  const riskEur = S.equity * (S.riskPct / 100);
-  let qty = riskEur / (r.entryEur - r.stopEur);
-  const maxTrade = Math.max(0, Number(S.maxTradeEur || 0));
-  if (maxTrade && qty * r.entryEur > maxTrade) qty = maxTrade / r.entryEur;
+  const perUnit = r.entryEur - r.stopEur;
+  const fixed = sizeModeFixed();
+  let qty;
+  let sizeBasis;
+  if (fixed) {
+    /* Kaufsumme ist die Eingabe. Das Risiko am Stop ergibt sich daraus und wird
+       NICHT begrenzt — es wird ausgewiesen. Wer 10.000 EUR in einen Titel legt,
+       dessen Stop 4 % entfernt liegt, riskiert 400 EUR plus Kosten. Diese Zahl
+       zu verstecken waere die gefaehrlichere Variante. */
+    qty = fixedTradeEur() / r.entryEur;
+    sizeBasis = 'fixed';
+  } else {
+    const riskEur = S.equity * (S.riskPct / 100);
+    qty = riskEur / perUnit;
+    const maxTrade = Math.max(0, Number(S.maxTradeEur || 0));
+    if (maxTrade && qty * r.entryEur > maxTrade) qty = maxTrade / r.entryEur;
+    sizeBasis = 'risk';
+  }
+  /* Fail-closed und in BEIDEN Modellen wirksam: die Liquiditaetsgrenze des
+     Titels darf nie ueberschritten werden. Im Fixmodus ist das wichtiger als je
+     zuvor — 10.000 EUR in einen duennen Nebenwert zu druecken ist genau der
+     Fall, in dem der Ausstieg teurer wird als der Einstieg. */
+  const cap = Number(r.buyCapacityEur ?? r.buyCapacity);
+  let liquidityCapped = false;
+  if (Number.isFinite(cap) && cap > 0 && qty * r.entryEur > cap) { qty = cap / r.entryEur; liquidityCapped = true; }
   const notional = qty * r.entryEur;
   const tp1Share = 0.5, tp2Share = 0.5;
   const tp1Gross = (r.tp1Eur - r.entryEur) * qty * tp1Share;
@@ -1222,10 +1393,10 @@ function stockSizing(r) {
   const planGross = tp1Gross + tp2Gross;
 
   // Target path = Entry + TP1 + TP2 (3 executions). Stop path = Entry + Stop (2 executions).
-  const targetFixedCosts = STOCK_ORDER_FIXED_EUR * 3;
-  const stopFixedCosts = STOCK_ORDER_FIXED_EUR * 2;
-  const frictionTarget = notional * (STOCK_EXECUTION_FRICTION_PCT / 100);
-  const frictionStop = notional * (STOCK_EXECUTION_FRICTION_PCT / 100);
+  const targetFixedCosts = orderFeeEur() * 3;
+  const stopFixedCosts = orderFeeEur() * 2;
+  const frictionTarget = notional * (venueFrictionPct() / 100);
+  const frictionStop = notional * (venueFrictionPct() / 100);
   const targetCosts = targetFixedCosts + frictionTarget;
   const stopCosts = stopFixedCosts + frictionStop;
 
@@ -1241,8 +1412,15 @@ function stockSizing(r) {
   const tp2AfterCosts = Math.max(0, tp2Gross * alloc);
   const tp1Net = tp1AfterCosts * taxFactor;
   const tp2Net = tp2AfterCosts * taxFactor;
+  /* v3.9.0 · Im Fixmodus ist DAS die wichtigste Zahl der ganzen Karte:
+     was kostet der Trade, wenn der Stop ausgeloest wird. Inklusive beider
+     Ausfuehrungskosten, nicht nur der Kursdifferenz. */
+  const stopDistancePct = r.entryEur > 0 ? (perUnit / r.entryEur) * 100 : null;
+  const targetDistancePct = (r.entryEur > 0 && r.tp2Eur != null) ? ((r.tp2Eur / r.entryEur - 1) * 100) : null;
+  const rewardRiskRaw = (stopDistancePct > 0 && targetDistancePct != null) ? targetDistancePct / stopDistancePct : null;
   return {
     qty, notional, risk: stopPriceLoss,
+    sizeBasis, liquidityCapped, stopDistancePct, targetDistancePct, rewardRiskRaw,
     tp1Share, tp2Share, tp1Gross, tp2Gross, planGross,
     targetFixedCosts, stopFixedCosts, frictionTarget, frictionStop, targetCosts, stopCosts,
     planAfterCosts, stopLossAfterCosts, planCrvAfterCosts,
@@ -1434,8 +1612,10 @@ const GLOSS_GROUPS = [
   {title:'Analyseverfahren (die Häkchen oben)',              keys:['vwap','ema21','rs','mtf','volume','book']},
   {title:'Kennzahlen im Fokusfenster',                        keys:['score','maturity','situationScore','lifecyclePhase','execScore','sectorTag']},
   {title:'Zeit & Datenstand',                                 keys:['dataFreshness','tradingHours','serpQuota']},
+  {title:'Marktstimmung & Marktbreite',                       keys:['fearGreed','contrarian','breadth']},
   {title:'Erkannte Kursereignisse (Situation Engine)',        keys:['sit_squeeze','sit_breakoutStart','sit_breakoutPressure','sit_reclaim','sit_pullbackHold','sit_acceleration','sit_nearHigh','sit_openingDrive','sit_watch']},
-  {title:'Bewertung eines Trades',                            keys:['crv','planEff','rMultiple','expectancy','atr','rvol','notional','spread','slippage','tickerSym']},
+  {title:'Bewertung eines Trades',                            keys:['crv','planEff','rMultiple','expectancy','atr','rvol','notional','spread','slippage','tickerSym','rewardRisk','stopDistance']},
+  {title:'Positionsgröße und Handelsmodus (v3.9.0)',          keys:['sizeModeRisk','sizeModeFixed','maxLoss','tradeModeA','consolidation','quoteAge']},
   {title:'Selbstauswertung (Modul 0)',                        keys:['sampleN','inSample','oos','wilson','overfit','multiTest','mute','hysterese']},
   {title:'Portfolio-Risiko (Modul 2)',                        keys:['riskPerTrade','portfolioBudget','cluster','diversify','stopReal']},
 ];
@@ -1446,6 +1626,10 @@ const GLOSS_LABEL = {
   volume:'Volumen', book:'Orderbuch', crv:'CRV / Chance-Risiko-Verhältnis', planEff:'Plan-Effizienz',
   rMultiple:'R (Risiko-Einheit)', expectancy:'Erwartungswert (EV)', atr:'ATR / Schwankungsbreite',
   rvol:'RVOL / relatives Volumen', notional:'Kaufsumme (Notional)', spread:'Spread', slippage:'Slippage',
+  sizeModeRisk:'Risikobasierte Positionsgröße', sizeModeFixed:'Fester Einsatz je Trade',
+  stopDistance:'Stop-Distanz (%)', rewardRisk:'Ziel : Stop (Kursweite)', maxLoss:'Maximaler Verlust am Stop',
+  tradeModeA:'Modus A · Momentum-Tageshandel', quoteAge:'Kursalter / Live-Kurs-Pflicht',
+  consolidation:'Konsolidierung nach dem Impuls',
   tickerSym:'Ticker-Kürzel (z. B. SOFI)', sampleN:'n / Fallzahl', inSample:'In-Sample', oos:'Out-of-Sample',
   wilson:'Wilson-Untergrenze', overfit:'Overfitting / Überanpassung', multiTest:'Mehrfachtest-Korrektur',
   mute:'Stummschalten', hysterese:'Hysterese', riskPerTrade:'Risiko je Trade',
@@ -1453,6 +1637,7 @@ const GLOSS_LABEL = {
   stopReal:'Warum das echte Risiko höher ist',
   dataFreshness:'Datenstand vs. Abfragezeit', tradingHours:'US-Handelszeiten in unserer Zeit',
   serpQuota:'SerpAPI-Kontingent (Crowd/Search)',
+  fearGreed:'Fear & Greed Index (Krypto-Stimmung)', contrarian:'Antizyklisch denken', breadth:'Marktbreite / Risk-On–Risk-Off',
   score:'Score (0–10)', maturity:'Reife (0–100 %)', situationScore:'Situation (0–100)',
   lifecyclePhase:'Phase (PREP / IGNITION / CONFIRM / LATE)', execScore:'Ausführbarkeit (0–10)',
   sectorTag:'Branche / Sektor',
@@ -1877,6 +2062,103 @@ function renderCrowdStatus(){
   el.innerHTML=`<b title="${esc(st.detail)}">${st.ok?'📡':st.tone==='off'?'🔌':st.tone==='err'?'⚠':'⏳'} ${esc(st.label)}</b><small>${esc(st.detail)}</small>`;
 }
 
+/* ==== v3.8.2 · P6 (Teil 1): Terminwarnung Quartalszahlen ====================
+   Reine WARNUNG, niemals ein Signal. Sie kann ausschliesslich abwerten —
+   dieselbe Klemme wie ueberall. Wenn Zahlen im Halte-Zeitraum liegen, ist ein
+   Intraday-Plan mit 1–2 % Zielweite keine Aussage mehr ueber den Abend.     */
+let earnData=null, earnTimer=null;
+
+async function loadEarnings(force=false){
+  try{
+    const q=new URLSearchParams(); if(S.token)q.set('t',S.token); if(force)q.set('force','1');
+    const r=await fetch('/api/earnings?'+q,{cache:'no-store'});
+    earnData=await r.json();
+  }catch(e){ earnData={state:'unavailable',error:String(e.message||e),auto:[],manual:[]}; }
+  renderStocks();
+}
+
+/** Naechster bekannter Termin fuer ein Symbol. Manuell schlaegt automatisch. */
+function earningsFor(symbol){
+  const k=String(symbol||'').trim().toUpperCase(); if(!k||!earnData) return null;
+  const pick=(list)=>(list||[]).filter(x=>String(x?.symbol||'').toUpperCase()===k)
+    .sort((a,b)=>String(a.date).localeCompare(String(b.date)))[0]||null;
+  const m=pick(earnData.manual), a=pick(earnData.auto);
+  const hit=m||a; if(!hit) return null;
+  const today=new Intl.DateTimeFormat('en-CA',{timeZone:NY_TZ}).format(new Date());
+  const days=Math.round((Date.parse(hit.date+'T12:00:00Z')-Date.parse(today+'T12:00:00Z'))/86_400_000);
+  if(days<0||days>14) return null;
+  const amc=!hit.time||/amc|after|post/i.test(hit.time);
+  return {...hit, days, amc, manual:!!m, stale:earnData.state==='stale'};
+}
+function earningsWarning(symbol){
+  const e=earningsFor(symbol); if(!e) return null;
+  const when = e.days===0 ? (e.amc?'heute nach Börsenschluss':'heute vor Börsenbeginn')
+    : e.days===1 ? (e.amc?'morgen nach Börsenschluss':'morgen vor Börsenbeginn')
+    : `in ${e.days} Tagen`;
+  const critical = e.days<=1;
+  return { critical, days:e.days, when, date:e.date,
+    label:`⚠ Quartalszahlen ${when}`,
+    detail:[
+      `Für diesen Titel sind Quartalszahlen am ${e.date} angesetzt (${e.amc?'nach Börsenschluss':'vor Börsenbeginn'}), also ${when}.`,
+      'Was das bedeutet: Der Kurs kann sich danach um ein Vielfaches dessen bewegen, was ein Intraday-Plan als Ziel vorsieht — in beide Richtungen. Eine Position über die Zahlen zu halten ist eine ANDERE Entscheidung als das hier bewertete Setup.',
+      'Diese Warnung ist kein Signal. Sie sagt nicht, dass die Zahlen gut oder schlecht werden, und sie kann die Bewertung ausschließlich herabstufen, niemals eine Kauf-Freigabe erzeugen.',
+      e.manual?'Quelle: von dir manuell eingetragen.':'Quelle: automatischer Terminkalender.',
+      e.stale?'ACHTUNG: Der Kalender war zuletzt nicht erreichbar, dieser Termin stammt aus dem Zwischenspeicher und kann veraltet sein.':'',
+      'Vor einer Order den Termin gegenprüfen — Unternehmen verschieben ihn gelegentlich.'
+    ].filter(Boolean).join('\n') };
+}
+
+/* ==== v3.7.0 · P3: Krypto-Sentiment im Client ===============================
+   Additive Anzeigeschicht. Der Wert fliesst NICHT in Score, Level oder
+   Freigabe ein — weder bei Krypto noch bei Aktien. Das steht auch im UI. */
+let fngData=null, fngTimer=null;
+const FNG_TONE_LABEL={'extreme-fear':'😱','fear':'😟','neutral':'😐','greed':'🤑','extreme-greed':'🔥','unknown':'—'};
+
+async function loadSentiment(force=false){
+  try{
+    const q=new URLSearchParams(); if(S.token)q.set('t',S.token); if(force)q.set('force','1');
+    const r=await fetch('/api/sentiment?'+q,{cache:'no-store'});
+    fngData=await r.json();
+  }catch(e){ fngData={state:'error',error:String(e.message||e),
+    note:'Der Stimmungsindex konnte nicht geladen werden. Es wird bewusst kein Ersatzwert erfunden.'}; }
+  renderSentiment();
+}
+
+function sentimentTitle(d){
+  if(!d||d.state==='error') return `Krypto-Stimmungsindex nicht verfügbar. ${d?.error?`Grund: ${d.error}. `:''}Es wird bewusst kein Ersatzwert erfunden.`;
+  const age=d.ts?Math.round((Date.now()-Number(d.ts))/3_600_000):null;
+  return [
+    `Fear & Greed Index ${d.value}/100 — „${d.de}".`,
+    d.meaning,
+    '',
+    'WAS DAS IST: Ein Stimmungswert für den Kryptomarkt, zusammengesetzt aus Schwankungsbreite, Marktmomentum, Social-Media-Aktivität, Bitcoin-Dominanz und Suchtrends. 0 = größtmögliche Angst, 100 = größtmögliche Gier.',
+    'WAS ES NICHT IST: Keine Prognose und keine Aussage über einen einzelnen Coin. Er gilt ausschließlich für Krypto — für Aktien sagt er nichts.',
+    'Der Wert hat 0 % Gewicht in Score, Bewertung und Kauf-Freigabe. Er ist Kontext, kein Signal.',
+    '',
+    d.change1d!=null?`Veränderung zum Vortag: ${d.change1d>0?'+':''}${d.change1d}.${d.change7d!=null?` Zur Vorwoche: ${d.change7d>0?'+':''}${d.change7d}.`:''}`:'',
+    age!=null?`Stand: vor ${age} Stunde${age===1?'':'n'}. Der Index wird einmal täglich aktualisiert.`:'',
+    d.stale?'ACHTUNG: Die Quelle war zuletzt nicht erreichbar — dieser Wert ist nicht aktuell.':'',
+    `Quelle: ${d.source||'alternative.me'}.`
+  ].filter(Boolean).join('\n');
+}
+
+function renderSentiment(){
+  const el=$('#sentimentCard'); if(!el) return;
+  const d=fngData;
+  if(!d||d.state==='error'||!Number.isFinite(Number(d.value))){
+    el.className='sentiment-card off';
+    el.innerHTML=`<b title="${esc(sentimentTitle(d))}">😐 Krypto-Stimmung nicht verfügbar</b><small>Es wird bewusst kein Ersatzwert erfunden.</small>`;
+    return;
+  }
+  const v=Math.max(0,Math.min(100,Number(d.value)));
+  const trend=d.change1d==null?'':d.change1d>0?`▲ +${d.change1d}`:d.change1d<0?`▼ ${d.change1d}`:'→ 0';
+  el.className=`sentiment-card ${d.tone||'neutral'}${d.stale?' stale':''}`;
+  el.innerHTML=`<b title="${esc(sentimentTitle(d))}">${FNG_TONE_LABEL[d.tone]||'😐'} Krypto-Stimmung: ${v}/100 · ${esc(d.de||'')}${d.stale?' (nicht aktuell)':''}</b>`
+    +`<div class="fng-bar" title="${esc('0 = größtmögliche Angst, 100 = größtmögliche Gier. Die Markierung zeigt den heutigen Stand.')}"><span class="fng-mark" style="left:${v}%"></span></div>`
+    +`<div class="fng-scale"><i>0 Angst</i><i>50</i><i>100 Gier</i></div>`
+    +`<small title="${esc(sentimentTitle(d))}">${esc(d.meaning||'')}${trend?` · ${trend} zum Vortag`:''} <b>Kontext, kein Signal — 0 % Gewicht in der Kauf-Freigabe.</b></small>`;
+}
+
 /** Entfernt abgelaufene Crowd-Werte. Fail-closed: im Zweifel loeschen. */
 function crowdPrune(maxAgeMs){
   const ttlH=Number(crowdMeta?.quota?.ttlHours)||6;
@@ -1986,6 +2268,11 @@ function renderOpeningPanel() {
 
 function renderMarketGainers(){
   const el=$('#marketGainers'); if(!el)return;
+  /* v3.8.1: Ohne diese Zeile laesst sich eine leere Kandidatenliste nicht von
+     einer zu strengen Schwelle unterscheiden. Die Zaehler kommen direkt aus dem
+     Einlassgitter im Worker und sind die Grundlage zum Nachkalibrieren. */
+  const g=stockMeta.discovery?.radar?.gate;
+  const gateLine=g&&g.seen?`<small class="gate-stats" title="${esc(`Von ${g.seen} bewerteten Titeln des Whole-Market-Radars kamen ${g.largeCap} über die kuratierte Large-Cap-Liste und ${g.momentum} über das messbare Momentum-Gitter durch.\n\nAbgelehnt wegen: Kurs unter 5 $ oder unbekannt ${g.failPrice} · zu dünner Umsatz ${g.failVolume} · zu breiter Spread ${g.failSpread} · Bewegung unter 3 % ${g.failMove}.\n\nStehen hier über längere Zeit 0 Momentum-Kandidaten und scheitert fast alles am Umsatz, ist die Schwelle zu streng — das ist bewusst sichtbar gemacht, statt es zu verstecken. Außerhalb der US-Handelszeiten ist eine leere Liste normal, weil der Tagesumsatz dann noch klein ist.`)}">Einlassgitter: ${g.seen} geprüft → ${g.largeCap} Large Cap + ${g.momentum} Momentum · abgelehnt: Umsatz ${g.failVolume}, Bewegung ${g.failMove}, Spread ${g.failSpread}, Kurs ${g.failPrice}</small>`:'';
   const radar=(stockMeta.discovery?.radar?.candidates||[]).slice(0,8);
   const gainers=(stockMeta.discovery?.radar?.gainers||[]);
   if(!radar.length){
@@ -1995,9 +2282,9 @@ function renderMarketGainers(){
       el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
       return;
     }
-    el.innerHTML=`<div class="ophead"><b>📡 Situation Radar</b><small>0 % BUY-Gewicht · Elliott-first</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div><span class="hint">Noch keine verifizierten marktweiten Radar-Kandidaten. Favoriten sind davon getrennt.</span>`;return;
+    el.innerHTML=`<div class="ophead"><b>📡 Situation Radar</b><small>0 % BUY-Gewicht · Elliott-first</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div>${gateLine}<span class="hint">Noch keine verifizierten marktweiten Radar-Kandidaten. Favoriten sind davon getrennt.</span>`;return;
   }
-  el.innerHTML=`<div class="ophead"><b>📡 Situation Radar</b><span>${radar.length} verifizierte Large-Cap-Kandidaten · Zustandswechsel statt nur Tagesgewinner</span><small>Discovery · 0 % BUY-Gewicht</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div><div class="opgrid">${radar.map(r=>`<button type="button" class="opcard ${Number(r.movePct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="Situation-Radar: priorisiert frische Beschleunigung, Breakout-Druck, Opening-Drive, Reclaim, Volumenpuls und Spread-Qualität. Erst Deep-Analyse/Elliott/CRV kann BUY freigeben."><b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b><span class="situation-tag">${esc(r.lifecycle&&r.lifecycle!=='WATCH'?r.lifecycle+' · ':'')}${esc(r.situation||'WATCH')}</span><span class="trend-pct ${Number(r.movePct)>=0?'up':'down'}">${Number(r.movePct)>=0?'+':''}${num(r.movePct,1)}% Tag</span><span class="${r.speedPct!=null?'trend-pct '+(Number(r.speedPct)>=0?'up':'down'):''}">${r.speedPct!=null?'Speed '+(Number(r.speedPct)>=0?'+':'')+num(r.speedPct,2)+'%':'Situation '+num(r.situationScore??r.score,0)}</span><span>${r.spreadPct!=null?'Spread '+num(r.spreadPct,2)+'%':'Spread n.v.'}</span><em>${gainers.some(x=>x.symbol===r.symbol)?'Gainer · Deep Check':'Situation · Deep Check'}</em></button>`).join('')}</div>`;
+  el.innerHTML=`<div class="ophead"><b>📡 Situation Radar</b><span>${radar.length} verifizierte Large-Cap-Kandidaten · Zustandswechsel statt nur Tagesgewinner</span><small>Discovery · 0 % BUY-Gewicht</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div>${gateLine}<div class="opgrid">${radar.map(r=>`<button type="button" class="opcard ${Number(r.movePct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="Situation-Radar: priorisiert frische Beschleunigung, Breakout-Druck, Opening-Drive, Reclaim, Volumenpuls und Spread-Qualität. Erst Deep-Analyse/Elliott/CRV kann BUY freigeben."><b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b><span class="situation-tag">${esc(r.lifecycle&&r.lifecycle!=='WATCH'?r.lifecycle+' · ':'')}${esc(r.situation||'WATCH')}</span><span class="trend-pct ${Number(r.movePct)>=0?'up':'down'}">${Number(r.movePct)>=0?'+':''}${num(r.movePct,1)}% Tag</span><span class="${r.speedPct!=null?'trend-pct '+(Number(r.speedPct)>=0?'up':'down'):''}">${r.speedPct!=null?'Speed '+(Number(r.speedPct)>=0?'+':'')+num(r.speedPct,2)+'%':'Situation '+num(r.situationScore??r.score,0)}</span><span>${r.spreadPct!=null?'Spread '+num(r.spreadPct,2)+'%':'Spread n.v.'}</span><em>${gainers.some(x=>x.symbol===r.symbol)?'Gainer · Deep Check':'Situation · Deep Check'}</em></button>`).join('')}</div>`;
   el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
 }
 
@@ -2112,6 +2399,7 @@ function googleFinanceUrl(row){
 
 function renderStocks() {
   (stockRows||[]).forEach(claudeOverlayRow); // Claude-Modus-Ansicht idempotent anwenden
+  (stockRows||[]).forEach(momentumOverlayRow); // v3.9.0: Modus A danach, ebenfalls idempotent
   const box=$('#stockGroups'),st=$('#stockState'),counts=$('#stockCounts'); if(!box||!st)return;
   renderDepotStrip(); renderPortfolioRisk(); renderCrowdStatus(); renderMarketGainers(); renderExtendedWatch(); renderOpeningPanel();
   if(stockMeta.configured===false){box.innerHTML='';st.textContent='Aktien-Datenquelle fehlt';st.className='badge err';if(counts)counts.textContent='Aktienradar nicht konfiguriert';stockHeatmap([]);return;}
@@ -2143,7 +2431,8 @@ function renderStocks() {
   if(topBox){if(!top)topBox.innerHTML=search?`<div class="stockfocus-empty">Keine geladene Aktie passend zu „${esc(search)}“. Enter oder 🔎 lädt den Titel direkt.</div>`:(filter==='favorites'?'<div class="stockfocus-empty">Noch keine Aktien-Favoriten. Mit ☆ neben einem Titel hinzufügen.</div>':'');else{
     const sz=stockSizing(top), buy=stockLevel(top)===3, tr=stockTradeability(top), opp=stockOpportunity(top), qm=focusQuoteMeta(top); const struct=Number(top.structurePct||0);
     const hl=stockHeadline(top); // v3.5.8 P0: Kopfzeile darf der Opportunity-Zeile nicht widersprechen
-    topBox.innerHTML=`<div class="stockfocus-card ${hl.light}${buy?' buy':''}"><div class="sf-focus-main"><div class="sf-title"><div><small title="Das große Fenster zeigt immer genau einen Titel im Detail — den zuletzt angeklickten oder, wenn du nichts ausgewählt hast, den aktuell aussichtsreichsten. Es wird bevorzugt nachgeladen, siehe Frequenzanzeige in der Zeile darunter.">AUSGEWÄHLTE AKTIE · ${esc(top.symbol)}</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button><b title="${esc(gloss('tickerSym'))}">${esc(top.symbol)}</b><a class="gfinance focus-link" href="${googleFinanceUrl(top)}" target="_blank" rel="noopener" title="${esc(top.symbol)} in Google Finance in einem neuen Tab öffnen">Google Finance ↗</a></h3><div class="focus-livebar ${qm.cls}"><b>${qm.label}</b><span>Kurs ${focusDisplayPrice(top)}</span><span>Quote ${qm.when}</span><span>${esc(qm.src+qm.scope)}</span>${qm.age!=null?`<span>${qm.age}s alt</span>`:''}${(()=>{const ds=dataSession(top);return `<span class="data-session ${ds.tone}" title="${esc(ds.detail)}">🕒 ${esc(ds.label)}</span>`;})()}<span title="${esc('Wann FusionPulse zuletzt nachgesehen hat, und wie frisch die gelieferten Daten dabei waren. ACHTUNG: eine frische Abfrage bedeutet NICHT automatisch einen frischen Kurs — wenn die Börse zu ist, liefert auch die neueste Abfrage den letzten Schlusskurs.')}">${esc(stockUpdateLabel(top))}</span>${(()=>{const rr=refreshRate(top.symbol);return `<span class="focus-freq${rr.rel!=null&&rr.rel>=1.6?' hot':rr.rel!=null&&rr.rel<=0.6?' cold':''}" title="${esc(rr.detail)}">↻ ${esc(rr.label)}</span>`;})()}<button type="button" id="stockFocusPlan" title="${esc('Kompletten Tradeplan in die Zwischenablage kopieren: Entry, Stop, beide Ziele, Stückzahl, CRV und Datenstand. Zum Übertragen in die Ordermaske deines Brokers — spart das fehleranfällige Abtippen. Der Text sagt ausdrücklich dazu, wenn FusionPulse den Trade NICHT freigibt.')}">⧉ Plan</button><button type="button" id="stockFocusRefresh" title="Diese Aktie neu abfragen; der autonome Whole-Market-Scan bleibt serverseitig.">↻ Aktie</button></div><span class="company-name" title="Vollständiger Firmenname. Warum sinnvoll? Der Ticker allein kann leicht mit ähnlich benannten Wertpapieren verwechselt werden.">${esc((top.securityName&&top.securityName!==top.symbol)?top.securityName:(top.name&&top.name!==top.symbol?top.name:'Firmenname wird noch geladen'))}</span><small class="company-focus" title="Kurzbeschreibung des operativen Fokus aus den verfügbaren Unternehmens-Metadaten. Warum sinnvoll? Sie hilft einzuordnen, wodurch die Aktie wirtschaftlich bewegt werden kann.">${esc((top.companyDescription||'').slice(0,220)||((top.sector&&top.sector!=='Discovery')?top.sector:'Unternehmensfokus noch nicht verifiziert'))}${(!top.companyDescription||!/candidate|program|pipeline|therapy|therapeutic|device|platform|drug/i.test(top.companyDescription))?' · Lead Program/Candidate nicht verifiziert':''}</small><small class="company-exchange" title="Primäres Listing laut verfügbaren Metadaten. Warum sinnvoll? Die Hauptbörse hilft bei Handelszeiten, Liquidität und Dateninterpretation. Höchstes aktuelles Volumen wird nur behauptet, wenn es tatsächlich gemessen werden kann.">Börse: ${esc(top.exchange||'n.v.')}</small><small class="analysis-inline" title="Tatsächlich aktive Analyse-/Sicherheitsmethoden. Situation Engine priorisiert nur Kandidaten und verändert BUY nicht."><b>Analyse:</b> ${esc(analysisMethodsText())}</small><span class="sf-tags">${gl(top.sector,'sectorTag')}<i> · </i>${gl('Score '+num(top.score,1),'score')}${top.preSignalMaturity!=null?`<i> · </i>${gl('Reife '+Math.round(top.preSignalMaturity)+'%','maturity')}`:''}${top.situationType?`<i> · </i>${gl('Situation '+top.situationType,null,glossForSituation(top.situationType))}<i> </i>${gl(Math.round(Number(top.situationScore)||0)+'/100','situationScore')}`:''}${top.radarLifecycle&&top.radarLifecycle!=='WATCH'?`<i> · </i>${gl('Phase '+top.radarLifecycle,'lifecyclePhase')}`:''}</span></div><strong class="sf-verdict hl-${hl.light}" title="${esc(hl.title)}">${hl.icon} ${esc(hl.text)}</strong></div><div class="sf-grid"><span title="Aktueller Kurs. „Live-Quote" heißt: gerade frisch abgefragt. „Analyse-/Fallbackpreis" heißt: der letzte Kurs aus dem Analysedatensatz, möglicherweise einige Minuten alt — vor einer Order immer den echten Kurs bei deinem Broker prüfen.">Kurs <b>${focusDisplayPrice(top)}</b><small>${qm.ok?' Live-Quote':' Analyse-/Fallbackpreis'}</small></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span title="Der geplante Kaufkurs. Darüber zu kaufen verschlechtert das Chance-Risiko-Verhältnis, weil der Stop dann weiter entfernt liegt.">Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span title="${esc('Stop-Loss: der Kurs, bei dem der Trade beendet wird, um den Verlust zu begrenzen. Er sitzt bewusst außerhalb der normalen Tagesschwankung. '+gloss('atr'))}">Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span title="Take Profit 1: hier wird planmäßig die halbe Position verkauft. Das sichert einen Teil des Gewinns, bevor der Kurs drehen kann.">TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span title="Take Profit 2: hier wird die verbleibende halbe Position verkauft. Das eigentliche Ziel des Trades.">TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Im FusionPulse-Modus ist dies das Netto-CRV bis zum gemessenen Strukturziel. Im Claude-Modus bleibt die dort definierte Plan-CRV-Logik unverändert.">${S.claudeMode?'Plan-CRV':'Struktur-CRV'} <b>${num(tr.netCrv,1)} : 1${Number(tr.netCrv)<Number(tr.minCrv||0)?' · zu niedrig':''}</b></span><span title="50/50-Plan nach geschätzten Fixkosten und Ausführungsreserve. Eigene Effizienzkennzahl; nicht mit dem Struktur-CRV verwechseln.">Plan-Effizienz <b>${sz?num(sz.planCrvAfterCosts,2)+' : 1':'–'}${!S.claudeMode&&sz&&sz.planCrvAfterCosts<FUSION_MIN_PLAN_EFFICIENCY?' · zu niedrig':''}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Strukturpotenzial = geschätzter technisch plausibler Kursweg bis zum nächsten relevanten Widerstand/Ziel aus Chart-, Elliott-/Fibonacci- und Marktstruktur. Das ist kein erwarteter Gewinn und allein kein Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}${crowdConfirmGauge(top)}</span></div><div class="opportunity-watch ${opp.ready?'ready':'waiting'}"><b>${buy?'BUY FREIGEGEBEN':opp.label}</b><span>${opp.why?esc(opp.why):(opp.reasons.length?esc(opp.reasons.join(' · ')):'Wartet auf Qualität, CRV, Kursweg und wirtschaftlich relevantes Gewinnpotenzial.')}</span></div>${positionPanel(top)}<div class="intraday-chart" title="Kursverlauf. Intraday nutzt 5-Minuten-/IEX-Daten; längere Zeiträume werden passend aggregiert nachgeladen. Warum sinnvoll? Elliott-Strukturen sehen auf verschiedenen Zeitebenen unterschiedlich aus; der längere Chart liefert Kontext, aber kein BUY allein."><span>Chart · <select id="stockChartRange" title="Zeitraum wählen. Warum sinnvoll? Kurz zeigt Entry-Struktur, lang zeigt den übergeordneten Elliott-/Trend-Kontext.">${['5','10','30','60','120','180','240','300','1T','5T','1Wo','3Mo','6Mo','12Mo'].map(m=>`<option value="${m}"${String(m)===String(stockChartMinutes)?' selected':''}>${/^\d+$/.test(m)?m+' min':m}</option>`).join('')}</select></span>${spark((stockChartCache.get(top.symbol+'|'+stockChartMinutes)?.rows?.map(x=>x.c)||(top.intraday||[]).slice(-Math.max(1,Math.ceil((Number(stockChartMinutes)||120)/5)))),420,76)}</div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<div class="stock-interpret"><b>Was hat sich geändert? · Interpretation</b><span>${top.whyNow?.length?`Warum jetzt? ${esc(top.whyNow.join(' · '))} · `:''}${esc(stockInterpretation(top))}</span><small>Radar/Crowd/Search dienen nur der Discovery · 0 % BUY-Gewicht</small></div><small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} ${buyGateHint(top)}</small></div>${stockLadder(top)}</div>`;
+    const ew=earningsWarning(top.symbol); // v3.8.2: Ereigniskontext, reine Warnung
+    topBox.innerHTML=`<div class="stockfocus-card ${hl.light}${buy?' buy':''}"><div class="sf-focus-main"><div class="sf-title"><div><small title="Das große Fenster zeigt immer genau einen Titel im Detail — den zuletzt angeklickten oder, wenn du nichts ausgewählt hast, den aktuell aussichtsreichsten. Es wird bevorzugt nachgeladen, siehe Frequenzanzeige in der Zeile darunter.">AUSGEWÄHLTE AKTIE · ${esc(top.symbol)}</small><h3><button class="favbtn ${isFavStock(top.symbol)?'on':''}" data-favstock="${esc(top.symbol)}" title="Favorit / Depot">${isFavStock(top.symbol)?'★':'☆'}</button><b title="${esc(gloss('tickerSym'))}">${esc(top.symbol)}</b><a class="gfinance focus-link" href="${googleFinanceUrl(top)}" target="_blank" rel="noopener" title="${esc(top.symbol)} in Google Finance in einem neuen Tab öffnen">Google Finance ↗</a></h3><div class="focus-livebar ${qm.cls}"><b>${qm.label}</b><span>Kurs ${focusDisplayPrice(top)}</span><span>Quote ${qm.when}</span><span>${esc(qm.src+qm.scope)}</span>${qm.age!=null?`<span>${qm.age}s alt</span>`:''}${ew?`<span class="earn-warn${ew.critical?' critical':''}" title="${esc(ew.detail)}">${esc(ew.label)}</span>`:''}${(()=>{const ds=dataSession(top);return `<span class="data-session ${ds.tone}" title="${esc(ds.detail)}">🕒 ${esc(ds.label)}</span>`;})()}<span title="${esc('Wann FusionPulse zuletzt nachgesehen hat, und wie frisch die gelieferten Daten dabei waren. ACHTUNG: eine frische Abfrage bedeutet NICHT automatisch einen frischen Kurs — wenn die Börse zu ist, liefert auch die neueste Abfrage den letzten Schlusskurs.')}">${esc(stockUpdateLabel(top))}</span>${(()=>{const rr=refreshRate(top.symbol);return `<span class="focus-freq${rr.rel!=null&&rr.rel>=1.6?' hot':rr.rel!=null&&rr.rel<=0.6?' cold':''}" title="${esc(rr.detail)}">↻ ${esc(rr.label)}</span>`;})()}<button type="button" id="stockFocusPlan" title="${esc('Kompletten Tradeplan in die Zwischenablage kopieren: Entry, Stop, beide Ziele, Stückzahl, CRV und Datenstand. Zum Übertragen in die Ordermaske deines Brokers — spart das fehleranfällige Abtippen. Der Text sagt ausdrücklich dazu, wenn FusionPulse den Trade NICHT freigibt.')}">⧉ Plan</button><button type="button" id="stockFocusRefresh" title="Diese Aktie neu abfragen; der autonome Whole-Market-Scan bleibt serverseitig.">↻ Aktie</button></div><span class="company-name" title="Vollständiger Firmenname. Warum sinnvoll? Der Ticker allein kann leicht mit ähnlich benannten Wertpapieren verwechselt werden.">${esc((top.securityName&&top.securityName!==top.symbol)?top.securityName:(top.name&&top.name!==top.symbol?top.name:'Firmenname wird noch geladen'))}</span><small class="company-focus" title="Kurzbeschreibung des operativen Fokus aus den verfügbaren Unternehmens-Metadaten. Warum sinnvoll? Sie hilft einzuordnen, wodurch die Aktie wirtschaftlich bewegt werden kann.">${esc((top.companyDescription||'').slice(0,220)||((top.sector&&top.sector!=='Discovery')?top.sector:'Unternehmensfokus noch nicht verifiziert'))}${(!top.companyDescription||!/candidate|program|pipeline|therapy|therapeutic|device|platform|drug/i.test(top.companyDescription))?' · Lead Program/Candidate nicht verifiziert':''}</small><small class="company-exchange" title="Primäres Listing laut verfügbaren Metadaten. Warum sinnvoll? Die Hauptbörse hilft bei Handelszeiten, Liquidität und Dateninterpretation. Höchstes aktuelles Volumen wird nur behauptet, wenn es tatsächlich gemessen werden kann.">Börse: ${esc(top.exchange||'n.v.')}</small><small class="analysis-inline" title="Tatsächlich aktive Analyse-/Sicherheitsmethoden. Situation Engine priorisiert nur Kandidaten und verändert BUY nicht."><b>Analyse:</b> ${esc(analysisMethodsText())}</small><span class="sf-tags">${gl(top.sector,'sectorTag')}<i> · </i>${gl('Score '+num(top.score,1),'score')}${top.preSignalMaturity!=null?`<i> · </i>${gl('Reife '+Math.round(top.preSignalMaturity)+'%','maturity')}`:''}${top.situationType?`<i> · </i>${gl('Situation '+top.situationType,null,glossForSituation(top.situationType))}<i> </i>${gl(Math.round(Number(top.situationScore)||0)+'/100','situationScore')}`:''}${top.radarLifecycle&&top.radarLifecycle!=='WATCH'?`<i> · </i>${gl('Phase '+top.radarLifecycle,'lifecyclePhase')}`:''}</span></div><strong class="sf-verdict hl-${hl.light}" title="${esc(hl.title)}">${hl.icon} ${esc(hl.text)}</strong></div><div class="sf-grid"><span title="Aktueller Kurs. „Live-Quote" heißt: gerade frisch abgefragt. „Analyse-/Fallbackpreis" heißt: der letzte Kurs aus dem Analysedatensatz, möglicherweise einige Minuten alt — vor einer Order immer den echten Kurs bei deinem Broker prüfen.">Kurs <b>${focusDisplayPrice(top)}</b><small>${qm.ok?' Live-Quote':' Analyse-/Fallbackpreis'}</small></span><span title="Bei BUY empfohlene Kaufsumme; sonst nur theoretische Größe bzw. kein Trade.">${buy?'Kaufsumme':'Pot. Größe'} <b>${stockSizeDisplay(top,sz)}</b></span><span title="Der geplante Kaufkurs. Darüber zu kaufen verschlechtert das Chance-Risiko-Verhältnis, weil der Stop dann weiter entfernt liegt.">Entry <b>${stockPx(top.entryUsd,top.entryEur)}</b></span><span title="${esc('Stop-Loss: der Kurs, bei dem der Trade beendet wird, um den Verlust zu begrenzen. Er sitzt bewusst außerhalb der normalen Tagesschwankung. '+gloss('atr'))}">Stop <b>${stockPx(top.stopUsd,top.stopEur)}</b></span><span title="Take Profit 1: hier wird planmäßig die halbe Position verkauft. Das sichert einen Teil des Gewinns, bevor der Kurs drehen kann.">TP1 <b>${stockPx(top.tp1Usd,top.tp1Eur)}</b></span><span title="Take Profit 2: hier wird die verbleibende halbe Position verkauft. Das eigentliche Ziel des Trades.">TP2 <b>${stockPx(top.tp2Usd,top.tp2Eur)}</b></span><span title="Nettogewinn des ersten 50-%-Teilverkaufs bei TP1.">TP1 netto <b>${sz?eur(sz.tp1Net,0):'–'}</b></span><span title="Nettogewinn der verbleibenden 50 % bei TP2.">TP2 Rest netto <b>${sz?eur(sz.tp2Net,0):'–'}</b></span><span title="Gesamter Nettogewinn des Standardplans: 50 % bei TP1 + 50 % bei TP2.">Gesamtplan netto <b>${sz?eur(sz.planNet,0):'–'}</b></span><span title="Im FusionPulse-Modus ist dies das Netto-CRV bis zum gemessenen Strukturziel. Im Claude-Modus bleibt die dort definierte Plan-CRV-Logik unverändert.">${S.claudeMode?'Plan-CRV':'Struktur-CRV'} <b>${num(tr.netCrv,1)} : 1${Number(tr.netCrv)<Number(tr.minCrv||0)?' · zu niedrig':''}</b></span><span title="50/50-Plan nach geschätzten Fixkosten und Ausführungsreserve. Eigene Effizienzkennzahl; nicht mit dem Struktur-CRV verwechseln.">Plan-Effizienz <b>${sz?num(sz.planCrvAfterCosts,2)+' : 1':'–'}${!S.claudeMode&&sz&&sz.planCrvAfterCosts<FUSION_MIN_PLAN_EFFICIENCY?' · zu niedrig':''}</b></span><span title="Kursweg vom Einstieg bis TP2. Zu kleine Wege sind bei manueller Flatex-Ausführung praktisch schwer handelbar.">Weg TP2 <b>${num(tr.tp2Pct,1)}%</b></span><span title="Strukturpotenzial = geschätzter technisch plausibler Kursweg bis zum nächsten relevanten Widerstand/Ziel aus Chart-, Elliott-/Fibonacci- und Marktstruktur. Das ist kein erwarteter Gewinn und allein kein Kaufsignal.">Strukturpotenzial <b>${struct?num(struct,1)+'%':'–'}</b></span><span class="sf-crowd" title="Such-/Crowd-Aufmerksamkeit separat je Aktie. Dieser Wert verändert den BUY-Score derzeit nicht.">${crowdGauge(top.symbol)}${crowdConfirmGauge(top)}</span></div><div class="opportunity-watch ${opp.ready?'ready':'waiting'}"><b>${buy?'BUY FREIGEGEBEN':opp.label}</b><span>${opp.why?esc(opp.why):(opp.reasons.length?esc(opp.reasons.join(' · ')):'Wartet auf Qualität, CRV, Kursweg und wirtschaftlich relevantes Gewinnpotenzial.')}</span></div>${positionPanel(top)}<div class="intraday-chart" title="Kursverlauf. Intraday nutzt 5-Minuten-/IEX-Daten; längere Zeiträume werden passend aggregiert nachgeladen. Warum sinnvoll? Elliott-Strukturen sehen auf verschiedenen Zeitebenen unterschiedlich aus; der längere Chart liefert Kontext, aber kein BUY allein."><span>Chart · <select id="stockChartRange" title="Zeitraum wählen. Warum sinnvoll? Kurz zeigt Entry-Struktur, lang zeigt den übergeordneten Elliott-/Trend-Kontext.">${['5','10','30','60','120','180','240','300','1T','5T','1Wo','3Mo','6Mo','12Mo'].map(m=>`<option value="${m}"${String(m)===String(stockChartMinutes)?' selected':''}>${/^\d+$/.test(m)?m+' min':m}</option>`).join('')}</select></span>${spark((stockChartCache.get(top.symbol+'|'+stockChartMinutes)?.rows?.map(x=>x.c)||(top.intraday||[]).slice(-Math.max(1,Math.ceil((Number(stockChartMinutes)||120)/5)))),420,76)}</div><div class="sf-history" title="Verlauf der Setup-Ampel über die letzten 120 Minuten; 8 Segmente à 15 Minuten."><span>120-Min-Verlauf</span>${stockStatusBand(top)}</div>${edgeStrip(top)}<div class="stock-interpret"><b>Was hat sich geändert? · Interpretation</b><span>${top.whyNow?.length?`Warum jetzt? ${esc(top.whyNow.join(' · '))} · `:''}${esc(stockInterpretation(top))}</span><small>Radar/Crowd/Search dienen nur der Discovery · 0 % BUY-Gewicht</small></div><small>${tr.ok?'Ausführbarkeit erfüllt.':'⚠ Rechnerisches Setup, aber Ausführbarkeit/Marktphase erfüllt deine Grenzen noch nicht.'} ${buyGateHint(top)}</small></div>${stockLadder(top)}</div>`;
     topBox.querySelector('[data-favstock]')?.addEventListener('click',e=>toggleStockFavorite(top.symbol,e));
     topBox.querySelector('#stockChartRange')?.addEventListener('change',async e=>{stockChartMinutes=String(e.target.value||'120');const k=top.symbol+'|'+stockChartMinutes,hit=stockChartCache.get(k);if(!hit||Date.now()-Number(hit.ts||0)>120_000){try{const q=new URLSearchParams({symbol:top.symbol,range:stockChartMinutes});if(S.token)q.set('t',S.token);const rr=await fetchWithTimeout('/api/stock-chart?'+q,{cache:'no-store'},10_000);const dd=await rr.json();if(dd?.rows?.length)stockChartCache.set(k,{...dd,ts:Date.now()});}catch{}}renderStocks();});
     topBox.querySelector('#stockFocusRefresh')?.addEventListener('click',async()=>{await searchStockNow(top.symbol,true);renderStocks();});
@@ -2366,6 +2655,10 @@ function setStockPoll() {
   openingTimer = setInterval(() => { if (document.visibilityState === 'visible') scanOpeningMomentum(false); }, 60_000);
   clearInterval(experimentalTimer); experimentalTimer=setInterval(()=>{if(document.visibilityState==='visible')loadExperimental(false);},15*60_000);
   clearInterval(crowdTimer); crowdTimer=setInterval(()=>{if(document.visibilityState==='visible')loadCrowd(false);},20*60_000);
+  // Der Index wird nur einmal taeglich aktualisiert — halbstuendlich reicht mehr als aus.
+  clearInterval(fngTimer); fngTimer=setInterval(()=>{if(document.visibilityState==='visible')loadSentiment(false);},30*60_000);
+  // Termine aendern sich selten — zweistuendlich genuegt.
+  clearInterval(earnTimer); earnTimer=setInterval(()=>{if(document.visibilityState==='visible')loadEarnings(false);},120*60_000);
 }
 
 /* ------------------------------------------------- Reifezeit + Alarmierung
@@ -2736,7 +3029,9 @@ function render() {
   }
   const reg = $('#regime');
   reg.textContent = `${meta.marketRegime || '–'} · ${Math.round((meta.breadth || 0) * 100)} % über VWAP`;
-  reg.dataset.tip = 'Marktregime: Risk-On = breite positive Marktstruktur, Risk-Off = breite Schwäche. Der Prozentwert zeigt den Anteil der gescannten Coins oberhalb ihres volumengewichteten Durchschnittspreises (VWAP). Marktfilter, kein eigenständiges Kaufsignal.';
+  /* v3.7.0: Klarstellung, weil das oft als „Marktstimmung" gelesen wird — es ist
+     Marktbreite. Stimmung steht seit 3.7.0 getrennt in der Fear-&-Greed-Kachel. */
+  reg.dataset.tip = 'Marktregime = MARKTBREITE, nicht Stimmung. Risk-On heißt: ein Großteil der gescannten Titel liegt über seinem volumengewichteten Durchschnittspreis (VWAP), die Marktstruktur ist breit positiv. Risk-Off heißt das Gegenteil. Der Prozentwert nennt den Anteil.\n\nWICHTIG: Das misst, was Kurse TUN — nicht, was Marktteilnehmer FÜHLEN. Die Stimmung steht getrennt in der Kachel „Krypto-Stimmung" (Fear & Greed).\n\nGrundlage ist eine Stichprobe der gescannten Titel, kein Marktindex. Marktfilter, kein eigenständiges Kaufsignal.';
   reg.removeAttribute('title');
   reg.className = 'regime-btn '+(meta.marketRegime || '').toLowerCase().replace('-', '');
   const rex=$('#regimeExplain'); if(rex && !rex.classList.contains('hidden')) rex.innerHTML=regimeExplanation();
@@ -2852,6 +3147,11 @@ setInterval(() => {
 
 /* ------------------------------------------------------------ Einstellungen */
 function openSettings() {
+  if ($('#sTradeMode')) $('#sTradeMode').value = S.tradeMode || DEFAULTS.tradeMode;
+  if ($('#sSizeMode')) $('#sSizeMode').value = S.sizeMode || DEFAULTS.sizeMode;
+  if ($('#sFixedTrade')) $('#sFixedTrade').value = S.fixedTradeEur ?? DEFAULTS.fixedTradeEur;
+  if ($('#sMaxLoss')) $('#sMaxLoss').value = S.maxLossEur ?? DEFAULTS.maxLossEur;
+  renderSizeModeHint();
   $('#sEquity').value = S.equity; $('#sRisk').value = S.riskPct; $('#sMaxTrade').value = S.maxTradeEur; $('#sMinCrvCoin').value = S.minCrvCoin; $('#sMinCrvStock').value = S.minCrvStock; $('#sMinNetProfit').value = S.minNetProfitStock; $('#sMinTp2Pct').value = S.minTp2PctStock;
   $('#sDeep').value = S.deep; $('#sCoinCount').value = S.coinCount; $('#sStockCount').value = S.stockCount;
   $('#sStockDeep').value = S.stockDeep || DEFAULTS.stockDeep;
@@ -2863,6 +3163,31 @@ function openSettings() {
   if ($('#sPortfolioRisk')) $('#sPortfolioRisk').value = S.portfolioRiskPct ?? DEFAULTS.portfolioRiskPct;
   if ($('#sPortfolioGuard')) $('#sPortfolioGuard').checked = !!S.portfolioGuard;
   if ($('#sCrowdLimit')) $('#sCrowdLimit').value = S.crowdSymbolLimit ?? DEFAULTS.crowdSymbolLimit;
+  /* Der Hinweis muss sofort mitrechnen, sonst sieht der Nutzer die Konsequenz
+     seiner Eingabe erst nach dem Speichern — also genau dann nicht, wenn er sie
+     zum Abwaegen braucht. Live gegen die Feldwerte, nicht gegen S. */
+  for (const id of ['#sSizeMode', '#sFixedTrade', '#sEquity', '#sRisk', '#sMaxTrade', '#sOrderFee', '#sVenueFriction']) {
+    const f = $(id);
+    if (f && !f.dataset.hintBound) {
+      f.dataset.hintBound = '1';
+      f.addEventListener('input', () => {
+        const prev = { sizeMode: S.sizeMode, fixedTradeEur: S.fixedTradeEur, equity: S.equity, riskPct: S.riskPct, maxTradeEur: S.maxTradeEur, orderFeeEur: S.orderFeeEur, venueFrictionPct: S.venueFrictionPct };
+        S.sizeMode = String($('#sSizeMode')?.value || S.sizeMode);
+        S.fixedTradeEur = +$('#sFixedTrade')?.value || S.fixedTradeEur;
+        S.equity = +$('#sEquity')?.value || S.equity;
+        S.riskPct = +$('#sRisk')?.value || S.riskPct;
+        S.maxTradeEur = +$('#sMaxTrade')?.value || S.maxTradeEur;
+        /* `+undefined` ist NaN, nicht undefined — `??` wuerde hier NICHT greifen
+           und NaN in die Anzeige tragen. Deshalb explizit auf Endlichkeit pruefen. */
+        const numOr = (id, fallback) => { const v = Number($(id)?.value); return Number.isFinite(v) ? v : fallback; };
+        S.orderFeeEur = numOr('#sOrderFee', S.orderFeeEur);
+        S.venueFrictionPct = numOr('#sVenueFriction', S.venueFrictionPct);
+        try { renderSizeModeHint(); } finally { Object.assign(S, prev); }
+      });
+    }
+  }
+  if ($('#sOrderFee')) $('#sOrderFee').value = S.orderFeeEur ?? DEFAULTS.orderFeeEur;
+  if ($('#sVenueFriction')) $('#sVenueFriction').value = S.venueFrictionPct ?? DEFAULTS.venueFrictionPct;
   $$('#sComponents input[data-comp]').forEach((c) => { c.checked = S.components.includes(c.dataset.comp); });
   updateCountsInfo();
   loadTiingoQuota();
@@ -2904,6 +3229,15 @@ function applySettings() {
   S.equity = +$('#sEquity').value || DEFAULTS.equity;
   S.riskPct = +$('#sRisk').value || DEFAULTS.riskPct;
   S.maxTradeEur = Math.max(100, +$('#sMaxTrade').value || DEFAULTS.maxTradeEur);
+  /* v3.9.0 · Sizing-Modell und Handelsmodus. Unbekannte Werte fallen auf den
+     Default zurueck, damit ein manipulierter localStorage nicht in einen
+     undefinierten Zustand fuehrt (fail-closed auf 'unveraendertes Verhalten'). */
+  const smRaw = String($('#sSizeMode')?.value || DEFAULTS.sizeMode);
+  S.sizeMode = (smRaw === 'fixed' || smRaw === 'risk') ? smRaw : DEFAULTS.sizeMode;
+  const tmRaw = String($('#sTradeMode')?.value || DEFAULTS.tradeMode);
+  S.tradeMode = (tmRaw === 'A' || tmRaw === 'off') ? tmRaw : DEFAULTS.tradeMode;
+  S.fixedTradeEur = Math.max(100, +$('#sFixedTrade')?.value || DEFAULTS.fixedTradeEur);
+  S.maxLossEur = Math.max(0, +$('#sMaxLoss')?.value || 0);
   S.minCrvCoin = Math.max(1, +$('#sMinCrvCoin').value || DEFAULTS.minCrvCoin);
   S.minCrvStock = Math.max(1, +$('#sMinCrvStock').value || DEFAULTS.minCrvStock);
   S.minNetProfitStock = Math.max(0, +$('#sMinNetProfit').value || 0);
@@ -2926,9 +3260,11 @@ function applySettings() {
   S.portfolioRiskPct = Math.min(20, Math.max(Number(S.riskPct||0), +$('#sPortfolioRisk')?.value || DEFAULTS.portfolioRiskPct));
   S.portfolioGuard = !!$('#sPortfolioGuard')?.checked;
   S.crowdSymbolLimit = Math.min(15, Math.max(1, +$('#sCrowdLimit')?.value || DEFAULTS.crowdSymbolLimit));
+  S.orderFeeEur = Math.min(100, Math.max(0, +$('#sOrderFee')?.value ?? DEFAULTS.orderFeeEur));
+  S.venueFrictionPct = Math.min(5, Math.max(0, +$('#sVenueFriction')?.value ?? DEFAULTS.venueFrictionPct));
   const picked = $$('#sComponents input[data-comp]').filter((c) => c.checked).map((c) => c.dataset.comp);
   S.components = picked.length ? picked : [...ALL_COMPONENTS];
-  saveSettings(); applyTheme(); applyAnalysisView(); renderAnalysisMethods(); render(); renderStocks();
+  saveSettings(); applyTheme(); applyTradeModeView(); renderAnalysisMethods(); render(); renderStocks();
   $('#settings').classList.remove('open');
   scan(true);
   // Aktien nur dann frisch anfordern, wenn sich die Analyse geändert hat —
@@ -3013,7 +3349,7 @@ $('#scan').onclick = async () => {
   // v3.4.2: manueller blauer Refresh bedeutet ECHTE Aktualisierung. FokusScope zuerst,
   // danach der gesamte Aktien-Snapshot; alte Cache-Daten duerfen nicht als Refresh gelten.
   if(focusStock) await searchStockNow(focusStock,true);
-  await Promise.allSettled([scan(true), scanStocks(true), scanOpeningMomentum(true), loadExperimental(true), loadCrowd(true), loadLearning(), loadAttribution(), loadAladdin(), loadHealth()]);
+  await Promise.allSettled([scan(true), scanStocks(true), scanOpeningMomentum(true), loadExperimental(true), loadCrowd(true), loadSentiment(false), loadEarnings(false), loadLearning(), loadAttribution(), loadAladdin(), loadHealth()]);
 };
 $('#sound').onclick = () => {
   S.sound = !S.sound; saveSettings();
@@ -3140,6 +3476,8 @@ scanStocks(false);
 scanOpeningMomentum(false);
 loadExperimental(false);
 loadCrowd(false);
+loadSentiment(false);
+loadEarnings(false);
 loadLearning();
 loadAttribution();
 loadAladdin();

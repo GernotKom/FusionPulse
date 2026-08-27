@@ -955,6 +955,67 @@ const LARGE_CAP_RADAR_SYMBOLS = new Set([
 function largeCapRadarAllowed(symbol){
   return LARGE_CAP_RADAR_SYMBOLS.has(String(symbol||'').trim().toUpperCase().replace(/\./g,'-'));
 }
+
+/* ==== v3.8.0 · MOMENTUM-MODUS: messbares Gitter statt Namensliste ===========
+   BEFUND: Bis 3.7.0 war `largeCapRadarAllowed` ein Einlass-Gate, das aus rund
+   12.000 von Tiingo gescannten Titeln genau 48 durchliess — alles Mega-Caps.
+   Ein Nachrichten-Mover wie MRNA konnte den Radar deshalb NIE von selbst
+   erreichen, obwohl die Daten dafuer laengst vorlagen. Der Nutzer sucht aber
+   genau solche Titel; die App suchte per Konstruktion daran vorbei.
+
+   Ersetzt durch ein Gitter aus MESSBAREN Groessen. Das ist ehrlicher als eine
+   gepflegte Namensliste, weil es Handelbarkeit prueft statt Bekanntheit — und
+   es veraltet nicht. Bewusst konservativ, weil Illiquiditaet beim schnellen
+   Ein- und Aussteigen teurer ist als eine verpasste Gelegenheit.
+
+   Der Large-Cap-Pfad bleibt unveraendert bestehen und ist weiterhin Default.
+   Der Momentum-Pfad ist ein ZWEITER Modus, keine Ersetzung.                 */
+const MOM_MIN_PRICE_USD   = 5;        // unter 5 $ beginnt das Penny-Stock-Gebiet
+/* ACHTUNG, Kalibrierungsrisiko (v3.8.1): Der Tiingo-IEX-Feed liefert das
+   Volumen der Boerse IEX — und IEX hat nur rund 2–3 % des US-Handelsvolumens.
+   Ein Titel mit 500 Mio. $ Gesamtumsatz zeigt hier vielleicht 10–15 Mio. $.
+   Eine Schwelle von 20 Mio. $ (erster Entwurf) haette deshalb fast alles
+   ausgeschlossen — die Liste waere leer geblieben und haette wie ein Defekt
+   ausgesehen. Der Wert ist bewusst als IEX-ANTEIL gesetzt, mit grosszuegiger
+   Reserve nach unten; die Handelbarkeit sichern zusaetzlich Kurs- und
+   Spread-Kriterium ab. Nach dem ersten Live-Lauf anhand der Zaehler in
+   `radarGateStats` nachkalibrieren statt weiter zu schaetzen.            */
+const MOM_MIN_DOLLARVOL   = 2_000_000; // IEX-Anteil, entspricht grob 60–100 Mio. $ gesamt
+/* v3.9.0 · Hoechstalter des juengsten Bars fuer eine Modus-A-Freigabe.
+   Begruendung: Bei 10–15 % Tagesbewegung laeuft ein Titel in 10 Minuten leicht
+   1–2 % weiter. Ein Plan auf Basis eines solchen Kurses hat einen Stop, der real
+   schon durchbrochen ist, oder ein Ziel, das bereits erreicht wurde. Der Feed
+   liefert 5-Minuten-Bars; 600 Sekunden lassen genau einen verspaeteten Bar zu,
+   danach ist der Plan nicht mehr belastbar. Fail-closed: unbekanntes Alter zaehlt
+   wie zu alt. */
+const MOM_MAX_QUOTE_AGE_SEC = 600;
+const MOM_MAX_SPREAD_PCT  = 0.60;     // darueber frisst die Spanne den Ertrag
+const MOM_MIN_MOVE_PCT    = 3.0;      // darunter ist es kein Mover
+
+/* Zaehlt, woran Kandidaten scheitern. Ohne diese Zahlen laesst sich eine leere
+   Liste nicht von einer zu strengen Schwelle unterscheiden — und genau das
+   waere hier der wahrscheinlichste Fehler. */
+let radarGateStats={ts:0,seen:0,largeCap:0,momentum:0,failPrice:0,failVolume:0,failSpread:0,failMove:0};
+function resetRadarGateStats(){ radarGateStats={ts:Date.now(),seen:0,largeCap:0,momentum:0,failPrice:0,failVolume:0,failSpread:0,failMove:0}; }
+function momentumRadarAllowed(r,count=false){
+  const price=Number(r?.last);
+  const vol=Number(r?.volume);
+  const spread=Number(r?.spreadPct);
+  const move=Math.abs(Number(r?.movePct));
+  if(!(price>=MOM_MIN_PRICE_USD)){ if(count)radarGateStats.failPrice++; return false; }   // fail-closed
+  if(!(vol>0) || !(price*vol>=MOM_MIN_DOLLARVOL)){ if(count)radarGateStats.failVolume++; return false; }
+  if(Number.isFinite(spread) && spread>MOM_MAX_SPREAD_PCT){ if(count)radarGateStats.failSpread++; return false; }
+  if(!(move>=MOM_MIN_MOVE_PCT)){ if(count)radarGateStats.failMove++; return false; }
+  return true;
+}
+/** Einlass in den Radar: Large-Cap-Liste ODER messbar handelbarer Mover. */
+function radarCandidateAllowed(r,count=false){
+  if(count) radarGateStats.seen++;
+  if(largeCapRadarAllowed(r?.symbol)){ if(count)radarGateStats.largeCap++; return true; }
+  const ok=momentumRadarAllowed(r,count);
+  if(ok&&count) radarGateStats.momentum++;
+  return ok;
+}
 const STOCK_SEARCH_CATALOG = [
   ...STOCK_UNIVERSE,
   ['Technologie','PLTR','Palantir Technologies Inc.'], ['Technologie','IONQ','IonQ, Inc.'],
@@ -1500,8 +1561,123 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
     };
   })();
 
+  // ---- v3.9.0 MODUS A · MOMENTUM (additiv; claude UND fusion bleiben unberuehrt) --
+  // Warum ein eigener Block statt Schalter in fusion/claude:
+  //   - Der Claude-Block ist SHA-verriegelt und darf sich nicht aendern.
+  //   - Der fusion-Block gehoert dem parallelen ChatGPT-Strang. Ein modusabhaengiger
+  //     Zweig darin haette dessen Verhalten aendern koennen (Invariante 9).
+  // Dieser Block wird IMMER berechnet, aber nur angezeigt/verwendet, wenn der Nutzer
+  // Modus A aktiv einschaltet. Er veraendert keinen anderen Score.
+  //
+  // Der inhaltliche Unterschied zu beiden bestehenden Modi:
+  //  1. KEIN overextended-Malus. Der Abstand zur EMA21 ist hier die Eintrittskarte,
+  //     kein Warnsignal. Der Malus bestrafte bisher genau die gesuchten Titel.
+  //  2. Elliott-Gewicht = 0. Bei einem Gap ohne Wellenhistorie misst die Kennzahl
+  //     Rauschen. Lieber weglassen als so tun, als sei sie aussagekraeftig.
+  //  3. Eigenes Zielprofil: Stop unter dem Konsolidierungstief NACH dem Impuls,
+  //     Ziel als Vielfaches der bisherigen Tagesspanne statt als R-Vielfaches.
+  //     Damit faellt auch der 8R-Deckel weg, der den VEEV-Fall unmoeglich machte.
+  //  4. Live-Quote-Pflicht: bei zweistelliger Tagesbewegung ist ein fuenf Minuten
+  //     alter Kurs kein Schoenheitsfehler. Fehlt der frische Kurs, gibt es keinen Plan.
+  const momentum = (() => {
+    // --- Konsolidierung nach dem Impuls: das Tief der letzten 6 Bars, sofern sie
+    //     tatsaechlich eine Beruhigung gegenueber dem Impuls davor darstellen.
+    const consWindow = bars.slice(-6);
+    const impulseWindow = bars.slice(-18, -6);
+    const consLow = consWindow.length ? Math.min(...consWindow.map(b => b.l).filter(Number.isFinite)) : null;
+    const consHigh = consWindow.length ? Math.max(...consWindow.map(b => b.h).filter(Number.isFinite)) : null;
+    const impulseLow = impulseWindow.length ? Math.min(...impulseWindow.map(b => b.l).filter(Number.isFinite)) : null;
+    const impulseHigh = impulseWindow.length ? Math.max(...impulseWindow.map(b => b.h).filter(Number.isFinite)) : null;
+    const impulseUp = (impulseHigh != null && impulseLow != null) ? impulseHigh - impulseLow : null;
+    const consRange = (consHigh != null && consLow != null) ? consHigh - consLow : null;
+    // Echte Konsolidierung: die juengste Spanne ist deutlich enger als der Impuls
+    // davor UND das Tief liegt nicht unter dem halben Impuls (sonst ist es ein Abverkauf).
+    const consolidating = impulseUp > 0 && consRange != null
+      && consRange <= impulseUp * 0.62
+      && consLow >= impulseLow + impulseUp * 0.38;
+
+    // --- Stop: unter das Konsolidierungstief, mit ATR-Puffer gegen Zufallsausloesung.
+    //     Fail-closed: ohne brauchbares Konsolidierungstief kein Stop und kein Plan.
+    const mStop = (consolidating && consLow > 0) ? consLow - 0.25 * atr : null;
+    const mEntry = last.c;
+    const mRisk = (mStop != null && mEntry > mStop) ? mEntry - mStop : null;
+    const mStopPct = mRisk != null ? (mRisk / mEntry) * 100 : null;
+
+    // --- Ziel als Vielfaches der Eroeffnungs-/Tagesspanne statt als R-Vielfaches.
+    //     Ein Titel, der heute 8 % gelaufen ist, laeuft erfahrungsgemaess eher
+    //     weitere Bruchteile DIESER Spanne als ein starres Vielfaches eines
+    //     zufaellig engen Stops. Kein Deckel bei 8R: der Deckel stammt aus dem
+    //     Risikomodell und hat hier keine Entsprechung.
+    const dayWindow = bars.slice(-78); // rund ein US-Handelstag in 5-Min-Bars
+    const dayLow = dayWindow.length ? Math.min(...dayWindow.map(b => b.l).filter(Number.isFinite)) : null;
+    const dayHigh = dayWindow.length ? Math.max(...dayWindow.map(b => b.h).filter(Number.isFinite)) : null;
+    const dayRange = (dayHigh != null && dayLow != null && dayHigh > dayLow) ? dayHigh - dayLow : null;
+    const mTp1 = (dayRange && consHigh != null) ? Math.max(consHigh, mEntry) + 0.5 * dayRange : null;
+    const mTp2 = (dayRange && consHigh != null) ? Math.max(consHigh, mEntry) + 1.0 * dayRange : null;
+    const mTp2Pct = (mTp2 != null && mEntry > 0) ? (mTp2 / mEntry - 1) * 100 : null;
+    const mRewardRisk = (mRisk > 0 && mTp2 != null) ? (mTp2 - mEntry) / mRisk : null;
+
+    // --- Score OHNE Elliott und OHNE overextended-Malus.
+    //     Die 12 % Elliott-Gewicht werden NICHT umverteilt: eine Umverteilung
+    //     wuerde den Score ohne neue Information anheben (Invariante 1/3).
+    //     weighted() normiert ueber die tatsaechlich gesetzten Gewichte; die
+    //     fehlende Komponente wird damit sauber ausgelassen statt geschaetzt.
+    const mSit10 = situationScore / 10;
+    const mTrigger10 = squeezeRelease ? 9.2 : brokePriorHigh ? 8.7 : nearBreakout ? 7.4 : (reclaimVwap || reclaimEma21) ? 7.1 : pullbackHold ? 6.8 : 5.0;
+    const mScore = +clamp(weighted([
+      [null, trendScore, 0.16],
+      [null, momoScore, 0.20],          // Momentum zaehlt hier mehr als im Positionsmodus
+      ['volume', volScore, 0.16],
+      ['vwap', vwapScore, 0.10],
+      [null, mSit10, 0.20],
+      [null, mTrigger10, 0.12],
+      [null, liquidityVacuum / 10, 0.06],
+    ], on)).toFixed(1);
+
+    // --- Live-Quote-Pflicht. `last.dt` ist der Zeitstempel des juengsten Bars.
+    //     Aelter als MOM_MAX_QUOTE_AGE_SEC -> kein Plan, ausgewiesen als nicht bewertbar.
+    const barMs = Date.parse(last?.dt || '');
+    const quoteAgeSec = Number.isFinite(barMs) ? Math.max(0, Math.round((Date.now() - barMs) / 1000)) : null;
+    const quoteFresh = quoteAgeSec != null && quoteAgeSec <= MOM_MAX_QUOTE_AGE_SEC;
+
+    const mBlockers = [];
+    if (!volumeKnown) mBlockers.push('Volumenbasis fehlt (fail-closed)');
+    if (relVolScore == null) mBlockers.push('RVOL nicht messbar');
+    else if (relVolScore < 1.5) mBlockers.push(`RVOL ${relVolScore.toFixed(1)}x < 1,5x`);
+    if (!consolidating) mBlockers.push('keine Konsolidierung nach dem Impuls - kein definierbarer Stop');
+    if (mRisk == null) mBlockers.push('Stop nicht bestimmbar (fail-closed)');
+    if (!dayRange) mBlockers.push('Tagesspanne nicht messbar');
+    if (quoteAgeSec == null) mBlockers.push('Kursalter unbekannt (fail-closed)');
+    else if (!quoteFresh) mBlockers.push(`Kurs ${Math.round(quoteAgeSec / 60)} Min alt - Modus A verlangt Live-Kurs`);
+    if (mRewardRisk != null && mRewardRisk < 2.0) mBlockers.push(`Ziel nur ${mRewardRisk.toFixed(1)}x Stopweite < 2,0x`);
+    if (mScore < 6.8) mBlockers.push(`Momentum-Score ${mScore} < 6,8`);
+    if (situationType === 'WATCH') mBlockers.push('kein aktives Situationsmuster');
+
+    const mGreen = volumeKnown && relVolScore != null && relVolScore >= 1.5
+      && consolidating && mRisk != null && !!dayRange && quoteFresh
+      && mRewardRisk != null && mRewardRisk >= 2.0
+      && mScore >= 6.8 && situationType !== 'WATCH';
+    const mYellow = !mGreen && volumeKnown && mScore >= 5.5 && (consolidating || brokePriorHigh || squeezeRelease);
+    return {
+      light: mGreen ? 'green' : mYellow ? 'yellow' : 'red',
+      score: mScore,
+      entryUsd: mEntry, stopUsd: mStop, tp1Usd: mTp1, tp2Usd: mTp2,
+      entryEur: e(mEntry), stopEur: mStop == null ? null : e(mStop),
+      tp1Eur: mTp1 == null ? null : e(mTp1), tp2Eur: mTp2 == null ? null : e(mTp2),
+      tp2Pct: mTp2Pct == null ? null : +mTp2Pct.toFixed(2),
+      stopPct: mStopPct == null ? null : +mStopPct.toFixed(2),
+      rewardRisk: mRewardRisk == null ? null : +mRewardRisk.toFixed(2),
+      tp2Source: dayRange ? 'Tagesspanne x 1,0 ueber Konsolidierungshoch' : 'kein Zielraum',
+      consolidating, dayRangePct: dayRange ? +((dayRange / mEntry) * 100).toFixed(2) : null,
+      quoteAgeSec, quoteFresh,
+      elliottUsed: false, overextendedApplied: false,
+      verdict: mGreen ? 'Kauf-Setup · Momentum' : mYellow ? 'Beobachten · Momentum' : 'Kein Trade · Momentum',
+      blockers: mBlockers.slice(0, 6),
+    };
+  })();
+
   return {
-    claude, fusion,
+    claude, fusion, momentum,
     // v3.5.3: Legacy bleibt fuer Audit/Vergleich erhalten; die normale FusionPulse-Ansicht
     // nutzt ab jetzt die mathematisch konsistente adaptive Bewertung. Claude bleibt parallel.
     legacy:{light,score,netCRV,tp2Usd:tp2,tp2Eur:e(tp2),tp2Pct:+tp2Pct.toFixed(2),verdict,blockers:[]},
@@ -1846,6 +2022,185 @@ async function fetchJSONPublic(url){
   if(!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
+/* ==== v3.8.2 · P6 (Teil 1): Termine der Quartalszahlen =====================
+   ANLASS, konkret: Am 26.8. hat die App VEEV analysiert, bewertet und dabei
+   mit keinem Wort erwaehnt, dass an diesem Abend Zahlen kommen. Der Nutzer
+   hat einen Intraday-Plan mit 1,2 % Zielweite gesehen; abends bewegte sich
+   die Aktie nach den Zahlen um ein Vielfaches davon. Das Urteil ueber den
+   Intraday-Plan war richtig — aber die App hat eine Information verschwiegen,
+   die sie haette haben koennen, und dadurch eine ANDERE Frage unsichtbar
+   gemacht, die der Nutzer haette stellen wollen.
+
+   Bewusste Designentscheidung: Daraus wird KEIN Signal. Der Weg von
+   „Zahlen heute Abend" zu „dieser Trade ist besser" ist nicht berechenbar.
+   Die Information ist eine WARNUNG, die ausschliesslich abwerten kann.
+
+   Zwei Quellen, weil eine allein nicht verlaesslich ist:
+   1. Twelve Data `earnings_calendar` — ob das im Basic-Tarif enthalten ist,
+      ist nicht dokumentiert. Statt zu raten, wird es versucht und der echte
+      Fehler durchgereicht, damit sichtbar ist WARUM nichts kommt.
+   2. Manuell gepflegte Termine. Funktioniert immer, ohne Tarif und ohne
+      Fremddienst — und der Nutzer schaut ohnehin bei Google Finance nach. */
+const EARN_TTL_MS = 12*60*60_000;   // Termine aendern sich selten
+let earnMemo={ts:0,data:null};
+
+function parseEarningsPayload(j){
+  /* Das Antwortformat ist nicht sicher dokumentiert. Tolerant parsen und im
+     Zweifel NICHTS zurueckgeben, statt etwas hineinzuinterpretieren. */
+  const out=new Map();
+  const push=(sym,date,time)=>{
+    const k=String(sym||'').trim().toUpperCase(); if(!k) return;
+    const d=String(date||'').trim(); if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+    const prev=out.get(k);
+    if(!prev||d<prev.date) out.set(k,{symbol:k,date:d,time:String(time||'').trim()||null});
+  };
+  const walk=(node,dateHint)=>{
+    if(!node) return;
+    if(Array.isArray(node)){ for(const x of node) walk(x,dateHint); return; }
+    if(typeof node!=='object') return;
+    if(node.symbol) push(node.symbol, node.date||node.report_date||dateHint, node.time||node.hour);
+    for(const [k,v] of Object.entries(node)){
+      if(/^\d{4}-\d{2}-\d{2}$/.test(k)) walk(v,k); else if(typeof v==='object') walk(v,dateHint);
+    }
+  };
+  walk(j?.earnings ?? j?.data ?? j, null);
+  return [...out.values()];
+}
+
+async function earningsCalendar(env, force=false){
+  const now=Date.now();
+  if(!force && earnMemo.data && now-earnMemo.ts<EARN_TTL_MS) return {...earnMemo.data, cached:true};
+  const manual=await readManualEarnings(env);
+  if(!env?.TWELVE_API_KEY){
+    const data={state:'nokey',auto:[],manual,source:null,
+      note:'Kein Twelve-Data-Schlüssel hinterlegt. Es werden nur manuell eingetragene Termine verwendet.',ts:now,version:APP_VERSION};
+    earnMemo={ts:now,data}; return data;
+  }
+  const d0=new Date(now), d1=new Date(now+14*86_400_000);
+  const iso=(d)=>d.toISOString().slice(0,10);
+  try{
+    const j=await twelveJSON('earnings_calendar',{start_date:iso(d0),end_date:iso(d1),format:'JSON'},env.TWELVE_API_KEY,1,env);
+    const auto=parseEarningsPayload(j);
+    const data={state:auto.length?'ok':'empty',auto,manual,source:'Twelve Data earnings_calendar',
+      note:auto.length?'Termine der Quartalszahlen. Reine Warnung — 0 % Gewicht in Score und Kauf-Freigabe.'
+        :'Der Kalender antwortete, lieferte aber keine verwertbaren Termine. Möglicherweise ist er im Basic-Tarif nicht enthalten. Manuell eingetragene Termine wirken weiterhin.',
+      ts:now,version:APP_VERSION};
+    earnMemo={ts:now,data};
+    if(env?.DB&&auto.length){ try{ await ensureD1Schema(env);
+      await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
+        .bind('earnings:last',safeJson({ts:now,auto}),now).run(); }catch{} }
+    return data;
+  }catch(e){
+    // Letzten bekannten Stand nutzen, aber als alt kennzeichnen.
+    let auto=[],staleTs=0;
+    if(env?.DB){ try{ await ensureD1Schema(env);
+      const r=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind('earnings:last').first();
+      if(r?.value){ const p=JSON.parse(r.value); auto=p?.auto||[]; staleTs=Number(p?.ts||r.updated_ts||0); } }catch{} }
+    const data={state:auto.length?'stale':'unavailable',auto,manual,staleTs,error:String(e.message||e),
+      source:'Twelve Data earnings_calendar',
+      note:`Der automatische Terminkalender ist nicht verfügbar: ${String(e.message||e)}. Sehr wahrscheinlich ist dieser Endpunkt im Basic-Tarif nicht enthalten. Manuell eingetragene Termine wirken unabhängig davon.`,
+      ts:now,version:APP_VERSION};
+    earnMemo={ts:now,data}; return data;
+  }
+}
+async function readManualEarnings(env){
+  if(!env?.DB) return [];
+  try{ await ensureD1Schema(env);
+    const r=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind('earnings:manual').first();
+    if(!r?.value) return [];
+    const p=JSON.parse(r.value);
+    return Array.isArray(p?.rows)?p.rows.filter(x=>x?.symbol&&/^\d{4}-\d{2}-\d{2}$/.test(String(x.date||''))):[];
+  }catch{ return []; }
+}
+async function writeManualEarnings(env,rows){
+  if(!env?.DB) throw new Error('Keine D1-Verbindung');
+  await ensureD1Schema(env);
+  const clean=(Array.isArray(rows)?rows:[]).filter(x=>x?.symbol&&/^\d{4}-\d{2}-\d{2}$/.test(String(x.date||'')))
+    .map(x=>({symbol:String(x.symbol).trim().toUpperCase().slice(0,8),date:String(x.date),time:String(x.time||'amc').slice(0,4)})).slice(0,200);
+  await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
+    .bind('earnings:manual',safeJson({rows:clean}),Date.now()).run();
+  earnMemo={ts:0,data:null};
+  return clean;
+}
+
+/* ==== v3.7.0 · P3: Krypto-Sentiment (Fear & Greed) ==========================
+   Quelle: alternative.me — kostenlos, kein Schluessel, keine Registrierung.
+   (Der frueher von mir behauptete Cloudflare-Egress-Blocker existiert nicht;
+   Workers duerfen per fetch jede Domain aufrufen. Das war ein Irrtum.)
+
+   Was der Index IST: ein zusammengesetzter Stimmungswert 0–100 aus
+   Volatilitaet, Marktmomentum, Social-Media-Aktivitaet, Bitcoin-Dominanz und
+   Suchtrends. Er misst die STIMMUNG, nicht die Qualitaet eines Trades.
+   Was er NICHT ist: eine Prognose, und er gilt ausschliesslich fuer Krypto —
+   nicht fuer Aktien. Additive Schicht: 0 % Gewicht in Score und Freigabe.
+
+   Der Index wird einmal taeglich aktualisiert; deshalb ein langer Cache und
+   ein D1-Rueckfall, damit ein Ausfall der Quelle nicht zu Luecken fuehrt.  */
+const FNG_TTL_MS = 30*60_000;
+let fngMemo = {ts:0, data:null};
+
+function fngPlain(v){
+  const n=Number(v);
+  if(!Number.isFinite(n)) return {tone:'unknown', de:'unbekannt', meaning:''};
+  if(n<=24) return {tone:'extreme-fear', de:'Extreme Angst',
+    meaning:'Die Marktteilnehmer sind stark verunsichert und verkaufen eher. Historisch waren solche Phasen oft eher Boden als Anfang vom Ende — belastbar vorhersagen laesst sich das aber nicht.'};
+  if(n<=44) return {tone:'fear', de:'Angst',
+    meaning:'Vorsichtige, eher pessimistische Stimmung. Kurse bewegen sich in solchen Phasen oft ruckartig nach oben, wenn positive Nachrichten kommen.'};
+  if(n<=55) return {tone:'neutral', de:'Neutral',
+    meaning:'Weder ausgepraegte Angst noch Euphorie. Aus der Stimmung allein laesst sich hier am wenigsten ableiten.'};
+  if(n<=74) return {tone:'greed', de:'Gier',
+    meaning:'Optimistische bis euphorische Stimmung. Es wird eher gekauft — was Rueckschlaege heftiger ausfallen laesst, weil viele bereits investiert sind.'};
+  return {tone:'extreme-greed', de:'Extreme Gier',
+    meaning:'Sehr euphorische Stimmung. Historisch waren solche Phasen oft nahe an lokalen Hochs. Das ist eine Beobachtung ueber die Vergangenheit, keine Vorhersage.'};
+}
+
+async function cryptoSentiment(env, force=false){
+  const now=Date.now();
+  if(!force && fngMemo.data && now-fngMemo.ts<FNG_TTL_MS) return {...fngMemo.data, cached:true};
+  try{
+    const j=await fetchJSONPublic('https://api.alternative.me/fng/?limit=14&format=json');
+    const arr=Array.isArray(j?.data)?j.data:[];
+    if(!arr.length) throw new Error('leere Antwort');
+    const cur=arr[0];
+    const value=Number(cur?.value);
+    if(!Number.isFinite(value)) throw new Error('kein Zahlenwert');
+    const hist=arr.map(x=>({v:Number(x?.value), ts:Number(x?.timestamp)*1000}))
+                  .filter(x=>Number.isFinite(x.v)&&Number.isFinite(x.ts));
+    const prev=hist[1]?.v, weekAgo=hist[7]?.v;
+    const p=fngPlain(value);
+    const data={ state:'ok', configured:true, value, ...p,
+      classificationRaw:String(cur?.value_classification||''),
+      ts:Number(cur?.timestamp)*1000 || now,
+      nextUpdateSec:Number(j?.data?.[0]?.time_until_update)||null,
+      change1d: Number.isFinite(prev)?value-prev:null,
+      change7d: Number.isFinite(weekAgo)?value-weekAgo:null,
+      history: hist,
+      source:'alternative.me Crypto Fear & Greed Index',
+      scope:'crypto',
+      note:'Stimmungsindex fuer den Kryptomarkt aus Volatilitaet, Momentum, Social Media, BTC-Dominanz und Suchtrends. Gilt NICHT fuer Aktien. 0 % Gewicht in Score und Kauf-Freigabe.',
+      version:APP_VERSION, ts_fetched:now };
+    fngMemo={ts:now, data};
+    if(env?.DB) { try{ await ensureD1Schema(env);
+      await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
+        .bind('crypto_fng:last', safeJson(data), now).run(); }catch{} }
+    return data;
+  }catch(e){
+    // Rueckfall auf den letzten gespeicherten Stand — aber ausdruecklich als alt gekennzeichnet.
+    if(env?.DB){ try{ await ensureD1Schema(env);
+      const row=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind('crypto_fng:last').first();
+      if(row?.value){ const old=JSON.parse(row.value);
+        return {...old, state:'stale', stale:true, error:String(e.message||e),
+          note:`${old.note} ACHTUNG: Die Quelle war zuletzt nicht erreichbar; dieser Wert stammt vom ${new Date(Number(row.updated_ts)||0).toISOString()} und ist nicht aktuell.`}; }
+    }catch{} }
+    return { state:'error', configured:true, value:null, error:String(e.message||e),
+      source:'alternative.me Crypto Fear & Greed Index', scope:'crypto',
+      note:'Der Stimmungsindex konnte nicht geladen werden. Es wird bewusst kein Ersatzwert erfunden.', version:APP_VERSION };
+  }
+}
+
 function moonPhase(){
   const syn=29.53058867, known=Date.UTC(2000,0,6,18,14,0); // known new moon
   let days=(Date.now()-known)/86400000; let age=((days%syn)+syn)%syn; let f=age/syn;
@@ -3087,11 +3442,11 @@ async function filterRadarToCommonStocks(env,rows,limit){
   // next common stocks. Metadata checks are cached for seven days.
   const source=(rows||[]).map(r=>({...r,symbol:safeRadarSymbol(r?.symbol)})).filter(r=>r.symbol).slice(0,24);
   const checked=await pool(source,4,async r=>{try{return {r,m:await radarEquityMeta(env,r.symbol)};}catch(e){return {r,m:{tradableStock:false,reason:String(e?.message||e)}};}});
-  return checked.filter(x=>x?.m?.tradableStock && largeCapRadarAllowed(x?.r?.symbol)).map(x=>({...x.r,securityName:x.m.name,companyDescription:x.m.description||'',exchange:x.m.exchange||'',assetType:'stock',securityVerified:true,largeCapRadar:true})).slice(0,limit);
+  return checked.filter(x=>x?.m?.tradableStock && radarCandidateAllowed(x?.r)).map(x=>({...x.r,securityName:x.m.name,companyDescription:x.m.description||'',exchange:x.m.exchange||'',assetType:'stock',securityVerified:true,largeCapRadar:largeCapRadarAllowed(x?.r?.symbol),momentumRadar:!largeCapRadarAllowed(x?.r?.symbol)&&momentumRadarAllowed(x?.r)})).slice(0,limit);
 }
 
 function verifiedCommonOnly(rows){
-  return (rows||[]).filter(r=>r?.securityVerified===true && largeCapRadarAllowed(r?.symbol) && !NON_COMMON_SYMBOL_DENY.has(String(r?.symbol||'').toUpperCase()) && !NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''}`));
+  return (rows||[]).filter(r=>r?.securityVerified===true && (largeCapRadarAllowed(r?.symbol)||r?.momentumRadar===true) && !NON_COMMON_SYMBOL_DENY.has(String(r?.symbol||'').toUpperCase()) && !NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''}`));
 }
 // v3.2.7 P0: Never let a previously cached/persisted non-common instrument leak
 // back into the visible stock scanner. This is deliberately exclusion-only.
@@ -3114,8 +3469,9 @@ async function tiingoIexMarketRadar(env,limit=80,force=false){
   const d=await tiingoFetch(env,'/iex'), all=Array.isArray(d)?d:[];
   const phase=usMarketPhase(new Date(now),'iex');
   const maxAge=['opening','regular'].includes(phase.key)?12:['premarket','after'].includes(phase.key)?30:90;
+  resetRadarGateStats();
   const ranked=all.map(x=>iexRadarQuote(x,prevMap.get(String(x?.ticker||x?.symbol||'').toUpperCase()))).filter(Boolean)
-    .filter(r=>largeCapRadarAllowed(r.symbol))
+    .filter(r=>radarCandidateAllowed(r,true))
     .filter(r=>r.ageMin==null||r.ageMin<=maxAge)
     .sort((a,b)=>b.score-a.score);
   // Instrument-Metadaten bewusst NICHT hier prüfen: Der Bulk-Radar soll CPU-arm
@@ -3215,7 +3571,7 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
     if(cleanMemo.length!==stockMemo.rows.length) stockMemo={...stockMemo,rows:cleanMemo};
     const memoRadar=verifiedCommonOnly(tiingoIexRadarMemo.rows||[]).slice(0,20);
     const memoBoats=verifiedCommonOnly(tiingoDiscoveryMemo.rows||[]).slice(0,15);
-    return {configured:true,state:'ok',cached:true,rows:cleanMemo,ts:stockMemo.ts,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:cleanMemo.length,updatedThisCycle:0,refreshedSymbols:Array.isArray(stockMemo.refreshedSymbols)?stockMemo.refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified cache only',ts:tiingoIexRadarMemo.ts,candidates:memoRadar,gainers:openingGainers(memoRadar),buyWeight:0},boats:{...tiingoDiscoveryMemo,rows:memoBoats,candidates:memoBoats,buyWeight:0}},version:APP_VERSION};
+    return {configured:true,state:'ok',cached:true,rows:cleanMemo,ts:stockMemo.ts,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:cleanMemo.length,updatedThisCycle:0,refreshedSymbols:Array.isArray(stockMemo.refreshedSymbols)?stockMemo.refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified cache only',ts:tiingoIexRadarMemo.ts,candidates:memoRadar,gainers:openingGainers(memoRadar),buyWeight:0,gate:{...radarGateStats}},boats:{...tiingoDiscoveryMemo,rows:memoBoats,candidates:memoBoats,buyWeight:0}},version:APP_VERSION};
   }
 
   // Browser/PWA darf den autonomen Markt-Scan nicht mehr selbst starten.
@@ -3236,10 +3592,10 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       const cleanRows=(persisted.rows||[]).filter(r=>{const sym=String(r?.symbol||'').toUpperCase();return !NON_COMMON_SYMBOL_DENY.has(sym) && !NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''}`) && (catalogSet.has(sym)||favs.includes(sym)||allowed.has(sym));});
       stockMemo={ts:persisted.ts,rows:cleanRows,cycle:persisted.cycle,sig:persisted.sig,refreshedSymbols:Array.isArray(persisted.meta?.refreshedSymbols)?persisted.meta.refreshedSymbols:[]};
       const radar=await readPersistedIexRadar(env);
-      return {configured:true,state:'ok',cached:true,persistent:true,rows:cleanRows,ts:persisted.ts,cycle:persisted.cycle,universe:radar?.universe||12000,universeLabel:`${radar?.universe||'12.000+'} Tiingo/IEX`,scanned:cleanRows.length,updatedThisCycle:0,refreshedSymbols:Array.isArray(persisted.meta?.refreshedSymbols)?persisted.meta.refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified',ts:persisted.ts||0,candidates:verifiedRadar,gainers:openingGainers(verifiedRadar),buyWeight:0},boats:{source:'Tiingo BOATS · verified',ts:persisted.ts||0,candidates:verifiedBoats,buyWeight:0}},version:APP_VERSION,note:'Server-Cache: autonomer Cron-Radar/Deep-Scan; PWA startet keinen Doppel-Scan. Nur verifizierte Common Stocks werden an die UI gereicht.'};
+      return {configured:true,state:'ok',cached:true,persistent:true,rows:cleanRows,ts:persisted.ts,cycle:persisted.cycle,universe:radar?.universe||12000,universeLabel:`${radar?.universe||'12.000+'} Tiingo/IEX`,scanned:cleanRows.length,updatedThisCycle:0,refreshedSymbols:Array.isArray(persisted.meta?.refreshedSymbols)?persisted.meta.refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified',ts:persisted.ts||0,candidates:verifiedRadar,gainers:openingGainers(verifiedRadar),buyWeight:0,gate:{...radarGateStats}},boats:{source:'Tiingo BOATS · verified',ts:persisted.ts||0,candidates:verifiedBoats,buyWeight:0}},version:APP_VERSION,note:'Server-Cache: autonomer Cron-Radar/Deep-Scan; PWA startet keinen Doppel-Scan. Nur verifizierte Common Stocks werden an die UI gereicht.'};
     }
     const staleRows=stripKnownNonCommon(stockMemo.rows||[]);
-    return {configured:true,state:'stale',cached:true,rows:staleRows,ts:stockMemo.ts||0,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:staleRows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:tiingoIexRadarMemo.ts,candidates:(tiingoIexRadarMemo.rows||[]).slice(0,20),buyWeight:0},boats:tiingoDiscoveryMemo},version:APP_VERSION,note:'Warte auf ersten serverseitigen Cron-Batch.'};
+    return {configured:true,state:'stale',cached:true,rows:staleRows,ts:stockMemo.ts||0,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:staleRows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:tiingoIexRadarMemo.ts,candidates:(tiingoIexRadarMemo.rows||[]).slice(0,20),buyWeight:0,gate:{...radarGateStats}},boats:tiingoDiscoveryMemo},version:APP_VERSION,note:'Warte auf ersten serverseitigen Cron-Batch.'};
   }
 
   const phase=usMarketPhase(new Date(),'iex');
@@ -3332,7 +3688,7 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   const rows=[...safeCarry.values()].sort((a,b)=>(Number(b.preSignalMaturity)||0)-(Number(a.preSignalMaturity)||0)||(Number(b.situationScore)||0)-(Number(a.situationScore)||0)||(Number(b.radarRank)||0)-(Number(a.radarRank)||0)||(Number(b.score)||0)-(Number(a.score)||0)).slice(0,100);
   stockMemo={ts:Date.now(),rows,cycle,sig}; setApiState('stocks',fresh.length?'ok':'stale',fresh.length?null:'Tiingo lieferte keine analysierbaren Bars');
   await persistStockScan(env,sig,cycle,rows,{provider:'Tiingo IEX',fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol),queue:{favorites:favPick,recheck:recheckPick,gainers:gainerPick,radar:radarPick,boats:boatsPick,explore},verifiedRadar:(radar.rows||[]).slice(0,20),verifiedBoats:(boats.rows||[]).slice(0,12)});
-  return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:radar.universe||12000,universeLabel:`${radar.universe||'12.000+'} Tiingo/IEX`,scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:phase,queue:{favorites:favPick.length,recheck:recheckPick.length,gainers:gainerPick.length,radar:radarPick.length,boats:boatsPick.length,explore:explore.length},discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar.ts,universe:radar.universe,candidates:(radar.rows||[]).slice(0,20),gainers:openingGainers(radar.rows||[]),buyWeight:0},boats:{source:'Tiingo BOATS',ts:boats.ts,session:boats.session,candidates:(boats.rows||[]).slice(0,15),buyWeight:0}},version:APP_VERSION,note:'Tiingo Primary: Large-Cap Opportunity Lifecycle Radar + BOATS Discovery (beide 0 % direktes BUY-Gewicht) -> adaptive Deep-Scan-Queue -> IEX 5-Min Analyse.'};
+  return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:radar.universe||12000,universeLabel:`${radar.universe||'12.000+'} Tiingo/IEX`,scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:phase,queue:{favorites:favPick.length,recheck:recheckPick.length,gainers:gainerPick.length,radar:radarPick.length,boats:boatsPick.length,explore:explore.length},discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar.ts,universe:radar.universe,candidates:(radar.rows||[]).slice(0,20),gainers:openingGainers(radar.rows||[]),buyWeight:0,gate:{...radarGateStats}},boats:{source:'Tiingo BOATS',ts:boats.ts,session:boats.session,candidates:(boats.rows||[]).slice(0,15),buyWeight:0}},version:APP_VERSION,note:'Tiingo Primary: Large-Cap Opportunity Lifecycle Radar + BOATS Discovery (beide 0 % direktes BUY-Gewicht) -> adaptive Deep-Scan-Queue -> IEX 5-Min Analyse.'};
 }
 async function tiingoStockSuggest(env,raw){
   const query=String(raw||'').trim();
@@ -3502,6 +3858,21 @@ export default {
     if (url.pathname === '/api/experimental') {
       try { return json(await experimentalPulse(url.searchParams.get('force') === '1'), 200, { 'cache-control':'no-store' }); }
       catch (e) { return json({state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/earnings') {
+      if(request.method==='POST'){
+        try{ const body=await request.json(); const rows=await writeManualEarnings(env, body?.rows);
+          return json({state:'ok',rows,version:APP_VERSION},200,{ 'cache-control':'no-store' }); }
+        catch(e){ return json({state:'error',error:String(e.message||e),version:APP_VERSION},500,{ 'cache-control':'no-store' }); }
+      }
+      const d=await earningsCalendar(env, url.searchParams.get('force')==='1');
+      return json(d,200,{ 'cache-control':'no-store' });
+    }
+
+    if (url.pathname === '/api/sentiment') {
+      const d=await cryptoSentiment(env, url.searchParams.get('force')==='1');
+      return json(d, d.state==='error'?502:200, { 'cache-control':'no-store' });
     }
 
     if (url.pathname === '/api/crowd') {

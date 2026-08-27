@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.6.5</title>
+<title>FusionPulse 3.9.0</title>
 </head>
 <body>
 
@@ -70,6 +70,8 @@
 </nav>
 
 <!-- ═══════════════════════════════════ Fokus + Karte nebeneinander ═══ -->
+<section id="sentimentCard" class="sentiment-card" title="Krypto-Stimmungsindex (Fear &amp; Greed) von alternative.me. Misst die Marktstimmung, nicht die Qualität eines Trades — und gilt ausschließlich für Krypto, nicht für Aktien. 0 % Gewicht in Score und Kauf-Freigabe."></section>
+
 <div class="stage">
   <section id="focus" class="focus"></section>
 
@@ -198,16 +200,35 @@
   <button id="sClose" aria-label="Schließen">×</button>
   <h2>Einstellungen · <span id="settingsVer">v–</span></h2>
 
+  <h3>Handelsmodus</h3>
+  <p class="hint">Der Umschalter steuert das <b>Regelwerk</b>, nicht nur die Anzeige. Modus A bewertet dieselben Titel nach anderen Maßstäben als der Positionsmodus.</p>
+  <label title="Aus = bisheriges Verhalten, unverändert. Modus A = Momentum-Tageshandel: der Abstand zur EMA21 wird NICHT mehr bestraft (er ist hier die Eintrittskarte), Elliott wird nicht verwendet (bei einem Gap ohne Wellenhistorie misst die Kennzahl Rauschen), der Stop kommt unter das Konsolidierungstief nach dem Impuls, das Ziel ist ein Vielfaches der Tagesspanne, und ohne frischen Kurs gibt es keinen Plan. Modus B (Position, 3–6 Monate, Tagesbalken) ist noch nicht gebaut.">Handelsmodus<select id="sTradeMode">
+    <option value="off">Aus · bisheriges Verhalten</option>
+    <option value="A">Modus A · Momentum-Tageshandel</option>
+  </select></label>
+
+  <h3>Positionsgröße</h3>
+  <p class="hint">Zwei Modelle. <b>Risikobasiert</b>: du gibst das Risiko vor, die Kaufsumme ergibt sich — ein enger Stop erzeugt dann automatisch eine große Position. <b>Fester Einsatz</b>: du gibst die Kaufsumme vor, der mögliche Verlust ergibt sich und wird dir angezeigt.</p>
+  <label title="Risikobasiert = klassisches Money-Management, funktioniert gut bei vielen kleinen Trades. Fester Einsatz = du legst immer denselben Betrag an und steuerst das Risiko über die Stop-Distanz. Bei festem Einsatz wird der Mindest-Netto-Gewinn in Euro durch eine härtere Bedingung ersetzt: das Ziel muss mindestens doppelt so weit entfernt sein wie der Stop.">Modell<select id="sSizeMode">
+    <option value="risk">Risikobasiert · Risiko ist die Vorgabe</option>
+    <option value="fixed">Fester Einsatz · Kaufsumme ist die Vorgabe</option>
+  </select></label>
+  <label title="Nur im Modell 'Fester Einsatz'. Dieser Betrag wird bei JEDEM Trade eingesetzt, unabhängig davon, wie weit der Stop entfernt liegt. Der mögliche Verlust wird daraus berechnet und auf jeder Karte ausgewiesen. Frei änderbar — trag hier ein, was du tatsächlich einsetzen willst.">Einsatz je Trade (€)<input id="sFixedTrade" type="number" min="100" step="100"></label>
+  <label title="Nur im Modell 'Fester Einsatz'. Obergrenze für den Verlust am Stop inklusive aller Ausführungskosten. Setups, deren Stop so weit entfernt liegt, dass dieser Betrag überschritten würde, bekommen keine Kauf-Freigabe. 0 schaltet die Grenze ab. Diese Sperre kann ausschließlich abwerten und niemals ein BUY erzeugen.">Maximaler Verlust am Stop (€) · 0 = aus<input id="sMaxLoss" type="number" min="0" step="25"></label>
+
   <h3>Konto und Risiko</h3>
-  <label>Konto-Equity (€)<input id="sEquity" type="number" min="100" step="100"></label>
-  <label>Risiko pro Trade (%)<input id="sRisk" type="number" min="0.1" max="5" step="0.05"></label>
-  <label title="Harter Deckel: FusionPulse darf eine kleinere Kaufsumme vorschlagen, aber niemals mehr als diesen Betrag.">Max. Kaufsumme pro Trade (€)<input id="sMaxTrade" type="number" min="100" step="100"></label>
+  <p class="hint" id="sRiskModeHint">–</p>
+  <label title="Dein tatsächliches Kapital. Wird im Modell 'Fester Einsatz' NICHT mehr für die Positionsgröße verwendet, bleibt aber die Bezugsgröße für das Gesamt-Risikobudget über alle offenen Positionen weiter unten.">Konto-Equity (€)<input id="sEquity" type="number" min="100" step="100"></label>
+  <label title="Nur im Modell 'Risikobasiert' wirksam. Im Modell 'Fester Einsatz' wird der Verlust nicht vorgegeben, sondern aus Einsatz und Stop-Distanz berechnet.">Risiko pro Trade (%)<input id="sRisk" type="number" min="0.1" max="5" step="0.05"></label>
+  <label title="Harter Deckel im Modell 'Risikobasiert': FusionPulse darf eine kleinere Kaufsumme vorschlagen, aber niemals mehr als diesen Betrag. Im Modell 'Fester Einsatz' ohne Wirkung — dort gilt der Einsatz je Trade.">Max. Kaufsumme pro Trade (€)<input id="sMaxTrade" type="number" min="100" step="100"></label>
   <label>Mindest-Netto-CRV für Krypto-BUY<select id="sMinCrvCoin"><option value="1.5">1 : 1,5</option><option value="2">1 : 2</option><option value="2.5">1 : 2,5</option><option value="3">1 : 3</option><option value="3.5">1 : 3,5</option><option value="4">1 : 4</option></select></label>
   <label>Mindest-Netto-CRV für Aktien-BUY<select id="sMinCrvStock"><option value="2">1 : 2</option><option value="2.5">1 : 2,5</option><option value="3">1 : 3</option><option value="3.5">1 : 3,5</option><option value="4">1 : 4</option></select></label>
   <label title="Verhindert rechnerisch gute, aber praktisch zu kleine Trades. FusionPulse Adaptiv nimmt zusätzlich mindestens 1,25 % der tatsächlichen Positionsgröße als dynamische Untergrenze; der alte 350-€-Default wird einmalig auf 75 € migriert.">Minimaler Netto-Gewinn im Tradeplan (€)<input id="sMinNetProfit" type="number" min="0" step="25"></label>
   <label title="Mindestabstand vom Einstieg bis TP2. Zu enge Ziele sind bei manueller Flatex-Ausführung schwer handelbar.">Minimaler Kursweg bis TP2 (%)<input id="sMinTp2Pct" type="number" min="0" max="20" step="0.25"></label>
   <label>Steuersatz für Gewinnschätzung (%) · Österreich KESt = 27,5<input id="sTax" type="number" min="0" max="60" step="0.1"></label>
   <label title="Maximales Risiko über ALLE gleichzeitig offenen Positionen zusammen, in Prozent des Kapitals. Das Risiko je Trade oben begrenzt nur den einzelnen Trade — fünf gleichzeitige Trades zu je 0,75 % ergeben 3,75 % Gesamtrisiko. Standard 2,25 % entspricht drei parallelen Trades. Wird automatisch nie kleiner als das Einzeltrade-Risiko.">Gesamt-Risikobudget über alle offenen Positionen (%)<input id="sPortfolioRisk" type="number" min="0.25" max="20" step="0.25"></label>
+  <label title="Was du bei deinem Broker TATSÄCHLICH pro Order zahlst, inklusive Fremdspesen. Diese Zahl geht in jede Wirtschaftlichkeitsrechnung ein: bei drei Orders pro Trade (Kauf, Teilverkauf TP1, Rest TP2) sind das das Dreifache. Beispiele: flatex US-Direkthandel rund 11,50 €, flatex über Tradegate rund 7,90 €. Prüfe das in deinem Preis-Leistungsverzeichnis — eine zu niedrige Angabe lässt Trades lohnend erscheinen, die es nicht sind.">Ordergebühr je Order (€)<input id="sOrderFee" type="number" min="0" max="100" step="0.10"></label>
+  <label title="Reserve für Spread und Slippage je Seite, in Prozent der Kaufsumme. An der US-Heimatbörse liegt der Spread bei liquiden Titeln um 0,15 %. Über Tradegate kann er bei US-Nebenwerten im Nachrichten-Move 1 % und mehr betragen — dort ist der Handel dann trotz niedrigerer Ordergebühr deutlich teurer. Konservativ schätzen: diese Zahl schützt dich vor Trades, die nur auf dem Papier funktionieren.">Spread-/Slippage-Reserve je Seite (%)<input id="sVenueFriction" type="number" min="0" max="5" step="0.05"></label>
   <label title="Wie viele Aktien der Crowd/Search-Sensor beobachtet. Jede Abfrage kostet SerpAPI-Kontingent — beim kostenlosen Tarif stehen nur rund 100 Suchen im MONAT zur Verfügung. 6 Symbole bedeuten, dass jedes etwa alle 6 Stunden aufgefrischt werden kann und das Kontingent den Monat übersteht. Höhere Werte verbrauchen es entsprechend schneller; der Server bremst zusätzlich hart ab, wenn das Budget zur Neige geht.">Crowd/Search: Anzahl beobachteter Aktien<input id="sCrowdLimit" type="number" min="1" max="15" step="1"></label>
   <label class="row" title="Wenn eingeschaltet: sobald das Gesamt-Risikobudget für einen weiteren Trade nicht mehr reicht, wird keine neue BUY-Freigabe mehr erteilt (bestehende Positionen bleiben unberührt, ein Ausstieg wird nie blockiert). Ausgeschaltet warnt die Portfolio-Kachel nur. Diese Sperre kann ausschließlich abwerten und niemals ein BUY erzeugen."><input id="sPortfolioGuard" type="checkbox"> 🧮 Budget-Sperre: kein neues BUY bei ausgeschöpftem Gesamtrisiko</label>
 

@@ -899,3 +899,28 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .data-session.warn{color:var(--red)}
 .stock-updated.ds-old,.stock-updated.ds-warn{color:#f09a68}
 #stockFocusPlan{cursor:pointer}
+
+/* ==== v3.7.0 · Krypto-Stimmungsindex (Fear & Greed) ======================== */
+.sentiment-card{margin:8px 0;padding:.55rem .7rem;border:1px solid var(--line);border-radius:11px;background:var(--panel2)}
+.sentiment-card b{display:block;font-size:.85rem;cursor:help}
+.sentiment-card small{display:block;margin-top:.3rem;font-size:.7rem;color:var(--dim);line-height:1.5;cursor:help}
+.sentiment-card small b{display:inline;font-size:inherit;color:var(--dim2)}
+.sentiment-card.off{border-style:dashed}
+.sentiment-card.off b{color:var(--dim)}
+.sentiment-card.stale{border-style:dashed}
+.sentiment-card.extreme-fear b{color:#5b8cff}
+.sentiment-card.fear b{color:#7aa2e8}
+.sentiment-card.neutral b{color:var(--dim2)}
+.sentiment-card.greed b{color:var(--yellow)}
+.sentiment-card.extreme-greed b{color:#ef5a5a}
+.fng-bar{position:relative;height:7px;margin:.45rem 0 .2rem;border-radius:999px;cursor:help;
+  background:linear-gradient(90deg,#5b8cff 0%,#7aa2e8 24%,#8a94a6 50%,#f2c015 74%,#ef5a5a 100%);opacity:.85}
+.fng-mark{position:absolute;top:50%;width:3px;height:15px;margin-left:-1.5px;border-radius:2px;
+  background:var(--fg);transform:translateY(-50%);box-shadow:0 0 0 1.5px var(--panel2)}
+.fng-scale{display:flex;justify-content:space-between;font-size:.6rem;color:var(--dim2)}
+.fng-scale i{font-style:normal}
+
+/* v3.8.2: Terminwarnung Quartalszahlen. Reine Warnung, kann nur abwerten. */
+.earn-warn{cursor:help;font-weight:600;color:var(--yellow)}
+.earn-warn.critical{color:#f09a68;padding:.1rem .4rem;border:1px solid color-mix(in srgb,#f09a68 55%,var(--line));border-radius:.4rem}
+.earn-row{font-size:.66rem;color:var(--yellow);cursor:help}

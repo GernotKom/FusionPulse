@@ -85,8 +85,13 @@ export function loadClient(overrides = {}) {
   get crowdMap(){return crowdMap;}, set crowdMap(v){crowdMap=v;},
   get crowdHistory(){return crowdHistory;}, set crowdHistory(v){crowdHistory=v;},
   get refreshHistory(){return refreshHistory;}, set refreshHistory(v){refreshHistory=v;},
-  trackRefresh, crowdPrune, dataSession, withLocalTime, etClockToLocal, nyDeltaMinutes, localTzLabel,
+  trackRefresh, crowdPrune, earningsFor, earningsWarning,
+  get earnData(){return earnData;}, set earnData(v){earnData=v;}, fngPlainOk:true, sentimentTitle, renderSentiment, loadSentiment,
+  get fngData(){return fngData;}, set fngData(v){fngData=v;},
+  dataSession, withLocalTime, etClockToLocal, nyDeltaMinutes, localTzLabel,
   stockOrderPlan, orderPlan,
+  momentumOverlayRow, momentumModeOn, applyTradeModeView, sizeModeFixed, fixedTradeEur,
+  MOMENTUM_VIEW_FIELDS, MIN_REWARD_RISK_FIXED,
   get focusStock(){return focusStock;}, set focusStock(v){focusStock=v;}
 };`;
   const src = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');

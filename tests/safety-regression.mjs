@@ -154,10 +154,46 @@ assert.match(workerText,/signal: AbortSignal\.timeout\(20_000\)/,'Provider fetch
 // v3.4.1 P0 runtime regression guard
 assert.match(workerText,/const priceSource = Number\(snap\.minuteBar\?\.c\|\|0\)>0 \? 'minute'/,'Alpaca momentum must define priceSource before returning it');
 assert.match(app,/Tages-Bar\/Fallback/,'Daily Alpaca fallback must be visibly labelled and must not look live');
-// v3.4.2 Large-cap-only automatic stock discovery
-assert.match(workerText,/const LARGE_CAP_RADAR_SYMBOLS = new Set/,'Automatic stock discovery must use an explicit large-cap allowlist');
-assert.match(workerText,/\.filter\(r=>largeCapRadarAllowed\(r\.symbol\)\)/,'Whole-market radar must exclude non-large-cap symbols before ranking/display');
-assert.match(workerText,/x=>x\?\.m\?\.tradableStock && largeCapRadarAllowed\(x\?\.r\?\.symbol\)/,'Verified radar candidates must still pass the large-cap gate');
+/* v3.4.2 → v3.8.0: BEWUSSTE AENDERUNG einer Sicherheitsregel. Bitte lesen,
+   bevor jemand sie wieder zurueckdreht.
+
+   Die urspruengliche Absicht stand im Code-Kommentar: „The goal is practical
+   broker tradability rather than maximum candidate count." Absicht war also
+   HANDELBARKEIT — die Namensliste war nur das Mittel dazu.
+
+   Das Mittel hatte einen Nebeneffekt, der erst im Betrieb auffiel: aus rund
+   12.000 gescannten Titeln kamen 48 durch, alle Mega-Caps. Ein Nachrichten-
+   Mover konnte den Radar nie erreichen. Fuer den Anwendungsfall des Nutzers
+   (starke Tagesbewegungen finden) suchte die App per Konstruktion daran vorbei.
+
+   Die Absicht bleibt, das Mittel wird MESSBAR: Mindestkurs, Mindest-Dollar-
+   umsatz, maximaler Spread, Mindestbewegung. Das prueft Handelbarkeit direkt,
+   statt sie ueber Bekanntheit zu schaetzen — und es veraltet nicht.
+   Die Large-Cap-Liste bleibt als zusaetzlicher Einlasspfad bestehen.        */
+assert.match(workerText,/const LARGE_CAP_RADAR_SYMBOLS = new Set/,'Die kuratierte Large-Cap-Liste muss als Einlasspfad erhalten bleiben');
+assert.match(workerText,/\.filter\(r=>radarCandidateAllowed\(r,true\)\)/,'Der Whole-Market-Radar muss vor Ranking/Anzeige gefiltert werden — mit Zaehlung, damit eine leere Liste erklaerbar bleibt');
+assert.match(workerText,/x=>x\?\.m\?\.tradableStock && radarCandidateAllowed\(x\?\.r\)/,'Verifizierte Kandidaten muessen das Handelbarkeitsgitter passieren');
+assert.match(workerText,/if\(largeCapRadarAllowed\(r\?\.symbol\)\)\{ if\(count\)radarGateStats\.largeCap\+\+; return true; \}/,
+  'Einlasspfad 1: kuratierte Large-Cap-Liste');
+assert.match(workerText,/const ok=momentumRadarAllowed\(r,count\);/,'Einlasspfad 2: messbares Momentum-Gitter');
+assert.doesNotMatch(workerText,/return true;\s*\}\s*function radarCandidateAllowed/,'Kein dritter, ungeprueffter Einlassweg');
+// Das Gitter muss fail-closed sein: fehlende Werte duerfen NICHT durchlassen.
+assert.match(workerText,/if\(!\(price>=MOM_MIN_PRICE_USD\)\)\{ if\(count\)radarGateStats\.failPrice\+\+; return false; \}/,'Ohne bekannten Kurs kein Einlass');
+assert.match(workerText,/if\(!\(vol>0\) \|\| !\(price\*vol>=MOM_MIN_DOLLARVOL\)\)\{ if\(count\)radarGateStats\.failVolume\+\+; return false; \}/,'Ohne bekannten Dollarumsatz kein Einlass');
+// Und die Schwellen muessen nennenswert bleiben, sonst ist das Gitter Dekoration.
+{
+  const num=(k)=>Number((new RegExp(k+"\\s*=\\s*([0-9_\\.]+)").exec(workerText)||[])[1]?.replace(/_/g,''));
+  assert.ok(num('MOM_MIN_PRICE_USD')>=5,'Mindestkurs muss Penny Stocks ausschliessen');
+  /* v3.8.1 KALIBRIERUNG: Die Schwelle bezieht sich auf den IEX-ANTEIL des
+     Umsatzes, nicht auf den Gesamtmarkt — IEX hat nur 2–3 % des US-Volumens.
+     Der erste Entwurf (20 Mio. $) haette deshalb praktisch alles ausgesperrt.
+     Untergrenze bleibt trotzdem nennenswert, damit das Gitter kein Feigenblatt
+     wird; die Handelbarkeit sichern Kurs- und Spread-Kriterium zusaetzlich. */
+  assert.ok(num('MOM_MIN_DOLLARVOL')>=1_000_000,'Mindest-Dollarumsatz muss echte Liquiditaet verlangen');
+  assert.ok(num('MOM_MIN_DOLLARVOL')<=10_000_000,'Die Schwelle darf nicht am Gesamtmarkt kalibriert sein — IEX liefert nur einen Bruchteil');
+  assert.ok(num('MOM_MAX_SPREAD_PCT')<=1.0,'Der zugelassene Spread muss eng genug bleiben, um den Ertrag nicht zu fressen');
+  assert.ok(num('MOM_MIN_MOVE_PCT')>=2,'Ein Mover muss sich nennenswert bewegt haben');
+}
 assert.match(workerText,/const OPENING_UNIVERSE = \[\.\.\.LARGE_CAP_RADAR_SYMBOLS\]/,'Opening Momentum base universe must be large-cap only');
 
 // v3.4.3 Situation Engine / freshness / visible methods guards
@@ -389,6 +425,11 @@ console.log('✓ FusionPulse v3.5.7 mute/rehabilitation regressions: OK');
 
   C.S.claudeMode = true;
   C.mutedSetupSet = new Set();
+  /* v3.8.0: Die Handelskosten sind seither einstellbar. Diese Fixture bildet
+     einen ECHTEN Screenshot vom 26.8. nach und muss deshalb die damals
+     geltenden Annahmen festnageln (10,75 € je Order, 0,06 % Reibung) —
+     sonst verschiebt eine spaetere Einstellungsaenderung den Regressionstest. */
+  C.S.orderFeeEur = 10.75; C.S.venueFrictionPct = 0.06;
   live();
 
   // -- 1) Der reproduzierte SOFI-Fall (Screenshots 26.8., v3.5.6).
@@ -481,6 +522,7 @@ console.log('✓ FusionPulse v3.5.8 headline/economic-consistency regressions: O
   const C = loadClient();
   C.S.equity = 5000; C.S.riskPct = 0.75; C.S.portfolioRiskPct = 2.25; C.S.portfolioGuard = false;
   C.S.claudeMode = true; C.mutedSetupSet = new Set();
+  C.S.orderFeeEur = 10.75; C.S.venueFrictionPct = 0.06;   // Kostenannahmen festnageln (v3.8.0)
 
   const rows = [
     { symbol:'AAA', sector:'Technologie', entryEur:25.00, stopEur:24.90, tp1Eur:26.00, tp2Eur:27.50, priceEur:25.00 },
@@ -971,3 +1013,434 @@ console.log('✓ FusionPulse v3.6.4 session/timezone/plan/trail regressions: OK'
 }
 
 console.log('✓ FusionPulse v3.6.5 serpapi-budget/crowd-cache regressions: OK');
+
+// ---------------------------------------------------------------------------
+// v3.7.0 · P3: Krypto-Sentiment (Fear & Greed, alternative.me).
+// Wichtig ist hier weniger die Anzeige als die Abgrenzung: der Index darf
+// NICHTS bewerten, gilt nur fuer Krypto, und ist etwas anderes als das
+// Risk-On/Off-Badge (das ist Marktbreite).
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url),'utf8');
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url),'utf8');
+
+  // -- Quelle und Route.
+  assert.match(w, /api\.alternative\.me\/fng\//, 'Der Index muss von alternative.me kommen');
+  assert.match(w, /url\.pathname === '\/api\/sentiment'/, 'Es braucht eine eigene Route');
+  assert.match(w, /async function cryptoSentiment\(env, force=false\)/, 'Es braucht eine Sentiment-Funktion');
+  // Kein Schluessel noetig — das ist der Grund, warum das sofort geht.
+  const fngBody = w.slice(w.indexOf('async function cryptoSentiment'), w.indexOf('function moonPhase(){'));
+  assert.ok(fngBody.length > 500 && fngBody.length < 6000, 'Der Funktionsausschnitt muss plausibel begrenzt sein');
+  assert.doesNotMatch(fngBody, /api_key|API_KEY|SENTIMENT_KEY/,
+    'Der Index darf keinen Zugangsschluessel brauchen — genau deshalb ist er sofort nutzbar');
+
+  // -- Fail-closed: bei Ausfall wird nichts erfunden.
+  assert.match(w, /kein Ersatzwert erfunden/, 'Bei Ausfall darf kein Wert erfunden werden');
+  assert.match(w, /state:'stale', stale:true/, 'Ein alter Wert muss als alt gekennzeichnet werden');
+  assert.match(w, /if\(!Number\.isFinite\(value\)\) throw new Error\('kein Zahlenwert'\)/, 'Unbrauchbare Antworten muessen abgewiesen werden');
+
+  // -- Die Abgrenzung muss ueberall dranstehen.
+  assert.match(w, /0 % Gewicht in Score und Kauf-Freigabe/, 'Der Worker muss die Nullgewichtung dokumentieren');
+  assert.match(w, /Gilt NICHT fuer Aktien/, 'Die Krypto-Beschraenkung muss benannt sein');
+  assert.match(app, /Kontext, kein Signal — 0 % Gewicht in der Kauf-Freigabe/, 'Die Kachel muss die Nullgewichtung sichtbar tragen');
+  assert.match(app, /Er gilt ausschließlich für Krypto — für Aktien sagt er nichts/, 'Der Tooltip muss die Krypto-Beschraenkung nennen');
+
+  // -- Der Wert darf NIRGENDS in eine Bewertung einfliessen (Invariante 3).
+  /* Manche Bewertungsfunktionen sind als `const x = (r) => {`, andere als
+     `function x(r){` geschrieben — beide Formen muessen gefunden werden,
+     sonst prueft die Schleife stillschweigend gar nichts. */
+  for (const fn of ['stockHeadline','coinHeadline','stockLevel','stockOpportunity','stockTradeability','stockStrength']) {
+    const i = [app.indexOf(`function ${fn}(`), app.indexOf(`const ${fn} = (`), app.indexOf(`const ${fn}=(`)]
+      .filter(x => x >= 0).sort((a,b)=>a-b)[0];
+    assert.ok(i !== undefined && i >= 0, `${fn} muss auffindbar sein`);
+    const body = app.slice(i, i + 3000);
+    assert.doesNotMatch(body, /fngData|fearGreed|sentiment/i, `${fn} darf den Stimmungsindex nicht auswerten (Invariante 3)`);
+  }
+
+  // -- Anzeige: Werte werden korrekt eingeordnet, Extremwerte nicht als Signal verkauft.
+  C.fngData = { state:'ok', value:12, tone:'extreme-fear', de:'Extreme Angst', meaning:'Test',
+    change1d:-4, change7d:-11, ts:Date.now()-3*3600_000, source:'alternative.me' };
+  const t = C.sentimentTitle(C.fngData);
+  assert.match(t, /12\/100/, 'Der Zahlenwert muss im Tooltip stehen');
+  assert.match(t, /Keine Prognose/, 'Es muss dastehen, dass es keine Prognose ist');
+  assert.match(t, /einmal täglich aktualisiert/, 'Die Aktualisierungsfrequenz muss dastehen');
+  C.fngData = { state:'error', error:'timeout' };
+  assert.match(C.sentimentTitle(C.fngData), /kein Ersatzwert erfunden/, 'Auch im Fehlerfall bleibt die Regel sichtbar');
+  assert.match(html, /id="sentimentCard"/, 'Die Kachel muss im Markup existieren');
+
+  // -- Risk-On/Off ist NICHT Sentiment und muss das jetzt sagen.
+  assert.match(app, /Marktregime = MARKTBREITE, nicht Stimmung/, 'Das Regime-Badge muss sich vom Sentiment abgrenzen');
+  assert.match(app, /was Kurse TUN — nicht, was Marktteilnehmer FÜHLEN/, 'Der Unterschied muss im Klartext dastehen');
+  assert.match(C.GLOSS.breadth, /kein Sentiment/, 'Das Glossar muss Marktbreite vom Sentiment abgrenzen');
+  assert.match(C.GLOSS.fearGreed, /ausschließlich für Krypto/, 'Das Glossar muss die Krypto-Beschraenkung nennen');
+  assert.match(C.GLOSS.contrarian, /KEINE Handelsregel|fallende Messer/, 'Antizyklisches Denken muss vor Fehldeutung warnen');
+  const grouped = new Set(C.GLOSS_GROUPS.flatMap(g=>g.keys));
+  for (const k of ['fearGreed','contrarian','breadth']) assert.ok(grouped.has(k), `"${k}" fehlt im sichtbaren Glossar`);
+}
+
+console.log('✓ FusionPulse v3.7.0 crypto-sentiment regressions: OK');
+
+// ---------------------------------------------------------------------------
+// v3.8.0 · Handelskosten als Einstellung + Momentum-Kandidatengitter.
+// Anlass: Der Nutzer nutzt die App als SUCHWERKZEUG (Kandidaten finden, dann
+// bei flatex und Google Finance selbst pruefen) und handelt US-Titel direkt
+// fuer rund 11–12 € je Order. Die fest verdrahtete 10,75-€-Konstante ging in
+// jede Wirtschaftlichkeitsschwelle ein — eine falsche Zahl an dieser Stelle
+// verzerrt alles darueber.
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url),'utf8');
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url),'utf8');
+
+  // -- Die Kosten duerfen nirgends mehr fest verdrahtet sein.
+  assert.doesNotMatch(app, /STOCK_ORDER_FIXED_EUR\s*\*/, 'Die Ordergebuehr darf nicht mehr als Konstante gerechnet werden');
+  assert.doesNotMatch(app, /STOCK_EXECUTION_FRICTION_PCT\s*\//, 'Die Reibung darf nicht mehr als Konstante gerechnet werden');
+  assert.match(html, /id="sOrderFee"/, 'Die Ordergebuehr muss einstellbar sein');
+  assert.match(html, /id="sVenueFriction"/, 'Die Spread-Reserve muss einstellbar sein');
+  assert.match(html, /Preis-Leistungsverzeichnis/, 'Die Einstellung muss zur Pruefung beim eigenen Broker auffordern');
+
+  // -- Die Einstellung muss tatsaechlich durchschlagen, nicht nur existieren.
+  C.stockMeta = { ts:Date.now(), refreshedSymbols:['CST'], market:{key:'regular'} };
+  const row = { symbol:'CST', name:'Cost Test', sector:'Tech', light:'green', score:8.3,
+    verdict:'Kauf-Setup · Claude', claude:{light:'green',score:8.3,verdict:'Kauf-Setup · Claude',expectancyR:0.3,blockers:[]},
+    entryEur:25.00, stopEur:24.90, tp1Eur:26.00, tp2Eur:27.50, priceEur:25.00,
+    entryUsd:29.25, stopUsd:29.13, tp1Usd:30.42, tp2Usd:32.18, priceUsd:29.25,
+    netCRV:3.2, tp2Pct:10, setup:'Pullback', situationType:'PULLBACK',
+    updated:new Date().toISOString().slice(0,19).replace('T',' '), marketPhase:'regular' };
+  C.S.equity=5000; C.S.riskPct=0.75; C.S.claudeMode=true; C.mutedSetupSet=new Set();
+  C.S.orderFeeEur = 5.00;  C.S.venueFrictionPct = 0.05;
+  const cheap = C.stockSizing(row).planNet;
+  C.S.orderFeeEur = 20.00; C.S.venueFrictionPct = 0.50;
+  const dear  = C.stockSizing(row).planNet;
+  assert.ok(cheap > dear, `Hoehere Kosten muessen den Netto-Ertrag senken (${cheap.toFixed(0)} vs ${dear.toFixed(0)})`);
+  assert.ok(cheap - dear > 40, 'Der Unterschied muss spuerbar durchschlagen, nicht nur kosmetisch sein');
+  // Fehlende/unsinnige Angabe faellt auf den konservativen Standard zurueck.
+  C.S.orderFeeEur = undefined; C.S.venueFrictionPct = undefined;
+  assert.ok(Number.isFinite(C.stockSizing(row).planNet), 'Ohne Einstellung muss der Rueckfallwert greifen');
+  C.S.orderFeeEur = C.DEFAULTS.orderFeeEur; C.S.venueFrictionPct = C.DEFAULTS.venueFrictionPct;
+  assert.ok(C.DEFAULTS.orderFeeEur >= 10, 'Der Standard muss die realen US-Direkthandelskosten abbilden, nicht den guenstigsten Fall');
+
+  // -- Das Momentum-Gitter: messbar, fail-closed, und es laesst echte Mover durch.
+  const grid = w.slice(w.indexOf('function momentumRadarAllowed(r,count=false){'), w.indexOf('function radarCandidateAllowed'));
+  assert.ok(grid.length > 200 && grid.length < 3000, 'Der Gitter-Ausschnitt muss plausibel begrenzt sein');
+  assert.ok(grid.includes('MOM_MIN_PRICE_USD') && grid.includes('MOM_MIN_DOLLARVOL')
+    && grid.includes('MOM_MAX_SPREAD_PCT') && grid.includes('MOM_MIN_MOVE_PCT'),
+    'Das Gitter muss alle vier messbaren Kriterien pruefen');
+  // Nachbau der Gitterlogik gegen konkrete Faelle — so faellt der Test auf,
+  // wenn jemand eine Schwelle aufweicht, ohne es zu merken.
+  const th = (k)=>Number((new RegExp(k+"\\s*=\\s*([0-9_\\.]+)").exec(w)||[])[1]?.replace(/_/g,''));
+  const pass = (r)=> r.last>=th('MOM_MIN_PRICE_USD') && r.volume>0
+    && r.last*r.volume>=th('MOM_MIN_DOLLARVOL')
+    && !(Number.isFinite(r.spreadPct) && r.spreadPct>th('MOM_MAX_SPREAD_PCT'))
+    && Math.abs(r.movePct)>=th('MOM_MIN_MOVE_PCT');
+  // Ein echter Nachrichten-Mover wie MRNA muss durchkommen — das war der Anlass.
+  assert.equal(pass({last:42, volume:900_000, spreadPct:0.08, movePct:14.2}), true,
+    'Ein liquider Nachrichten-Mover muss den Radar erreichen koennen');
+  // Und die Ausschlussfaelle muessen greifen.
+  assert.equal(pass({last:2.10, volume:50_000_000, spreadPct:0.1, movePct:30}), false, 'Penny Stocks bleiben draussen');
+  assert.equal(pass({last:60, volume:8_000, spreadPct:0.1, movePct:12}), false, 'Zu duenner Umsatz bleibt draussen');
+  assert.equal(pass({last:60, volume:500_000, spreadPct:2.5, movePct:12}), false, 'Zu breiter Spread bleibt draussen');
+  assert.equal(pass({last:60, volume:500_000, spreadPct:0.1, movePct:0.4}), false, 'Ruhige Titel sind keine Mover');
+  assert.equal(pass({last:NaN, volume:500_000, spreadPct:0.1, movePct:12}), false, 'Ohne Kurs: fail-closed');
+  assert.equal(pass({last:60, volume:NaN, spreadPct:0.1, movePct:12}), false, 'Ohne Umsatz: fail-closed');
+
+  // -- Eine leere Liste muss erklaerbar sein, sonst sieht sie aus wie ein Defekt.
+  assert.match(w, /let radarGateStats=/, 'Das Einlassgitter muss zaehlen, woran Kandidaten scheitern');
+  assert.match(w, /gate:\{\.\.\.radarGateStats\}/, 'Die Zaehler muessen an die Oberflaeche durchgereicht werden');
+  assert.match(app, /class="gate-stats"/, 'Die Zaehler muessen sichtbar sein, nicht nur im JSON');
+  assert.match(app, /ist die Schwelle zu streng/, 'Der Tooltip muss sagen, wie eine leere Liste zu deuten ist');
+}
+
+console.log('✓ FusionPulse v3.8.0 cost-model/momentum-grid regressions: OK');
+
+// ---------------------------------------------------------------------------
+// v3.8.2 · P6 Teil 1: Terminwarnung Quartalszahlen.
+// ANLASS: Am 26.8. hat die App VEEV analysiert und bewertet, ohne zu erwaehnen,
+// dass an diesem Abend Zahlen kamen. Das Urteil ueber den Intraday-Plan war
+// richtig — aber eine Information fehlte, die eine andere Frage sichtbar
+// gemacht haette. Diese Suite stellt sicher, dass die Warnung existiert UND
+// dass sie eine Warnung bleibt statt zu einem Signal zu werden.
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url),'utf8');
+  C.S.equity=5000; C.S.riskPct=0.75; C.S.claudeMode=true; C.mutedSetupSet=new Set();
+  C.S.orderFeeEur=11.5; C.S.venueFrictionPct=0.15;
+  C.stockMeta={ts:Date.now(),refreshedSymbols:['EVT'],market:{key:'regular'}};
+
+  const nyToday = new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York'}).format(new Date());
+  const plusDays = (n) => new Date(Date.parse(nyToday+'T12:00:00Z')+n*86_400_000).toISOString().slice(0,10);
+
+  const row = { symbol:'EVT', name:'Event Inc.', sector:'Tech', light:'green', score:8.4,
+    verdict:'Kauf-Setup · Claude', claude:{light:'green',score:8.4,verdict:'Kauf-Setup · Claude',expectancyR:0.4,blockers:[]},
+    entryEur:25.00, stopEur:24.90, tp1Eur:26.00, tp2Eur:27.50, priceEur:25.00,
+    entryUsd:29.25, stopUsd:29.13, tp1Usd:30.42, tp2Usd:32.18, priceUsd:29.25,
+    netCRV:3.2, tp2Pct:10, setup:'Pullback', situationType:'PULLBACK',
+    updated:new Date().toISOString().slice(0,19).replace('T',' '), marketPhase:'regular' };
+
+  // Ohne Termin: unveraendertes Verhalten. Die Warnung darf nichts kaputtmachen.
+  C.earnData = { state:'ok', auto:[], manual:[] };
+  assert.equal(C.earningsWarning('EVT'), null, 'Ohne Termin darf keine Warnung erscheinen');
+  assert.equal(C.stockHeadline(row).text, 'BUY', 'Ohne Termin bleibt ein echter BUY unveraendert');
+
+  // Der VEEV-Fall: Zahlen heute nach Boersenschluss.
+  C.earnData = { state:'ok', auto:[{symbol:'EVT', date:plusDays(0), time:'amc'}], manual:[] };
+  const wArn = C.earningsWarning('EVT');
+  assert.ok(wArn, 'Ein Termin heute muss eine Warnung erzeugen');
+  assert.equal(wArn.critical, true, 'Zahlen heute sind kritisch');
+  assert.match(wArn.when, /heute nach Börsenschluss/, 'Der Zeitpunkt muss im Klartext dastehen');
+  const hl = C.stockHeadline(row);
+  assert.equal(hl.kind, 'event', 'Die Kopfzeile muss den Termin als Grund fuehren');
+  assert.notEqual(hl.light, 'green', 'Vor Zahlen darf die Kopf-Ampel nicht gruen bleiben');
+  assert.doesNotMatch(hl.text, /^BUY/, 'Vor Zahlen darf kein BUY stehen');
+  assert.match(hl.title, /ANDERE Entscheidung/, 'Der Unterschied zwischen Setup und Halten ueber die Zahlen muss benannt sein');
+  assert.match(hl.title, /kein Signal/, 'Es muss dastehen, dass die Warnung kein Signal ist');
+  assert.match(hl.title, /in beide Richtungen/, 'Die Warnung darf keine Richtung suggerieren');
+
+  // Fail-closed: die Warnung darf NIE aufwerten.
+  for (const lt of ['red','yellow']) {
+    const h = C.stockHeadline({ ...row, light:lt, verdict:'Test · Claude' });
+    assert.ok(C.HEADLINE_RANK[h.light] <= C.HEADLINE_RANK[lt], `Die Terminwarnung darf ${lt} nicht aufwerten`);
+  }
+
+  // Zeitfenster: weit entfernte oder vergangene Termine warnen nicht kritisch.
+  C.earnData = { state:'ok', auto:[{symbol:'EVT', date:plusDays(6), time:'amc'}], manual:[] };
+  assert.equal(C.earningsWarning('EVT').critical, false, 'Ein Termin in sechs Tagen ist nicht kritisch');
+  assert.equal(C.stockHeadline(row).text, 'BUY', 'Ein ferner Termin darf die Freigabe nicht blockieren');
+  C.earnData = { state:'ok', auto:[{symbol:'EVT', date:plusDays(-1), time:'amc'}], manual:[] };
+  assert.equal(C.earningsWarning('EVT'), null, 'Vergangene Termine duerfen nicht mehr warnen');
+  C.earnData = { state:'ok', auto:[{symbol:'EVT', date:plusDays(30), time:'amc'}], manual:[] };
+  assert.equal(C.earningsWarning('EVT'), null, 'Termine weit in der Zukunft sind keine Warnung fuer heute');
+
+  // Manuell eingetragene Termine haben Vorrang und funktionieren ohne Fremddienst.
+  C.earnData = { state:'unavailable', error:'plan', auto:[], manual:[{symbol:'EVT', date:plusDays(0), time:'amc'}] };
+  const man = C.earningsWarning('EVT');
+  assert.ok(man && man.critical, 'Manuelle Termine muessen auch ohne automatischen Kalender wirken');
+  assert.match(man.detail, /manuell eingetragen/, 'Die Quelle muss benannt sein');
+  C.earnData = { state:'ok', auto:[{symbol:'EVT', date:plusDays(5), time:'amc'}], manual:[{symbol:'EVT', date:plusDays(0), time:'amc'}] };
+  assert.equal(C.earningsWarning('EVT').days, 0, 'Der manuelle Termin muss den automatischen ueberschreiben');
+
+  // Ein veralteter Kalenderstand muss als solcher erkennbar sein.
+  C.earnData = { state:'stale', auto:[{symbol:'EVT', date:plusDays(0), time:'amc'}], manual:[] };
+  assert.match(C.earningsWarning('EVT').detail, /veraltet/, 'Ein alter Kalenderstand muss gekennzeichnet werden');
+
+  // -- Worker: ehrlicher Umgang mit einem moeglicherweise gesperrten Endpunkt.
+  assert.match(w, /url\.pathname === '\/api\/earnings'/, 'Es braucht eine Termin-Route');
+  assert.match(w, /Basic-Tarif nicht enthalten/, 'Ein gesperrter Endpunkt muss als solcher benannt werden, statt stumm leer zu bleiben');
+  assert.match(w, /async function writeManualEarnings/, 'Manuelle Termine muessen speicherbar sein');
+  assert.match(w, /state:auto\.length\?'stale':'unavailable'/, 'Ein Ausfall muss vom Zwischenspeicher unterschieden werden');
+  // Der Parser darf nichts hineininterpretieren.
+  assert.match(w, /if\(!\/\^\\d\{4\}-\\d\{2\}-\\d\{2\}\$\/\.test\(d\)\) return;/, 'Nur echte Datumsangaben duerfen uebernommen werden');
+  // Und aus der Warnung darf kein Score werden (Invariante 3).
+  for (const fn of ['stockLevel','stockOpportunity','stockTradeability','stockStrength']) {
+    const i = [app.indexOf(`function ${fn}(`), app.indexOf(`const ${fn} = (`)].filter(x=>x>=0).sort((a,b)=>a-b)[0];
+    assert.doesNotMatch(app.slice(i, i+3000), /earnData|earningsFor|earningsWarning/,
+      `${fn} darf den Terminkalender nicht auswerten — die Warnung ist Anzeige, kein Gate`);
+  }
+}
+
+console.log('✓ FusionPulse v3.8.2 earnings-event-warning regressions: OK');
+
+// ===========================================================================
+// v3.9.0 · Fixbetrags-Sizing + Modus A (Momentum)
+// Eigene Fixtures, bewusst NICHT aus den Suiten oben nachgenutzt. Zu jedem
+// Funktionsnachweis gehoert hier eine Negativkontrolle: die Bedingung wird
+// kuenstlich verletzt, und der Test MUSS dann kippen. Ein Test, der den Fehler
+// nicht sehen kann, ist kein Nachweis (Lehre aus dem tautologischen Test v3.6.4).
+// ===========================================================================
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const S = C.S;
+
+  // --- Fixture: Einstieg 100 EUR, Stop 98 EUR (2 % entfernt), TP2 104 EUR (4 % = 2x Stop).
+  //     Bewusst runde Zahlen, damit jede Abweichung von Hand nachrechenbar ist.
+  const mk = (over={}) => ({
+    symbol:'TSTA', entryUsd:100, entryEur:100, stopUsd:98, stopEur:98,
+    tp1Usd:102, tp1Eur:102, tp2Usd:104, tp2Eur:104, tp2Pct:4, netCRV:3.0,
+    light:'green', score:8, verdict:'x', tp2Source:'y', blockers:[], ...over,
+  });
+
+  // ---------------------------------------------------------------- Sizing
+  S.sizeMode='risk'; S.equity=5000; S.riskPct=0.75; S.maxTradeEur=10000;
+  const szRisk = C.stockSizing(mk());
+  // 37,50 EUR Risiko / 2 EUR je Stueck = 18,75 Stueck = 1.875 EUR Kaufsumme.
+  assert.ok(Math.abs(szRisk.notional-1875)<0.01, `Risikomodus: 1.875 EUR erwartet, war ${szRisk.notional}`);
+  assert.equal(szRisk.sizeBasis,'risk','Der Modus muss im Ergebnis benannt sein');
+
+  // Der Deckel muss im Risikomodus greifen: bei 0,1 % Stopabstand waeren es 37.500 EUR.
+  const szTight = C.stockSizing(mk({stopEur:99.9, stopUsd:99.9}));
+  assert.ok(Math.abs(szTight.notional-10000)<0.01,
+    `Enger Stop muss auf maxTradeEur gedeckelt werden, war ${szTight.notional}`);
+
+  S.sizeMode='fixed'; S.fixedTradeEur=10000;
+  const szFix = C.stockSizing(mk());
+  assert.ok(Math.abs(szFix.notional-10000)<0.01, `Fixmodus: 10.000 EUR erwartet, war ${szFix.notional}`);
+  assert.equal(szFix.sizeBasis,'fixed','Der Fixmodus muss im Ergebnis benannt sein');
+  // NEGATIVKONTROLLE: der Deckel maxTradeEur darf im Fixmodus NICHT mehr wirken.
+  S.maxTradeEur=500;
+  assert.ok(Math.abs(C.stockSizing(mk()).notional-10000)<0.01,
+    'Im Fixmodus darf maxTradeEur die Kaufsumme nicht mehr beschneiden');
+  S.maxTradeEur=10000;
+
+  // Das Risiko ist im Fixmodus das ERGEBNIS: 2 % von 10.000 = 200 EUR Kursverlust.
+  assert.ok(Math.abs(szFix.risk-200)<0.01, `Kursverlust 200 EUR erwartet, war ${szFix.risk}`);
+  // Plus Kosten: 2 Orders a 11,50 + 0,15 % von 10.000 = 23 + 15 = 38 EUR -> 238 EUR.
+  S.orderFeeEur=11.50; S.venueFrictionPct=0.15;
+  const szCost = C.stockSizing(mk());
+  assert.ok(Math.abs(szCost.stopLossAfterCosts-238)<0.5,
+    `Worst Case 238 EUR erwartet, war ${szCost.stopLossAfterCosts}`);
+  assert.ok(Math.abs(szCost.stopDistancePct-2)<0.01,'Stop-Distanz muss 2 % sein');
+  assert.ok(Math.abs(szCost.rewardRiskRaw-2)<0.01,'Ziel:Stop muss 2,0x sein');
+
+  // Liquiditaetsdeckel muss auch im Fixmodus greifen (fail-closed).
+  const szLiq = C.stockSizing(mk({buyCapacityEur:3000}));
+  assert.ok(Math.abs(szLiq.notional-3000)<0.01,'Marktliquiditaet muss den festen Einsatz begrenzen');
+  assert.equal(szLiq.liquidityCapped,true,'Die Kuerzung muss ausgewiesen werden');
+
+  // ------------------------------------------------- Gate: Ziel : Stop >= 2x
+  C.stockMeta = { market:{key:'regular'} };
+  S.claudeMode=false; S.minTp2PctStock=2.0; S.minCrvStock=3.0; S.maxLossEur=0; S.taxPct=27.5;
+  const trOk = C.stockTradeability(mk());
+  assert.equal(trOk.fixedSize,true,'Der Fixmodus muss im Gate sichtbar sein');
+  assert.ok(Math.abs(trOk.rewardRisk-2)<0.01,'Ziel:Stop 2,0x erwartet');
+  assert.equal(trOk.rewardRiskOk,true,'Genau 2,0x muss die Schwelle erfuellen');
+
+  // NEGATIVKONTROLLE: Ziel auf +3 % (= 1,5x Stop) -> Freigabe MUSS entfallen.
+  const trBad = C.stockTradeability(mk({tp2Eur:103, tp2Usd:103, tp2Pct:3}));
+  assert.equal(trBad.rewardRiskOk,false,'1,5x darf die Schwelle NICHT erfuellen');
+  assert.equal(trBad.ok,false,'Ein Setup unter 2,0x darf im Fixmodus keine Freigabe bekommen');
+  // Gegenprobe, dass wirklich DIESE Bedingung kippt und nicht eine andere:
+  assert.equal(trBad.marketOk,true,'Die Marktphase war nicht der Grund');
+  assert.ok(trBad.netCrv>=trBad.minCrv,'Das CRV war nicht der Grund');
+
+  // Der Mindest-Eurogewinn darf im Fixmodus NICHT mehr als Huerde wirken —
+  // er misst dort nur noch die Zielweite ein zweites Mal.
+  S.minNetProfitStock=99999;
+  assert.equal(C.stockTradeability(mk()).ok,true,
+    'Im Fixmodus darf der Mindest-Eurogewinn nicht mehr blockieren');
+  // NEGATIVKONTROLLE: im Risikomodus MUSS er weiter blockieren.
+  S.sizeMode='risk';
+  assert.equal(C.stockTradeability(mk()).ok,false,
+    'Im Risikomodus muss der Mindest-Eurogewinn weiterhin scharf sein');
+  S.sizeMode='fixed'; S.minNetProfitStock=30;
+
+  // ------------------------------------------------- Gate: maximaler Verlust
+  S.maxLossEur=400;
+  assert.equal(C.stockTradeability(mk()).lossOk,true,'238 EUR liegen unter der 400-EUR-Grenze');
+  // Stop auf 94 EUR = 6 % -> 600 EUR Kursverlust + Kosten -> ueber der Grenze.
+  const trLoss = C.stockTradeability(mk({stopEur:94, stopUsd:94, tp2Eur:112, tp2Usd:112, tp2Pct:12}));
+  assert.equal(trLoss.lossOk,false,'Ein Verlust ueber der Grenze muss die Freigabe entziehen');
+  assert.equal(trLoss.ok,false,'Die Verlustgrenze muss auf das Gesamturteil durchschlagen');
+  // Und sie darf ausschliesslich ABWERTEN: abgeschaltet ist dasselbe Setup wieder frei.
+  S.maxLossEur=0;
+  assert.equal(C.stockTradeability(mk({stopEur:94, stopUsd:94, tp2Eur:112, tp2Usd:112, tp2Pct:12})).ok,true,
+    'Ohne Grenze darf dasselbe Setup nicht blockiert sein — die Sperre darf nur abwerten');
+  S.maxLossEur=400;
+
+  // --------------------------------------------------------- Modus-A-Overlay
+  S.tradeMode='off';
+  const row = mk({ momentum:{ light:'green', score:9.1, verdict:'Kauf-Setup · Momentum',
+    entryUsd:200, entryEur:200, stopUsd:190, stopEur:190, tp1Usd:220, tp1Eur:220,
+    tp2Usd:240, tp2Eur:240, tp2Pct:20, tp2Source:'Tagesspanne x 1,0', blockers:[] } });
+  C.momentumOverlayRow(row);
+  assert.equal(row.entryEur,100,'Bei ausgeschaltetem Modus A darf nichts ueberschrieben werden');
+  assert.equal(row.momentumActive,false,'Der Zustand muss ausgewiesen sein');
+
+  S.tradeMode='A';
+  C.momentumOverlayRow(row);
+  assert.equal(row.entryEur,200,'Modus A muss den Einstieg ersetzen');
+  assert.equal(row.stopEur,190,'Modus A muss den Stop ersetzen');
+  assert.equal(row.tp2Eur,240,'Modus A muss das Ziel ersetzen');
+  assert.equal(row.momentumActive,true,'Der Zustand muss ausgewiesen sein');
+
+  // Idempotenz und Reversibilitaet: zurueckschalten stellt das Original her.
+  C.momentumOverlayRow(row); C.momentumOverlayRow(row);
+  assert.equal(row.entryEur,200,'Mehrfaches Anwenden darf nichts veraendern');
+  S.tradeMode='off'; C.momentumOverlayRow(row);
+  assert.equal(row.entryEur,100,'Zurueckschalten muss die Originalwerte wiederherstellen');
+  assert.equal(row.stopEur,98,'Auch der Stop muss zurueckkommen');
+
+  // Eine Zeile aus einem alten Cache ohne momentum-Block bleibt unveraendert.
+  S.tradeMode='A';
+  const legacyRow = mk();
+  C.momentumOverlayRow(legacyRow);
+  assert.equal(legacyRow.entryEur,100,'Ohne Momentum-Block darf Modus A nichts erfinden');
+  assert.equal(legacyRow.momentumActive,false,'Fail-closed: kein Block = kein Modus A');
+  S.tradeMode='off';
+
+  // ------------------------------------------------------------- Glossar
+  for (const k of ['sizeModeRisk','sizeModeFixed','stopDistance','rewardRisk','maxLoss','tradeModeA','quoteAge','consolidation']) {
+    assert.ok(C.GLOSS[k] && C.GLOSS[k].length>80, `GLOSS-Eintrag fehlt oder ist zu duenn: ${k}`);
+    assert.ok(C.GLOSS_LABEL[k], `GLOSS_LABEL fehlt: ${k}`);
+    assert.ok(C.GLOSS_GROUPS.some(g=>g.keys.includes(k)), `${k} taucht im sichtbaren Glossar nicht auf`);
+  }
+}
+
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url),'utf8');
+  const w   = fs.readFileSync(new URL('../src/worker.js', import.meta.url),'utf8');
+  const idx = fs.readFileSync(new URL('../public/index.html', import.meta.url),'utf8');
+
+  // -- Der Momentum-Block muss additiv sein: claude und fusion duerfen ihn nie lesen.
+  //    Sonst waere aus einer Anzeigeschicht eine Bewertungsschicht geworden (Invariante 3).
+  // Achtung: 'const claude = (() => {' kommt ZWEIMAL vor — einmal im Krypto-Zweig
+  // (Zeile ~543) und einmal im Aktien-Zweig. Beim ersten Entwurf traf der Marker
+  // den Krypto-Block, und die Blockgrenze umspannte dann halb den Worker; der Test
+  // fiel aus dem falschen Grund. lastIndexOf trifft den Aktien-Block.
+  const claudeBlk = w.slice(w.lastIndexOf('const claude = (() => {'), w.indexOf('const fusion = (() => {'));
+  // Die Grenze muss VOR dem Kommentarkopf des Momentum-Blocks liegen — der Kopf
+  // erklaert den neuen Modus und enthaelt das Wort natuerlich, ohne dass fusion
+  // ihn auswertet. Zweiter Fehlalarm beim Bau, ebenfalls hier festgehalten.
+  const fusionBlk = w.slice(w.indexOf('const fusion = (() => {'), w.indexOf('// ---- v3.9.0 MODUS A'));
+  for (const [name, blk] of [['claude',claudeBlk],['fusion',fusionBlk]]) {
+    assert.ok(blk.length>500, `${name}-Block nicht gefunden — Marker geprueft?`);
+    assert.doesNotMatch(blk,/momentum/i, `Der ${name}-Block darf den Momentum-Block nicht auswerten`);
+  }
+
+  // -- Modus A: kein Ueberdehnungs-Malus, kein Elliott.
+  const momBlk = w.slice(w.indexOf('const momentum = (() => {'), w.indexOf('return {\n    claude, fusion, momentum,'));
+  assert.ok(momBlk.length>1000,'Momentum-Block nicht gefunden');
+  assert.doesNotMatch(momBlk,/overextended\s*\?/, 'Modus A darf keinen Ueberdehnungs-Malus anwenden');
+  assert.doesNotMatch(momBlk,/stockElliott|ellRetr|ellFibDist/, 'Modus A darf Elliott nicht verwenden');
+  assert.doesNotMatch(momBlk,/\b8\s*\*\s*risk\b|\b6\s*\*\s*risk\b/, 'Modus A darf keinen R-Deckel auf das Ziel setzen');
+  // Live-Quote-Pflicht muss wirklich blockieren, nicht nur gemessen werden.
+  assert.match(momBlk,/quoteFresh/, 'Modus A braucht eine Frischepruefung');
+  assert.match(momBlk,/const mGreen = [^;]*quoteFresh/, 'Ein alter Kurs muss die Freigabe verhindern, nicht nur angezeigt werden');
+  assert.match(momBlk,/consolidating[\s\S]{0,200}mGreen|const mGreen = [^;]*consolidating/, 'Ohne Konsolidierung darf es keine Freigabe geben');
+
+  // -- Die Elliott-Gewichte duerfen NICHT umverteilt worden sein: das haette den
+  //    Score ohne neue Information angehoben. Summe der Gewichte muss unter 1 liegen.
+  const weights = [...momBlk.matchAll(/,\s*(0\.\d+)\],/g)].map(m=>Number(m[1]));
+  const sum = weights.reduce((a,b)=>a+b,0);
+  assert.ok(weights.length>=6, `Zu wenige Gewichte gefunden (${weights.length})`);
+  assert.ok(sum>0.95 && sum<1.001, `Gewichtssumme ${sum.toFixed(3)} — Elliott wurde offenbar umverteilt statt ausgelassen`);
+
+  // -- Der neue Schalter muss standardmaessig AUS sein (Invariante 9).
+  assert.match(app,/sizeMode:\s*'risk'/, 'Das Sizing-Modell muss per Default unveraendert bleiben');
+  assert.match(app,/tradeMode:\s*'off'/, 'Der Handelsmodus muss per Default aus sein');
+
+  // -- Ungueltige gespeicherte Werte duerfen nicht in einen undefinierten Zustand fuehren.
+  assert.match(app,/\(smRaw === 'fixed' \|\| smRaw === 'risk'\) \? smRaw : DEFAULTS\.sizeMode/, 'Unbekanntes Sizing-Modell muss auf den Default zurueckfallen');
+  assert.match(app,/\(tmRaw === 'A' \|\| tmRaw === 'off'\) \? tmRaw : DEFAULTS\.tradeMode/, 'Unbekannter Handelsmodus muss auf den Default zurueckfallen');
+
+  // -- Die Bedienelemente muessen existieren, sonst ist die Einstellung unerreichbar.
+  for (const id of ['sTradeMode','sSizeMode','sFixedTrade','sMaxLoss','sRiskModeHint']) {
+    assert.ok(idx.includes(`id="${id}"`), `Bedienelement fehlt in der Oberflaeche: ${id}`);
+  }
+
+  // -- Modus A ist ein Regelwerk, keine Anzeige: der Overlay muss auch beim
+  //    normalen Rendern laufen, nicht nur beim Speichern der Einstellungen.
+  const rs = app.slice(app.indexOf('function renderStocks() {'), app.indexOf('function renderStocks() {')+400);
+  assert.match(rs,/momentumOverlayRow/, 'renderStocks muss den Modus-A-Overlay anwenden');
+
+  // -- Der Momentum-Overlay darf NICHT im SHA-verriegelten Bereich stehen.
+  //    (Genau dieser Fehler ist beim Bau von 3.9.0 passiert und wurde gefangen.)
+  const lockedOverlay = app.slice(app.indexOf('/* ---- Claude-Modus-Overlay'), app.indexOf('function buyReady'));
+  assert.doesNotMatch(lockedOverlay,/momentumOverlayRow|MOMENTUM_VIEW_FIELDS/,
+    'Der Modus-A-Code darf nicht im verriegelten Claude-Overlay-Bereich liegen');
+}
+
+console.log('✓ FusionPulse v3.9.0 fixed-size/mode-A regressions: OK');
