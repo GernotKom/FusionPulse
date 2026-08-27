@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.13.0 — Frontend
+   FusionPulse v3.14.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -90,7 +90,13 @@ const DEFAULTS = {
   sizeMode: 'risk', fixedTradeEur: 10000, maxLossEur: 400,
   /* v3.9.0 · Handelsmodus. 'off' = unveraendertes Verhalten (Default).
      'A' = Momentum-Tageshandel, 'B' = Large Cap / Position (noch Konzept). */
-  tradeMode: 'off',
+  /* v3.14.0: Voreinstellung von 'off' auf 'A' geaendert — ausdruecklich vom
+     Nutzer so entschieden. Modus A wurde in v3.9.0 fuer genau seinen Fall
+     gebaut (Momentum-Tageshandel auf Nachrichtenlage) und war seitdem inaktiv,
+     weil die Voreinstellung nie umgelegt wurde. Damit lief weiterhin die alte
+     Bewertung inklusive des 8R-Deckels, der laut Uebergabe den VEEV-Fall
+     unmoeglich gemacht hat. */
+  tradeMode: 'A',
   // v3.5.9 · Modul 2: Gesamt-Risikobudget ueber ALLE offenen Positionen (nicht je Trade)
   // und Klumpungswarnung. Default 3x das Einzeltrade-Risiko = drei parallele Trades.
   portfolioRiskPct: 2.25, portfolioGuard: false,
@@ -110,6 +116,22 @@ let settingsMigrated352=false;
 if(Number(storedSettings.minNetProfitStock)===350 && !storedSettings.fusionAdaptive352){S.minNetProfitStock=75;S.fusionAdaptive352=true;settingsMigrated352=true;}
 // v3.5.3: der 75-EUR-Default konnte bei 5.000 EUR / 0,75 % Risiko still ein ~6R-Ziel erzwingen.
 if(Number(S.minNetProfitStock)===75 && !storedSettings.fusionAdaptive353){S.minNetProfitStock=30;S.fusionAdaptive353=true;settingsMigrated352=true;}
+/* v3.14.0 · Modus A aktivieren — und warum eine Default-Aenderung allein NICHT reicht.
+   `S = {...DEFAULTS, ...storedSettings}`: ein bereits gespeichertes `tradeMode:'off'`
+   ueberschreibt jeden neuen Default. Wer die App schon benutzt hat, haette von der
+   Umstellung nichts gemerkt — der Schalter waere weiterhin aus gewesen und der
+   8R-Deckel weiterhin aktiv.
+   Deshalb eine einmalige Migration, die NUR den alten Default 'off' anfasst. Wer
+   den Modus bewusst auf 'off' gestellt hat, nachdem er ihn einmal geaendert hatte,
+   traegt `tradeModeChosen` und bleibt unangetastet. Die Migration laeuft genau
+   einmal und wird dem Nutzer angezeigt, statt still zu passieren. */
+let tradeModeMigrated314=false;
+if(!storedSettings.tradeModeMigrated314){
+  if(storedSettings.tradeMode==='off' && !storedSettings.tradeModeChosen){
+    S.tradeMode='A'; tradeModeMigrated314=true;
+  }
+  S.tradeModeMigrated314=true;
+}
 // Flatex AT / Tradegate cost model (v3.0.4): public base fee + minimum venue cost
 // per execution. Spread/slippage cannot be known from the Twelve Data candle feed,
 // therefore a separate conservative execution reserve is shown as an estimate.
@@ -168,6 +190,9 @@ S.components = S.components.filter((c) => ALL_COMPONENTS.includes(c));
 if (!S.components.length) S.components = [...ALL_COMPONENTS];
 const saveSettings = () => { try { localStorage.setItem('fp.settings', JSON.stringify(S)); } catch {} };
 if(settingsMigrated352) saveSettings();
+/* v3.14.0: Die Modus-Migration muss gespeichert werden, sonst laeuft sie bei
+   jedem Laden erneut und wuerde eine spaetere bewusste Abschaltung ueberschreiben. */
+if(tradeModeMigrated314 || S.tradeModeMigrated314!==storedSettings.tradeModeMigrated314) saveSettings();
 
 let rows = [];
 let meta = {};
@@ -3179,6 +3204,7 @@ function momentumContext(symbol){
 function measureChrome(){
   const head=document.querySelector('body>header');
   const nav=document.querySelector('.viewbar');
+  const foot=document.querySelector('.signal-banner');
   if(!head) return;
   const h=Math.round(head.getBoundingClientRect().height||0);
   const n=nav?Math.round(nav.getBoundingClientRect().height||0):0;
@@ -3187,13 +3213,21 @@ function measureChrome(){
   root.setProperty('--fp-head-h', h+'px');
   root.setProperty('--fp-nav-h', n+'px');
   root.setProperty('--fp-chrome-h', (h+n)+'px');
+  /* v3.14.0: Der Fuss fehlte. Die untere Signalleiste ist `fixed` und ihre Hoehe
+     variiert mit dem Inhalt — bei aktivem Plan traegt sie zwei Zeilen. Der feste
+     Startwert von 108 px war zu klein, deshalb blieb das Seitenende dauerhaft
+     verdeckt. Fail-closed wie oben: nicht messbar heisst Startwert behalten. */
+  const f=foot?Math.round(foot.getBoundingClientRect().height||0):0;
+  if(f) root.setProperty('--fp-foot-h', f+'px');
 }
 if(typeof ResizeObserver==='function'){
   const ro=new ResizeObserver(()=>measureChrome());
   const attach=()=>{
     const head=document.querySelector('body>header'), nav=document.querySelector('.viewbar');
+    const foot=document.querySelector('.signal-banner');
     if(head) ro.observe(head);
     if(nav) ro.observe(nav);
+    if(foot) ro.observe(foot);   // v3.14.0: der Fuss aendert seine Hoehe mit dem Plan
     measureChrome();
   };
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',attach,{once:true});
@@ -3620,7 +3654,11 @@ function applySettings() {
   const smRaw = String($('#sSizeMode')?.value || DEFAULTS.sizeMode);
   S.sizeMode = (smRaw === 'fixed' || smRaw === 'risk') ? smRaw : DEFAULTS.sizeMode;
   const tmRaw = String($('#sTradeMode')?.value || DEFAULTS.tradeMode);
-  S.tradeMode = (tmRaw === 'A' || tmRaw === 'off') ? tmRaw : DEFAULTS.tradeMode;
+  const tmNew = (tmRaw === 'A' || tmRaw === 'off') ? tmRaw : DEFAULTS.tradeMode;
+  /* v3.14.0: Sobald der Nutzer den Modus SELBST setzt, ist die Wahl bewusst und
+     darf von keiner kuenftigen Migration mehr ueberschrieben werden. */
+  if(tmNew !== S.tradeMode) S.tradeModeChosen = true;
+  S.tradeMode = tmNew;
   S.fixedTradeEur = Math.max(100, +$('#sFixedTrade')?.value || DEFAULTS.fixedTradeEur);
   S.maxLossEur = Math.max(0, +$('#sMaxLoss')?.value || 0);
   S.minCrvCoin = Math.max(1, +$('#sMinCrvCoin').value || DEFAULTS.minCrvCoin);
@@ -3766,6 +3804,20 @@ $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeDetail(); };
 $('#settings').onclick = (e) => { if (e.target.id === 'settings') $('#settings').classList.remove('open'); };
 $('#more').onclick = () => { showRest = !showRest; renderList(); };
 $('#updateReload').onclick = hardReload;
+
+/* v3.14.0: Eine Migration, die das Bewertungsverhalten aendert, darf NICHT still
+   passieren. Der Nutzer muss wissen, dass ab jetzt anders gerechnet wird — sonst
+   erklaert er sich abweichende Ergebnisse falsch. Die frueheren Migrationen
+   (v3.5.2/3.5.3) waren stumm; das war ein Fehler, der hier nicht wiederholt wird. */
+if(tradeModeMigrated314){
+  const bar=$('#updateBar'), txt=$('#updateText'), btn=$('#updateReload');
+  if(bar&&txt&&btn){
+    txt.textContent='Modus A · Momentum-Tageshandel ist jetzt aktiv. Die Bewertung verwendet ab sofort das Tagesziel statt des bisherigen 8R-Deckels. Umschaltbar in den Einstellungen.';
+    btn.textContent='Verstanden';
+    btn.onclick=()=>bar.classList.add('hidden');
+    bar.classList.remove('hidden');
+  }
+}
 $('#dcopy').onclick = (e) => {
   const r = rows.find((x) => x.pair === selected);
   if (r) copy(orderPlan(r), e.target);

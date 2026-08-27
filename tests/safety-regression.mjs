@@ -1897,12 +1897,22 @@ console.log('✓ FusionPulse v3.11.0 attention-pulse/earnings-board regressions:
   assert.doesNotMatch(css, /\.viewbar\{top:62px!important\}/, 'Fester Leisten-Versatz darf nicht zurueckkehren');
   assert.doesNotMatch(css, /\.viewbar\{top:104px!important\}/, 'Fester Leisten-Versatz darf nicht zurueckkehren');
   assert.match(css, /body\{padding-top:var\(--fp-chrome-h\)\}/, 'Der Abstand muss aus der gemessenen Hoehe kommen');
-  assert.match(css, /\.viewbar\{top:var\(--fp-head-h\)!important;position:sticky\}/,
-    'Die Leiste muss kleben und ihren Versatz aus der Messung beziehen');
+  /* v3.14.0: von `sticky` auf `fixed` umgestellt. Sticky blieb im Betrieb trotz
+     korrekter Regel nicht stehen — es hat stille Ausfallgruende (Elternbox,
+     overflow, Stapelkontext), die man einem Screenshot nicht ansieht. Da die
+     Kopfzeile ohnehin `fixed` ist und gemessen wird, ist `fixed` deterministisch.
+     Geprueft wird beides: fixiert UND Versatz aus der Messung. */
+  assert.match(css, /\.viewbar\{position:fixed!important;top:var\(--fp-head-h\)!important/,
+    'Die Leiste muss fixiert sein und ihren Versatz aus der Messung beziehen');
+  assert.doesNotMatch(css, /\.viewbar\{top:var\(--fp-head-h\)!important;position:sticky\}/,
+    'Die unzuverlaessige sticky-Variante darf nicht zurueckkehren');
   assert.match(css, /scroll-margin-top:calc\(var\(--fp-chrome-h\)/,
     'Sprungziele muessen unter der Leiste hervorkommen, nicht dahinter landen');
-  assert.match(css, /:root\{--fp-head-h:\d+px;--fp-nav-h:\d+px;--fp-chrome-h:\d+px\}/,
-    'Startwerte fuer den ersten Bildaufbau muessen gesetzt sein');
+  // v3.14.0: --fp-foot-h ist dazugekommen; jede Variable einzeln pruefen statt
+  // die exakte Reihenfolge einer Zeile festzuschreiben.
+  for (const v of ['--fp-head-h', '--fp-nav-h', '--fp-chrome-h', '--fp-foot-h']) {
+    assert.match(css, new RegExp(`${v}:\\d+px`), `Startwert fuer ${v} fehlt`);
+  }
 
   // -- Die Messung muss laufen und fail-closed sein.
   assert.match(app, /function measureChrome\(\)\{/, 'Die Hoehenmessung muss existieren');
@@ -2095,3 +2105,95 @@ console.log('✓ FusionPulse v3.12.0 chrome-measure/nav/trail-direction regressi
 }
 
 console.log('✓ FusionPulse v3.13.0 live-quote-batch regressions: OK');
+
+/* ====================================================================
+   v3.14.0 · Zwei Punkte:
+   1. „Passt immer noch nicht beim Scrollen" — ich hatte in v3.12.0 den
+      KOPF gemessen und den FUSS übersehen. Feste 108 px für die untere
+      Signalleiste ließen das Seitenende dauerhaft verdeckt.
+   2. Modus A aktivieren. Eine Default-Änderung allein erreicht bestehende
+      Nutzer NICHT — gespeicherte Einstellungen überschreiben sie.
+   ==================================================================== */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const cssRaw = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  const css = cssRaw.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // -- Der Fuss darf keine geratene Hoehe mehr haben.
+  assert.doesNotMatch(css, /body\{padding-bottom:108px\}/,
+    'Die geratenen 108 px fuer die Signalleiste duerfen nicht zurueckkehren');
+  assert.match(css, /body\{padding-bottom:calc\(var\(--fp-foot-h\)/,
+    'Der untere Abstand muss aus der gemessenen Hoehe kommen');
+
+  const mc = app.slice(app.indexOf('function measureChrome()'), app.indexOf('if(typeof ResizeObserver'));
+  assert.ok(mc.length > 300, 'measureChrome muss gefunden werden');
+  assert.match(mc, /querySelector\('\.signal-banner'\)/, 'Die Signalleiste muss gemessen werden');
+  assert.match(mc, /if\(f\) root\.setProperty\('--fp-foot-h'/,
+    'Fail-closed: nicht messbar heisst Startwert behalten');
+  assert.match(app, /if\(foot\) ro\.observe\(foot\)/,
+    'Die Signalleiste aendert ihre Hoehe mit dem Plan und muss beobachtet werden');
+
+  // -- Funktionsnachweis: Kopf UND Fuss, beide gemessen, beide fail-closed.
+  {
+    const mkFn = new Function('document', mc + '; return measureChrome;');
+    const set = {};
+    const mkDoc = (headH, navH, footH) => ({
+      querySelector: (s) => s === 'body>header' ? (headH ? { getBoundingClientRect: () => ({ height: headH }) } : null)
+                          : s === '.viewbar' ? { getBoundingClientRect: () => ({ height: navH }) }
+                          : s === '.signal-banner' ? (footH ? { getBoundingClientRect: () => ({ height: footH }) } : null) : null,
+      documentElement: { style: { setProperty: (k, v) => { set[k] = v; } } },
+    });
+    mkFn(mkDoc(74, 61, 173))();
+    assert.equal(set['--fp-chrome-h'], '135px', 'Oben muss die Summe aus Kopf und Leiste stehen');
+    assert.equal(set['--fp-foot-h'], '173px',
+      'Unten muss die GEMESSENE Leistenhoehe stehen — die festen 108 px waren der Fehler');
+
+    // Ohne messbare Signalleiste darf der Startwert nicht ueberschrieben werden.
+    const set2 = {};
+    const doc2 = mkDoc(74, 61, 0);
+    doc2.documentElement.style.setProperty = (k, v) => { set2[k] = v; };
+    mkFn(doc2)();
+    assert.equal(set2['--fp-foot-h'], undefined, 'Nicht messbarer Fuss darf keinen Wert setzen');
+    assert.equal(set2['--fp-chrome-h'], '135px', 'Der Kopf muss trotzdem gemessen werden');
+  }
+
+  // -- Modus A: Default UND Migration. Der Default allein reicht nicht.
+  assert.match(app, /tradeMode: 'A',/, 'Die Voreinstellung muss auf Modus A stehen');
+  const mig = app.slice(app.indexOf('let tradeModeMigrated314'), app.indexOf('// Flatex AT / Tradegate'));
+  assert.ok(mig.length > 100, 'Die Migration muss gefunden werden — leerer Slice waere ein blinder Test');
+  assert.match(mig, /storedSettings\.tradeMode==='off' && !storedSettings\.tradeModeChosen/,
+    'Nur der alte Default darf migriert werden, keine bewusste Wahl');
+  assert.match(app, /if\(tmNew !== S\.tradeMode\) S\.tradeModeChosen = true;/,
+    'Eine eigene Wahl muss vor kuenftigen Migrationen geschuetzt werden');
+  assert.ok(app.includes('if(tradeModeMigrated314 || S.tradeModeMigrated314!==storedSettings.tradeModeMigrated314) saveSettings();'),
+    'Die Migration muss gespeichert werden, sonst laeuft sie bei jedem Laden erneut');
+
+  // -- Funktionsnachweis der Migrationsregel, alle vier Faelle.
+  {
+    const decide = (stored) => {
+      const S = { tradeMode: stored.tradeMode ?? 'A' };
+      let migrated = false;
+      if (!stored.tradeModeMigrated314) {
+        if (stored.tradeMode === 'off' && !stored.tradeModeChosen) { S.tradeMode = 'A'; migrated = true; }
+        S.tradeModeMigrated314 = true;
+      }
+      return { mode: S.tradeMode, migrated };
+    };
+    assert.deepEqual(decide({ tradeMode: 'off' }), { mode: 'A', migrated: true },
+      'Der alte Default muss auf Modus A wandern');
+    assert.deepEqual(decide({ tradeMode: 'off', tradeModeChosen: true }), { mode: 'off', migrated: false },
+      'Eine BEWUSSTE Abschaltung darf NICHT ueberschrieben werden');
+    assert.deepEqual(decide({ tradeMode: 'off', tradeModeMigrated314: true }), { mode: 'off', migrated: false },
+      'Die Migration darf nur EINMAL laufen');
+    assert.deepEqual(decide({}), { mode: 'A', migrated: false },
+      'Ein neuer Nutzer bekommt Modus A ueber den Default, ohne Migration');
+  }
+
+  // -- Die Umstellung aendert das Bewertungsverhalten und darf nicht still passieren.
+  assert.match(app, /if\(tradeModeMigrated314\)\{[\s\S]{0,400}bar\.classList\.remove\('hidden'\)/,
+    'Der Nutzer muss ueber die Umstellung informiert werden');
+  assert.match(app, /Modus A · Momentum-Tageshandel ist jetzt aktiv/,
+    'Der Hinweis muss benennen, was sich aendert');
+}
+
+console.log('✓ FusionPulse v3.14.0 footer-measure/mode-A-migration regressions: OK');

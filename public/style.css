@@ -602,7 +602,15 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 .stockrow .sr-name{display:flex;flex-direction:column}.stockrow .sr-name b{font-size:12px}.stockrow .sr-name small{font-size:10px}
 
 /* v3.1.0 reorder + permanent signal info */
-body{padding-bottom:108px}.signal-idle{display:flex;align-items:center;gap:9px;white-space:nowrap;font-size:10px;color:var(--dim)}.signal-idle b{color:var(--fg);font-size:11px}.draghandle{border:0;background:transparent;color:var(--dim);cursor:grab;padding:0 2px;font-size:15px;touch-action:none}.draghandle:active{cursor:grabbing}.stockrow.dragging,.depotchip.dragging{opacity:.5;outline:1px dashed var(--dim2)}.depotchip{touch-action:none}.depotchip .dragmark{margin-right:4px;color:var(--dim);font-size:10px}
+/* v3.14.0 · DERSELBE FEHLER WIE OBEN, UNTEN UEBERSEHEN.
+   Hier standen feste 108 px fuer die Hoehe der unteren Signalleiste. Die Leiste
+   ist aber `position:fixed` und ihre Hoehe variiert mit Inhalt und Umbruch —
+   bei einem aktiven Plan traegt sie zwei Zeilen. War sie hoeher als 108 px,
+   liess sich das Seitenende nicht mehr freischeiben: der untere Teil der
+   Fokuskarte blieb dauerhaft verdeckt, auch am Ende des Scrollbereichs.
+   Genau das war die Meldung „passt immer noch nicht beim Scrollen".
+   Ich hatte in v3.12.0 den Kopf gemessen und den Fuss uebersehen. */
+body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;align-items:center;gap:9px;white-space:nowrap;font-size:10px;color:var(--dim)}.signal-idle b{color:var(--fg);font-size:11px}.draghandle{border:0;background:transparent;color:var(--dim);cursor:grab;padding:0 2px;font-size:15px;touch-action:none}.draghandle:active{cursor:grabbing}.stockrow.dragging,.depotchip.dragging{opacity:.5;outline:1px dashed var(--dim2)}.depotchip{touch-action:none}.depotchip .dragmark{margin-right:4px;color:var(--dim);font-size:10px}
 
 /* v3.1.0 VL: Intraday charts in large stock/coin views */
 .intraday-chart{margin:10px 0;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);min-width:0}
@@ -655,10 +663,15 @@ body{padding-bottom:108px}.signal-idle{display:flex;align-items:center;gap:9px;w
    Jetzt wird die tatsaechliche Hoehe zur Laufzeit gemessen und in --fp-head-h /
    --fp-nav-h geschrieben (siehe measureChrome() in app.js). Die Werte hier sind
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
-:root{--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px}
+:root{--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-foot-h:108px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
-.viewbar{top:var(--fp-head-h)!important;position:sticky}
+/* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
+   Sticky hat mehrere stille Ausfallgruende (Elternbox, overflow, Stapelkontext),
+   die man einem Screenshot nicht ansieht. Da die Kopfzeile ohnehin `fixed` ist
+   und ihre Hoehe seit v3.12.0 gemessen wird, ist `fixed` hier die deterministische
+   Loesung: die Leiste haengt immer exakt unter dem Kopf, ohne Bedingungen. */
+.viewbar{position:fixed!important;top:var(--fp-head-h)!important;left:0;right:0;z-index:210}
 /* Jedes Sprungziel muss unter der Leiste hervorkommen, nicht dahinter. */
 [id],.stage,.stockstage{scroll-margin-top:calc(var(--fp-chrome-h) + 10px)}
 .resource-strip{display:flex;flex-direction:column;min-width:122px;max-width:190px;padding:4px 7px;border:1px solid var(--line);border-radius:8px;background:var(--panel);font-size:9px;line-height:1.2}
