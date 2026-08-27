@@ -172,7 +172,11 @@ main{padding:0 var(--pad) 88px}
 .legend{color:var(--dim2);font-size:11px;margin-top:18px;line-height:1.9}
 
 /* ═════════════════════════════════════════════════════ Aktions-Dock ═══ */
-.dock{position:fixed;left:0;right:0;bottom:52px;z-index:30;display:flex;align-items:center;gap:12px;
+/* v3.14.2: `bottom:52px` war ein geratener Festwert fuer die Hoehe der
+   Signalleiste — verboten seit v3.12.0, hier uebersehen. Bricht die Leiste
+   um (schmales Fenster, Analyse-Dock in zweiter Zeile), ueberlappt das Dock
+   sie. Jetzt aus derselben Messung wie alles andere. */
+.dock{position:fixed;left:0;right:0;bottom:var(--fp-banner-h);z-index:30;display:flex;align-items:center;gap:12px;
   padding:11px var(--pad);
   background:#0f1626f5;backdrop-filter:blur(16px);border-top:1px solid var(--line)}
 .dock.green{border-top-color:var(--green)}
@@ -663,7 +667,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    Jetzt wird die tatsaechliche Hoehe zur Laufzeit gemessen und in --fp-head-h /
    --fp-nav-h geschrieben (siehe measureChrome() in app.js). Die Werte hier sind
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
-:root{--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-foot-h:108px}
+:root{--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.

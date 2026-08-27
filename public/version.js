@@ -1,2 +1,2 @@
 /* GENERIERT von scripts/sync-version.mjs — nicht editieren. */
-self.FP_VERSION = '3.14.1';
+self.FP_VERSION = '3.14.2';

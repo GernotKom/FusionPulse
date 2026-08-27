@@ -2128,8 +2128,11 @@ console.log('✓ FusionPulse v3.13.0 live-quote-batch regressions: OK');
   const mc = app.slice(app.indexOf('function measureChrome()'), app.indexOf('if(typeof ResizeObserver'));
   assert.ok(mc.length > 300, 'measureChrome muss gefunden werden');
   assert.match(mc, /querySelector\('\.signal-banner'\)/, 'Die Signalleiste muss gemessen werden');
-  assert.match(mc, /if\(f\) root\.setProperty\('--fp-foot-h'/,
-    'Fail-closed: nicht messbar heisst Startwert behalten');
+  /* v3.14.2: Die Struktur hat sich geaendert (zwei Variablen statt einer), das
+     Fail-closed-Verhalten NICHT. Der Nachweis dafuer steht jetzt ausgefuehrt im
+     v3.14.2-Block, Fall 3; hier bleibt nur die Bedingung selbst. */
+  assert.match(mc, /if\(f\)\{/, 'Fail-closed: nicht messbare Signalleiste setzt keinen Wert');
+  assert.match(mc, /setProperty\('--fp-foot-h'/, 'Der untere Abstand muss gesetzt werden');
   assert.match(app, /if\(foot\) ro\.observe\(foot\)/,
     'Die Signalleiste aendert ihre Hoehe mit dem Plan und muss beobachtet werden');
 
@@ -2266,3 +2269,117 @@ console.log('✓ FusionPulse v3.14.0 footer-measure/mode-A-migration regressions
 }
 
 console.log('✓ FusionPulse v3.14.1 shell-consistency regressions: OK');
+
+/* ====================================================================
+   v3.14.2 · Der Fussleisten-Fehler zum DRITTEN Mal, eine Etage tiefer.
+   v3.12.0 hat den Kopf gemessen und den Fuss uebersehen.
+   v3.14.0 hat den Fuss gemessen und die Aktions-Leiste `.dock` uebersehen.
+   Unten liegen zwei feste Leisten uebereinander. Nachgerechnet am
+   Screenshot: 66 px Dock + 51 px Signalleiste = 117 px verdeckt,
+   freigeschoben wurden 65 px. Es fehlten 52 px.
+   Der Fehler tritt NUR bei aktivem Plan auf — ohne Auswahl ist das Dock
+   ausgeblendet und v3.14.0 stimmt. Genau deshalb blieb er unentdeckt.
+   Zweiter Punkt: die Systemampel nennt jetzt die betroffene Quelle.
+   ==================================================================== */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const cssRaw = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  const css = cssRaw.replace(/\/\*[\s\S]*?\*\//g, '');   // Kommentare zitieren die alten Werte
+
+  // -- Das Dock darf keine geratene Hoehe der Signalleiste mehr annehmen.
+  assert.doesNotMatch(css, /\.dock\{[^}]*bottom:52px/,
+    'Die geratenen 52 px fuer die Signalleiste duerfen nicht zurueckkehren');
+  assert.match(css, /\.dock\{[^}]*bottom:var\(--fp-banner-h\)/,
+    'Das Dock muss auf der GEMESSENEN Leistenhoehe sitzen');
+  for (const v of ['--fp-banner-h', '--fp-foot-h']) {
+    assert.ok(new RegExp(`:root\\{[^}]*\\${v}:`).test(css), `Startwert fuer ${v} muss existieren`);
+  }
+
+  const mc = app.slice(app.indexOf('function measureChrome()'), app.indexOf('if(typeof ResizeObserver'));
+  assert.ok(mc.length > 400, 'measureChrome muss gefunden werden — leerer Slice waere ein blinder Test');
+  assert.match(mc, /querySelector\('\.dock'\)/, 'Die Aktions-Leiste muss gemessen werden');
+  assert.match(app, /if\(dock\) ro\.observe\(dock\)/,
+    'Das Dock erscheint und verschwindet mit der Auswahl und muss beobachtet werden');
+
+  /* -- Funktionsnachweis: AUSGEFUEHRT, nicht auf Zeichenketten geprueft.
+        Regel aus v3.9.3 — bei einer Rechnung ist ein Textmatch kein Nachweis. */
+  {
+    const mkFn = new Function('document', mc + '; return measureChrome;');
+    const mkDoc = (headH, navH, bannerH, dockH, sink) => ({
+      querySelector: (s) => s === 'body>header' ? (headH ? { getBoundingClientRect: () => ({ height: headH }) } : null)
+                          : s === '.viewbar' ? { getBoundingClientRect: () => ({ height: navH }) }
+                          : s === '.signal-banner' ? (bannerH ? { getBoundingClientRect: () => ({ height: bannerH }) } : null)
+                          : s === '.dock' ? { getBoundingClientRect: () => ({ height: dockH }) } : null,
+      documentElement: { style: { setProperty: (k, v) => { sink[k] = v; } } },
+    });
+
+    // Fall 1 — der gemeldete Fall: Plan aktiv, Dock sichtbar. 51 + 66 = 117.
+    const a = {}; mkFn(mkDoc(74, 61, 51, 66, a))();
+    assert.equal(a['--fp-banner-h'], '51px', 'Das Dock braucht die Leistenhoehe ALLEIN als Bezug');
+    assert.equal(a['--fp-foot-h'], '117px',
+      'Der untere Abstand muss BEIDE Leisten decken — 51 px allein war der Fehler');
+
+    // Fall 2 — keine Auswahl, Dock ausgeblendet (Hoehe 0). Kein Messfehler.
+    const b = {}; mkFn(mkDoc(74, 61, 51, 0, b))();
+    assert.equal(b['--fp-foot-h'], '51px', 'Ohne sichtbares Dock ist der Fuss nur die Signalleiste');
+    assert.equal(b['--fp-banner-h'], '51px', 'Die Leistenhoehe bleibt davon unberuehrt');
+
+    // Fall 3 — fail-closed: nicht messbare Signalleiste setzt gar nichts.
+    const c = {}; mkFn(mkDoc(74, 61, 0, 66, c))();
+    assert.equal(c['--fp-foot-h'], undefined, 'Nicht messbarer Fuss darf keinen Wert setzen');
+    assert.equal(c['--fp-banner-h'], undefined, 'Auch der Bezug fuer das Dock bleibt dann der Startwert');
+    assert.equal(c['--fp-chrome-h'], '135px', 'Der Kopf muss trotzdem gemessen werden');
+
+    // Fall 4 — der Startwert muss den gemeldeten Fall abdecken, falls nie gemessen wird.
+    // Es gibt mehrere :root-Bloecke (Farbpalette zuerst) — den mit den Hoehen nehmen.
+    const rootM = css.match(/:root\{([^}]*--fp-foot-h[^}]*)\}/);
+    assert.ok(rootM, 'Der :root-Block mit den Layout-Hoehen muss gefunden werden');
+    const root = rootM[1];
+    const foot0 = Number(root.match(/--fp-foot-h:(\d+)px/)[1]);
+    const banner0 = Number(root.match(/--fp-banner-h:(\d+)px/)[1]);
+    assert.ok(foot0 >= 117, `Startwert --fp-foot-h muss beide Leisten decken (117 px gemessen), ist ${foot0}`);
+    assert.ok(foot0 > banner0, 'Der Startwert des Fusses muss groesser sein als der der Leiste allein');
+  }
+
+  // -- Die Systemampel muss die betroffene Quelle benennen, nicht nur "Datenquelle".
+  const rs = app.slice(app.indexOf('const RESOURCE_LABEL='), app.indexOf('function renderLearningReport'));
+  assert.ok(rs.length > 400, 'renderResourceStrip muss gefunden werden');
+  assert.match(rs, /alpaca:'Premarket\/Opening \(Alpaca\)'/,
+    'Alpaca hat keinen eigenen Punkt in der Kopfzeile und MUSS deshalb im Text stehen');
+  assert.doesNotMatch(rs, /'Handlungsbedarf · Datenquelle oder Worker fehlerhaft'/,
+    'Der alte Text ohne Quellenangabe darf nicht zurueckkehren');
+
+  /* -- Funktionsnachweis der Namensauswahl. Der gemeldete Zustand:
+        Krypto ok, Aktien ok, Alpaca error -> rot, und der Text muss Alpaca nennen. */
+  {
+    const STATE_TEXT = { ok:'verbunden', error:'API-Fehler', nokey:'API-Key fehlt', stale:'Daten veraltet', cpu:'Ressourcenwarnung' };
+    const RESOURCE_LABEL = { crypto:'Krypto (Bitpanda)', stocks:'Aktien (Twelve Data)', alpaca:'Premarket/Opening (Alpaca)' };
+    const pick = (hs) => {
+      const states=[hs.crypto?.state,hs.stocks?.state,hs.alpaca?.state].filter(Boolean);
+      const red=states.some(x=>['error','nokey'].includes(x));
+      const orange=states.some(x=>['cpu','daylimit'].includes(x));
+      const yellow=states.some(x=>['ratelimit','stale','warn','unknown'].includes(x));
+      const level=red?'red':orange?'orange':yellow?'yellow':'green';
+      const bad=level==='green'?[]:Object.keys(RESOURCE_LABEL)
+        .filter(k=>{const st=hs[k]?.state;if(!st||st==='ok')return false;
+          return level==='red'?['error','nokey'].includes(st)
+            :level==='orange'?['cpu','daylimit'].includes(st)
+            :['ratelimit','stale','warn','unknown'].includes(st);})
+        .map(k=>`${RESOURCE_LABEL[k]}: ${STATE_TEXT[hs[k].state]||hs[k].state}`);
+      return { level, who: bad.join(' · ') };
+    };
+    const real = pick({ crypto:{state:'ok'}, stocks:{state:'ok'}, alpaca:{state:'error'} });
+    assert.equal(real.level, 'red', 'Ein error muss weiterhin rot ergeben — die Bewertung aendert sich NICHT');
+    assert.equal(real.who, 'Premarket/Opening (Alpaca): API-Fehler',
+      'Der gemeldete Zustand muss Alpaca beim Namen nennen');
+    assert.equal(pick({ crypto:{state:'ok'}, stocks:{state:'ok'}, alpaca:{state:'ok'} }).level, 'green',
+      'Alles ok bleibt gruen');
+    assert.equal(pick({ crypto:{state:'ok'}, stocks:{state:'ok'}, alpaca:{state:'ok'} }).who, '',
+      'Im gruenen Fall darf kein Quellenanhang entstehen');
+    assert.equal(pick({ crypto:{state:'stale'}, stocks:{state:'ok'}, alpaca:{state:'error'} }).who,
+      'Krypto (Bitpanda): API-Fehler'.replace('Krypto (Bitpanda): API-Fehler','Premarket/Opening (Alpaca): API-Fehler'),
+      'Bei rot werden nur die roten Quellen genannt, nicht die gelben');
+  }
+}
+
+console.log('✓ FusionPulse v3.14.2 dock-measure/system-source regressions: OK');

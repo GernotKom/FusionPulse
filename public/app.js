@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.14.1 — Frontend
+   FusionPulse v3.14.2 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1901,6 +1901,15 @@ function learningBadge(){
   const age=st.lastTs?mins(Date.now()-st.lastTs):'–';
   return `🧠 ${Number(st.snapshots||0)} Setups · ${Number(st.resolved||0)} ausgewertet · letzter ${age}`;
 }
+/* v3.14.2 · Die Ampel nennt jetzt die Quelle.
+   Gemeldet: „SYSTEM ist rot, was ist da los". Die Leiste sagte nur
+   „Handlungsbedarf · Datenquelle oder Worker fehlerhaft" — WELCHE Quelle,
+   stand nur im Tooltip. Dazu kommt: `alpaca` hat in der Kopfzeile gar keinen
+   eigenen Punkt. Krypto, Aktien und Tiingo konnten also alle gruen leuchten,
+   waehrend die Ampel wegen Alpaca rot war. Das ist derselbe Widerspruch
+   zwischen Kopf und Kleingedrucktem wie bei SOFI in v3.5.8, nur eine Zeile
+   hoeher. Die Bewertung bleibt unveraendert — es kommt nur der Name dazu. */
+const RESOURCE_LABEL={crypto:'Krypto (Bitpanda)',stocks:'Aktien (Twelve Data)',alpaca:'Premarket/Opening (Alpaca)'};
 function renderResourceStrip(){
   const box=$('#resourceStrip'), out=$('#resourceText'); if(!box||!out)return;
   const hs=health?.status||{}; const states=[hs.crypto?.state,hs.stocks?.state,hs.alpaca?.state].filter(Boolean);
@@ -1908,7 +1917,14 @@ function renderResourceStrip(){
   const orange=states.some(x=>['cpu','daylimit'].includes(x));
   const yellow=states.some(x=>['ratelimit','stale','warn','unknown'].includes(x));
   const level=red?'red':orange?'orange':yellow?'yellow':'green';
-  const text=level==='green'?'App läuft einwandfrei · Datenserver stabil · kein Handlungsbedarf':level==='yellow'?'App funktioniert · einzelne Datenquelle eingeschränkt · kein unmittelbarer Handlungsbedarf':level==='orange'?'App eingeschränkt · Ressourcen/Limit beobachten':'Handlungsbedarf · Datenquelle oder Worker fehlerhaft';
+  const bad=level==='green'?[]:Object.keys(RESOURCE_LABEL)
+    .filter(k=>{const st=hs[k]?.state;if(!st||st==='ok')return false;
+      return level==='red'?['error','nokey'].includes(st)
+        :level==='orange'?['cpu','daylimit'].includes(st)
+        :['ratelimit','stale','warn','unknown'].includes(st);})
+    .map(k=>`${RESOURCE_LABEL[k]}: ${STATE_TEXT[hs[k].state]||hs[k].state}`);
+  const who=bad.length?' · '+bad.join(' · '):'';
+  const text=(level==='green'?'App läuft einwandfrei · Datenserver stabil · kein Handlungsbedarf':level==='yellow'?'App funktioniert · einzelne Datenquelle eingeschränkt · kein unmittelbarer Handlungsbedarf':level==='orange'?'App eingeschränkt · Ressourcen/Limit beobachten':'Handlungsbedarf · Datenquelle fehlerhaft')+who;
   out.textContent=text;
   box.classList.remove('warn','orange','err','ok'); box.classList.add(level==='green'?'ok':level==='yellow'?'warn':level==='orange'?'orange':'err');
   box.dataset.tip=`${text}. Krypto: ${hs.crypto?.state||'n.v.'}; Aktien: ${hs.stocks?.state||'n.v.'}; Opening: ${hs.alpaca?.state||'n.v.'}; Tiingo: ${health?.tiingoConfigured?'aktiv':'n.v.'}. Grün = alles stabil, Gelb = funktioniert mit kleiner Einschränkung, Orange = beobachten/zeitnah prüfen, Rot = konkreter Handlungsbedarf.`;
@@ -3205,6 +3221,7 @@ function measureChrome(){
   const head=document.querySelector('body>header');
   const nav=document.querySelector('.viewbar');
   const foot=document.querySelector('.signal-banner');
+  const dock=document.querySelector('.dock');   // v3.14.2: zweite feste Fussleiste
   if(!head) return;
   const h=Math.round(head.getBoundingClientRect().height||0);
   const n=nav?Math.round(nav.getBoundingClientRect().height||0):0;
@@ -3216,18 +3233,40 @@ function measureChrome(){
   /* v3.14.0: Der Fuss fehlte. Die untere Signalleiste ist `fixed` und ihre Hoehe
      variiert mit dem Inhalt — bei aktivem Plan traegt sie zwei Zeilen. Der feste
      Startwert von 108 px war zu klein, deshalb blieb das Seitenende dauerhaft
-     verdeckt. Fail-closed wie oben: nicht messbar heisst Startwert behalten. */
+     verdeckt. Fail-closed wie oben: nicht messbar heisst Startwert behalten.
+
+     v3.14.2 · DERSELBE FEHLER ZUM DRITTEN MAL, EINE ETAGE TIEFER.
+     Unten liegen ZWEI feste Leisten uebereinander, nicht eine: die Aktions-
+     Leiste `.dock` (Titel + Plan-Knopf) sitzt auf der Signalleiste. Gemessen
+     wurde nur die Signalleiste. Am Screenshot vom 27.8. nachgerechnet:
+     .dock 66 px + .signal-banner 51 px = 117 px verdeckt, freigeschoben wurden
+     51+14 = 65 px. Es fehlten 52 px — genau die halb sichtbare Zeile
+     „Kaufsumme / Entry / Stop-Loss\" am Ende der Fokuskarte.
+     Der Fehler zeigt sich NUR bei aktivem Plan; ohne Auswahl ist .dock
+     ausgeblendet und die Rechnung aus v3.14.0 stimmt. Deshalb sah der Fix
+     funktionierend aus und versagte genau im Arbeitsfall.
+     Zwei Variablen statt einer:
+       --fp-banner-h = nur die Signalleiste (Bezugspunkt fuer `.dock{bottom}`)
+       --fp-foot-h   = Signalleiste + Dock (Bezugspunkt fuer body padding-bottom)
+     Ein ausgeblendetes Dock misst 0 und ist KEIN Messfehler — dann ist der Fuss
+     korrekt nur die Signalleiste. Fail-closed gilt fuer die Signalleiste. */
   const f=foot?Math.round(foot.getBoundingClientRect().height||0):0;
-  if(f) root.setProperty('--fp-foot-h', f+'px');
+  if(f){
+    root.setProperty('--fp-banner-h', f+'px');
+    const d=dock?Math.round(dock.getBoundingClientRect().height||0):0;
+    root.setProperty('--fp-foot-h', (f+d)+'px');
+  }
 }
 if(typeof ResizeObserver==='function'){
   const ro=new ResizeObserver(()=>measureChrome());
   const attach=()=>{
     const head=document.querySelector('body>header'), nav=document.querySelector('.viewbar');
     const foot=document.querySelector('.signal-banner');
+    const dock=document.querySelector('.dock');
     if(head) ro.observe(head);
     if(nav) ro.observe(nav);
     if(foot) ro.observe(foot);   // v3.14.0: der Fuss aendert seine Hoehe mit dem Plan
+    if(dock) ro.observe(dock);   // v3.14.2: .dock erscheint/verschwindet mit der Auswahl
     measureChrome();
   };
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',attach,{once:true});
