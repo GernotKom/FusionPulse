@@ -2197,3 +2197,72 @@ console.log('✓ FusionPulse v3.13.0 live-quote-batch regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.14.0 footer-measure/mode-A-migration regressions: OK');
+
+/* ====================================================================
+   v3.14.1 · Konsistenzprüfung der Auslieferung.
+   Gemeldet: „die Version hängt" — Tab-Titel 3.11.0, Kopfzeile v3.12.0.
+   Das ist kein Schönheitsfehler: neuer Code auf alter Shell erzeugt
+   Folgefehler, die wie Layout- oder Scrollprobleme aussehen. Wir haben
+   zwei Runden daran gesucht.
+   ==================================================================== */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const idx = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const sync = fs.readFileSync(new URL('../scripts/sync-version.mjs', import.meta.url), 'utf8');
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const verjs = fs.readFileSync(new URL('../public/version.js', import.meta.url), 'utf8');
+
+  // -- Die drei Versionsstempel müssen übereinstimmen. Das ist der Kern.
+  const shell = (idx.match(/<meta name="fp-shell-version" content="([^"]+)">/) || [])[1];
+  const code = (verjs.match(/self\.FP_VERSION = '([^']+)'/) || [])[1];
+  const title = (idx.match(/<title>FusionPulse ([^<]+)<\/title>/) || [])[1];
+  assert.ok(shell, 'index.html braucht einen Shell-Versionsstempel');
+  assert.equal(shell, pkg.version, 'Der Shell-Stempel muss zur package.json passen');
+  assert.equal(code, pkg.version, 'version.js muss zur package.json passen');
+  assert.equal(title, pkg.version, 'Der Tab-Titel muss zur package.json passen');
+
+  // -- sync-version.mjs muss den Stempel mitziehen, sonst meldet die Pruefung
+  //    bei JEDER Auslieferung faelschlich einen Fehlstand.
+  assert.match(sync, /patch\('public\/index\.html', \/<meta name="fp-shell-version"/,
+    'sync-version.mjs muss den Shell-Stempel mitziehen');
+
+  // -- Die Pruefung selbst.
+  assert.match(app, /function checkShellConsistency\(\)\{/, 'Die Konsistenzpruefung muss existieren');
+  const chk = app.slice(app.indexOf('function checkShellConsistency()'), app.indexOf('\n}', app.indexOf("return {ok:false,shell,code,action:'warn'}")) + 2);
+  assert.ok(chk.length > 200, 'Die Pruefung muss gefunden werden — leerer Slice waere ein blinder Test');
+
+  // -- Funktionsnachweis: alle vier Fälle ausgeführt, nicht gelesen.
+  {
+    const mk = (metaVersion, fpVersion, store) => {
+      const session = { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; } };
+      const doc = { querySelector: () => (metaVersion ? { getAttribute: () => metaVersion } : null) };
+      return new Function('document', 'self', 'sessionStorage', chk + '; return checkShellConsistency;')(
+        doc, { FP_VERSION: fpVersion }, session);
+    };
+    assert.deepEqual(mk('3.14.1', '3.14.1', {})().ok, true, 'Gleiche Versionen sind in Ordnung');
+    assert.equal(mk(null, '3.14.1', {})().ok, true, 'Ohne Stempel darf nicht faelschlich gewarnt werden');
+    assert.equal(mk('3.14.1', null, {})().ok, true, 'Ohne FP_VERSION darf nicht faelschlich gewarnt werden');
+
+    // Der eigentliche Fall: Shell alt, Code neu.
+    const store = {};
+    const first = mk('3.11.0', '3.12.0', store)();
+    assert.equal(first.ok, false, 'Ein Fehlstand muss erkannt werden');
+    assert.equal(first.action, 'reload', 'Beim ersten Mal wird einmalig neu geladen');
+
+    // KEINE Schleife: der zweite Durchlauf darf nicht wieder neu laden.
+    const second = mk('3.11.0', '3.12.0', store)();
+    assert.equal(second.action, 'warn',
+      'Nach einem erfolglosen Versuch darf NICHT erneut neu geladen werden — eine Reload-Schleife waere der schlimmere Fehler');
+  }
+
+  // -- Die Warnung muss sagen, dass es NICHT an den Einstellungen liegt.
+  //    Genau diese Fehlzuordnung hat hier zwei Runden gekostet.
+  assert.match(app, /die alte Datei kommt vom Server/,
+    'Die Warnung muss die Ursache benennen');
+  assert.match(app, /NICHT an den Einstellungen liegen/,
+    'Die Warnung muss die naheliegende Fehlzuordnung ausschliessen');
+  assert.match(app, /setTimeout\(\(\)=>\{ hardReload\(\); \}, 900\)/,
+    'Der Selbstheilungsversuch muss die Caches leeren (hardReload)');
+}
+
+console.log('✓ FusionPulse v3.14.1 shell-consistency regressions: OK');

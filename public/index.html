@@ -11,7 +11,13 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.14.0</title>
+<title>FusionPulse 3.14.1</title>
+<!-- v3.14.1: Versionsstempel der SHELL (index.html). Wird von sync-version.mjs
+     gesetzt und beim Start gegen FP_VERSION aus version.js verglichen. Weichen
+     die beiden ab, ist eine halb aktualisierte Auslieferung im Umlauf: neues
+     app.js/style.css auf altem index.html. Das erzeugt Fehler, die wie
+     Layout-Probleme aussehen, aber keine sind — und kostet beim Suchen Stunden. -->
+<meta name="fp-shell-version" content="3.14.1">
 </head>
 <body>
 

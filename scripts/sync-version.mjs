@@ -38,6 +38,9 @@ patch('public/sw.js', /const APP_VERSION = '[^']*';/, `const APP_VERSION = '${ve
 
 // 4) Browser-Tab
 patch('public/index.html', /<title>FusionPulse [^<]*<\/title>/, `<title>FusionPulse ${version}</title>`);
+// v3.14.1: Der Shell-Stempel MUSS mitwandern, sonst meldet die Konsistenzpruefung
+// bei jeder Auslieferung faelschlich einen Fehlstand.
+patch('public/index.html', /<meta name="fp-shell-version" content="[^"]*">/, `<meta name="fp-shell-version" content="${version}">`);
 
 // 5) Dokumentation / Quellkopf
 patch('README.md', /^# FusionPulse v[^\n]*/m, `# FusionPulse v${version}`);

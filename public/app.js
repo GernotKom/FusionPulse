@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.14.0 — Frontend
+   FusionPulse v3.14.1 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -3804,6 +3804,58 @@ $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeDetail(); };
 $('#settings').onclick = (e) => { if (e.target.id === 'settings') $('#settings').classList.remove('open'); };
 $('#more').onclick = () => { showRest = !showRest; renderList(); };
 $('#updateReload').onclick = hardReload;
+
+/* ==== v3.14.1 · Konsistenzpruefung der Auslieferung =========================
+   Gemeldet: „die Version haengt". Im Screenshot sagte der Tab-Titel 3.11.0,
+   die Kopfzeile v3.12.0. Das ist kein Schoenheitsfehler, sondern ein halb
+   aktualisierter Stand: neues app.js/style.css auf altem index.html. Dabei
+   fehlen Elemente, die der neue Code erwartet — die Folgefehler sehen aus wie
+   Layout- oder Scrollprobleme, sind aber keine. Wir haben genau daran zwei
+   Runden gesucht.
+
+   Die App merkt das jetzt selbst: `<meta name="fp-shell-version">` steckt in
+   index.html, `FP_VERSION` in version.js. Beide setzt sync-version.mjs aus
+   package.json. Weichen sie ab, ist die Shell veraltet.
+
+   EINMAL selbst heilen, dann die Wahrheit sagen: Ein automatischer Neuladen-
+   Versuch (der leert auch die Caches). Bleibt der Fehlstand danach bestehen,
+   liegt es an der Auslieferung und nicht am Browser — dann wird KEINE weitere
+   Schleife gedreht, sondern eine dauerhafte Warnung gezeigt. Eine Reload-
+   Schleife waere hier der schlimmere Fehler: sie versteckt das Problem und
+   macht die App unbenutzbar.                                                 */
+function checkShellConsistency(){
+  const shell=document.querySelector('meta[name="fp-shell-version"]')?.getAttribute('content')||null;
+  const code=(typeof self!=='undefined' && self.FP_VERSION)?String(self.FP_VERSION):null;
+  if(!shell||!code||shell===code) return {ok:true,shell,code};
+  const KEY='fp.shellFixTried';
+  const tried=sessionStorage.getItem(KEY)===code;
+  if(!tried){
+    sessionStorage.setItem(KEY,code);
+    return {ok:false,shell,code,action:'reload'};
+  }
+  return {ok:false,shell,code,action:'warn'};
+}
+
+{
+  const c=checkShellConsistency();
+  if(!c.ok){
+    console.warn(JSON.stringify({event:'shell_version_mismatch',shell:c.shell,code:c.code,action:c.action}));
+    const bar=$('#updateBar'), txt=$('#updateText'), btn=$('#updateReload');
+    if(c.action==='reload'){
+      if(txt) txt.textContent=`Unvollständige Auslieferung erkannt (Shell ${c.shell}, Code ${c.code}). Wird einmalig neu geladen.`;
+      if(bar) bar.classList.remove('hidden');
+      setTimeout(()=>{ hardReload(); }, 900);
+    }else if(bar&&txt&&btn){
+      /* Zweiter Fehlstand in derselben Sitzung: Der Neuladeversuch hat nichts
+         geaendert. Dann liegt es am Server, nicht am Browser — das gehoert
+         gesagt, statt es weiter zu versuchen. */
+      txt.textContent=`Die Auslieferung ist inkonsistent: index.html meldet ${c.shell}, der Code ${c.code}. Ein Neuladen hat das nicht behoben — die alte Datei kommt vom Server. Bis das behoben ist, können Anzeige- und Scrollfehler auftreten, die NICHT an den Einstellungen liegen.`;
+      btn.textContent='Verstanden';
+      btn.onclick=()=>bar.classList.add('hidden');
+      bar.classList.remove('hidden');
+    }
+  }
+}
 
 /* v3.14.0: Eine Migration, die das Bewertungsverhalten aendert, darf NICHT still
    passieren. Der Nutzer muss wissen, dass ab jetzt anders gerechnet wird — sonst
