@@ -977,3 +977,10 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .signal-banner::-webkit-scrollbar,.signal-content::-webkit-scrollbar{height:7px}
 .signal-banner::-webkit-scrollbar-thumb,.signal-content::-webkit-scrollbar-thumb{background:var(--line,#3a3a3a);border-radius:4px}
 .signal-banner::-webkit-scrollbar-track,.signal-content::-webkit-scrollbar-track{background:transparent}
+
+/* v3.9.3 · Kürzel am Anfang einer Aufwärtsspur. Ein reiner Tooltip war in einem
+   dichten Punktfeld nicht treffbar — der Nutzer sah eine grüne Spur, konnte aber
+   nicht erkennen, zu welchem Titel sie gehört. Das Kürzel sitzt am ANFANG der Spur,
+   nicht an der Spitze, weil dort die Punkte stehen und es sonst überdeckt würde. */
+.stockmapwrap .trailtag{fill:var(--green);font-size:5.2px;font-weight:700;letter-spacing:.2px;text-anchor:middle;paint-order:stroke;stroke:var(--panel,#0d1117);stroke-width:1.6px;pointer-events:none;opacity:.95}
+.stockmapwrap .trailwrap.focus .trailtag{opacity:1;font-size:5.8px}

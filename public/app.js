@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.9.2 — Frontend
+   FusionPulse v3.9.3 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1572,10 +1572,28 @@ function stockHeatmap(shown) {
      der sauber nach rechts oben wandert, kann wirtschaftlich uninteressant
      bleiben. Deshalb bleibt die hohle Punktdarstellung davon unberuehrt. */
   const focusSym=String(focusStock||'').toUpperCase();
-  const trails = pts.map(({r}) => {
-    const h=(r._history||[]).filter(x=>Date.now()-x.ts<=HISTORY_WINDOW_MS).slice(-8);
+  /* v3.9.3 · ZWEITER BEFUND, gemeldet als „der gruene Strich zeigt mir nicht die
+     Aktie, die nach oben gezogen ist".
+     Ursache: Die PUNKTE laufen oben durch 15 Runden Kollisionsaufloesung und werden
+     dabei auseinandergeschoben. Die SPUREN wurden danach aus den Rohkoordinaten neu
+     berechnet — ohne diese Verschiebung. Spurende und zugehoeriger Punkt lagen also
+     systematisch woanders, und zwar umso weiter, je dichter das Feld ist. Im Cluster
+     rechts oben sind das leicht 15–20 Punkte Versatz: die Spur endete im Nichts.
+     Behoben, indem die Spur um denselben Vektor verschoben wird, den ihr Punkt
+     erfahren hat. Damit endet jede Spur zwingend an ihrem eigenen Punkt.
+     Zusaetzlich traegt die Pfeilspitze jetzt das Kuerzel — ein Tooltip allein ist
+     in einem dichten Feld nicht treffbar. */
+  const trails = pts.map(({r,x,y}) => {
+    const h=(r._history||[])
+      .filter(p=>Date.now()-p.ts<=HISTORY_WINDOW_MS)
+      .filter(p=>Number.isFinite(Number(p.executability))&&Number.isFinite(Number(p.quality)))
+      .slice(-8);
     if(h.length<2) return '';
-    const xy=h.map(x=>({x:g(Number(x.executability||0)),y:200-g(Number(x.quality||0))}));
+    const raw=h.map(p=>({x:g(Number(p.executability)),y:200-g(Number(p.quality))}));
+    const last=raw[raw.length-1];
+    // Versatz aus der Kollisionsaufloesung, inklusive der Randbegrenzung der Punkte.
+    const ox=Math.max(10,Math.min(190,x))-last.x, oy=Math.max(10,Math.min(190,y))-last.y;
+    const xy=raw.map(p=>({x:p.x+ox,y:p.y+oy}));
     const points=xy.map(p=>`${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
     const a0=xy[0], a1=xy[xy.length-1];
     const dx=a1.x-a0.x, dy=a0.y-a1.y;            // dy>0 = nach oben
@@ -1584,8 +1602,9 @@ function stockHeatmap(shown) {
     const isFocus=String(r.symbol||'').toUpperCase()===focusSym;
     const head = dir==='sweet'
       ? `<polygon class="trailhead" points="${(a1.x).toFixed(1)},${(a1.y).toFixed(1)} ${(a1.x-4.6).toFixed(1)},${(a1.y+2.4).toFixed(1)} ${(a1.x-2.4).toFixed(1)},${(a1.y+4.6).toFixed(1)}"/>`
+        + `<text class="trailtag" x="${(a0.x).toFixed(1)}" y="${(a0.y+3.4).toFixed(1)}">${esc(String(r.symbol||'').slice(0,5))}</text>`
       : '';
-    return `<g class="trailwrap dir-${dir}${isFocus?' focus':''}"><polyline class="stocktrail ${r.light}" points="${points}"/>${head}<title>${esc(`${r.symbol}: ${dir==='sweet'?'wandert Richtung rechts oben — Muster wird sauberer und besser handelbar':dir==='back'?'bewegt sich zurück nach links unten — Muster verliert an Qualität oder Handelbarkeit':dir==='flat'?'steht seit zwei Stunden praktisch still':'bewegt sich seitlich'}. Bewegungsrichtung der letzten 2 Stunden, keine Ertragsaussage.`)}</title></g>`;
+    return `<g class="trailwrap dir-${dir}${isFocus?' focus':''}"><polyline class="stocktrail ${r.light}" points="${points}"/>${head}<title>${esc(`${r.symbol}: ${dir==='sweet'?'wandert Richtung rechts oben — Muster wird sauberer und besser handelbar':dir==='back'?'bewegt sich zurück nach links unten — Muster verliert an Qualität oder Handelbarkeit':dir==='flat'?'steht seit zwei Stunden praktisch still':'bewegt sich seitlich'}. Die Spur endet an ihrem eigenen Punkt. Bewegungsrichtung der letzten 2 Stunden, keine Ertragsaussage.`)}</title></g>`;
   }).join('');
   svg.innerHTML=`<rect class="stockbg" x="0" y="0" width="200" height="200" rx="8"/><rect class="quad qa" x="100" y="0" width="100" height="100"/><rect class="quad qb" x="0" y="0" width="100" height="100"/><rect class="quad qc" x="100" y="100" width="100" height="100"/><rect class="quad qd" x="0" y="100" width="100" height="100"/><line class="ax" x1="100" y1="0" x2="100" y2="200"/><line class="ax" x1="0" y1="100" x2="200" y2="100"/><text class="quad-label ql-tr" x="151" y="11">MUSTER STARK<tspan class="ql2" x="151" dy="7.4">gut handelbar</tspan></text><text class="quad-label ql-tl" x="49" y="11">MUSTER STARK<tspan class="ql2" x="49" dy="7.4">schwer handelbar</tspan></text><text class="quad-label ql-br" x="151" y="187">MUSTER SCHWACH<tspan class="ql2" x="151" dy="7.4">gut handelbar</tspan></text><text class="quad-label ql-bl" x="49" y="187">MUSTER SCHWACH<tspan class="ql2" x="49" dy="7.4">schwer handelbar</tspan></text>${trails}`+
     /* v3.6.1: Die Punktfarbe folgt jetzt der Kopf-Bewertung statt allein r.light,
@@ -2549,8 +2568,14 @@ function trackStocks() {
     }
     st.level = lvl;
     st.history = appendHistory(stockHistoryStore, r.symbol, {
-      ts: now, quality: Number(r.score || r.quality || 0),
-      executability: Number.isFinite(Number(r.executability)) ? Number(r.executability) : 0,
+      /* v3.9.3 BEFUND: Hier stand `: 0`. Eine fehlende Ausfuehrbarkeit wurde damit
+         als gemessene Null gespeichert und in der Heatmap auf die linke untere Ecke
+         gezeichnet. Beim naechsten Scan mit echtem Wert entstand eine lange Spur quer
+         durch das Feld — die wie eine gewaltige Aufwaertsbewegung aussah und keine war.
+         Genau diese Phantomspur hat der Nutzer gemeldet. Jetzt `null` = nicht messbar;
+         die Spur ueberspringt solche Punkte, statt eine Koordinate zu erfinden. */
+      ts: now, quality: Number.isFinite(Number(r.score ?? r.quality)) ? Number(r.score ?? r.quality) : null,
+      executability: Number.isFinite(Number(r.executability)) ? Number(r.executability) : null,
       light: r.light, crv: Number(r.netCRV || 0),
       crowd: Number(crowdFor(r.symbol)?.score ?? NaN),
       crowdConfirm: Number(crowdMarketConfirmation(r).score ?? NaN)
@@ -2734,7 +2759,7 @@ function track() {
     }
 
     st.level = lvl; st.crvBand = crvBand;
-    st.history = appendHistory(coinHistoryStore, r.pair, { ts: now, quality: Number(r.quality || 0), executability: Number(r.executability || 0), light: r.light, crv: Number(r.netCRV || 0) });
+    st.history = appendHistory(coinHistoryStore, r.pair, { ts: now, quality: Number.isFinite(Number(r.quality)) ? Number(r.quality) : null, executability: Number.isFinite(Number(r.executability)) ? Number(r.executability) : null, light: r.light, crv: Number(r.netCRV || 0) });
     state.set(r.pair, st);
 
     r._age = now - st.since;
@@ -2943,10 +2968,21 @@ function renderMap() {
   }
   pts.forEach((p) => { p.x = Math.max(10, Math.min(190, p.x)); p.y = Math.max(10, Math.min(190, p.y)); });
 
-  const trails = pts.map(({r}) => {
-    const h=(r._history||[]).filter((x)=>Date.now()-x.ts<=120*60_000).slice(-8);
+  /* v3.9.3: Gleicher Befund wie in der Aktien-Heatmap — die Spuren wurden aus
+     Rohkoordinaten gezeichnet, die Punkte aber vorher auseinandergeschoben und
+     auf 10..190 begrenzt. Spurende und Punkt lagen deshalb nicht uebereinander.
+     Ausserdem werden Punkte ohne messbaren Wert jetzt uebersprungen statt als
+     Null in die linke untere Ecke gezeichnet. */
+  const trails = pts.map(({r,x,y}) => {
+    const h=(r._history||[])
+      .filter((p)=>Date.now()-p.ts<=120*60_000)
+      .filter((p)=>Number.isFinite(Number(p.executability))&&Number.isFinite(Number(p.quality)))
+      .slice(-8);
     if (h.length < 2) return '';
-    const points=h.map((x)=>`${g(x.executability).toFixed(1)},${(200-g(x.quality)).toFixed(1)}`).join(' ');
+    const raw=h.map((p)=>({x:g(Number(p.executability)),y:200-g(Number(p.quality))}));
+    const last=raw[raw.length-1];
+    const ox=x-last.x, oy=y-last.y;
+    const points=raw.map((p)=>`${(p.x+ox).toFixed(1)},${(p.y+oy).toFixed(1)}`).join(' ');
     return `<polyline class="trail ${r.light}" points="${points}"/>`;
   }).join('');
   const dots = pts.map(({r,x,y,rad}) => {

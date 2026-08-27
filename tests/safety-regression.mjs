@@ -1595,3 +1595,87 @@ console.log('✓ FusionPulse v3.9.1 ui-reachability/order/broker-availability re
 }
 
 console.log('✓ FusionPulse v3.9.2 navigation/tile-order/tile-clarity regressions: OK');
+
+/* ====================================================================
+   v3.9.3 · Heatmap-Spuren. Zwei Befunde des Nutzers:
+   „Der grüne Strich zeigt mir nicht die Aktie, die nach oben gezogen ist."
+   ==================================================================== */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+
+  // -- Befund 1: Nicht messbare Werte dürfen NICHT als gemessene Null gespeichert
+  //    werden. Sonst landet der Punkt in der linken unteren Ecke und erzeugt beim
+  //    nächsten Scan eine Phantomspur quer durch das Feld.
+  const stockAppend = app.slice(app.indexOf('appendHistory(stockHistoryStore'), app.indexOf("appendHistory(stockHistoryStore") + 1600);
+  assert.match(stockAppend, /executability: Number\.isFinite\(Number\(r\.executability\)\) \? Number\(r\.executability\) : null/,
+    'Fehlende Ausfuehrbarkeit muss als null gespeichert werden, nicht als 0');
+  assert.doesNotMatch(stockAppend, /Number\(r\.executability\) : 0/,
+    'Die alte Null-Ersetzung darf nicht zurueckkehren');
+  const coinAppend = app.slice(app.indexOf('appendHistory(coinHistoryStore'), app.indexOf('appendHistory(coinHistoryStore') + 400);
+  assert.doesNotMatch(coinAppend, /quality: Number\(r\.quality \|\| 0\)|executability: Number\(r\.executability \|\| 0\)/,
+    'Auch im Krypto-Zweig darf ein fehlender Wert nicht als 0 gespeichert werden');
+
+  // -- Beide Spur-Funktionen müssen nicht messbare Punkte überspringen.
+  for (const [name, fn] of [
+    ['Aktien-Heatmap', app.slice(app.indexOf('const focusSym=String(focusStock'), app.indexOf('svg.innerHTML=`<rect class="stockbg"'))],
+    ['Krypto-Heatmap', app.slice(app.indexOf('const trails = pts.map(({r,x,y}) => {', app.indexOf('function renderMap()')), app.indexOf('${trails}${dots}'))],
+  ]) {
+    assert.match(fn, /Number\.isFinite\(Number\(p\.executability\)\)\s*&&\s*Number\.isFinite\(Number\(p\.quality\)\)/,
+      `${name}: Punkte ohne messbaren Wert muessen uebersprungen werden`);
+    /* Der Versatz muss GERECHNET werden. Eine Pruefung auf „const ox= existiert"
+       waere blind gewesen: `const ox=0` haette sie bestanden. Die Negativkontrolle
+       hat genau das aufgedeckt. Deshalb wird der echte Ausdruck aus dem Code
+       herausgeloest und mit bekannten Werten AUSGEFUEHRT. */
+    const m = fn.match(/const ox=(.+?), oy=(.+?);/);
+    assert.ok(m, `${name}: Der Versatz-Ausdruck fehlt`);
+    const offset = new Function('x', 'y', 'last', `return [${m[1]}, ${m[2]}];`);
+    const [ox, oy] = offset(120, 60, { x: 100, y: 90 });
+    assert.equal(ox, 20, `${name}: Der x-Versatz muss aus Punkt minus Rohkoordinate folgen, war ${ox}`);
+    assert.equal(oy, -30, `${name}: Der y-Versatz muss aus Punkt minus Rohkoordinate folgen, war ${oy}`);
+    // Und er muss verschwinden, wenn es nichts zu verschieben gibt.
+    const [zx, zy] = offset(100, 90, { x: 100, y: 90 });
+    assert.equal(zx, 0, `${name}: Ohne Kollision darf kein Versatz entstehen`);
+    assert.equal(zy, 0, `${name}: Ohne Kollision darf kein Versatz entstehen`);
+  }
+
+  // -- Befund 2 (der eigentliche): Die Spur muss AN IHREM Punkt enden.
+  //    Rechnerische Gegenkontrolle auf einem unabhaengigen Pfad — die Geometrie wird
+  //    hier nachgebaut, NICHT aus der zu pruefenden Funktion uebernommen.
+  {
+    const g = (v) => 14 + (Math.max(0, Math.min(10, v)) / 10) * 172;
+    // Zwei Titel auf praktisch derselben Position -> die Kollisionsaufloesung MUSS
+    // sie auseinanderschieben. Genau dann divergieren Spur und Punkt im alten Code.
+    const mk = (score, exec) => ({ x: g(exec), y: 200 - g(score), rad: 5 + Math.max(0, (score - 5) * 0.7) });
+    const pts = [mk(8.6, 8.4), mk(8.5, 8.5)];
+    const before = pts.map(p => ({ x: p.x, y: p.y }));
+    for (let it = 0; it < 15; it++) for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
+      const a = pts[i], b = pts[j], dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || .1, m = a.rad + b.rad + 3;
+      if (d < m) { const q = (m - d) * .16, ux = dx / d, uy = dy / d; a.x -= ux * q; a.y -= uy * q; b.x += ux * q; b.y += uy * q; }
+    }
+    const shift = Math.hypot(pts[0].x - before[0].x, pts[0].y - before[0].y);
+    assert.ok(shift > 3, `Fixture taugt nicht: die Kollisionsaufloesung verschiebt nur ${shift.toFixed(1)} px`);
+
+    // ALTES Verhalten: Spurende = Rohkoordinate. Abstand zum Punkt = der Versatz.
+    const oldEnd = { x: before[0].x, y: before[0].y };
+    const oldGap = Math.hypot(oldEnd.x - Math.max(10, Math.min(190, pts[0].x)), oldEnd.y - Math.max(10, Math.min(190, pts[0].y)));
+    assert.ok(oldGap > 3, 'Gegenprobe: der alte Weg muss eine sichtbare Luecke erzeugen');
+
+    // NEUES Verhalten: Spur um (Punkt - Rohkoordinate) verschieben -> Luecke = 0.
+    const px = Math.max(10, Math.min(190, pts[0].x)), py = Math.max(10, Math.min(190, pts[0].y));
+    const ox = px - before[0].x, oy = py - before[0].y;
+    const newEnd = { x: before[0].x + ox, y: before[0].y + oy };
+    const newGap = Math.hypot(newEnd.x - px, newEnd.y - py);
+    assert.ok(newGap < 0.001, `Die Spur muss exakt am Punkt enden, Abstand war ${newGap.toFixed(3)}`);
+  }
+
+  // -- Die Aufwaertsspur muss den Titel BENENNEN. Ein Tooltip allein ist in einem
+  //    dichten Punktfeld nicht treffbar — das war die Rueckmeldung.
+  const stockTrail = app.slice(app.indexOf('const focusSym=String(focusStock'), app.indexOf('svg.innerHTML=`<rect class="stockbg"'));
+  assert.match(stockTrail, /class="trailtag"/, 'Die Aufwaertsspur muss das Kuerzel anzeigen');
+  assert.match(stockTrail, /dir==='sweet'[\s\S]{0,400}trailtag/, 'Das Kuerzel gehoert an die Aufwaertsspur');
+  assert.match(css, /\.stockmapwrap \.trailtag\{/, 'Das Kuerzel braucht eine Formatierung');
+  assert.match(css, /\.trailtag\{[^}]*pointer-events:none/, 'Das Kuerzel darf keine Klicks auf die Punkte abfangen');
+}
+
+console.log('✓ FusionPulse v3.9.3 heatmap-trail regressions: OK');
