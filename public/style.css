@@ -723,9 +723,36 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 .analysis-inline{display:block;margin:5px 0 2px;padding:5px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel2);color:var(--dim);font-size:9px;line-height:1.35}.analysis-inline b{color:var(--accent)}
 
 /* Modul 0: Attribution & Overfitting-Guard */
-.attr-wrap{overflow-x:auto;margin:.5rem 0}
+/* v3.9.1 · BEFUND: Die Aktions-Spalte (Wächter-Schalter) lag ausserhalb des
+   sichtbaren Bereichs. Ursache war NICHT ein zu schmales Layout, sondern die
+   Kombination aus `overflow-x:auto` und den macOS-Overlay-Scrollbalken: der
+   Scrollbereich existierte, war aber unsichtbar und damit nicht auffindbar.
+   Ein Schalter, den man nicht sieht, ist kein Schalter.
+   Drei Massnahmen, absichtlich zusammen:
+   1. Die Aktions-Spalte klebt rechts (`sticky`) und bleibt immer erreichbar.
+   2. Der Scrollbalken wird dauerhaft sichtbar gemacht, damit klar ist, dass
+      die Tabelle ueberhaupt seitlich laeuft.
+   3. Unter 900 px bricht die Tabelle in Karten um — auf dem 13-Zoll-MacBook
+      in der zweispaltigen Ansicht ist das der Regelfall, nicht der Sonderfall. */
+.attr-wrap{overflow-x:auto;margin:.5rem 0;scrollbar-width:thin}
+.attr-wrap::-webkit-scrollbar{height:9px}
+.attr-wrap::-webkit-scrollbar-thumb{background:var(--line,#3a3a3a);border-radius:5px}
+.attr-wrap::-webkit-scrollbar-track{background:transparent}
 .attr-table{width:100%;border-collapse:collapse;font-size:.82rem}
 .attr-table th,.attr-table td{text-align:left;padding:.3rem .5rem;border-bottom:1px solid var(--line,#2a2a2a)}
+.attr-table th.attr-action,.attr-table td.attr-action{position:sticky;right:0;z-index:2;background:var(--card,#161b22);box-shadow:-8px 0 8px -6px rgba(0,0,0,.55)}
+.attr-table tr.attr-overfit td.attr-action{background:#2a1a1c}
+.attr-table tr.attr-disable td.attr-action{background:#2a2118}
+.attr-table tr.attr-keep td.attr-action{background:#16241d}
+@media(max-width:900px){
+  .attr-wrap{overflow-x:visible}
+  .attr-table,.attr-table tbody,.attr-table tr,.attr-table td{display:block;width:100%}
+  .attr-table thead{position:absolute;left:-9999px}
+  .attr-table tr{border:1px solid var(--line,#2a2a2a);border-radius:8px;margin:0 0 .5rem;padding:.35rem .5rem}
+  .attr-table td{border-bottom:0;padding:.15rem 0;display:flex;justify-content:space-between;gap:.6rem;align-items:center}
+  .attr-table td::before{content:attr(data-lbl);opacity:.6;font-size:.9em;flex:0 0 auto}
+  .attr-table td.attr-action{position:static;box-shadow:none;background:transparent;margin-top:.3rem;border-top:1px solid var(--line,#2a2a2a);padding-top:.4rem}
+}
 .attr-table em{opacity:.65;font-style:normal;font-size:.9em}
 .attr-table tr.attr-overfit td{background:rgba(220,60,60,.12)}
 .attr-table tr.attr-disable td{background:rgba(230,140,50,.12)}
@@ -924,3 +951,11 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .earn-warn{cursor:help;font-weight:600;color:var(--yellow)}
 .earn-warn.critical{color:#f09a68;padding:.1rem .4rem;border:1px solid color-mix(in srgb,#f09a68 55%,var(--line));border-radius:.4rem}
 .earn-row{font-size:.66rem;color:var(--yellow);cursor:help}
+
+/* v3.9.1 · Handelbarkeits-Hinweis im Fokusfenster. Bewusst zurückhaltend
+   eingefärbt: es ist eine Wahrscheinlichkeitsaussage aus dem Primärlisting,
+   keine bestätigte Verfügbarkeit — und sie verändert keinen Score. */
+.flatex-hint{display:inline-block;margin:.15rem 0;padding:.05rem .4rem;border-radius:6px;font-size:.78rem;cursor:help;border:1px solid var(--line,#2a2a2a)}
+.flatex-hint.ft-ok{color:#7fd6a4;border-color:rgba(80,200,140,.35)}
+.flatex-hint.ft-no{color:#e6a06a;border-color:rgba(230,140,50,.35)}
+.flatex-hint.ft-unknown{color:var(--dim,#9aa4b2)}

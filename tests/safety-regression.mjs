@@ -1444,3 +1444,78 @@ console.log('✓ FusionPulse v3.8.2 earnings-event-warning regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.9.0 fixed-size/mode-A regressions: OK');
+
+/* ====================================================================
+   v3.9.1 · Bedienbarkeit (Wächter-Schalter), Anzeigereihenfolge und
+   flatex-Handelbarkeit. Alle drei Punkte sind ANZEIGE — kein Test darf
+   hier eine Score- oder BUY-Wirkung durchgehen lassen.
+   ==================================================================== */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const idx = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+
+  // -- P-UI1: Die Aktions-Spalte war real unerreichbar (Overlay-Scrollbalken
+  //    unter macOS). Drei unabhaengige Massnahmen, alle drei werden geprueft.
+  assert.match(app, /<th class="attr-action"/, 'Aktions-Spaltenkopf muss als attr-action markiert sein');
+  assert.match(app, /<td class="attr-action" data-lbl="Aktion">/, 'Aktions-Zelle muss als attr-action markiert sein');
+  assert.match(css, /\.attr-table th\.attr-action,\.attr-table td\.attr-action\{position:sticky;right:0/,
+    'Die Aktions-Spalte muss rechts kleben, sonst scrollt der Schalter wieder aus dem Bild');
+  assert.match(css, /\.attr-wrap::-webkit-scrollbar\{height:9px\}/,
+    'Der horizontale Scrollbalken muss sichtbar erzwungen werden');
+  assert.match(css, /@media\(max-width:900px\)\{[\s\S]*\.attr-table thead\{position:absolute/,
+    'Unter 900 px muss die Tabelle in Karten umbrechen');
+
+  // -- Negativkontrolle: In der Kartenansicht ist der Tabellenkopf versteckt.
+  //    Ohne data-lbl an JEDER Zelle waeren die Werte dort unbeschriftet.
+  for (const lbl of ['Setup','n','In-Sample','Out-of-Sample','Wächter','Aktion']) {
+    assert.ok(app.includes(`data-lbl="${lbl}"`), `Kartenansicht ohne Beschriftung fuer Spalte: ${lbl}`);
+  }
+
+  // -- P-UI2: Fokusfenster + Heatmap stehen VOR den Nebenkacheln. Gemessen an
+  //    der tatsaechlichen Position im Markup, nicht an einem Kommentar.
+  const pos = (needle) => { const i = idx.indexOf(needle); assert.ok(i >= 0, `fehlt: ${needle}`); return i; };
+  assert.ok(pos('<div class="stockstage">') < pos('id="depotStrip"'),
+    'Aktien: Fokus/Heatmap muss vor dem Depot-Streifen stehen');
+  assert.ok(pos('<div class="stockstage">') < pos('id="attributionReport"'),
+    'Aktien: Fokus/Heatmap muss vor der Selbstauswertung stehen');
+  assert.ok(pos('<div class="stockstage">') < pos('id="aladdinCard"'),
+    'Aktien: Fokus/Heatmap muss vor der Aladdin-Kachel stehen');
+  assert.ok(pos('<div class="stage">') < pos('id="sentimentCard"'),
+    'Krypto: Fokus/Heatmap muss vor der Stimmungskachel stehen');
+  assert.ok(pos('<div class="stockstage">') < pos('id="stockGroups"'),
+    'Aktien: Fokus/Heatmap muss vor der Gruppenliste stehen');
+
+  // -- P-UI3: flatex-Handelbarkeit ist AUSSCHLIESSLICH Anzeige.
+  assert.match(app, /function flatexTradability\(row\)\{/, 'Handelbarkeits-Hinweis muss existieren');
+  assert.match(app, /class="flatex-hint ft-\$\{ft\.tone\}"/, 'Der Hinweis muss im Fokusfenster gerendert werden');
+
+  // Fail-closed: leerer und unbekannter Handelsplatz duerfen NIE 'ok' ergeben.
+  const fnSrc = app.slice(app.indexOf('const FLATEX_LIKELY_EXCHANGE'), app.indexOf('function googleFinanceUrl'));
+  const flatex = new Function(fnSrc + '; return flatexTradability;')();
+  assert.equal(flatex({exchange:''}).tone, 'unknown', 'Fehlender Handelsplatz darf keine positive Aussage erzeugen');
+  assert.equal(flatex({}).tone, 'unknown', 'Fehlendes Feld darf keine positive Aussage erzeugen');
+  assert.equal(flatex({exchange:'XYZ-UNBEKANNT'}).tone, 'unknown', 'Unbekannter Handelsplatz darf keine positive Aussage erzeugen');
+  assert.equal(flatex({exchange:'OTC'}).tone, 'no', 'OTC muss als eher nicht handelbar gekennzeichnet werden');
+  assert.equal(flatex({exchange:'PINK'}).tone, 'no', 'Pink Sheets muessen als eher nicht handelbar gekennzeichnet werden');
+  assert.equal(flatex({exchange:'NASDAQ'}).tone, 'ok', 'NASDAQ muss als wahrscheinlich handelbar gelten');
+  assert.equal(flatex({exchange:'NYSE'}).tone, 'ok', 'NYSE muss als wahrscheinlich handelbar gelten');
+  // Jede Variante muss den Nicht-Eingriff ausdruecklich benennen (Ehrlichkeitsprinzip).
+  for (const ex of ['', 'OTC', 'NASDAQ', 'XYZ-UNBEKANNT']) {
+    assert.match(flatex({exchange:ex}).detail, /veraendert weder Score noch Kauf-Freigabe/,
+      `Hinweistext muss den Nicht-Eingriff benennen: ${ex || '(leer)'}`);
+  }
+
+  // -- Der Hinweis darf in KEINER Bewertungs- oder Freigabefunktion auftauchen.
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(worker, /flatexTradability/, 'Der Handelbarkeits-Hinweis darf serverseitig nichts bewerten');
+  const buyReadyBlock = app.slice(app.indexOf('function buyReady'), app.indexOf('function buyReady') + 1600);
+  assert.doesNotMatch(buyReadyBlock, /flatexTradability|flatex-hint/,
+    'Der Handelbarkeits-Hinweis darf die Kauf-Freigabe nicht beeinflussen');
+
+  // -- Invariante 8: sichtbares Glossar.
+  assert.match(app, /brokerAvail:'Handelbarkeit bei flatex/, 'GLOSS-Eintrag fehlt');
+  assert.match(app, /keys:\['brokerAvail'\]/, 'GLOSS-Eintrag muss im sichtbaren Glossar auftauchen');
+}
+
+console.log('✓ FusionPulse v3.9.1 ui-reachability/order/broker-availability regressions: OK');

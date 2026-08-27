@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="/style.css">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
 <script src="/version.js"></script>
-<title>FusionPulse 3.9.0</title>
+<title>FusionPulse 3.9.1</title>
 </head>
 <body>
 
@@ -70,7 +70,6 @@
 </nav>
 
 <!-- ═══════════════════════════════════ Fokus + Karte nebeneinander ═══ -->
-<section id="sentimentCard" class="sentiment-card" title="Krypto-Stimmungsindex (Fear &amp; Greed) von alternative.me. Misst die Marktstimmung, nicht die Qualität eines Trades — und gilt ausschließlich für Krypto, nicht für Aktien. 0 % Gewicht in Score und Kauf-Freigabe."></section>
 
 <div class="stage">
   <section id="focus" class="focus"></section>
@@ -85,6 +84,8 @@
     </div>
   </aside>
 </div>
+
+<section id="sentimentCard" class="sentiment-card" title="Krypto-Stimmungsindex (Fear &amp; Greed) von alternative.me. Misst die Marktstimmung, nicht die Qualität eines Trades — und gilt ausschließlich für Krypto, nicht für Aktien. 0 % Gewicht in Score und Kauf-Freigabe."></section>
 
 <!-- ═══════════════════════════════════════════ Coin-Trefferliste ═══ -->
 <nav class="coinbar">
@@ -143,6 +144,22 @@
         <option value="yellow">Beobachten</option>
       </select>
     </div>
+    <!-- v3.9.1: Fokusfenster und Heatmap stehen jetzt VOR Depot, Crowd,
+         Portfolio und den Learning-Kacheln. Begruendung: zuerst der
+         handlungsrelevante Zustand, danach Systemzustand und Rueckblick.
+         Die Krypto-Seite war schon so aufgebaut; die Aktienseite nicht. -->
+    <div class="stockstage">
+      <div id="stockFocus" class="stockfocus"></div>
+      <aside class="stockmapwrap">
+        <div class="maphead" title="Beide Achsen sind technisch. Wirtschaftlichkeit steckt in der Punktfarbe, nicht in der Position."><span>Musterqualität ↑</span><span class="mdim">Handelbarkeit →</span></div>
+        <svg id="stockMap" viewBox="0 0 200 200" title="Aktien-Heatmap. Nach oben: wie sauber das Kursmuster ist. Nach rechts: wie gut sich der Titel praktisch handeln lässt (Spread, Liquidität, Ausführbarkeit).&#10;&#10;WICHTIG: Beide Achsen messen nur Technik. Ob sich ein Trade wirtschaftlich lohnt, steht NICHT in der Position, sondern in der Farbe: voller Punkt = auch wirtschaftlich tragfähig, hohler Punkt mit gestricheltem Ring = gutes Muster, aber der Plan bringt zu wenig.&#10;&#10;Kreisgröße = Setup-Stärke, Schweif = bisherige Entwicklung. Mouseover auf einen Punkt zeigt Netto-Potenzial und CRV."></svg>
+        <div class="maplegend2">
+          <span title="Voller Punkt: Musterqualität und Ausführbarkeit stimmen UND der Trade lohnt sich wirtschaftlich — Netto-Potenzial und Chance-Risiko-Verhältnis liegen über deinen Grenzen."><i class="full"></i>wirtschaftlich tragfähig</span>
+          <span title="Hohler Punkt mit gestricheltem Ring: Das Kursmuster ist in Ordnung, aber der Trade lohnt sich nicht — zu wenig Gewinnpotenzial im Verhältnis zu Risiko und Gebühren, oder der Kursweg bis zum Ziel ist zu kurz. Das ist der häufigste Fall und kein Fehler."><i class="hollow"></i>Muster ok, Plan zu klein</span>
+          <span title="Grüne Spur mit Pfeilspitze: Der Titel wandert in den letzten 2 Stunden nach rechts oben — das Muster wird sauberer UND besser handelbar. Das ist die Richtung, in der ein Trade überhaupt erst möglich wird. Es ist eine Bewegungs-, keine Ertragsaussage."><i class="arrow"></i>wandert nach rechts oben</span>
+        </div>
+      </aside>
+    </div>
     <div id="depotStrip" class="depotstrip" title="Deine mit ★ markierten Aktien. Damit kannst du dein bestehendes Depot bzw. eine persönliche Watchlist abbilden."></div>
     <div id="crowdStatus" class="crowd-status" title="Zustand des Crowd/Search-Sensors. Der Tacho bleibt bewusst leer, statt Werte zu erfinden, wenn keine Daten abrufbar sind."></div>
     <section id="portfolioRisk" class="portfolio-card" title="Modul 2: Gesamt-Risiko ueber alle offenen Positionen und Klumpungswarnung. Rechnet zusammen, was das Einzeltrade-Risiko fuer sich nicht zeigt. Veraendert keinen Score."></section>
@@ -159,18 +176,6 @@
       </section>
     </div>
     <section id="aladdinCard" class="aladdin-card" title="FusionPulse Market Intelligence (Aladdin-Style): hierarchische Marktmeinung aus Regime, Sektor-Rotation, Breadth und Stress. Speist die Empfehlung, verändert keinen Claude-/FusionPulse-Score. Datenbasis ist eine Stichprobe des Deep-Scans, kein Vollmarkt-Index."></section>
-    <div class="stockstage">
-      <div id="stockFocus" class="stockfocus"></div>
-      <aside class="stockmapwrap">
-        <div class="maphead" title="Beide Achsen sind technisch. Wirtschaftlichkeit steckt in der Punktfarbe, nicht in der Position."><span>Musterqualität ↑</span><span class="mdim">Handelbarkeit →</span></div>
-        <svg id="stockMap" viewBox="0 0 200 200" title="Aktien-Heatmap. Nach oben: wie sauber das Kursmuster ist. Nach rechts: wie gut sich der Titel praktisch handeln lässt (Spread, Liquidität, Ausführbarkeit).&#10;&#10;WICHTIG: Beide Achsen messen nur Technik. Ob sich ein Trade wirtschaftlich lohnt, steht NICHT in der Position, sondern in der Farbe: voller Punkt = auch wirtschaftlich tragfähig, hohler Punkt mit gestricheltem Ring = gutes Muster, aber der Plan bringt zu wenig.&#10;&#10;Kreisgröße = Setup-Stärke, Schweif = bisherige Entwicklung. Mouseover auf einen Punkt zeigt Netto-Potenzial und CRV."></svg>
-        <div class="maplegend2">
-          <span title="Voller Punkt: Musterqualität und Ausführbarkeit stimmen UND der Trade lohnt sich wirtschaftlich — Netto-Potenzial und Chance-Risiko-Verhältnis liegen über deinen Grenzen."><i class="full"></i>wirtschaftlich tragfähig</span>
-          <span title="Hohler Punkt mit gestricheltem Ring: Das Kursmuster ist in Ordnung, aber der Trade lohnt sich nicht — zu wenig Gewinnpotenzial im Verhältnis zu Risiko und Gebühren, oder der Kursweg bis zum Ziel ist zu kurz. Das ist der häufigste Fall und kein Fehler."><i class="hollow"></i>Muster ok, Plan zu klein</span>
-          <span title="Grüne Spur mit Pfeilspitze: Der Titel wandert in den letzten 2 Stunden nach rechts oben — das Muster wird sauberer UND besser handelbar. Das ist die Richtung, in der ein Trade überhaupt erst möglich wird. Es ist eine Bewegungs-, keine Ertragsaussage."><i class="arrow"></i>wandert nach rechts oben</span>
-        </div>
-      </aside>
-    </div>
     <div id="stockGroups" class="stockgroups"></div>
     <p class="stocknote" id="stockNote">
       Datenquelle: <b id="stockSourceLabel">wird geladen</b>. EUR-Beträge sind mit dem aktuellen EUR/USD-Kurs
