@@ -984,3 +984,19 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
    nicht an der Spitze, weil dort die Punkte stehen und es sonst überdeckt würde. */
 .stockmapwrap .trailtag{fill:var(--green);font-size:5.2px;font-weight:700;letter-spacing:.2px;text-anchor:middle;paint-order:stroke;stroke:var(--panel,#0d1117);stroke-width:1.6px;pointer-events:none;opacity:.95}
 .stockmapwrap .trailwrap.focus .trailtag{opacity:1;font-size:5.8px}
+
+/* v3.10.0 · Kontext an Momentum-Kandidaten und Sektor-Nachzügler.
+   Die Momentum-Liste ist das Produkt der App, nicht ihr Trostpreis — sie hat
+   CRWD gefunden, bevor der Nutzer ihn auf dem Schirm hatte. Die Gestaltung
+   soll das tragen, ohne eine Kaufempfehlung vorzutäuschen. */
+.mom-context{display:flex;flex-wrap:wrap;gap:.22rem;margin-top:.26rem;width:100%}
+.mom-context span{font-size:.68rem;line-height:1.25;padding:.06rem .32rem;border-radius:5px;border:1px solid var(--line,#2a2a2a);cursor:help}
+.mc-lag{color:#8fd4ff;border-color:rgba(110,180,255,.38)!important;font-weight:600}
+.mc-why{color:var(--dim,#9aa4b2)}
+.mc-ft.ft-no{color:#e6a06a;border-color:rgba(230,140,50,.35)!important}
+.mc-ft.ft-unknown{color:var(--dim,#9aa4b2);opacity:.75}
+.stage-note{display:block;margin:.2rem 0 .45rem;font-size:.74rem;color:var(--dim,#9aa4b2);cursor:help;font-style:italic}
+.opcard.lag-card{border-color:rgba(110,180,255,.32)}
+.lag-gap{color:#8fd4ff;font-weight:700}
+.lag-flatex{font-size:.7rem;opacity:.85}
+.lag-flatex.ft-no{color:#e6a06a;opacity:1}

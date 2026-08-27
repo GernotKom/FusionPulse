@@ -234,6 +234,49 @@ function bookMetrics(book, refNotional = 2000) {
   return { bid, ask, mid, spread, imbalance, buyCapacity, sellCapacity, slipBps };
 }
 
+
+/* ==== v3.10.0 · Sektor-Nachzuegler ==========================================
+   BEFUND: `sectorLag` wurde ausschliesslich im Twelve-Data-Zweig berechnet
+   (siehe unten). Der Tiingo-Deep-Scan — also der PRIMAERE Pfad — setzte den
+   Wert in `tiingoAnalyseOne` auf null und hat ihn nie nachgerechnet. Damit war
+   die Kennzahl im Normalbetrieb dauerhaft leer, obwohl die UI sie auswertet.
+
+   Praktische Folge, am realen Fall des Nutzers: Nach starken NVDA-Zahlen laeuft
+   die Halbleiter- und Security-Nachbarschaft an. Ein Titel wie CRWD, der noch
+   hinterherhinkt, IST der Nachzuegler — und genau das haette diese Kennzahl
+   angezeigt. Sie war auf dem produktiven Pfad schlicht nicht vorhanden.
+
+   Kostet nichts: alle Zeilen liegen bereits im Speicher, keine API-Abfrage.
+   Verändert KEINEN Score und KEINE BUY-Freigabe — reine Discovery.          */
+function applySectorLag(rows){
+  /* ACHTUNG: `Number(null)` ist 0 und damit endlich. Ein reiner isFinite-Test
+     laesst fehlende Werte als gemessene Null durch — genau der Fehlertyp, der
+     in v3.9.3 die Phantomspur in der Heatmap erzeugt hat. Deshalb hier explizit
+     auf null/undefined/'' pruefen, bevor gerechnet wird. */
+  const measured=(v)=>v!=null && v!=='' && Number.isFinite(Number(v));
+  const bySector=new Map();
+  for(const r of rows||[]){
+    const sec=r?.sector; if(!sec||sec==='Discovery') continue;
+    if(!measured(r.ret15)) continue;   // fail-closed: nicht schaetzen
+    const a=bySector.get(sec)||[]; a.push(r); bySector.set(sec,a);
+  }
+  for(const r of rows||[]){
+    const sec=r?.sector;
+    if(!sec||sec==='Discovery'||!measured(r.ret15)){
+      r.sectorLeaderRet15=null; r.sectorLag=null; r.sectorPeers=0; continue;
+    }
+    const peers=(bySector.get(sec)||[]).filter(x=>x.symbol!==r.symbol);
+    // Ein einzelner Titel bildet keinen Sektor ab. Unter drei Vergleichstiteln
+    // bleibt der Wert bewusst leer statt eine Scheinaussage zu erzeugen.
+    if(peers.length<2){ r.sectorLeaderRet15=null; r.sectorLag=null; r.sectorPeers=peers.length; continue; }
+    const leader=Math.max(...peers.map(x=>Number(x.ret15)));
+    r.sectorLeaderRet15=+leader.toFixed(2);
+    r.sectorLag=+Math.max(-10,Math.min(10,leader-Number(r.ret15))).toFixed(2);
+    r.sectorPeers=peers.length;
+  }
+  return rows;
+}
+
 /* ============================================================== Kern-Analyse */
 function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv = 2 }) {
   if (c5.length < 60) return null;
@@ -1877,14 +1920,7 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3, favoriteSymbo
   const rows = [...old.values()];
   // Sector-Leader/Lag: misst, ob der eigene Sektor bereits läuft, während der
   // Titel selbst noch hinterherhinkt. Positiv = potenzieller Nachzügler.
-  const sectorMap = new Map();
-  for (const r of rows) { const a=sectorMap.get(r.sector)||[]; a.push(r); sectorMap.set(r.sector,a); }
-  for (const r of rows) {
-    const peers=(sectorMap.get(r.sector)||[]).filter(x=>x.symbol!==r.symbol);
-    const leader=peers.length?Math.max(...peers.map(x=>Number(x.ret15||0))):Number(r.ret15||0);
-    r.sectorLeaderRet15=+leader.toFixed(2);
-    r.sectorLag=+Math.max(-10,Math.min(10,leader-Number(r.ret15||0))).toFixed(2);
-  }
+  applySectorLag(rows);   // v3.10.0: gemeinsame Berechnung, siehe applySectorLag
   rows.sort((a, b) => b.score - a.score);
   stockMemo = { ts: Date.now(), rows, cycle, sig };
   setApiState('stocks', 'ok');
@@ -3686,6 +3722,7 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   for(const r of fresh)safeCarry.set(r.symbol,r);
   // Hohe Radar-/Setup-Relevanz oben halten; Freshness-Gates bleiben unveraendert.
   const rows=[...safeCarry.values()].sort((a,b)=>(Number(b.preSignalMaturity)||0)-(Number(a.preSignalMaturity)||0)||(Number(b.situationScore)||0)-(Number(a.situationScore)||0)||(Number(b.radarRank)||0)-(Number(a.radarRank)||0)||(Number(b.score)||0)-(Number(a.score)||0)).slice(0,100);
+  applySectorLag(rows);   // v3.10.0 FIX: fehlte auf dem primaeren Pfad komplett
   stockMemo={ts:Date.now(),rows,cycle,sig}; setApiState('stocks',fresh.length?'ok':'stale',fresh.length?null:'Tiingo lieferte keine analysierbaren Bars');
   await persistStockScan(env,sig,cycle,rows,{provider:'Tiingo IEX',fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol),queue:{favorites:favPick,recheck:recheckPick,gainers:gainerPick,radar:radarPick,boats:boatsPick,explore},verifiedRadar:(radar.rows||[]).slice(0,20),verifiedBoats:(boats.rows||[]).slice(0,12)});
   return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:radar.universe||12000,universeLabel:`${radar.universe||'12.000+'} Tiingo/IEX`,scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:phase,queue:{favorites:favPick.length,recheck:recheckPick.length,gainers:gainerPick.length,radar:radarPick.length,boats:boatsPick.length,explore:explore.length},discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar.ts,universe:radar.universe,candidates:(radar.rows||[]).slice(0,20),gainers:openingGainers(radar.rows||[]),buyWeight:0,gate:{...radarGateStats}},boats:{source:'Tiingo BOATS',ts:boats.ts,session:boats.session,candidates:(boats.rows||[]).slice(0,15),buyWeight:0}},version:APP_VERSION,note:'Tiingo Primary: Large-Cap Opportunity Lifecycle Radar + BOATS Discovery (beide 0 % direktes BUY-Gewicht) -> adaptive Deep-Scan-Queue -> IEX 5-Min Analyse.'};

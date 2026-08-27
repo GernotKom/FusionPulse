@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.9.3 — Frontend
+   FusionPulse v3.10.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2310,7 +2310,7 @@ function renderMarketGainers(){
     }
     el.innerHTML=`<div class="ophead"><b>📡 Momentum-Mover · Situation Radar</b><small title="Bewegung während der laufenden US-Handelszeit (Tiingo). Die Premarket-Kachel ist eine andere.">Tiingo · laufender Handel · 0 % BUY-Gewicht</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div>${gateLine}<span class="hint">Noch keine verifizierten marktweiten Radar-Kandidaten. Favoriten sind davon getrennt.</span>`;return;
   }
-  el.innerHTML=`<div class="ophead"><b>📡 Momentum-Mover · Situation Radar</b><span>${radar.length} verifizierte Kandidaten · Bewegung WÄHREND der Handelszeit</span><small title="Nicht mit „Premarket/Opening Momentum“ verwechseln: diese Kachel zeigt Titel, die sich JETZT im laufenden Handel bewegen (Tiingo). Die Premarket-Kachel darunter zeigt Gaps VOR der Eröffnung (Alpaca).">Tiingo · laufender Handel · 0 % BUY-Gewicht</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div>${gateLine}<div class="opgrid">${radar.map(r=>`<button type="button" class="opcard ${Number(r.movePct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="Situation-Radar: priorisiert frische Beschleunigung, Breakout-Druck, Opening-Drive, Reclaim, Volumenpuls und Spread-Qualität. Erst Deep-Analyse/Elliott/CRV kann BUY freigeben."><b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b><span class="situation-tag">${esc(r.lifecycle&&r.lifecycle!=='WATCH'?r.lifecycle+' · ':'')}${esc(r.situation||'WATCH')}</span><span class="trend-pct ${Number(r.movePct)>=0?'up':'down'}">${Number(r.movePct)>=0?'+':''}${num(r.movePct,1)}% Tag</span><span class="${r.speedPct!=null?'trend-pct '+(Number(r.speedPct)>=0?'up':'down'):''}">${r.speedPct!=null?'Speed '+(Number(r.speedPct)>=0?'+':'')+num(r.speedPct,2)+'%':'Situation '+num(r.situationScore??r.score,0)}</span><span>${r.spreadPct!=null?'Spread '+num(r.spreadPct,2)+'%':'Spread n.v.'}</span><em>${gainers.some(x=>x.symbol===r.symbol)?'Gainer · Deep Check':'Situation · Deep Check'}</em></button>`).join('')}</div>`;
+  el.innerHTML=`<div class="ophead"><b>📡 Momentum-Mover · Situation Radar</b><span>${radar.length} verifizierte Kandidaten · Bewegung WÄHREND der Handelszeit</span><small title="Nicht mit „Premarket/Opening Momentum“ verwechseln: diese Kachel zeigt Titel, die sich JETZT im laufenden Handel bewegen (Tiingo). Die Premarket-Kachel darunter zeigt Gaps VOR der Eröffnung (Alpaca).">Tiingo · laufender Handel</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div>${gateLine}<small class="stage-note" title="Diese Liste ist bewusst KEINE Kaufempfehlung und will auch keine sein. Sie beantwortet die Frage „wo lohnt der Blick jetzt“ — die Einordnung, ob eine Nachricht den Titel wirklich trägt, kann nur ein Mensch mit Kontext leisten. Eine fehlende BUY-Ampel bedeutet daher NICHT, dass hier nichts ist.">Kandidatenliste, keine Kaufempfehlung — die Einordnung der Nachrichtenlage bleibt bei dir</small><div class="opgrid">${radar.map(r=>`<button type="button" class="opcard ${Number(r.movePct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="Situation-Radar: priorisiert frische Beschleunigung, Breakout-Druck, Opening-Drive, Reclaim, Volumenpuls und Spread-Qualität. Erst Deep-Analyse/Elliott/CRV kann BUY freigeben."><b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b><span class="situation-tag">${esc(r.lifecycle&&r.lifecycle!=='WATCH'?r.lifecycle+' · ':'')}${esc(r.situation||'WATCH')}</span><span class="trend-pct ${Number(r.movePct)>=0?'up':'down'}">${Number(r.movePct)>=0?'+':''}${num(r.movePct,1)}% Tag</span><span class="${r.speedPct!=null?'trend-pct '+(Number(r.speedPct)>=0?'up':'down'):''}">${r.speedPct!=null?'Speed '+(Number(r.speedPct)>=0?'+':'')+num(r.speedPct,2)+'%':'Situation '+num(r.situationScore??r.score,0)}</span><span>${r.spreadPct!=null?'Spread '+num(r.spreadPct,2)+'%':'Spread n.v.'}</span><em>${gainers.some(x=>x.symbol===r.symbol)?'Gainer · Deep Check':'Situation · Deep Check'}</em>${momentumContext(r.symbol)}</button>`).join('')}</div>`;
   el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
 }
 
@@ -2457,7 +2457,7 @@ function renderStocks() {
   (stockRows||[]).forEach(claudeOverlayRow); // Claude-Modus-Ansicht idempotent anwenden
   (stockRows||[]).forEach(momentumOverlayRow); // v3.9.0: Modus A danach, ebenfalls idempotent
   const box=$('#stockGroups'),st=$('#stockState'),counts=$('#stockCounts'); if(!box||!st)return;
-  renderDepotStrip(); renderPortfolioRisk(); renderCrowdStatus(); renderMarketGainers(); renderExtendedWatch(); renderOpeningPanel();
+  renderDepotStrip(); renderPortfolioRisk(); renderCrowdStatus(); renderMarketGainers(); renderExtendedWatch(); renderOpeningPanel(); renderSectorLaggards();
   if(stockMeta.configured===false){box.innerHTML='';st.textContent='Aktien-Datenquelle fehlt';st.className='badge err';if(counts)counts.textContent='Aktienradar nicht konfiguriert';stockHeatmap([]);return;}
   const search=($('#stockQ')?.value||'').trim().toUpperCase(); const filter=$('#stockF')?.value||'';
   let stockFiltered=stockRows.filter(r=>(!search||r.symbol.toUpperCase().includes(search)||String(r.name||'').toUpperCase().includes(search)));
@@ -3093,6 +3093,85 @@ function paint(container, list) {
 }
 
 /* ------------------------------------------------------------------ Render */
+
+
+/* ==== v3.10.0 · Kontextzeile an Momentum-Kandidaten =========================
+   Der Nutzer hat CRWD in der Momentum-Liste GESEHEN — die Discovery hat also
+   funktioniert. Was fehlte, war der eine Satz daneben: warum bewegt der sich
+   gerade, und haengt das mit etwas zusammen, das ich schon weiss?
+
+   `whyNow` wird im Worker bereits befuellt (Radar-Gruende + Situation-Gruende),
+   stand bisher aber nur tief im Fokusfenster unter "Was hat sich geaendert?".
+   Hier kommt es an die Kachel, zusammen mit dem Sektor-Rueckstand — der Zeile,
+   die den Zusammenhang "NVDA laeuft, CRWD hinkt" ueberhaupt erst sichtbar macht.
+
+   Rein additiv: liest nur vorhandene Felder, kein Score-Eingriff.           */
+function momentumContext(symbol){
+  const r=(stockRows||[]).find(x=>String(x.symbol||'').toUpperCase()===String(symbol||'').toUpperCase());
+  if(!r) return '';
+  const bits=[];
+  if(r.sectorLag!=null && Number(r.sectorLeaderRet15)>=SECTOR_RUN_MIN && Number(r.sectorLag)>=SECTOR_LAG_MIN){
+    bits.push(`<span class="mc-lag" title="${esc(`Der Sektor ${r.sector||'?'} läuft mit ${num(Number(r.sectorLeaderRet15),2)} % auf 15 Minuten, dieser Titel steht bei ${num(Number(r.ret15),2)} %. Rückstand ${num(Number(r.sectorLag),2)} Punkte. Grund hinzusehen, kein Kaufsignal.`)}">🧲 ${esc(r.sector||'Sektor')} läuft · ${num(Number(r.sectorLag),1)} Pkt zurück</span>`);
+  }
+  const why=(r.whyNow||[]).filter(Boolean).slice(0,2).join(' · ');
+  if(why) bits.push(`<span class="mc-why" title="${esc('Warum jetzt: die vom Radar und der Situation Engine erkannten Auslöser. Das sind gemessene Kursereignisse, KEINE Nachrichtenmeldungen — den Nachrichtenkontext musst du selbst dazulegen.')}">❓ ${esc(why)}</span>`);
+  const ft=flatexTradability(r);
+  if(ft.tone!=='ok') bits.push(`<span class="mc-ft ft-${ft.tone}" title="${esc(ft.detail)}">${ft.tone==='no'?'⛔ flatex eher nicht':'❓ Handelsplatz prüfen'}</span>`);
+  return bits.length?`<span class="mom-context">${bits.join('')}</span>`:'';
+}
+
+/* ==== v3.10.0 · Sektor-Nachzuegler ==========================================
+   Anlass ist ein realer Trade des Nutzers: Nach starken NVDA-Zahlen lief die
+   Halbleiter-/Security-Nachbarschaft an. CRWD hinkte noch hinterher und war
+   genau deshalb der Kandidat. Die App hat den Titel zwar in der Momentum-Liste
+   gezeigt — aber ohne den einen Hinweis, der die Sache erklaert haette.
+
+   Die Kachel beantwortet nicht "kaufen ja/nein", sondern "wo lohnt der Blick
+   JETZT". Zwei Bedingungen muessen zusammenkommen:
+     1. Der Sektor laeuft   (Anfuehrer mindestens SECTOR_RUN_MIN Prozent auf 15 Min)
+     2. Der Titel hinkt     (Rueckstand mindestens SECTOR_LAG_MIN Prozentpunkte)
+   Ein Rueckstand in einem stehenden Sektor ist bedeutungslos — deshalb Punkt 1.
+
+   Reine Discovery: 0 % BUY-Gewicht, kein Score-Eingriff, keine API-Abfrage.
+   Die Werte liegen im laufenden Scan bereits vor.                           */
+const SECTOR_RUN_MIN = 0.8;   // % auf 15 Min, ab wann ein Sektor als "laufend" gilt
+const SECTOR_LAG_MIN = 0.6;   // Prozentpunkte Rueckstand, ab wann es auffaellt
+function renderSectorLaggards(){
+  const el=$('#sectorLaggards'); if(!el) return;
+  const head=`<div class="ophead"><b>🧲 Sektor-Nachzügler</b>`
+    +`<span title="Der Sektor läuft bereits, dieser Titel noch nicht. Genau diese Konstellation war der CRWD-Fall nach den NVDA-Zahlen. Der Rückstand ist ein Grund hinzusehen, kein Kaufgrund — ein Titel kann auch zurückbleiben, weil er zu Recht zurückbleibt.">Sektor läuft, Titel hinkt noch — Grund hinzusehen, kein Kaufsignal</span>`
+    +`<small>Discovery · 0 % BUY-Gewicht</small>${categoryFreshness(stockMeta.ts)}</div>`;
+
+  const rows=(stockRows||[]).filter(r=>
+    r.sectorLag!=null && r.sectorLeaderRet15!=null &&
+    Number(r.sectorLeaderRet15)>=SECTOR_RUN_MIN &&
+    Number(r.sectorLag)>=SECTOR_LAG_MIN);
+  if(!rows.length){
+    const why=(stockRows||[]).some(r=>r.sectorLag!=null)
+      ? 'Kein Sektor läuft gerade deutlich genug, oder kein Titel hinkt messbar hinterher.'
+      : 'Noch keine Sektor-Vergleichswerte im aktuellen Scan. Es wird bewusst nichts geschätzt.';
+    el.innerHTML=head+`<span class="hint">${esc(why)}</span>`; return;
+  }
+  const cand=rows.sort((a,b)=>Number(b.sectorLag)-Number(a.sectorLag)).slice(0,6);
+  el.innerHTML=head+`<div class="opgrid">${cand.map(r=>{
+    const lag=Number(r.sectorLag), lead=Number(r.sectorLeaderRet15), own=Number(r.ret15);
+    const ft=flatexTradability(r);
+    const why=(r.whyNow||[]).slice(0,2).join(' · ');
+    return `<button type="button" class="opcard ${r.light} lag-card" data-openstock="${esc(r.symbol)}" `
+      +`title="${esc(`${r.symbol}: Der Sektor ${r.sector||'?'} läuft mit ${num(lead,2)} % auf 15 Minuten, dieser Titel steht bei ${num(own,2)} %. Rückstand ${num(lag,2)} Punkte über ${r.sectorPeers||0} Vergleichstitel. Das ist ein Grund hinzusehen und ausdrücklich kein Kaufsignal — der Titel kann auch zu Recht zurückbleiben. Klick öffnet ihn im Fokusfenster.`)}">`
+      +`<b>${esc(r.symbol)}</b>`
+      +`<span class="lag-gap" title="Rückstand auf den Sektor-Anführer in Prozentpunkten.">↑ ${num(lag,1)} Pkt Rückstand</span>`
+      +`<span title="Sektor-Anführer gegen diesen Titel, jeweils 15-Minuten-Bewegung.">${esc(r.sector||'?')} ${num(lead,1)}% / hier ${num(own,1)}%</span>`
+      +`<span class="lag-flatex ft-${ft.tone}" title="${esc(ft.detail)}">${ft.tone==='ok'?'🏦 handelbar':ft.tone==='no'?'⛔ bei flatex eher nicht':'❓ Verfügbarkeit prüfen'}</span>`
+      +`<em>${esc(why||r.setup||'Beobachten')}</em></button>`;
+  }).join('')}</div>`
+  +`<small class="hint">Rückstand heißt: der Sektor bewegt sich, dieser Titel noch nicht. Ob er nachzieht oder zu Recht zurückbleibt, entscheidet die Nachrichtenlage — nicht diese Kennzahl.</small>`;
+  el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>{
+    focusStock=b.dataset.openstock||''; renderStocks();
+    document.querySelector('.stockstage')?.scrollIntoView({behavior:'smooth',block:'start'});
+  }));
+}
+
 /* ==== v3.9.2 · Krypto-Mover (Gegenstueck zur Aktien-Discovery) ==============
    Der Nutzer fragte nach einer Premarket-Kachel fuer Coins. Die gibt es nicht
    und kann es nicht geben: Krypto handelt durchgehend, es existiert weder eine
@@ -3452,7 +3531,7 @@ document.addEventListener('keydown', (e) => {
 
 renderAnalysisMethods();
 // Freshness-Farben muessen auch dann altern, wenn KEINE neue API-Antwort kommt.
-setInterval(()=>{if(document.visibilityState==='visible'){renderMarketGainers();renderExtendedWatch();renderOpeningPanel();}},30_000);
+setInterval(()=>{if(document.visibilityState==='visible'){renderMarketGainers();renderExtendedWatch();renderOpeningPanel();renderSectorLaggards();}},30_000);
 
 /* ------------------------------------------------------------------- Events */
 $('#scan').onclick = async () => {

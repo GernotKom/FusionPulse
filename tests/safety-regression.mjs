@@ -1679,3 +1679,105 @@ console.log('✓ FusionPulse v3.9.2 navigation/tile-order/tile-clarity regressio
 }
 
 console.log('✓ FusionPulse v3.9.3 heatmap-trail regressions: OK');
+
+/* ====================================================================
+   v3.10.0 · Sektor-Nachzügler + Kontext an Momentum-Kandidaten.
+   Anlass: Der Nutzer hat CRWD in der Momentum-Liste GESEHEN und daraus
+   einen profitablen Trade gemacht — ohne dass die App den Zusammenhang
+   „NVDA läuft, CRWD hinkt" gezeigt hätte. Sie konnte es nicht: sectorLag
+   war auf dem primären Datenpfad nie berechnet.
+   Alles hier ist DISCOVERY — kein Score, keine BUY-Wirkung.
+   ==================================================================== */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const idx = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+
+  // -- Der eigentliche Fehler: sectorLag fehlte auf dem PRIMÄREN (Tiingo) Pfad.
+  assert.match(worker, /function applySectorLag\(rows\)\{/, 'Gemeinsame Sektor-Berechnung muss existieren');
+  const calls = [...worker.matchAll(/applySectorLag\(rows\)/g)].length;
+  assert.ok(calls >= 3, `applySectorLag muss auf BEIDEN Datenpfaden laufen, gefunden: ${calls}`);
+  // Twelve-Data-Zweig
+  const twelve = worker.slice(worker.indexOf('rows.sort((a, b) => b.score - a.score);') - 900, worker.indexOf('rows.sort((a, b) => b.score - a.score);'));
+  assert.match(twelve, /applySectorLag\(rows\)/, 'Twelve-Data-Pfad muss den Sektor-Rueckstand berechnen');
+  // Tiingo-Zweig (der zuvor fehlende)
+  const tiingo = worker.slice(worker.indexOf("stockMemo={ts:Date.now(),rows,cycle,sig}") - 400, worker.indexOf("stockMemo={ts:Date.now(),rows,cycle,sig}"));
+  assert.match(tiingo, /applySectorLag\(rows\)/, 'Tiingo-Pfad muss den Sektor-Rueckstand berechnen — hier fehlte er');
+
+  // -- Funktionsnachweis: der Ausdruck wird AUSGEFÜHRT, nicht auf Vorkommen geprüft.
+  //    (Lehre aus v3.9.3: ein Test auf Schreibweise ist bei Rechnungen blind.)
+  {
+    const i = worker.indexOf('function applySectorLag');
+    const src = worker.slice(i, worker.indexOf('\n}', worker.indexOf('return rows;', i)) + 2);
+    const applySectorLag = new Function(src + '; return applySectorLag;')();
+
+    // Der reale Fall: NVDA zieht, CRWD hinkt am weitesten hinterher.
+    const rows = [
+      { symbol:'NVDA', sector:'Technologie', ret15: 4.2 },
+      { symbol:'AMD',  sector:'Technologie', ret15: 2.1 },
+      { symbol:'AVGO', sector:'Technologie', ret15: 1.8 },
+      { symbol:'CRWD', sector:'Technologie', ret15: 0.4 },
+    ];
+    applySectorLag(rows);
+    const byS = Object.fromEntries(rows.map(r => [r.symbol, r]));
+    assert.equal(byS.CRWD.sectorLeaderRet15, 4.2, 'Der Sektor-Anfuehrer muss NVDA sein');
+    assert.equal(byS.CRWD.sectorLag, 3.8, 'CRWD muss 3,8 Punkte Rueckstand zeigen');
+    const worst = [...rows].sort((a,b)=>b.sectorLag-a.sectorLag)[0];
+    assert.equal(worst.symbol, 'CRWD', 'Der groesste Nachzuegler muss oben stehen');
+    assert.ok(byS.NVDA.sectorLag < 0, 'Der Anfuehrer selbst darf keinen positiven Rueckstand haben');
+
+    // Fail-closed: fehlende Werte duerfen NICHT als gemessene Null durchgehen.
+    // `Number(null)` ist 0 und endlich — genau der Fehler aus v3.9.3.
+    const gaps = [
+      { symbol:'A', sector:'Tech', ret15: 3 }, { symbol:'B', sector:'Tech', ret15: 2 },
+      { symbol:'C', sector:'Tech', ret15: 1 },
+      { symbol:'NULLV', sector:'Tech', ret15: null },
+      { symbol:'UNDEF', sector:'Tech' },
+      { symbol:'EMPTY', sector:'Tech', ret15: '' },
+      { symbol:'DISC',  sector:'Discovery', ret15: 5 },
+    ];
+    applySectorLag(gaps);
+    for (const sym of ['NULLV','UNDEF','EMPTY','DISC']) {
+      const r = gaps.find(x => x.symbol === sym);
+      assert.equal(r.sectorLag, null, `${sym}: fehlender/ungueltiger Wert darf keinen Rueckstand erzeugen`);
+    }
+    // Ein einzelner Vergleichstitel ist kein Sektor.
+    const thin = [{ symbol:'X', sector:'Nische', ret15: 1 }, { symbol:'Y', sector:'Nische', ret15: 5 }];
+    applySectorLag(thin);
+    assert.equal(thin[0].sectorLag, null, 'Unter drei Titeln darf kein Sektorurteil entstehen');
+  }
+
+  // -- Die Kachel muss existieren, im Renderlauf hängen und fail-closed filtern.
+  assert.ok(idx.includes('id="sectorLaggards"'), 'Nachzuegler-Kachel braucht einen Platz im Markup');
+  assert.match(app, /function renderSectorLaggards\(\)\{/, 'Nachzuegler-Renderer muss existieren');
+  assert.match(app, /renderSectorLaggards\(\);/, 'Die Kachel muss im Renderlauf aufgerufen werden');
+  const lag = app.slice(app.indexOf('function renderSectorLaggards()'), app.indexOf('function renderCryptoMovers()'));
+  assert.match(lag, /r\.sectorLag!=null/, 'Nur Titel mit gemessenem Rueckstand duerfen in die Kachel');
+  assert.match(lag, /Number\(r\.sectorLeaderRet15\)>=SECTOR_RUN_MIN/,
+    'Ein Rueckstand in einem STEHENDEN Sektor ist bedeutungslos — der Sektor muss laufen');
+  // Der Nicht-Kaufsignal-Charakter muss im Text stehen, nicht nur im Kommentar.
+  assert.match(lag, /kein Kaufsignal/, 'Die Kachel muss ausdruecklich sagen, dass sie kein Kaufsignal ist');
+
+  // -- Kontextzeile an den Momentum-Karten.
+  assert.match(app, /function momentumContext\(symbol\)\{/, 'Kontextzeile muss existieren');
+  assert.match(app, /<em>\$\{gainers\.some[\s\S]{0,90}\}<\/em>\$\{momentumContext\(r\.symbol\)\}/,
+    'Die Kontextzeile muss an der Momentum-Karte haengen');
+  const mc = app.slice(app.indexOf('function momentumContext'), app.indexOf('function renderSectorLaggards'));
+  assert.match(mc, /r\.whyNow/, 'Der Auslöser-Kontext muss verwendet werden');
+  assert.match(mc, /KEINE Nachrichtenmeldungen/,
+    'Der Hinweis muss klarstellen, dass whyNow Kursereignisse sind und keine Nachrichten');
+
+  // -- Die Liste darf sich nicht mehr als Trostpreis darstellen.
+  assert.match(app, /Kandidatenliste, keine Kaufempfehlung/,
+    'Die Momentum-Kachel muss ihre eigene Rolle benennen');
+  assert.match(css, /\.mc-lag\{/, 'Der Sektor-Hinweis braucht eine Formatierung');
+
+  // -- Unverändert: alles hier ist Discovery, nichts davon bewertet.
+  assert.doesNotMatch(worker, /applySectorLag[\s\S]{0,200}score\s*[+*]=/, 'Sektor-Rueckstand darf keinen Score veraendern');
+  const buyReadyBlock = app.slice(app.indexOf('function buyReady'), app.indexOf('function buyReady') + 1600);
+  assert.doesNotMatch(buyReadyBlock, /sectorLag|momentumContext|renderSectorLaggards/,
+    'Der Sektor-Rueckstand darf die Kauf-Freigabe nicht beeinflussen');
+}
+
+console.log('✓ FusionPulse v3.10.0 sector-laggard/momentum-context regressions: OK');
