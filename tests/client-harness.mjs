@@ -90,12 +90,20 @@ export function loadClient(overrides = {}) {
   portfolioExposure, portfolioBlocksNewBuy, portfolioBudgetEur, sectorOfSymbol, positionRiskEur,
   stockStrength, DEFAULTS,
   GLOSS, gloss, gl, glossForSetup, glossForSituation, GLOSS_GROUPS, GLOSS_LABEL,
+  stockOpportunity, momentumOverlayRow,
   coinHeadline, buyReady, sizing, stockHeatmapMark, crowdStatus, crowdTrack, refreshRate,
   get crowdMeta(){return crowdMeta;}, set crowdMeta(v){crowdMeta=v;},
   get crowdMap(){return crowdMap;}, set crowdMap(v){crowdMap=v;},
   get crowdHistory(){return crowdHistory;}, set crowdHistory(v){crowdHistory=v;},
   get refreshHistory(){return refreshHistory;}, set refreshHistory(v){refreshHistory=v;},
   trackRefresh, crowdPrune, earningsFor, earningsWarning,
+  /* v3.16.0: Variante 2 muss AUSGEFUEHRT geprueft werden koennen, nicht per
+     Regex. Ohne diese Bindungen liesse sich nur nachweisen, dass der Code
+     dasteht — nicht, dass Modus A wirklich keine Freigabe mehr erzeugt. */
+  modeAActive, modeABlockText, modeAAgeTag, MODE_A_NO_RELEASE,
+  stockSizeDisplay, stockLevel, stockTradeability, stockOrderPlan,
+  earnEntryStatus, earnNormalizeRows, earnDaysUntil, EARN_WINDOW_DAYS,
+  saveManualEarnings, addManualEarningFromForm, removeManualEarning, renderEarningsEditor,
   get earnData(){return earnData;}, set earnData(v){earnData=v;}, fngPlainOk:true, sentimentTitle, renderSentiment, loadSentiment,
   get fngData(){return fngData;}, set fngData(v){fngData=v;},
   dataSession, withLocalTime, etClockToLocal, nyDeltaMinutes, localTzLabel,

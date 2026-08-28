@@ -2852,3 +2852,191 @@ console.log('✓ FusionPulse v3.14.6 system-lamp-visibility regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.15.0 model-compare/sector-priority/tile-tint regressions: OK');
+
+/* ====================================================================
+   v3.16.0 · VARIANTE 2: Modus A gibt keine Kauf-Freigabe mehr.
+
+   Anlass (gemessen, nicht vermutet): `momentumOverlayRow()` ersetzt 14
+   Anzeigefelder, `netCRV` ist NICHT dabei. `stockTradeability()` prueft
+   bei claudeMode:false aber genau `r.netCRV` gegen `S.minCrvStock`.
+   Modus A wurde also an einer Kennzahl des ChatGPT-Strangs gemessen,
+   die zu einem Plan gehoert, den der Overlay bereits ersetzt hatte.
+
+   Diese Suite prueft AUSGEFUEHRT (Abschnitt 11: nicht auf Vorkommen
+   einer Zeichenkette, sondern auf die Aussage):
+     1. Modus A kann Stufe 3 nicht mehr erreichen.
+     2. Der ChatGPT-Strang gibt weiterhin frei — er ist unberuehrt.
+     3. Ohne Momentum-Block faellt alles ins bisherige Verhalten.
+     4. Die Begruendung kommt aus den Modus-A-Blockern.
+     5. Die Euro-Zahl bleibt sichtbar, gekennzeichnet als Plan.
+   ==================================================================== */
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const S = C.S;
+  S.claudeMode = false; S.sizeMode = 'fixed'; S.fixedTradeEur = 10000;
+  S.equity = 20000; S.riskPct = 1; S.minCrvStock = 3; S.minTp2PctStock = 0;
+  C.stockMeta = { market:{ key:'regular' }, refreshedSymbols:['TEST'], ts: Date.now() };
+
+  /* Eigene Fixture, NICHT aus einer anderen Suite nachgenutzt (Checkliste 4).
+     Bewusst so gebaut, dass sie in BEIDEN Strangen freigabefaehig waere —
+     nur so beweist ein Level != 3 etwas ueber Modus A statt ueber die Daten. */
+  const mk = () => ({
+    symbol:'TEST', name:'Test Inc.', sector:'Technologie',
+    priceUsd:50, priceEur:46, marketPhase:'regular',
+    liveQuoteOk:true, liveQuoteAgeSec:30, updated:new Date().toISOString(),
+    light:'green', score:8.0, netCRV:4.0, tp2Pct:6.5, relVol:2.0,
+    entryUsd:50, stopUsd:49.4, tp1Usd:51.6, tp2Usd:53.3, buyCapacityEur:500000,
+    entryEur:46, stopEur:45.5, tp1Eur:47.5, tp2Eur:49.0,
+    momentum:{ light:'green', score:7.5, verdict:'Kauf-Setup · Momentum',
+      blockers:['RVOL 1.4x < 1,5x'], entryUsd:50, stopUsd:49.2, tp1Usd:52, tp2Usd:54,
+      entryEur:46, stopEur:45.3, tp1Eur:47.9, tp2Eur:49.7, tp2Pct:8.0, stopPct:1.6,
+      rewardRisk:5.0, quoteFresh:true, quoteAgeSec:30 },
+  });
+  const look = (mode) => { S.tradeMode = mode; const r = mk(); C.stockRows = [r];
+    C.momentumOverlayRow(r); return r; };
+
+  // ---- 1. Modus A: keine Freigabe, trotz in JEDER Hinsicht perfektem Titel.
+  const a = look('A');
+  assert.equal(C.MODE_A_NO_RELEASE, true, 'Variante 2 muss eingeschaltet sein');
+  assert.equal(C.modeAActive(a), true, 'Modus A muss an diesem Datensatz wirksam sein');
+  assert.notEqual(C.stockLevel(a), 3,
+    'Modus A darf Stufe 3 (BUY) nicht mehr erreichen — das ist der Kern von Variante 2');
+  assert.equal(C.stockLevel(a), 2, 'Gruen wird zu Stufe 2: abgewertet, nicht ausgeblendet');
+
+  // Die Kopfzeile muss den EIGENEN Zweig nehmen. `kind` allein reicht als
+  // Nachweis NICHT — es stammt aus opp.blockKind und faellt auch ohne den
+  // Zweig auf 'modeA'. Die Negativkontrolle hat genau das aufgedeckt.
+  const hl = C.stockHeadline(a);
+  assert.equal(hl.kind, 'modeA', 'Kopfzeile muss den Modus-A-Zweig melden');
+  assert.equal(hl.icon, '◆', 'Der Modus-A-Zweig hat ein eigenes Symbol, keine Ampel');
+  assert.match(hl.title, /Aufmerksamkeitsfilter/,
+    'Die Kopfzeile muss erklaeren, WARUM es keine Freigabe gibt');
+  assert.doesNotMatch(hl.text, /\bBUY\b/, 'Die Kopfzeile darf kein BUY behaupten');
+  assert.match(C.stockOrderPlan(a), /KEINE KAUF-FREIGABE/,
+    'Auch der kopierbare Plan muss die fehlende Freigabe ausdruecklich nennen');
+
+  // ---- 4. Die Begruendung stammt aus Modus A, nicht aus dem anderen Modell.
+  const opp = C.stockOpportunity(a);
+  assert.equal(opp.ready, false, 'Auch das Opportunity-Band gibt keine Freigabe');
+  assert.match(opp.why, /RVOL 1\.4x/, 'Der Grund muss aus r.blockers (Modus A) kommen');
+  assert.doesNotMatch(opp.why, /Struktur-CRV/,
+    'Der Grund darf NICHT mehr das Struktur-CRV des ChatGPT-Strangs zitieren');
+  assert.match(opp.reasons.join(' '), /Plan netto/, 'Die Euro-Zahl bleibt in den Gruenden');
+
+  // ---- 5. Die Euro-Zahl bleibt, gekennzeichnet als Plan statt als Empfehlung.
+  const szTxt = C.stockSizeDisplay(a, C.stockSizing(a), false);
+  const szHtml = C.stockSizeDisplay(a, C.stockSizing(a), true);
+  assert.match(szTxt, /^Plan\s/, 'Der Einsatz muss als Plangroesse gekennzeichnet sein');
+  assert.doesNotMatch(szTxt, /pot\./, 'Nicht die alte "pot."-Beschriftung des anderen Zweigs');
+  assert.match(szHtml, /keine Kaufempfehlung/,
+    'Der Tooltip muss klarstellen, dass die Zahl keine Empfehlung ist');
+
+  // ---- 2. Der ChatGPT-Strang bleibt unberuehrt. Ohne diesen Nachweis waere
+  //         Variante 2 eine Verschlechterung fuer den parallelen Strang.
+  const b = look('off');
+  assert.equal(C.stockLevel(b), 3,
+    'Ohne Modus A muss die Freigabe erreichbar bleiben — Invariante 9');
+  assert.equal(C.stockHeadline(b).kind, 'buy', 'Die Kopfzeile des anderen Strangs ist unveraendert');
+  assert.equal(C.modeAActive(b), false, 'Bei tradeMode off darf der Zweig nicht greifen');
+
+  // ---- 3. Fail-closed in die andere Richtung: ein alter Cache ohne
+  //         Momentum-Block darf nicht stillschweigend alles sperren.
+  S.tradeMode = 'A';
+  const c = mk(); delete c.momentum; C.stockRows = [c]; C.momentumOverlayRow(c);
+  assert.equal(C.modeAActive(c), false, 'Ohne Momentum-Block ist Modus A nicht wirksam');
+  assert.equal(C.stockLevel(c), 3, 'Alte Caches fallen ins bisherige Verhalten zurueck');
+  S.tradeMode = 'off';
+
+  // ---- Glossar: der neue Begriff braucht einen Eintrag an genau EINER Stelle.
+  assert.ok(C.GLOSS.modeANoRelease && C.GLOSS.modeANoRelease.length > 80,
+    'GLOSS-Eintrag modeANoRelease fehlt oder ist zu duenn');
+  assert.ok(C.GLOSS_LABEL.modeANoRelease, 'GLOSS_LABEL fehlt: modeANoRelease');
+  assert.ok(C.GLOSS_GROUPS.some((g) => g.keys.includes('modeANoRelease')),
+    'modeANoRelease taucht im sichtbaren Glossar nicht auf');
+}
+
+console.log('✓ FusionPulse v3.16.0 mode-A-no-release regressions: OK');
+
+/* ====================================================================
+   v3.16.1 · P6 Teil 1b: Eingabemaske fuer manuelle Quartalstermine.
+   Die Route POST /api/earnings gibt es seit v3.8.2, die Oberflaeche nie.
+   In v3.16.0 war der Code ausgeliefert, aber OHNE Funktionsnachweis —
+   nach Abschnitt 13 zaehlt das nicht als fertig. Hier ist er.
+
+   Geprueft wird AUSGEFUEHRT, nicht per Regex:
+     1. Das Wirkungsfenster folgt exakt earningsFor() (0..14 Tage).
+     2. Die Client-Bereinigung spiegelt writeManualEarnings().
+     3. Keine optimistische Anzeige: bei Serverfehler bleibt der Stand.
+   ==================================================================== */
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  let reply = null, sent = null;
+  const C = loadClient({ fetch: async (u, o) => { sent = { url:String(u), body:JSON.parse(o.body) }; return reply; } });
+  /* Der Client startet beim Laden loadEarnings(). Dessen Promise loest eine
+     Mikrotask spaeter auf und ueberschrieb die Fixture — beim ersten Anlauf
+     fiel dieser Test deshalb aus dem FALSCHEN Grund (Abschnitt 11). */
+  await new Promise((r) => setImmediate(r));
+
+  // ---- 1. Wirkungsfenster. Weicht es von earningsFor() ab, behauptet die
+  //         Maske eine Wirkung, die es nicht gibt.
+  assert.equal(C.EARN_WINDOW_DAYS, 14, 'Fensterbreite muss zu earningsFor() passen');
+  const T = '2026-08-28';
+  assert.equal(C.earnEntryStatus('2026-08-28', T).state, 'active', 'Heute wirkt');
+  assert.equal(C.earnEntryStatus('2026-09-11', T).state, 'active', 'Tag 14 wirkt noch');
+  assert.equal(C.earnEntryStatus('2026-09-12', T).state, 'ahead', 'Tag 15 wirkt noch nicht');
+  assert.equal(C.earnEntryStatus('2026-08-27', T).state, 'past', 'Gestern wirkt nicht mehr');
+  assert.equal(C.earnEntryStatus('quatsch', T).state, 'invalid', 'Unbrauchbares Datum wird benannt');
+  assert.equal(C.earnEntryStatus('2026-09-12', T).active, false,
+    'Ausserhalb des Fensters darf nichts als wirksam gelten — fail-closed');
+
+  // ---- 2. Bereinigung spiegelt den Server. Was hier durchkommt, kommt dort
+  //         ebenfalls durch — sonst luegt die Vorschau.
+  const n = C.earnNormalizeRows([
+    { symbol:' mrna ', date:'2026-09-01', time:'AMC' },
+    { symbol:'toolongsymbol', date:'2026-09-02' },
+    { symbol:'X', date:'01.09.2026' },
+    { symbol:'MRNA', date:'2026-09-01', time:'bmo' },
+    { symbol:'', date:'2026-09-03' }]);
+  assert.equal(n.filter((x) => x.symbol === 'MRNA').length, 1, 'Doppelte werden zusammengefasst');
+  assert.equal(n.find((x) => x.symbol === 'MRNA').time, 'bmo', 'Der spaetere Eintrag gewinnt');
+  assert.ok(!n.some((x) => x.date === '01.09.2026'), 'Falsches Datumsformat wird verworfen');
+  assert.ok(!n.some((x) => !x.symbol), 'Leeres Kuerzel wird verworfen');
+  assert.ok(n.every((x) => x.symbol.length <= 8), 'Kuerzel wird wie serverseitig auf 8 gekuerzt');
+
+  // ---- 3. Keine optimistische Anzeige. Das ist der Kern: der Server kuerzt
+  //         und wirft ohne D1. Wer seine eigene Eingabe anzeigt, zeigt einen
+  //         Termin, den es nicht gibt.
+  C.earnData = { state:'ok', auto:[], manual:[{ symbol:'ALT', date:'2026-09-05', time:'amc' }] };
+  reply = { ok:false, status:500, json: async () => ({ state:'error', error:'Keine D1-Verbindung' }) };
+  assert.equal(await C.saveManualEarnings([{ symbol:'NEU', date:'2026-09-06', time:'amc' }]), false,
+    'Ein Serverfehler muss als Fehlschlag zurueckkommen');
+  assert.equal(C.earnData.manual.length, 1, 'Bei Serverfehler bleibt der bisherige Stand unangetastet');
+  assert.equal(C.earnData.manual[0].symbol, 'ALT', 'Es wird nichts lokal hinzuerfunden');
+  assert.equal(sent.body.rows[0].symbol, 'NEU', 'Es wird die VOLLSTAENDIGE Liste geschickt — die Route ersetzt');
+
+  reply = { ok:true, status:200, json: async () => ({ state:'ok', rows:[{ symbol:'SRV', date:'2026-09-07', time:'bmo' }] }) };
+  assert.equal(await C.saveManualEarnings([{ symbol:'IRGENDWAS', date:'2026-09-09', time:'amc' }]), true);
+  assert.equal(C.earnData.manual[0].symbol, 'SRV',
+    'Uebernommen wird die SERVERANTWORT, nicht die eigene Eingabe');
+
+  // ---- Oberflaeche und Glossar
+  const index = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(index, /id="earningsEditor"/, 'Die Maske braucht einen sichtbaren Ort');
+  for (const id of ['earnSym', 'earnDate', 'earnSlot', 'earnAdd', 'earnManualList', 'earnEditState'])
+    assert.ok(index.includes(`id="${id}"`), `Bedienelement fehlt im Markup: ${id}`);
+  // Die Felder muessen STATISCH im Markup stehen: renderEarningsBoard() schreibt
+  // sein innerHTML bei jedem Scan neu und wuerde ein erzeugtes Formular samt
+  // Eingabefokus mitten im Tippen verwerfen.
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const editor = app.slice(app.indexOf('function renderEarningsEditor'), app.indexOf('function wireEarningsEditor'));
+  assert.ok(editor.length > 400, 'Der Editor-Block muss gefunden werden');
+  assert.ok(!/id="earnSym"|id="earnDate"|id="earnSlot"/.test(editor),
+    'Die Eingabefelder duerfen NICHT neu gerendert werden — sonst geht der Tippfokus verloren');
+  assert.ok(C.GLOSS.earnManual && C.GLOSS.earnManual.length > 80, 'GLOSS-Eintrag earnManual fehlt');
+  assert.ok(C.GLOSS_LABEL.earnManual, 'GLOSS_LABEL fehlt: earnManual');
+  assert.ok(C.GLOSS_GROUPS.some((g) => g.keys.includes('earnManual')),
+    'earnManual taucht im sichtbaren Glossar nicht auf');
+}
+
+console.log('✓ FusionPulse v3.16.1 manual-earnings-editor regressions: OK');

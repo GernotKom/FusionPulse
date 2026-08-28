@@ -1964,7 +1964,10 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3, favoriteSymbo
    ausdruecklich nicht mehr sein sollte — ein Katalog-Pool. */
 const PRIORITY_SECTORS = [
   ['Pharma/Healthcare', new Set(['LLY','JNJ','MRK','PFE','ABBV','AMGN','GILD','BMY','VRTX','REGN','MRNA','BIIB','ZTS','ISRG','UNH','CVS','TMO','DHR','ABT','MDT','SYK','BSX','HCA','ELV','CI','BAX','EW','IDXX','IQV','RMD','DXCM','ALNY','INCY','NBIX','UTHR','EXEL','HALO','SRPT','ABSI','RXRX','CRSP','NTLA','BEAM','VEEV','MOH','ZBH','HOLX','PODD','CTLT','JAZZ','NVAX','SGEN','ARWR','APLS','KRTX','MDGL','CYTK','ITCI','RARE','FOLD','PTCT','BPMC','DNLI'])],
-  ['Edelmetalle/Minen', new Set(['NEM','GOLD','AEM','KGC','AU','WPM','FNV','RGLD','PAAS','AGI','BTG','HMY','EGO','SSRM','CDE','HL','EXK','FSM','MAG','GFI','SBSW','IAG','NGD','OR','SAND','DRD','SILV','MUX','GATO','SKE','ORLA','PLG','FCX','SCCO','TECK','RIO','BHP','VALE','AA','MP','ALB','UEC','CCJ','DNN','NXE','ERO','HBM','CS','TFPM','EQX','NGT','ASM'])],
+  /* v3.16.0 · Bereinigt. 'CS' war Credit Suisse — die ADS wurden am 12.6.2023
+     von der NYSE genommen, ein toter Ticker auf einem Listenplatz. 'NGT' ist
+     Newmonts Toronto-Listing und kommt im US-Feed nicht vor. Beide entfernt. */
+  ['Edelmetalle/Minen', new Set(['NEM','GOLD','AEM','KGC','AU','WPM','FNV','RGLD','PAAS','AGI','BTG','HMY','EGO','SSRM','CDE','HL','EXK','FSM','MAG','GFI','SBSW','IAG','NGD','OR','SAND','DRD','SILV','MUX','GATO','SKE','ORLA','PLG','FCX','SCCO','TECK','RIO','BHP','VALE','AA','MP','ALB','UEC','CCJ','DNN','NXE','ERO','HBM','TFPM','EQX','ASM'])],
   ['Technologie',       new Set(['AAPL','MSFT','NVDA','AVGO','AMD','INTC','QCOM','TXN','MU','AMAT','LRCX','KLAC','ADI','MRVL','NXPI','ON','SWKS','MPWR','TER','ENTG','GOOGL','META','AMZN','CRM','ORCL','ADBE','NOW','INTU','PANW','CRWD','ZS','SNOW','DDOG','NET','MDB','TEAM','WDAY','SHOP','PLTR','SMCI','DELL','ANET','CSCO','IBM','ACN','UBER','ABNB','COIN','HOOD','PYPL','ARM','IONQ','RGTI','QBTS','AFRM','ZM','CEG','SDGR','MSTR','CRWV','APP','TSM','ASML','AMBA','ALAB','CRDO','LSCC','RMBS','SITM'])],
 ];
 const PRIORITY_SECTOR_BY_SYMBOL = (() => {

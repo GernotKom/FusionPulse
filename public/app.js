@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.15.0 — Frontend
+   FusionPulse v3.16.1 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -630,6 +630,12 @@ const GLOSS = {
   brokerAvail:'Handelbarkeit bei flatex: Ob ein Titel im Handelsangebot deines Brokers ueberhaupt vorkommt. Die Anzeige leitet das aus dem Primaerlisting ab (NYSE/NASDAQ/AMEX = in der Regel ueber US-Direkthandel verfuegbar; OTC/Pink Sheets = meist nicht oder nur mit sehr schlechten Spreads). Sie ist ausdruecklich KEINE bestaetigte Verfuegbarkeit und keine Preisauskunft — bestaetigt ist erst, was die Ordermaske zeigt. Sie veraendert weder Score noch Kauf-Freigabe.',
   hysterese:'Hysterese: Die Hürde zum Wiedereinschalten liegt bewusst höher als die zum Abschalten. Ohne diesen Abstand würde reines Zufallsrauschen das System dauernd zwischen an und aus springen lassen.',
 
+  /* --- Keine Freigabe in Modus A (v3.16.0) --- */
+  modeANoRelease:'Kandidat statt Kauf-Freigabe: In Modus A gibt FusionPulse bewusst KEIN BUY mehr aus. Wozu das dient: Modus A ist ein Aufmerksamkeitsfilter — er sagt dir, welcher Titel gerade auffällig ist, rechnet Entry, Stop, beide Ziele, den Euro-Einsatz und den Verlust am Stop durch und nennt, woran es noch hängt. Die Kaufentscheidung bleibt vollständig bei dir. Warum das geändert wurde: Bis v3.15.0 wurde ein Modus-A-Plan gegen das Struktur-CRV des parallelen FusionPulse-Verfahrens geprüft — eine Kennzahl, die zu einem ganz anderen Plan gehört, der gar nicht angezeigt wurde. Eine Freigabe konnte deshalb praktisch nie zustande kommen, egal wie gut das Momentum-Setup war. Statt dafür neue geratene Schwellen einzuführen, entfällt die Freigabe in diesem Modus. Was das ausdrücklich NICHT heißt: Es heißt nicht, dass ein Titel schlecht ist, und nicht, dass du nicht kaufen sollst. Es heißt nur, dass die App diese Entscheidung nicht mehr für dich behauptet. Wer eine echte Freigabe will, schaltet Modus A in den Einstellungen aus — dann gilt wieder das FusionPulse-Regelwerk mit seinen eigenen Kriterien.',
+
+  /* --- Quartalstermine von Hand (v3.16.0) --- */
+  earnManual:'Eigener Quartalstermin: Ein Termin, den du selbst einträgst, statt ihn vom automatischen Kalender zu holen. Wozu er dient: Der automatische Kalender ist im gebuchten Tarif möglicherweise gar nicht enthalten — ein selbst eingetragener Termin funktioniert unabhängig davon und gilt vor dem automatischen. Er erzeugt eine Warnung an genau diesem Titel, und diese Warnung kann die Bewertung ausschließlich HERABSTUFEN, niemals eine Kauf-Freigabe erzeugen. Was er ausdrücklich NICHT ist: eine Richtungsaussage. Ein Termin sagt nur, dass sich der Kurs danach um ein Vielfaches dessen bewegen kann, was ein Intraday-Plan als Ziel vorsieht — in beide Richtungen. Zwei Einschränkungen stehen an jedem Eintrag: Eine Warnung erscheint nur für Termine von heute bis in 14 Tage, und in der Tafel darüber erscheinen nur Titel, die gerade analysiert werden. Ein Termin außerhalb dieser Fenster ist trotzdem gespeichert und wirkt später von selbst.',
+
   /* --- Modul 2: Portfolio --- */
   riskPerTrade:'Risiko je Trade: Der Betrag, den du verlierst, wenn genau dieser eine Trade am Stop endet. NICHT die Kaufsumme — die ist ein Vielfaches davon.',
   portfolioBudget:'Gesamt-Risikobudget: Die Obergrenze für alles, was gleichzeitig auf dem Spiel steht. Wichtig, weil fünf Trades mit je „nur 0,75 %" zusammen 3,75 % ergeben. Die Einzelbegrenzung oben sagt darüber nichts.',
@@ -773,12 +779,71 @@ function portfolioBlocksNewBuy(r){
   return px.budget>0 && px.freeRisk < px.perTradeReal;
 }
 
+/* ==== v3.16.0 · MODUS A GIBT KEINE KAUF-FREIGABE MEHR (Variante 2) ==========
+   BEFUND, der dazu gefuehrt hat (gemessen, nicht vermutet):
+
+   `momentumOverlayRow()` ersetzt 14 Anzeigefelder — `netCRV` ist NICHT dabei.
+   `stockTradeability()` liest bei `claudeMode:false` aber genau `r.netCRV` als
+   `gateCrv` und prueft es gegen `S.minCrvStock` (3,0). Modus A lieferte also
+   seinen eigenen Plan und wurde an der Kennzahl eines Plans gemessen, den der
+   Overlay gerade ersetzt hatte. Im Harness nachgewiesen: ein Titel mit
+   Momentum-Ampel gruen, Score 7,5 und Ziel:Stop 5,3 bekam Level 2; ein Anheben
+   des Momentum-Scores auf 9,5 aenderte NICHTS, ein Anheben von `netCRV` auf 3,2
+   kippte die Freigabe. Dazu ein Totband: `stockLevel` verlangt Score >= 7,2
+   (FUSION_MIN_SCORE_STOCK), Modus A wird schon ab 6,8 gruen.
+
+   ZWEI MOEGLICHE ANTWORTEN, die Entscheidung ist gefallen:
+   (1) Modus A bekommt eigene Gates — mehr Mechanik, mehr Schwellen zu raten.
+   (2) Modus A gibt gar keine Freigabe mehr. GEWAEHLT.
+
+   Begruendung, die aelter ist als dieser Befund: seit v3.10.0 steht in der
+   Uebergabe, dass die realistische Zielsetzung ein AUFMERKSAMKEITSFILTER ist
+   und kein Signalgeber. Der Nutzer hat an CRWD und NVDA verdient, ohne dass die
+   App je BUY gesagt hat. Eine Freigabe, die aus Sicherheitsgruenden nie kommt,
+   ist kein Schutz — sie ist eine Zusage, die die App nicht einloest.
+
+   WAS DAS KONKRET HEISST:
+   - In Modus A ist Stufe 3 (BUY) unerreichbar. `stockLevel()` deckelt bei 2.
+     Das kann ausschliesslich ABWERTEN (Invariante 1 und 9).
+   - Der ChatGPT-Strang bleibt unberuehrt: der Zweig greift nur, wenn Modus A
+     tatsaechlich aktiv ist UND der Worker einen Momentum-Block geliefert hat.
+     Bei `tradeMode:'off'` ist jede Zeile hier wirkungslos.
+   - Die Zahlen verschwinden NICHT. Plan, Euro-Einsatz, Verlust am Stop und die
+     Blocker des Momentum-Blocks bleiben sichtbar — das ist der eigentliche
+     Nutzen. Was verschwindet, ist die Behauptung einer Freigabe.
+   - Die Begruendung kommt ab jetzt aus `r.blockers` (Modus A), nicht mehr aus
+     dem Struktur-CRV des anderen Modells. Vorher stand an einem Modus-A-Titel
+     ein Grund, der sich auf einen nicht angezeigten Plan bezog.             */
+const MODE_A_NO_RELEASE = true;
+/** Ist an DIESEM Datensatz gerade Modus A wirksam? Eine Stelle, damit Kopfzeile,
+ *  Ton, Plan, Heatmap und Groessenanzeige nie auseinanderlaufen (Invariante 7). */
+function modeAActive(r){ return MODE_A_NO_RELEASE && momentumModeOn() && !!r?.momentumActive; }
+/** Die Blocker des Momentum-Blocks, als lesbarer Grund. Fail-closed: ohne
+ *  Blockerliste wird nichts erfunden, sondern der Grundsatz genannt. */
+function modeABlockText(r){
+  const b=Array.isArray(r?.blockers)?r.blockers.filter(Boolean):[];
+  return b.length?b.slice(0,3).join(' · '):'Modus A nennt keinen offenen Blocker — die Freigabe entfaellt hier grundsaetzlich, nicht wegen dieses Titels.';
+}
+
+/** Kurzmarke an der Kopfzeile, wenn Modus A den geforderten Live-Kurs nicht hat.
+ *  Fail-closed: unbekanntes Alter wird wie „nicht live" behandelt, nicht wie ok. */
+function modeAAgeTag(r){
+  const m=r?.momentum; if(!m) return '';
+  if(m.quoteFresh===true) return '';
+  const s=Number(m.quoteAgeSec);
+  return Number.isFinite(s)?` · Kurs ${Math.round(s/60)} Min alt`:' · Kursalter unbekannt';
+}
+
 /* Paket A: Menge der stummgeschalteten Setups (aus /api/attribution).
    Ein stummes Setup wird nie auf BUY (Stufe 3) gehoben – aber weiterhin
    angezeigt (Stufe 2/1), damit du es beobachten kannst. Kein Score-Eingriff. */
 let mutedSetupSet = new Set();
 function setupOf(r){ return String(r?.situation || r?.situationType || r?.setup || '').trim(); }
 const stockLevel = (r) => {
+  /* v3.16.0 · Variante 2: In Modus A ist Stufe 3 unerreichbar. Der Deckel steht
+     GANZ OBEN, damit keine spaetere Bedingung ihn versehentlich umgeht — und er
+     wertet nur ab: gruen wird 2 statt 3, gelb und rot bleiben, wo sie waren. */
+  if (modeAActive(r)) return r.light === 'green' ? 2 : r.light === 'yellow' ? 1 : 0;
   const t = stockTradeability(r);
   const fresh = stockFreshness(r);
   const minScore = (S.claudeMode && r.claude) ? CLAUDE_MIN_SCORE_STOCK : FUSION_MIN_SCORE_STOCK;
@@ -1384,6 +1449,19 @@ async function scan(force = false) {
 
 function stockOpportunity(r){
   const sz=stockSizing(r), tr=stockTradeability(r), f=stockFreshness(r);
+  /* v3.16.0 · Variante 2: In Modus A gibt es keine Opportunity-Freigabe, und der
+     Grund darf nicht mehr aus dem Struktur-CRV des anderen Modells kommen. Die
+     Zahlen bleiben: Plan-Netto und Einsatz stehen weiterhin in den Gruenden. */
+  if(modeAActive(r)){
+    const reasons=[];
+    if(Number(r.score)>0) reasons.push(`Momentum-Score ${num(r.score,1)}/10`);
+    if(Number.isFinite(Number(r.momentum?.rewardRisk))) reasons.push(`Ziel:Stop ${num(r.momentum.rewardRisk,1)}×`);
+    if(sz) reasons.push(`Plan netto ${eur(Number(sz.planNet||0),0)}`);
+    if(Number(r.relVol||0)>=1.5) reasons.push(`RVOL ${num(r.relVol,1)}×`);
+    return {ready:false, tier:'candidate', label:'KANDIDAT · MODUS A',
+      why:`Modus A gibt keine Kauf-Freigabe — er zeigt Kandidaten und rechnet den Plan durch. ${modeABlockText(r)}`,
+      blockKind:'modeA', reasons:reasons.slice(0,3), distance:0, minNet:0};
+  }
   const phase=stockMeta?.market?.key||r.marketPhase||'closed';
   const opportunityPhase=['premarket-early','premarket','opening','regular'].includes(phase);
   const claude=!!(S.claudeMode&&r.claude);
@@ -1487,6 +1565,14 @@ function stockHeadline(r){
   const ewCrit = earningsWarning(r?.symbol);
   if (ewCrit && ewCrit.critical) return clamp({
     light:'yellow', icon:'⚠', text:`Setup ok · Quartalszahlen ${ewCrit.when}${modeTagOf(r)}`, kind:'event', title:ewCrit.detail });
+  /* v3.16.0 · Variante 2: Modus A hat keine Freigabe. Der Zweig steht VOR dem
+     BUY-Zweig — nach ihm waere er wirkungslos, derselbe Fehler wie bei der
+     Terminwarnung in v3.8.2. Der Grund kommt aus den Modus-A-Blockern, nicht
+     aus dem Struktur-CRV des anderen Modells. */
+  if (modeAActive(r)) return clamp({
+    light, icon:'◆', text:`Kandidat · Modus A${modeAAgeTag(r)}`, kind:'modeA',
+    title:`Modus A gibt bewusst KEINE Kauf-Freigabe. Er ist ein Aufmerksamkeitsfilter: er sagt dir, welcher Titel gerade auffaellig ist, und rechnet dir den Plan durch — die Kaufentscheidung bleibt bei dir.\n\nDas Kursmuster steht auf ${light === 'green' ? 'gruen' : light === 'yellow' ? 'gelb' : 'rot'}: ${String(r?.verdict || '')}.\n\nWoran Modus A gerade haengt: ${modeABlockText(r)}\n\nWarum keine Freigabe: bis v3.15.0 wurde ein Modus-A-Plan gegen das Struktur-CRV des ChatGPT-Strangs geprueft — eine Kennzahl, die zu einem Plan gehoert, der gar nicht angezeigt wird. Statt dafuer neue geratene Schwellen einzufuehren, entfaellt die Freigabe in diesem Modus.\n\nFuer eine Freigabe schalte Modus A in den Einstellungen aus; dann gilt wieder das FusionPulse-Regelwerk mit seinen eigenen Gates.`
+  });
   if (stockLevel(r) === 3) return clamp({
     light:'green', icon:'🟢', text:'BUY', kind:'buy',
     title:'Alle Bedingungen sind gleichzeitig erfüllt: Musterqualität, aktuelle Daten, offener Markt, ausführbare Größe und ein Gewinnpotenzial, das Risiko und Kosten rechtfertigt.\n\nDas ist ein Vorschlag nach deinen eigenen Regeln, keine Prognose. FusionPulse führt nichts automatisch aus.'
@@ -1604,6 +1690,13 @@ function stockPx(usdVal, eurVal, d = 2) {
 
 function stockSizeDisplay(r, sz, html = true) {
   if (!sz) return '–';
+  /* v3.16.0 · Variante 2: In Modus A ist die Euro-Zahl das Wichtigste an der
+     Karte — sie darf also nicht verschwinden, nur weil es keine Freigabe gibt.
+     Sie wird als PLANGROESSE gekennzeichnet, nicht als Empfehlung. */
+  if (modeAActive(r)) {
+    const t = `Rechnerischer Einsatz nach deinem Sizing-Modell. Modus A gibt keine Kauf-Freigabe — diese Zahl ist die Groesse des durchgerechneten Plans, keine Kaufempfehlung.`;
+    return html ? `<span class="potential-size" title="${esc(t)}">Plan ${eur(sz.notional,0)}</span>` : `Plan ${eur(sz.notional,0)}`;
+  }
   const lvl = stockLevel(r);
   if (lvl === 3) return html ? `<span class="action-size">${eur(sz.notional,0)}</span>` : eur(sz.notional,0);
   if (r.light === 'yellow' || r.light === 'green') return html ? `<span class="potential-size" title="Nur theoretische Positionsgröße. Aktuell keine Kauf-Freigabe.">pot. ${eur(sz.notional,0)}</span>` : `pot. ${eur(sz.notional,0)}`;
@@ -1821,6 +1914,8 @@ const GLOSS_GROUPS = [
   {title:'Positionsgröße und Handelsmodus (v3.9.0)',          keys:['sizeModeRisk','sizeModeFixed','maxLoss','tradeModeA','consolidation','quoteAge']},
   {title:'Selbstauswertung (Modul 0)',                        keys:['sampleN','inSample','oos','wilson','overfit','multiTest','mute','hysterese']},
   {title:'Handelbarkeit beim Broker (v3.9.1)',                keys:['brokerAvail']},
+  {title:'Quartalstermine (v3.16.0)',                         keys:['earnManual']},
+  {title:'Kandidat statt Freigabe (v3.16.0)',                 keys:['modeANoRelease']},
   {title:'Portfolio-Risiko (Modul 2)',                        keys:['riskPerTrade','portfolioBudget','cluster','diversify','stopReal']},
 ];
 const GLOSS_LABEL = {
@@ -1845,6 +1940,8 @@ const GLOSS_LABEL = {
   score:'Score (0–10)', maturity:'Reife (0–100 %)', situationScore:'Situation (0–100)',
   lifecyclePhase:'Phase (PREP / IGNITION / CONFIRM / LATE)', execScore:'Ausführbarkeit (0–10)',
   sectorTag:'Branche / Sektor', brokerAvail:'flatex-Handelbarkeit (Hinweis)',
+  earnManual:'Quartalstermin selbst eintragen',
+  modeANoRelease:'Warum Modus A kein BUY mehr ausgibt',
   sit_squeeze:'SQUEEZE RELEASE', sit_breakoutStart:'BREAKOUT START', sit_breakoutPressure:'BREAKOUT PRESSURE',
   sit_reclaim:'RECLAIM', sit_pullbackHold:'PULLBACK HOLD', sit_acceleration:'ACCELERATION',
   sit_nearHigh:'NEAR HIGH', sit_openingDrive:'OPENING DRIVE', sit_watch:'WATCH',
@@ -2298,6 +2395,7 @@ async function loadEarnings(force=false){
     const r=await fetch('/api/earnings?'+q,{cache:'no-store'});
     earnData=await r.json();
   }catch(e){ earnData={state:'unavailable',error:String(e.message||e),auto:[],manual:[]}; }
+  renderEarningsEditor();   // v3.16.0: Eingabemaske zeigt den Serverstand, nicht die Eingabe
   renderStocks();
 }
 
@@ -2330,6 +2428,186 @@ function earningsWarning(symbol){
       e.stale?'ACHTUNG: Der Kalender war zuletzt nicht erreichbar, dieser Termin stammt aus dem Zwischenspeicher und kann veraltet sein.':'',
       'Vor einer Order den Termin gegenprüfen — Unternehmen verschieben ihn gelegentlich.'
     ].filter(Boolean).join('\n') };
+}
+
+/* ==== v3.16.0 · P6 Teil 1b: Eingabemaske fuer manuelle Quartalstermine ======
+   Die Route POST /api/earnings gibt es seit v3.8.2 und sie funktioniert. Eine
+   Oberflaeche dazu gab es nie. Ein Feature, das nur per curl bedienbar ist, ist
+   fuer den Nutzer nicht vorhanden — dieselbe Klasse wie der Modul-0-Schalter
+   (v3.9.1) und die unsichtbare Systemampel (v3.14.6).
+
+   Drei Entscheidungen, die hier wichtiger sind als der Code:
+
+   1. KEINE optimistische Anzeige. Angezeigt wird ausschliesslich das, was der
+      Server zurueckmeldet. Er kuerzt Kuerzel und Zeitfenster und wirft ohne
+      D1-Verbindung. Wuerde der Client seine eigene Liste als Wahrheit zeigen,
+      saehe der Nutzer einen Termin, den es auf dem Server nicht gibt — genau
+      die Sorte stiller Fehler, die diese App nicht machen darf. Schlaegt das
+      Speichern fehl, bleibt `earnData.manual` unangetastet.
+
+   2. Ein eingetragener Termin WIRKT NICHT IMMER SOFORT, und das muss dranstehen.
+      `earningsFor()` liefert nur im Fenster 0..14 Tage etwas, und die Tafel
+      darueber zeigt nur Titel, die gerade analysiert werden. Ohne diese zwei
+      Hinweise traegt der Nutzer einen Termin ein, sieht nichts und haelt die
+      Maske fuer kaputt — obwohl beides so gewollt ist.
+
+   3. Loeschen ist die Gegenrichtung zur Invariante. Eintragen kann
+      ausschliesslich abwerten; Loeschen nimmt eine Abwertung WEG. Deshalb
+      zwei Klicks, nicht einer. Ein Tippfehler muss korrigierbar bleiben, aber
+      nicht mit einem Rutscher.
+
+   Diese Schicht rechnet nichts: kein Score, kein Gate, keine Ampel, keine
+   Freigabe. Sie pflegt eine Datenquelle, die es seit v3.8.2 gibt.           */
+const EARN_WINDOW_DAYS=14;                 // identisch mit earningsFor()
+const EARN_SLOT_LABEL={amc:'nB · nach Börsenschluss', bmo:'vB · vor Börsenbeginn'};
+let earnEditBusy=false, earnArmedDelete='';
+
+function earnToday(){ return new Intl.DateTimeFormat('en-CA',{timeZone:NY_TZ}).format(new Date()); }
+
+/** Tage bis zum Termin, in NY-Kalendertagen — dieselbe Rechnung wie earningsFor(). */
+function earnDaysUntil(date, today){
+  const d=String(date||'').trim(); if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+  const t=String(today||earnToday());
+  return Math.round((Date.parse(d+'T12:00:00Z')-Date.parse(t+'T12:00:00Z'))/86_400_000);
+}
+
+/** Wirkt dieser Eintrag gerade? Muss exakt dem 0..14-Fenster von earningsFor()
+ *  folgen, sonst behauptet die Maske eine Wirkung, die es nicht gibt. */
+function earnEntryStatus(date, today){
+  const d=earnDaysUntil(date,today);
+  if(d==null) return {state:'invalid', days:null, text:'Datum unbrauchbar', active:false};
+  if(d<0) return {state:'past', days:d, text:`abgelaufen · vor ${-d} T`, active:false};
+  if(d>EARN_WINDOW_DAYS) return {state:'ahead', days:d, text:`wirkt erst in ${d-EARN_WINDOW_DAYS} T`, active:false};
+  return {state:'active', days:d, active:true,
+    text:d===0?'heute · wirkt':d===1?'morgen · wirkt':`in ${d} T · wirkt`};
+}
+
+/** Spiegelt die Serverbereinigung aus writeManualEarnings(). Was hier
+ *  wegfaellt, faellt dort ebenfalls weg — die Vorschau luegt damit nicht. */
+function earnNormalizeRows(rows){
+  const out=new Map();
+  for(const x of (Array.isArray(rows)?rows:[])){
+    const sym=String(x?.symbol||'').trim().toUpperCase().slice(0,8);
+    const date=String(x?.date||'').trim();
+    if(!sym||!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    const raw=String(x?.time||'amc').trim().toLowerCase().slice(0,4);
+    out.set(sym+'|'+date,{symbol:sym, date, time:/bmo|before|pre/.test(raw)?'bmo':'amc'});
+  }
+  return [...out.values()]
+    .sort((a,b)=>a.date.localeCompare(b.date)||a.symbol.localeCompare(b.symbol))
+    .slice(0,200);
+}
+
+function setEarnEditState(tone,msg){
+  const el=$('#earnEditState'); if(!el) return;
+  el.dataset.tone=tone||''; el.textContent=msg||'';
+}
+
+/** Schreibt die VOLLSTAENDIGE Liste — die Route ersetzt, sie ergaenzt nicht.
+ *  Uebernommen wird nur die Serverantwort. */
+async function saveManualEarnings(rows, okMsg){
+  if(earnEditBusy) return false;
+  earnEditBusy=true; setEarnEditState('busy','Wird gespeichert …');
+  try{
+    const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
+    const r=await fetch('/api/earnings?'+q,{method:'POST',cache:'no-store',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify({rows:earnNormalizeRows(rows)})});
+    let d=null; try{ d=await r.json(); }catch{}
+    if(!r.ok || d?.state!=='ok' || !Array.isArray(d?.rows)){
+      const why=d?.error||`HTTP ${r.status}`;
+      setEarnEditState('err',`Nicht gespeichert: ${why}. Angezeigt wird weiterhin der Stand vom Server.`);
+      return false;
+    }
+    if(earnData) earnData.manual=d.rows;
+    else earnData={state:'ok',auto:[],manual:d.rows};
+    setEarnEditState('ok', okMsg||'Gespeichert.');
+    earnArmedDelete='';
+    renderEarningsEditor(); renderStocks();
+    return true;
+  }catch(e){
+    setEarnEditState('err',`Nicht gespeichert: ${String(e?.message||e)}. Angezeigt wird weiterhin der Stand vom Server.`);
+    return false;
+  }finally{ earnEditBusy=false; }
+}
+
+function addManualEarningFromForm(){
+  const sym=String($('#earnSym')?.value||'').trim().toUpperCase().slice(0,8);
+  const date=String($('#earnDate')?.value||'').trim();
+  const slot=String($('#earnSlot')?.value||'amc')==='bmo'?'bmo':'amc';
+  if(!sym){ setEarnEditState('err','Kürzel fehlt.'); return false; }
+  if(!/^[A-Z0-9.\-]{1,8}$/.test(sym)){ setEarnEditState('err','Kürzel unbrauchbar. Erlaubt sind Buchstaben, Ziffern, Punkt und Bindestrich, höchstens 8 Zeichen.'); return false; }
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)){ setEarnEditState('err','Datum fehlt oder hat nicht das Format JJJJ-MM-TT.'); return false; }
+  const known=(earnData?.manual||[]).some(x=>String(x?.symbol||'').toUpperCase()===sym&&String(x?.date||'')===date);
+  const st=earnEntryStatus(date);
+  const note=known?`${sym} · ${date} war schon eingetragen und wurde aktualisiert.`
+    :st.state==='past'?`${sym} · ${date} gespeichert — der Termin liegt aber in der Vergangenheit und wirkt nicht mehr.`
+    :st.state==='ahead'?`${sym} · ${date} gespeichert — sichtbar wird er ${st.days-EARN_WINDOW_DAYS} Tage später, im 14-Tage-Fenster.`
+    :`${sym} · ${date} gespeichert.`;
+  saveManualEarnings([...(earnData?.manual||[]),{symbol:sym,date,time:slot}], note);
+  const s=$('#earnSym'); if(s) s.value='';
+  return true;
+}
+
+/** Zwei Klicks: der erste schaerft, der zweite loescht. Loeschen nimmt eine
+ *  Abwertung weg und ist deshalb bewusst kein Ein-Klick-Vorgang. */
+function removeManualEarning(key){
+  const [sym,date]=String(key||'').split('|');
+  if(!sym||!date) return false;
+  if(earnArmedDelete!==key){
+    earnArmedDelete=key;
+    renderEarningsEditor();
+    setEarnEditState('warn',`${sym} · ${date} wirklich entfernen? Noch einmal klicken. Ohne diesen Termin entfällt die Warnung vor den Zahlen.`);
+    return false;
+  }
+  const rest=(earnData?.manual||[]).filter(x=>!(String(x?.symbol||'').toUpperCase()===sym&&String(x?.date||'')===date));
+  saveManualEarnings(rest,`${sym} · ${date} entfernt.`);
+  return true;
+}
+
+function renderEarningsEditor(){
+  const el=$('#earnManualList'); if(!el) return;
+  if(!earnData){ el.innerHTML='<span class="hint">Terminkalender wird geladen.</span>'; return; }
+  const rows=earnNormalizeRows(earnData.manual||[]);
+  if(!rows.length){
+    el.innerHTML='<span class="hint">Noch kein eigener Termin eingetragen. Manuelle Termine überstimmen den automatischen Kalender und funktionieren auch dann, wenn dieser im gebuchten Tarif nichts liefert.</span>';
+    return;
+  }
+  const today=earnToday();
+  const analysed=new Set((stockRows||[]).map(r=>String(r.symbol||'').toUpperCase()));
+  el.innerHTML=rows.map(x=>{
+    const st=earnEntryStatus(x.date,today);
+    const key=`${x.symbol}|${x.date}`;
+    const armed=earnArmedDelete===key;
+    const onBoard=analysed.has(x.symbol);
+    const why=st.state==='past'?`Der Termin liegt in der Vergangenheit. Er ist gespeichert, wirkt aber nicht mehr — Warnungen gibt es nur für Termine von heute bis in ${EARN_WINDOW_DAYS} Tagen.`
+      :st.state==='ahead'?`Der Termin liegt weiter als ${EARN_WINDOW_DAYS} Tage voraus. Er ist gespeichert und wird automatisch sichtbar, sobald er in dieses Fenster rückt.`
+      :`Der Termin wirkt: Bei diesem Titel erscheint die Terminwarnung. Sie kann die Bewertung ausschließlich herabstufen, niemals eine Kauf-Freigabe erzeugen.`;
+    const scan=onBoard?'':'<span class="earn-off" title="Dieser Titel wird gerade nicht analysiert. Deshalb steht er nicht in der Tafel darüber. Der Termin ist trotzdem gespeichert und greift, sobald der Titel im Scan oder in der Suche auftaucht.">nicht im Scan</span>';
+    return `<div class="earn-manual-row${st.active?' active':''}">`
+      +`<b>${esc(x.symbol)}</b>`
+      +`<span class="earn-manual-date">${esc(x.date)}</span>`
+      +`<span class="earn-manual-slot" title="${esc(EARN_SLOT_LABEL[x.time]||'')}">${x.time==='bmo'?'vB':'nB'}</span>`
+      +`<span class="earn-manual-state" data-state="${esc(st.state)}" title="${esc(why)}">${esc(st.text)}</span>`
+      +scan
+      +`<button type="button" class="earn-del${armed?' armed':''}" data-earndel="${esc(key)}" `
+      +`title="${esc(armed?'Noch einmal klicken, dann wird der Termin entfernt.':'Termin entfernen. Achtung: damit entfällt die Warnung vor den Zahlen — deshalb sind zwei Klicks nötig.')}">`
+      +`${armed?'wirklich?':'×'}</button></div>`;
+  }).join('')
+    +`<small class="hint">Manuelle Termine gelten vor dem automatischen Kalender. Angezeigt wird immer der Stand vom Server, nicht die Eingabe — ein Termin, der hier steht, ist gespeichert.</small>`;
+  el.querySelectorAll('[data-earndel]').forEach(b=>b.addEventListener('click',()=>removeManualEarning(b.dataset.earndel)));
+}
+
+function wireEarningsEditor(){
+  const add=$('#earnAdd');
+  if(add && !add.dataset.bound){ add.dataset.bound='1'; add.addEventListener('click',addManualEarningFromForm); }
+  const sym=$('#earnSym');
+  if(sym && !sym.dataset.bound){ sym.dataset.bound='1';
+    sym.addEventListener('keydown',(e)=>{ if(e.key==='Enter') addManualEarningFromForm(); }); }
+  const date=$('#earnDate');
+  if(date && !date.dataset.bound){ date.dataset.bound='1';
+    date.addEventListener('keydown',(e)=>{ if(e.key==='Enter') addManualEarningFromForm(); }); }
+  renderEarningsEditor();
 }
 
 /* ==== v3.7.0 · P3: Krypto-Sentiment im Client ===============================
@@ -2669,7 +2947,7 @@ function renderStocks() {
   (stockRows||[]).forEach(claudeOverlayRow); // Claude-Modus-Ansicht idempotent anwenden
   (stockRows||[]).forEach(momentumOverlayRow); // v3.9.0: Modus A danach, ebenfalls idempotent
   const box=$('#stockGroups'),st=$('#stockState'),counts=$('#stockCounts'); if(!box||!st)return;
-  renderDepotStrip(); renderPortfolioRisk(); renderCrowdStatus(); renderMarketGainers(); renderExtendedWatch(); renderOpeningPanel(); renderSectorLaggards(); renderEarningsBoard();
+  renderDepotStrip(); renderPortfolioRisk(); renderCrowdStatus(); renderMarketGainers(); renderExtendedWatch(); renderOpeningPanel(); renderSectorLaggards(); renderEarningsBoard(); renderEarningsEditor();
   if(stockMeta.configured===false){box.innerHTML='';st.textContent='Aktien-Datenquelle fehlt';st.className='badge err';if(counts)counts.textContent='Aktienradar nicht konfiguriert';stockHeatmap([]);return;}
   const search=($('#stockQ')?.value||'').trim().toUpperCase(); const filter=$('#stockF')?.value||'';
   let stockFiltered=stockRows.filter(r=>(!search||r.symbol.toUpperCase().includes(search)||String(r.name||'').toUpperCase().includes(search)));
@@ -4279,6 +4557,7 @@ loadExperimental(false);
 loadCrowd(false);
 loadSentiment(false);
 loadEarnings(false);
+wireEarningsEditor();
 loadLearning();
 loadAttribution();
 loadAladdin();

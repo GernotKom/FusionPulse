@@ -693,7 +693,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"3.15.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"3.16.1";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1119,6 +1119,32 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
    alles andere bleibt ruhig, sonst verliert die Hervorhebung ihren Zweck. */
 .earn-row.soon{border-color:rgba(230,140,50,.5);background:rgba(230,140,50,.07)}
 .earn-row.soon .earn-when{color:#e6a06a}
+
+/* v3.16.0 · Eingabemaske fuer eigene Quartalstermine.
+   Bewusst KEINE Ampelfarbe: „wirkt" sagt etwas ueber die Gueltigkeit eines
+   Datums aus, nichts ueber Handelbarkeit. Deshalb Akzentblau wie bei der
+   Sektor-Marke aus v3.15.0, nicht gruen. `flex-wrap` statt Scrollbereich —
+   das Muster aus dem Erreichbarkeits-Audit wird hier gar nicht erst gebaut. */
+.earn-form{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+.earn-form label{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--dim)}
+.earn-form input,.earn-form select{min-width:8.5em}
+.earn-form #earnSym{text-transform:uppercase;letter-spacing:.5px;min-width:6.5em}
+.earn-state{min-height:1.1em;margin:7px 0 0;font-size:12px;color:var(--dim)}
+.earn-state[data-tone="ok"]{color:var(--fg)}
+.earn-state[data-tone="warn"],.earn-state[data-tone="err"]{color:#e6a06a}
+.earn-manual-list{margin-top:8px;display:flex;flex-direction:column;gap:4px}
+.earn-manual-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:5px 8px;
+  border:1px solid var(--line);border-radius:7px}
+.earn-manual-row.active{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.earn-manual-row>b{font-size:13px;min-width:4em}
+.earn-manual-date{font-size:12px;color:var(--dim)}
+.earn-manual-slot{font-size:11px;font-weight:700;color:var(--dim);cursor:help}
+.earn-manual-state{font-size:11px;color:var(--dim2);cursor:help}
+.earn-manual-state[data-state="active"]{color:var(--accent);font-weight:600}
+.earn-off{font-size:10px;color:var(--dim2);border:1px solid var(--line);border-radius:6px;
+  padding:0 5px;cursor:help}
+.earn-del{margin-left:auto;font-size:11px;padding:2px 8px;line-height:1.6}
+.earn-del.armed{border-color:#e6a06a;color:#e6a06a;font-weight:700}
 
 /* v3.12.0 · Zweistufige Reiterleiste.
    Die Hauptbereiche bleiben immer gleich, damit sie als Orientierung taugen;

@@ -8,16 +8,16 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/style.css?v=3.15.0">
+<link rel="stylesheet" href="/style.css?v=3.16.1">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
-<script src="/version.js?v=3.15.0"></script>
-<title>FusionPulse 3.15.0</title>
+<script src="/version.js?v=3.16.1"></script>
+<title>FusionPulse 3.16.1</title>
 <!-- v3.14.1: Versionsstempel der SHELL (index.html). Wird von sync-version.mjs
      gesetzt und beim Start gegen FP_VERSION aus version.js verglichen. Weichen
      die beiden ab, ist eine halb aktualisierte Auslieferung im Umlauf: neues
      app.js/style.css auf altem index.html. Das erzeugt Fehler, die wie
      Layout-Probleme aussehen, aber keine sind — und kostet beim Suchen Stunden. -->
-<meta name="fp-shell-version" content="3.15.0">
+<meta name="fp-shell-version" content="3.16.1">
 </head>
 <body>
 
@@ -193,6 +193,35 @@
          Titel begrenzt, die FusionPulse kennt — nur fuer die gibt es einen
          verifizierten Sektor. Ein Termin ohne Sektor waere hier wertlos. -->
     <div id="earningsBoard" class="openingpanel" title="Anstehende Quartalszahlen der beobachteten Titel, nach Sektor geordnet. Reine Terminliste — 0 % Gewicht in Score und Kauf-Freigabe."></div>
+    <!-- v3.16.0 P6 Teil 1b: Die Route POST /api/earnings gibt es seit v3.8.2,
+         die Oberflaeche dazu nie. Die Maske steht bewusst DIREKT unter der
+         Tafel — dort faellt auf, dass ein Termin fehlt, und dort wird er
+         eingetragen. Reine Datenpflege: kein Score, kein Gate, keine Ampel. -->
+    <section id="earningsEditor" class="openingpanel earn-edit" title="Eigene Quartalstermine eintragen. Manuelle Termine gelten vor dem automatischen Kalender und funktionieren auch dann, wenn dieser nichts liefert. Reine Terminliste — 0 % Gewicht in Score und Kauf-Freigabe.">
+      <div class="ophead">
+        <b>✎ Eigener Quartalstermin</b>
+        <span title="Ein manuell eingetragener Termin überstimmt den automatischen Kalender. Er erzeugt eine Warnung, die die Bewertung ausschließlich herabstufen kann — niemals eine Kauf-Freigabe.">manuell · gilt vor dem automatischen Kalender</span>
+        <small>Terminliste · 0 % BUY-Gewicht</small>
+      </div>
+      <div class="earn-form">
+        <label for="earnSym">Kürzel
+          <input id="earnSym" type="text" maxlength="8" placeholder="MRNA" autocomplete="off" autocapitalize="characters" spellcheck="false" title="Das Börsenkürzel, z. B. MRNA. Höchstens 8 Zeichen; der Server kürzt länger Eingetragenes.">
+        </label>
+        <label for="earnDate">Datum
+          <input id="earnDate" type="date" title="Der Tag der Quartalszahlen in New Yorker Zeit. Eine Warnung erscheint nur für Termine von heute bis in 14 Tage.">
+        </label>
+        <label for="earnSlot">Zeitpunkt
+          <select id="earnSlot" title="nB = nach Börsenschluss (der übliche Fall), vB = vor Börsenbeginn. Entscheidet, ob die Warnung sich auf den heutigen Abend oder den morgigen Handelsbeginn bezieht.">
+            <option value="amc">nB · nach Börsenschluss</option>
+            <option value="bmo">vB · vor Börsenbeginn</option>
+          </select>
+        </label>
+        <button type="button" id="earnAdd" class="primary" title="Speichert den Termin auf dem Server (Cloudflare D1). Angezeigt wird danach der Serverstand, nicht die Eingabe.">Termin speichern</button>
+      </div>
+      <div id="earnEditState" class="earn-state"></div>
+      <div id="earnManualList" class="earn-manual-list"></div>
+      <small class="hint">Warum überhaupt von Hand? Der automatische Terminkalender ist im gebuchten Tarif möglicherweise nicht enthalten. Ein selbst eingetragener Termin funktioniert unabhängig davon — und du siehst die Termine bei Google Finance ohnehin. Ein Termin ist <b>keine Richtungsaussage</b>: Er sagt nur, dass der Kurs danach in beide Richtungen weit laufen kann.</small>
+    </section>
     <div id="sectorLaggards" class="openingpanel" title="Titel, die hinter ihrem eigenen Sektor zurueckliegen, waehrend der Sektor bereits laeuft. Discovery — 0 % BUY-Gewicht."></div>
     <div id="marketGainers" class="openingpanel" title="Verifizierte Common-Stock-Kandidaten aus dem Tiingo-IEX-Whole-Market-Radar. Unabhängig von Favoriten; Discovery בלבד; Elliott-Deep-Scan entscheidet über Qualität."></div>
     <div id="openingPanel" class="openingpanel" title="Premarket-/Opening-Momentum über Alpaca. Im kostenlosen IEX-Feed ist die Live-Abdeckung auf IEX beschränkt; vor 08:00 ET gibt es dort keine Live-Daten."></div>
@@ -359,6 +388,6 @@
      Muss das LETZTE Element im Fluss bleiben. Hoehe kommt aus derselben
      Messung wie alles andere (--fp-foot-h). -->
 <div class="foot-spacer" aria-hidden="true"></div>
-<script src="/app.js?v=3.15.0"></script>
+<script src="/app.js?v=3.16.1"></script>
 </body>
 </html>
