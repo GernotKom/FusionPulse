@@ -2656,3 +2656,60 @@ console.log('✓ FusionPulse v3.14.4 body-box/foot-spacer regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.14.5 version-badge regressions: OK');
+
+/* ====================================================================
+   v3.14.6 · Die Systemampel war keine Ampel mehr.
+   Vier Zustaende, aber nur zwei davon hatten eine Textfarbe: `orange`
+   und `err`. `ok` und `warn` faerbten ausschliesslich den 1px-Rahmen,
+   und zwar mit 47 % Deckkraft. Der Zustand war korrekt berechnet, aber
+   nicht ablesbar. Als einziges Statuselement im Kopf hatte die Leiste
+   ausserdem keinen Punkt, waehrend Krypto/Aktien/Tiingo/Cloudflare
+   daneben welche haben.
+   Geaendert wird ausschliesslich die DARSTELLUNG. Die Zuordnung
+   Zustand -> Stufe bleibt unveraendert; ein Test rechnet sie nach.
+   ==================================================================== */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');   // Kommentare zitieren die alten Werte
+
+  // -- Jeder der vier Zustaende braucht einen Punkt UND eine Textfarbe.
+  for (const lvl of ['ok', 'warn', 'orange', 'err']) {
+    assert.ok(new RegExp(`\\.resource-strip\\.${lvl} b::before\\{background:`).test(css),
+      `Stufe "${lvl}" braucht einen sichtbaren Punkt in der Zustandsfarbe`);
+    assert.ok(new RegExp(`\\.resource-strip\\.${lvl} span\\{color:`).test(css),
+      `Stufe "${lvl}" braucht eine Textfarbe — ok und warn hatten keine, das war der Fehler`);
+  }
+  // -- Die unsichtbaren Rahmen duerfen nicht zurueckkehren.
+  assert.doesNotMatch(css, /\.resource-strip\.warn\{border-color:#f2c01577\}/,
+    'Der 47-%-Rahmen war praktisch unsichtbar und darf nicht zurueckkehren');
+  assert.match(css, /\.resource-strip b::before\{content:""/,
+    'Die Leiste braucht ueberhaupt einen Punkt, wie die Statuspunkte daneben');
+
+  /* -- Die BEWERTUNG darf sich nicht geaendert haben. Ausgefuehrt nachgerechnet:
+        dieselbe Stufenlogik wie in renderResourceStrip, gegen die Klassenabbildung. */
+  {
+    const map = app.match(/box\.classList\.add\((level==='green'[^;]*)\);/);
+    assert.ok(map, 'Die Abbildung Stufe -> CSS-Klasse muss gefunden werden');
+    const toClass = new Function('level', `return ${map[1]};`);
+    assert.equal(toClass('green'), 'ok', 'gruen muss auf ok abbilden');
+    assert.equal(toClass('yellow'), 'warn', 'gelb muss auf warn abbilden');
+    assert.equal(toClass('orange'), 'orange', 'orange muss auf orange abbilden');
+    assert.equal(toClass('red'), 'err', 'rot muss auf err abbilden');
+
+    const level = (states) => {
+      const red = states.some((x) => ['error', 'nokey'].includes(x));
+      const orange = states.some((x) => ['cpu', 'daylimit'].includes(x));
+      const yellow = states.some((x) => ['ratelimit', 'stale', 'warn', 'unknown'].includes(x));
+      return red ? 'red' : orange ? 'orange' : yellow ? 'yellow' : 'green';
+    };
+    // Der Zustand aus dem Screenshot vom 28.8.: Aktien stale, Rest ok -> gelb.
+    assert.equal(toClass(level(['ok', 'stale', 'ok'])), 'warn',
+      'Ein veralteter Aktienfeed muss gelb bleiben — die Bewertung aendert sich NICHT');
+    assert.equal(toClass(level(['ok', 'ok', 'ok'])), 'ok', 'Alles ok bleibt gruen');
+    assert.equal(toClass(level(['ok', 'ok', 'error'])), 'err', 'Ein Fehler bleibt rot');
+    assert.equal(toClass(level(['cpu', 'ok', 'ok'])), 'orange', 'Ressourcenwarnung bleibt orange');
+  }
+}
+
+console.log('✓ FusionPulse v3.14.6 system-lamp-visibility regressions: OK');

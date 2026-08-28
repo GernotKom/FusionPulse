@@ -693,7 +693,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"3.14.5";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"3.14.6";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -706,7 +706,7 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 [id],.stage,.stockstage{scroll-margin-top:calc(var(--fp-chrome-h) + 10px)}
 .resource-strip{display:flex;flex-direction:column;min-width:122px;max-width:190px;padding:4px 7px;border:1px solid var(--line);border-radius:8px;background:var(--panel);font-size:9px;line-height:1.2}
 .resource-strip b{font-size:9px!important}.resource-strip span{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.resource-strip.warn{border-color:#f2c01577}.resource-strip.err{border-color:#ef5a5a88}
+.resource-strip.err{border-color:color-mix(in srgb,var(--red) 80%,var(--line))}
 .learning-report{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:10px;min-height:90px}
 .learning-report .lr-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:7px}
 .learning-report .lr-grid span{padding:6px;border:1px solid var(--line);border-radius:8px;font-size:9px;color:var(--dim)}
@@ -721,7 +721,28 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 .mini-dot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--dim2);box-shadow:0 0 0 1px #0005}
 .mini-dot.ok::before{background:var(--green)}.mini-dot.warn::before{background:var(--yellow)}.mini-dot.err::before{background:var(--red)}.mini-dot.busy::before{background:var(--dim2)}
 .mini-dot.ok,.mini-dot.warn,.mini-dot.err,.mini-dot.busy{color:var(--fg)}
-.resource-strip.ok{border-color:color-mix(in srgb,var(--green) 60%,var(--line))}.resource-strip.orange{border-color:#ff8a3d99}.resource-strip.orange span{color:#ffc18f}.resource-strip.err span{color:#ff9c9c}
+/* v3.14.6 · DIE AMPEL WAR KEINE AMPEL MEHR.
+   Vier Zustaende, aber nur zwei davon hatten eine Textfarbe: `orange` und `err`.
+   `ok` und `warn` faerbten ausschliesslich den 1px-Rahmen, und zwar mit 47 %
+   Deckkraft (#f2c01577). Neben der uebrigen Kopfzeile ist das praktisch
+   unsichtbar — der Zustand war zwar korrekt berechnet, aber nicht ablesbar.
+   Dazu kam: die Leiste hatte als einziges Statuselement im Kopf keinen Punkt,
+   waehrend Krypto/Aktien/Tiingo/Cloudflare daneben welche haben.
+   Jetzt traegt jeder Zustand einen echten Punkt in der Zustandsfarbe, einen
+   deutlich sichtbaren Rahmen und eine passende Textfarbe. Die Bewertung selbst
+   ist UNVERAENDERT — es aendert sich nur, ob man sie sieht. */
+.resource-strip b::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;
+  margin-right:5px;vertical-align:baseline;background:var(--dim2);box-shadow:0 0 0 1px #0006}
+.resource-strip.ok b::before{background:var(--green)}
+.resource-strip.warn b::before{background:var(--yellow)}
+.resource-strip.orange b::before{background:#ff8a3d}
+.resource-strip.err b::before{background:var(--red)}
+.resource-strip.ok{border-color:color-mix(in srgb,var(--green) 75%,var(--line));background:color-mix(in srgb,var(--green) 7%,var(--panel))}
+.resource-strip.ok span{color:#8fe4c2}
+.resource-strip.warn{border-color:color-mix(in srgb,var(--yellow) 75%,var(--line));background:color-mix(in srgb,var(--yellow) 7%,var(--panel))}
+.resource-strip.warn span{color:#f2d98a}
+.resource-strip.orange{border-color:#ff8a3d;background:#ff8a3d12}.resource-strip.orange span{color:#ffc18f}
+.resource-strip.err{background:#ef5a5a14}.resource-strip.err span{color:#ff9c9c}
 .stock-search-wrap{position:relative;flex:1;min-width:240px}.stock-search-wrap input{width:100%;box-sizing:border-box;padding-right:34px!important;background:color-mix(in srgb,var(--panel2) 72%,#fff 8%)!important;border-color:color-mix(in srgb,var(--line2) 75%,#fff 18%)!important}.stock-search-wrap input:focus{border-color:var(--accent)!important;box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 20%,transparent)}
 .searchclear{position:absolute;right:6px;top:50%;transform:translateY(-50%);min-width:24px!important;width:24px;height:24px;padding:0!important;border:0!important;border-radius:50%;background:var(--line2)!important;color:var(--fg)!important;font-size:17px;line-height:1}.searchclear.hidden{display:none!important}
 .stock-search-preview{flex:1 1 100%;min-height:18px;font-size:10px;color:var(--dim)}.stock-search-preview:empty{display:none}.stock-search-preview button{padding:5px 8px;border:1px solid color-mix(in srgb,var(--green) 50%,var(--line));border-radius:8px;background:color-mix(in srgb,var(--green) 8%,var(--panel2));color:var(--fg);font-size:10px}
