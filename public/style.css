@@ -693,7 +693,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"3.14.6";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"3.15.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1157,3 +1157,41 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .stockmapwrap .trailtag.dir-sweet{fill:var(--green)}
 .stockmapwrap .trailtag.dir-back{fill:#e6a06a;opacity:.9}
 .stockmapwrap .trailtag.dir-side{fill:var(--dim,#9aa4b2);opacity:.85}
+
+/* v3.15.0 · Modellvergleich. Die Zustandsfarben hier sind AMPELFARBEN und
+   deshalb von der Kachelfarb-Einstellung (v3.15.0, Variante A) ausgenommen. */
+.model-compare{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:9px;margin-top:9px}
+.model-compare>b{display:block;font-size:11px;color:var(--fg)}
+.model-compare>b small{font-weight:400;color:var(--dim);font-size:9px;margin-left:6px}
+.model-compare>small{display:block;margin-top:7px;font-size:9px;color:var(--dim);line-height:1.3}
+.model-compare.dissent{border-color:color-mix(in srgb,var(--yellow) 55%,var(--line))}
+.model-compare.dissent>small{color:#f2d98a}
+.mc-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:7px}
+@media(max-width:760px){.mc-row{grid-template-columns:1fr}}
+.mc-cell{display:flex;flex-direction:column;gap:2px;padding:7px;border:1px solid var(--line);
+  border-left:3px solid var(--dim2);border-radius:9px;background:var(--panel);min-width:0}
+.mc-cell b{font-size:10px;color:var(--fg)}
+.mc-cell i{font-style:normal;font-size:12px;font-weight:800;color:var(--fg)}
+.mc-cell small{font-size:9px;color:var(--dim);line-height:1.25;overflow-wrap:anywhere}
+.mc-cell.mc-block{color:#ffb0b0}
+.mc-cell .mc-block{color:#d9a6a6}
+.mc-cell.hl-green{border-left-color:var(--green)}.mc-cell.hl-green i{color:var(--green)}
+.mc-cell.hl-yellow{border-left-color:var(--yellow)}.mc-cell.hl-yellow i{color:var(--yellow)}
+.mc-cell.hl-red{border-left-color:#52647d}.mc-cell.hl-red i{color:var(--dim)}
+.mc-cell.mc-active{background:color-mix(in srgb,var(--accent) 9%,var(--panel));border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.mc-cell.mc-na{opacity:.55}
+/* v3.15.0: Kennzeichnung des Prioritaetssektors. Bewusst in Akzentblau und NICHT
+   in einer Ampelfarbe — er sagt nichts ueber die Handelbarkeit aus. */
+.prio-sector{font-size:9px;font-weight:800;color:var(--accent);letter-spacing:.4px;
+  border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line));border-radius:7px;padding:1px 5px}
+/* v3.15.0 · Kachelfarben (Variante A). Nur Rahmen und Flaeche neutraler
+   Kacheln. Jede Regel hier ist bewusst OHNE Ampelbezug — kein Selektor
+   beruehrt .hl-*, .mc-cell.hl-*, .resource-strip.* oder ein Statusband. */
+.tint-box{display:grid;gap:5px;margin-top:7px}
+.tint-row{display:flex;align-items:center;justify-content:space-between;gap:9px;font-size:10px;color:var(--dim)}
+.tint-row select{padding:4px 7px;font-size:10px}
+.sf-grid>span{border-color:var(--tint-sfGrid,var(--line));background:var(--tint-sfGrid-bg,var(--panel))}
+.stock-interpret{border-color:var(--tint-interpret,var(--line));background:var(--tint-interpret-bg,var(--panel2))}
+.intraday-chart{border-color:var(--tint-chart,var(--line));background:var(--tint-chart-bg,var(--panel2))}
+.learning-report{border-color:var(--tint-learning,var(--line));background:var(--tint-learning-bg,var(--panel2))}
+.model-compare{border-color:var(--tint-modelCompare,var(--line));background:var(--tint-modelCompare-bg,var(--panel2))}

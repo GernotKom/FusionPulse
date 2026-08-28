@@ -1943,6 +1943,42 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3, favoriteSymbo
    08:00–17:00 ET; deshalb ist 04:00–08:00 ET im Free-Tarif NICHT vollständig
    live abdeckbar. Die UI kennzeichnet das ausdrücklich. Keine Orders.
    ======================================================================== */
+/* ============================================================================
+   v3.15.0 · SEKTOR-PRIORISIERUNG DER DEEP-SCAN-QUEUE (additiv, 0 % BUY-Gewicht)
+   Wunsch: den Aktienmarkt bevorzugt nach Pharma/Healthcare, Edelmetalle/Minen
+   und Technologie scannen.
+   WARUM ES EINE KURATIERTE LISTE IST UND KEINE ABFRAGE: der Sektor steht bisher
+   nur im statischen Katalog, und der hat 26 Eintraege. Alles, was aus dem
+   Whole-Market-Radar ueber die ~37.000 Tiingo-Titel kommt, traegt
+   `sector:'Discovery'`. Tiingo liefert Sektor/Industrie nur im
+   kostenpflichtigen Fundamentals-Paket. Eine Liste ist damit die einzige
+   ehrliche Option — und sie wird ausdruecklich als KURATIERT und
+   UNVOLLSTAENDIG gekennzeichnet, statt Vollstaendigkeit zu behaupten.
+   WAS SIE TUT: sie veraendert, WELCHE Titel tief analysiert werden.
+   WAS SIE NICHT TUT: sie veraendert keinen Score, kein Gate, keine Ampel und
+   keine Freigabe. Ein Titel aus einem Prioritaetssektor bekommt Aufmerksamkeit,
+   keinen Bonus. Damit gilt dieselbe Regel wie fuer Radar und BOATS.
+   KEINE VERDRAENGUNG: die Reserve ist gedeckelt, damit der allgemeine
+   Whole-Market-Radar nicht ausgehungert wird. Faende die Priorisierung nur noch
+   die eigenen drei Sektoren, waere der Radar wieder das, was er in v3.3.4
+   ausdruecklich nicht mehr sein sollte — ein Katalog-Pool. */
+const PRIORITY_SECTORS = [
+  ['Pharma/Healthcare', new Set(['LLY','JNJ','MRK','PFE','ABBV','AMGN','GILD','BMY','VRTX','REGN','MRNA','BIIB','ZTS','ISRG','UNH','CVS','TMO','DHR','ABT','MDT','SYK','BSX','HCA','ELV','CI','BAX','EW','IDXX','IQV','RMD','DXCM','ALNY','INCY','NBIX','UTHR','EXEL','HALO','SRPT','ABSI','RXRX','CRSP','NTLA','BEAM','VEEV','MOH','ZBH','HOLX','PODD','CTLT','JAZZ','NVAX','SGEN','ARWR','APLS','KRTX','MDGL','CYTK','ITCI','RARE','FOLD','PTCT','BPMC','DNLI'])],
+  ['Edelmetalle/Minen', new Set(['NEM','GOLD','AEM','KGC','AU','WPM','FNV','RGLD','PAAS','AGI','BTG','HMY','EGO','SSRM','CDE','HL','EXK','FSM','MAG','GFI','SBSW','IAG','NGD','OR','SAND','DRD','SILV','MUX','GATO','SKE','ORLA','PLG','FCX','SCCO','TECK','RIO','BHP','VALE','AA','MP','ALB','UEC','CCJ','DNN','NXE','ERO','HBM','CS','TFPM','EQX','NGT','ASM'])],
+  ['Technologie',       new Set(['AAPL','MSFT','NVDA','AVGO','AMD','INTC','QCOM','TXN','MU','AMAT','LRCX','KLAC','ADI','MRVL','NXPI','ON','SWKS','MPWR','TER','ENTG','GOOGL','META','AMZN','CRM','ORCL','ADBE','NOW','INTU','PANW','CRWD','ZS','SNOW','DDOG','NET','MDB','TEAM','WDAY','SHOP','PLTR','SMCI','DELL','ANET','CSCO','IBM','ACN','UBER','ABNB','COIN','HOOD','PYPL','ARM','IONQ','RGTI','QBTS','AFRM','ZM','CEG','SDGR','MSTR','CRWV','APP','TSM','ASML','AMBA','ALAB','CRDO','LSCC','RMBS','SITM'])],
+];
+const PRIORITY_SECTOR_BY_SYMBOL = (() => {
+  const m = new Map();
+  for (const [name, set] of PRIORITY_SECTORS) for (const sym of set) if (!m.has(sym)) m.set(sym, name);
+  return m;
+})();
+const norm1 = (x) => String(x || '').trim().toUpperCase().replace(/\./g, '-');
+function prioritySectorOf(symbol){ return PRIORITY_SECTOR_BY_SYMBOL.get(norm1(symbol)) || null; }
+/* Wie viele Plaetze pro Zyklus je Prioritaetssektor reserviert werden. Bewusst
+   klein: drei Sektoren x 1 Platz gegen capRadar >= 8 laesst dem allgemeinen
+   Radar die Mehrheit. Der Wert ist GERATEN und nicht gemessen — er gehoert auf
+   dieselbe Liste offener Kalibrierungen wie MOM_MIN_DOLLARVOL. */
+const SECTOR_RESERVE_PER_SECTOR = 1;
 const OPENING_UNIVERSE = [...LARGE_CAP_RADAR_SYMBOLS];
 let openingMemo={ts:0,data:null};
 function alpacaFeed(env){
@@ -3749,6 +3785,20 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   // So kann der Deep Scan nicht wieder faktisch zu einem Favoriten-/Cache-Pool werden.
   const gainerPick=[];
   for(const x of openingGainers(radar.rows||[],capGainer)){if(!picked.has(x.symbol)){picked.add(x.symbol);gainerPick.push(x.symbol);}if(gainerPick.length>=capGainer)break;}
+  /* v3.15.0: Sektor-Reserve VOR dem allgemeinen Radar. Sie zieht nur Titel, die
+     der Radar ohnehin nominiert hat — es wird also nichts erfunden, nur die
+     Reihenfolge geaendert. Reicht ein Sektor nicht, verfaellt sein Platz an den
+     allgemeinen Radar statt leer zu bleiben. */
+  const sectorPick=[];
+  for(const [name] of PRIORITY_SECTORS){
+    let took=0;
+    for(const x of radar.rows||[]){
+      if(took>=SECTOR_RESERVE_PER_SECTOR)break;
+      if(picked.has(x.symbol))continue;
+      if(prioritySectorOf(x.symbol)!==name)continue;
+      picked.add(x.symbol);sectorPick.push(x.symbol);took++;
+    }
+  }
   for(const x of radar.rows||[]){if(!picked.has(x.symbol)){picked.add(x.symbol);radarPick.push(x.symbol);}if(radarPick.length>=capRadar)break;}
   // Nur zwei starke Altanalysen pro Zyklus nachziehen; Discovery hat Vorrang.
   for(const r of [...(stockMemo.rows||[])].sort((a,b)=>deepRecheckRank(b)-deepRecheckRank(a))){const sym=String(r?.symbol||'').toUpperCase();if(sym&&!picked.has(sym)){picked.add(sym);recheckPick.push(sym);}if(recheckPick.length>=capRecheck)break;}
@@ -3757,7 +3807,7 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   // Exploration verhindert Tunnelblick und sorgt fuer fortlaufende Rotation des stabilen Basiskatalogs.
   const start=(cycle*7)%STOCK_SEARCH_CATALOG.length;
   for(let i=0;i<STOCK_SEARCH_CATALOG.length&&picked.size<deepLimit;i++){const sym=STOCK_SEARCH_CATALOG[(start+i)%STOCK_SEARCH_CATALOG.length][1];if(!picked.has(sym)){picked.add(sym);explore.push(sym);}}
-  const syms=[...favPick,...recheckPick,...gainerPick,...radarPick,...boatsPick,...explore].slice(0,deepLimit), fx=await getTiingoFx(env);
+  const syms=[...favPick,...recheckPick,...gainerPick,...sectorPick,...radarPick,...boatsPick,...explore].slice(0,deepLimit), fx=await getTiingoFx(env);
   const radarMap=new Map((radar.rows||[]).map(x=>[x.symbol,x])), boatsMap=new Map((boats.rows||[]).map(x=>[x.symbol,x]));
   const fresh=(await pool(syms,6,async sym=>{
     const inf=STOCK_SEARCH_BY_SYMBOL.get(sym)||{sector:'Discovery',name:sym};
@@ -3779,6 +3829,8 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       row.radarRank=Number(rm?.situationScore??rm?.score)||0;
       row.radarSituation=rm?.situation||null;
       row.radarLifecycle=life;
+      // v3.15.0: nur Kennzeichnung. Kein Score, kein Gate, keine Ampel haengt daran.
+      row.prioritySector=prioritySectorOf(sym);
       return row;
     }catch(e){console.warn(JSON.stringify({event:'tiingo_stock_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));return null;}
   })).filter(Boolean);

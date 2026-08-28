@@ -8,7 +8,17 @@ import vm from 'node:vm';
 
 function stubEl() {
   const el = {
-    style: {}, dataset: {}, classList: { add(){}, remove(){}, toggle(){}, contains(){return false;} },
+    /* v3.15.0: `style` war ein nacktes Objekt. Der Client setzt und ENTFERNT
+       CSSOM-Eigenschaften (measureChrome, applyTileTints). Ohne setProperty/
+       removeProperty faellt der Harness mit einem TypeError statt mit einer
+       Aussage — und ein Test, der aus dem falschen Grund faellt, ist kein Test.
+       Der Stub merkt sich die Werte, damit man sie pruefen kann. */
+    style: (()=>{ const m=new Map(); return {
+      _map:m,
+      setProperty(k,v){ m.set(k,String(v)); },
+      removeProperty(k){ const v=m.get(k)??''; m.delete(k); return v; },
+      getPropertyValue(k){ return m.get(k)??''; },
+    };})(), dataset: {}, classList: { add(){}, remove(){}, toggle(){}, contains(){return false;} },
     children: [], value: '', textContent: '', innerHTML: '', checked: false, hidden: false,
     addEventListener(){}, removeEventListener(){}, appendChild(){}, remove(){}, insertAdjacentHTML(){},
     setAttribute(){}, removeAttribute(){}, getAttribute(){return null;}, focus(){}, click(){}, scrollIntoView(){},

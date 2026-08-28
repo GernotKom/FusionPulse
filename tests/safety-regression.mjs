@@ -94,7 +94,7 @@ assert.match(wrangler,/"TIINGO_STOCKS_MODE": "primary"/,'Tiingo Primary must rem
 assert.match(workerText,/Discovery only: unusual overnight move[\s\S]*NEVER enters analyseStock\/BUY/,'BOATS discovery must be explicitly isolated from BUY');
 assert.match(workerText,/row\.discovery=\{type:'iex-radar',\.\.\.rm,buyWeight:0\}/,'IEX Radar candidate metadata must carry 0 BUY weight');
 assert.match(workerText,/row\.discovery=\{type:'boats',\.\.\.bm,buyWeight:0\}/,'BOATS candidate metadata must carry 0 BUY weight');
-assert.match(workerText,/const syms=\[\.\.\.favPick,\.\.\.recheckPick,\.\.\.gainerPick,\.\.\.radarPick,\.\.\.boatsPick,\.\.\.explore\]\.slice\(0,deepLimit\)/,'Deep scan must cap adaptive candidate batch at the configurable deep limit');
+assert.match(workerText,/const syms=\[\.\.\.favPick,\.\.\.recheckPick,\.\.\.gainerPick,\.\.\.sectorPick,\.\.\.radarPick,\.\.\.boatsPick,\.\.\.explore\]\.slice\(0,deepLimit\)/,'Deep scan must cap adaptive candidate batch at the configurable deep limit');
 assert.match(workerText,/await tiingoFetch\(env,'\/iex'\)/,'Whole-market Radar must use Tiingo IEX bulk snapshot');
 assert.match(workerText,/stockMinute%2===1[\s\S]*tiingoIexMarketRadar\(env,80,true\)/,'Server scheduler must keep the market radar independent of the browser');
 assert.match(workerText,/execution!=='server'&&!force[\s\S]*readLatestPersistedStockScan/,'Browser stock requests must consume the persisted server scan instead of starting a duplicate market scan');
@@ -2713,3 +2713,142 @@ console.log('✓ FusionPulse v3.14.5 version-badge regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.14.6 system-lamp-visibility regressions: OK');
+
+/* ====================================================================
+   v3.15.0 · Drei additive Erweiterungen. Gemeinsame Invariante:
+   KEINE davon veraendert einen Score, ein Gate, eine Ampel oder eine
+   Freigabe. Das ist der Punkt, an dem diese Suite scharf sein muss —
+   die Ergaenzungen sind gross, ihr erlaubter Wirkbereich ist klein.
+     1. Modellvergleich (Claude/Aladdin, ChatGPT-Strang, Momentum)
+     2. Sektor-Prioritaet der Deep-Scan-Queue
+     3. Kachelfarben, Variante A: Ampelfarben sind geschuetzt
+   ==================================================================== */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const index = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+
+  /* ---- 1. Modellvergleich ------------------------------------------------ */
+  const mcSrc = app.slice(app.indexOf('const MODEL_LABEL='), app.indexOf('const TINTABLE_TILES='));
+  assert.ok(mcSrc.length > 800 && mcSrc.length < 6000, 'Der Modellvergleich muss gefunden werden');
+  // Er darf LESEN, nicht RECHNEN. Keine Score-/Gate-Arithmetik in diesem Block.
+  for (const forbidden of ['S.minCrvStock', 'S.minCrvCoin', 'buyReady', 'light=', 'score=']) {
+    assert.ok(!mcSrc.includes(forbidden),
+      `Der Modellvergleich darf nichts bewerten — "${forbidden}" gehoert nicht hinein`);
+  }
+  assert.match(app, /\$\{modelCompare\(top\)\}\$\{positionPanel\(top\)\}/,
+    'Der Modellvergleich muss in der Fokuskarte eingehaengt sein');
+  assert.match(worker, /claude, fusion, momentum,/,
+    'Alle drei Urteile muessen weiterhin im selben Datensatz ausgeliefert werden');
+
+  /* Funktionsnachweis, AUSGEFUEHRT: Dissens erkennen, aktiven Strang markieren,
+     Uebereinstimmung NICHT als Bestaetigung ausgeben. */
+  {
+    const fn = new Function('esc', 'num', 'S', 'momentumModeOn',
+      mcSrc + '; return {modelCompare, activeModelKey};');
+    const api = fn((x) => String(x), (x) => String(x), { claudeMode: true }, () => false);
+
+    const r1 = { claude: { light: 'red', score: 5, blockers: ['CRV zu niedrig'] },
+                 fusion: { light: 'yellow', score: 6 }, momentum: { light: 'green', score: 7 } };
+    const out1 = api.modelCompare(r1);
+    assert.match(out1, /model-compare dissent/, 'Verschiedene Urteile muessen als Dissens markiert werden');
+    assert.match(out1, /UNEINIG/, 'Der Dissens muss im Klartext benannt werden');
+    assert.match(out1, /Claude \/ Aladdin · aktiv/, 'Der aktive Strang muss markiert sein');
+    assert.match(out1, /CRV zu niedrig/, 'Der wichtigste Blocker muss sichtbar sein');
+
+    const same = { light: 'green', score: 8 };
+    const out2 = api.modelCompare({ claude: same, fusion: same, momentum: same });
+    assert.doesNotMatch(out2, /dissent/, 'Gleiche Urteile duerfen nicht als Dissens erscheinen');
+    assert.match(out2, /KEINE Bestätigung/,
+      'Uebereinstimmung darf NICHT als Bestaetigung verkauft werden — die Modelle teilen sich die Kursdaten');
+
+    // Der aktive Strang folgt dem Modus, nicht der Anzeigereihenfolge.
+    assert.equal(fn((x) => x, (x) => x, { claudeMode: false }, () => false).activeModelKey(), 'fusion');
+    assert.equal(fn((x) => x, (x) => x, { claudeMode: true }, () => true).activeModelKey(), 'momentum');
+    // Ein fehlender Strang darf nicht zu einer erfundenen Aussage werden.
+    assert.match(api.modelCompare({ claude: { light: 'green' } }), /nicht berechnet/,
+      'Ein fehlendes Modell muss als "nicht berechnet" erscheinen, nicht stillschweigend fehlen');
+  }
+
+  /* ---- 2. Sektor-Prioritaet ---------------------------------------------- */
+  const secSrc = worker.slice(worker.indexOf('const PRIORITY_SECTORS ='),
+                              worker.indexOf('const OPENING_UNIVERSE ='));
+  assert.ok(secSrc.length > 600, 'Die Sektorliste muss gefunden werden');
+  {
+    const fn = new Function(secSrc + '; return {prioritySectorOf, PRIORITY_SECTORS, SECTOR_RESERVE_PER_SECTOR};');
+    const api = fn();
+    assert.deepEqual(api.PRIORITY_SECTORS.map((x) => x[0]),
+      ['Pharma/Healthcare', 'Edelmetalle/Minen', 'Technologie'],
+      'Die Reihenfolge ist die gewuenschte Prioritaet und darf nicht stillschweigend wechseln');
+    assert.equal(api.prioritySectorOf('LLY'), 'Pharma/Healthcare');
+    assert.equal(api.prioritySectorOf('NEM'), 'Edelmetalle/Minen');
+    assert.equal(api.prioritySectorOf('NVDA'), 'Technologie');
+    assert.equal(api.prioritySectorOf('nvda'), 'Technologie', 'Kleinschreibung muss greifen');
+    assert.equal(api.prioritySectorOf('BRK.B'), null, 'Unbekanntes darf nicht zugeordnet werden');
+    assert.equal(api.prioritySectorOf(''), null, 'Leereingabe darf nichts zuordnen');
+    assert.equal(api.prioritySectorOf(null), null, 'null darf nichts zuordnen');
+    // Die Reserve darf den allgemeinen Radar nicht aushungern (capRadar >= 8).
+    assert.ok(api.SECTOR_RESERVE_PER_SECTOR * api.PRIORITY_SECTORS.length <= 3,
+      'Die Sektor-Reserve muss klein gegen capRadar bleiben, sonst wird der Radar wieder ein Katalog-Pool');
+  }
+  assert.match(worker, /row\.prioritySector=prioritySectorOf\(sym\);/,
+    'Der Sektor muss am Datensatz gekennzeichnet werden');
+  // Der Sektor darf NIRGENDS in eine Bewertung einfliessen.
+  for (const m of worker.match(/prioritySector[^\n]*/g) || []) {
+    assert.ok(!/score|Score|light|buy|BUY|crv|CRV|gate/.test(m.replace('row.prioritySector=prioritySectorOf(sym);', '')),
+      `Der Prioritaetssektor darf keine Bewertung beruehren: ${m.slice(0, 90)}`);
+  }
+  assert.match(app, /prio-sector/, 'Der Sektor muss im Client gekennzeichnet sein');
+  assert.doesNotMatch(css, /\.prio-sector\{[^}]*color:var\(--green\)/,
+    'Die Sektor-Kennzeichnung darf keine Ampelfarbe tragen — sie sagt nichts ueber Handelbarkeit');
+
+  /* ---- 3. Kachelfarben, Variante A --------------------------------------- */
+  const tintSrc = app.slice(app.indexOf('const TINTABLE_TILES='), app.indexOf('function positionPanel(r){'));
+  assert.ok(tintSrc.length > 800, 'Der Kachelfarb-Block muss gefunden werden');
+  assert.match(index, /id="tileTintBox"/, 'Die Einstellung muss im Dialog existieren');
+
+  /* Der Kern von Variante A: kein faerbbarer Selektor darf eine Ampel beruehren. */
+  {
+    const tintRules = css.split('\n').filter((l) => l.includes('var(--tint-'));
+    assert.ok(tintRules.length >= 5, 'Es muessen faerbbare Kacheln existieren');
+    for (const rule of tintRules) {
+      const sel = rule.split('{')[0];
+      for (const guarded of ['.hl-', '.mc-cell.hl', '.resource-strip', 'sf-verdict', 'status-band', '::before']) {
+        assert.ok(!sel.includes(guarded),
+          `Variante A: "${guarded}" ist eine Ampel und darf nicht faerbbar sein — Regel: ${sel}`);
+      }
+    }
+  }
+
+  /* Funktionsnachweis, AUSGEFUEHRT: reservierte Ampelfarben werden VERWORFEN. */
+  {
+    const mk = (tints) => {
+      const set = new Map();
+      const root = { setProperty: (k, v) => set.set(k, v), removeProperty: (k) => set.delete(k) };
+      const doc = { documentElement: { style: root } };
+      const fn = new Function('S', 'document', '$', 'esc',
+        tintSrc + '; return {tintFor, applyTileTints};');
+      const api = fn({ tileTints: tints }, doc, () => null, (x) => x);
+      api.applyTileTints();
+      return { api, set };
+    };
+    assert.equal(mk({ sfGrid: '#13cf8b' }).api.tintFor('sfGrid'), '',
+      'Ampelgruen darf NICHT als Kachelton uebernommen werden');
+    assert.equal(mk({ sfGrid: '#F2C015' }).api.tintFor('sfGrid'), '',
+      'Ampelgelb darf nicht uebernommen werden, auch nicht in Grossschreibung');
+    assert.equal(mk({ sfGrid: '#ef4f57' }).api.tintFor('sfGrid'), '', 'Ampelrot darf nicht uebernommen werden');
+    assert.equal(mk({ sfGrid: '#5b8cff' }).api.tintFor('sfGrid'), '#5b8cff', 'Ein erlaubter Ton muss greifen');
+    assert.equal(mk({ sfGrid: 'javascript:x' }).api.tintFor('sfGrid'), '',
+      'Nur echte Hex-Werte duerfen in die CSS-Variable — fail-closed gegen manipulierten localStorage');
+    assert.equal(mk({}).api.tintFor('sfGrid'), '', 'Ohne Einstellung bleibt es beim Standard');
+
+    const applied = mk({ sfGrid: '#5b8cff', interpret: '#13cf8b' }).set;
+    assert.equal(applied.get('--tint-sfGrid'), '#5b8cff', 'Der erlaubte Ton muss gesetzt werden');
+    assert.ok(!applied.has('--tint-interpret'),
+      'Eine verworfene Ampelfarbe darf gar keine Variable setzen, nicht nur eine andere');
+  }
+}
+
+console.log('✓ FusionPulse v3.15.0 model-compare/sector-priority/tile-tint regressions: OK');
