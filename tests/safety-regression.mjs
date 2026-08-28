@@ -2231,16 +2231,24 @@ console.log('✓ FusionPulse v3.14.0 footer-measure/mode-A-migration regressions
 
   // -- Die Pruefung selbst.
   assert.match(app, /function checkShellConsistency\(\)\{/, 'Die Konsistenzpruefung muss existieren');
-  const chk = app.slice(app.indexOf('function checkShellConsistency()'), app.indexOf('\n}', app.indexOf("return {ok:false,shell,code,action:'warn'}")) + 2);
+  /* v3.14.3: Die Pruefung ruft jetzt zusaetzlich cssVersion() auf. Der Slice muss
+     ab dort beginnen, sonst faellt der Nachweis mit einem ReferenceError statt
+     mit einer echten Aussage — und ein Test, der aus dem falschen Grund faellt,
+     ist kein Test. Die geprueften Invarianten von v3.14.1 bleiben unveraendert. */
+  const chk = app.slice(app.indexOf('function cssVersion()'), app.indexOf('\n}', app.indexOf("return {ok:false,shell,code,action:'warn'}")) + 2);
   assert.ok(chk.length > 200, 'Die Pruefung muss gefunden werden — leerer Slice waere ein blinder Test');
+  assert.ok(chk.includes('function checkShellConsistency()'), 'Der Slice muss die Pruefung selbst enthalten');
 
   // -- Funktionsnachweis: alle vier Fälle ausgeführt, nicht gelesen.
   {
     const mk = (metaVersion, fpVersion, store) => {
       const session = { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; } };
-      const doc = { querySelector: () => (metaVersion ? { getAttribute: () => metaVersion } : null) };
-      return new Function('document', 'self', 'sessionStorage', chk + '; return checkShellConsistency;')(
-        doc, { FP_VERSION: fpVersion }, session);
+      const doc = { querySelector: () => (metaVersion ? { getAttribute: () => metaVersion } : null), documentElement: {} };
+      // v3.14.3: Der CSS-Stempel wird hier bewusst als PASSEND gestubbt, damit dieser
+      // Block weiterhin genau den index.html-Fehlstand prueft und nichts anderes.
+      const gcs = () => ({ getPropertyValue: () => (fpVersion ? `"${fpVersion}"` : '') });
+      return new Function('document', 'self', 'sessionStorage', 'getComputedStyle', chk + '; return checkShellConsistency;')(
+        doc, { FP_VERSION: fpVersion }, session, gcs);
     };
     assert.deepEqual(mk('3.14.1', '3.14.1', {})().ok, true, 'Gleiche Versionen sind in Ordnung');
     assert.equal(mk(null, '3.14.1', {})().ok, true, 'Ohne Stempel darf nicht faelschlich gewarnt werden');
@@ -2383,3 +2391,111 @@ console.log('✓ FusionPulse v3.14.1 shell-consistency regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.14.2 dock-measure/system-source regressions: OK');
+
+/* ====================================================================
+   v3.14.3 · Warum „oben steht 3.14.2" NICHTS bewiesen hat.
+   Es gab drei Versionsstempel — index.html, version.js, Worker — und
+   die beiden Dateien, in denen die Layoutkorrekturen tatsaechlich
+   liegen, hatten KEINEN: app.js und style.css. Der Zustand
+   „index.html neu · version.js neu · style.css alt" war damit
+   vollstaendig unsichtbar: Konsistenzpruefung gruen, kein blauer
+   Balken, Kopfzeile mit neuer Nummer, Scrollen trotzdem kaputt.
+   Dazu kam: die Kopfzeile zeigte die Version des WORKERS, nicht die
+   des geladenen Codes. Die Nummer, die der Nutzer abliest, war also
+   gar kein Beleg fuer die geladene Oberflaeche.
+   ==================================================================== */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const cssRaw = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  const index = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const sw = fs.readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8');
+  const sync = fs.readFileSync(new URL('../scripts/sync-version.mjs', import.meta.url), 'utf8');
+  const pkgV = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+
+  // -- 1. Verhinderung: eine neue Version ist eine neue URL.
+  for (const f of ['style\\.css', 'app\\.js', 'version\\.js']) {
+    const m = index.match(new RegExp(`(?:href|src)="/${f}\\?v=([^"]+)"`));
+    assert.ok(m, `${f} muss in index.html die Version im URL tragen — sonst kann ein alter Cache-Eintrag getroffen werden`);
+    assert.equal(m[1], pkgV, `${f} muss auf die Version aus package.json zeigen, nicht auf eine alte`);
+  }
+  assert.doesNotMatch(index, /(?:href|src)="\/(?:style\.css|app\.js|version\.js)"/,
+    'Kein Asset darf ohne Versionsstempel eingebunden bleiben');
+  // Der Sync muss das selbst schreiben — von Hand gepflegt waere es der naechste Fehlstand.
+  /* Der Stempel muss VOM SYNC kommen. Ein von Hand gepflegter Stempel waere
+     exakt der naechste Fehlstand. Geprueft wird pro Datei die konkrete
+     patch()-Zeile auf index.html — ein blosses includes() waere hier zu
+     schwach: die SHELL-Zeile fuer sw.js enthaelt dieselben Zeichenketten
+     und wuerde einen entfernten index.html-Stempel decken. */
+  const syncIndexLines = sync.split('\n').filter((l) => l.includes("patch('public/index.html'"));
+  for (const f of ['/style.css?v=', '/app.js?v=', '/version.js?v=']) {
+    assert.ok(syncIndexLines.some((l) => l.includes(f)),
+      `sync-version.mjs muss ${f} in index.html selbst schreiben`);
+  }
+  assert.ok(sync.split('\n').some((l) => l.includes('SHELL_VERSIONED') && l.includes("patch('public/sw.js'")),
+    'sync-version.mjs muss auch die SW-Liste selbst schreiben');
+  assert.match(sw, /SHELL_VERSIONED = \['\/version\.js\?v=/,
+    'Der Service-Worker-Cache muss dieselben URLs vorhalten, sonst greift die Offline-Ebene ins Leere');
+  assert.ok(sw.includes(`?v=${pkgV}`), 'Die SW-Liste muss mitwandern');
+
+  // -- 2. Erkennung: das Stylesheet traegt einen pruefbaren Stempel.
+  const cssV = cssRaw.match(/--fp-css-version:"([^"]+)"/);
+  assert.ok(cssV, 'style.css braucht einen eigenen Versionsstempel — ohne ihn ist ein altes CSS nicht erkennbar');
+  assert.equal(cssV[1], pkgV, 'Der CSS-Stempel muss zur package.json passen');
+  assert.match(app, /function cssVersion\(\)/, 'Die App muss den CSS-Stempel auslesen koennen');
+  assert.match(app, /--fp-css-version/, 'Die Konsistenzpruefung muss das Stylesheet einbeziehen');
+
+  // -- 3. Die Kopfzeile darf nicht die Serverversion als laufenden Code ausgeben.
+  assert.doesNotMatch(app, /\$\('#appver'\)\.textContent = 'v' \+ health\.version;/,
+    'Die Kopfzeile darf NICHT die Worker-Version anzeigen — genau diese Fehlannahme kostete eine Runde');
+  assert.match(app, /srv === ui \? 'v' \+ ui : `v\$\{ui\} · Server v\$\{srv\}`/,
+    'Die Kopfzeile muss den laufenden Code melden und eine Abweichung sichtbar machen');
+
+  /* -- Funktionsnachweis, AUSGEFUEHRT: die Pruefung selbst, alle vier Faelle.
+        Ein Textmatch waere hier kein Nachweis — es geht um eine Fallunterscheidung. */
+  {
+    const startAt = app.indexOf('function cssVersion()');
+    const tail = "return {ok:false,shell,code,action:'warn'};";
+    const tailAt = app.indexOf(tail);
+    assert.ok(startAt >= 0 && tailAt > startAt, 'Die Anker der Pruefung muessen gefunden werden');
+    const endAt = app.indexOf('}', tailAt + tail.length) + 1;   // schliessende Klammer mitnehmen
+    const src = app.slice(startAt, endAt);
+    assert.ok(src.length > 500 && src.length < 3000,
+      'Der Slice muss GENAU die Pruefung enthalten — ein zu grosser Slice waere ein blinder Test');
+    assert.ok(src.includes('function checkShellConsistency()'), 'Der Slice muss beide Funktionen enthalten');
+    const mk = (shellV, codeV, cssV, tried) => {
+      const store = { 'fp.shellFixTried': tried || null };
+      const document = {
+        querySelector: () => shellV ? { getAttribute: () => shellV } : null,
+        documentElement: {},
+      };
+      const fn = new Function('document', 'self', 'sessionStorage', 'getComputedStyle',
+        src + '; return checkShellConsistency;');
+      return fn(document, { FP_VERSION: codeV },
+        { getItem: (k) => store[k], setItem: (k, v) => { store[k] = v; } },
+        () => ({ getPropertyValue: () => cssV == null ? '' : `"${cssV}"` }))();
+    };
+
+    // Der gemeldete Fall: alles neu, nur das Stylesheet alt. Bis v3.14.2 unsichtbar.
+    const stale = mk('3.14.3', '3.14.3', '3.14.2', null);
+    assert.equal(stale.ok, false, 'Ein veraltetes style.css MUSS auffallen — das war die Luecke');
+    assert.equal(stale.part, 'style.css', 'Die Meldung muss die betroffene Datei benennen');
+    assert.equal(stale.action, 'reload', 'Erster Fehlstand: einmal selbst heilen');
+
+    // Zweiter Durchlauf derselben Sitzung: warnen statt erneut laden.
+    assert.equal(mk('3.14.3', '3.14.3', '3.14.2', '3.14.3').action, 'warn',
+      'Keine Reload-Schleife — nach dem einen Versuch wird gewarnt');
+
+    // Alles gleich -> in Ordnung.
+    assert.equal(mk('3.14.3', '3.14.3', '3.14.3', null).ok, true, 'Gleiche Versionen duerfen nicht warnen');
+
+    // Fail-closed: fehlender CSS-Stempel ist KEIN Fehlstand (altes CSS ohne die Variable).
+    assert.equal(mk('3.14.3', '3.14.3', null, null).ok, true,
+      'Ein fehlender Stempel darf keine Falschwarnung ausloesen');
+
+    // Die alte index.html-Pruefung aus v3.14.1 muss weiter greifen.
+    const shellBad = mk('3.14.2', '3.14.3', '3.14.3', null);
+    assert.equal(shellBad.ok, false, 'Der Shell-Fehlstand aus v3.14.1 muss erhalten bleiben');
+  }
+}
+
+console.log('✓ FusionPulse v3.14.3 asset-stamp/css-consistency regressions: OK');

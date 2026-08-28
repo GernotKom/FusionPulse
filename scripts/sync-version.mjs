@@ -42,6 +42,28 @@ patch('public/index.html', /<title>FusionPulse [^<]*<\/title>/, `<title>FusionPu
 // bei jeder Auslieferung faelschlich einen Fehlstand.
 patch('public/index.html', /<meta name="fp-shell-version" content="[^"]*">/, `<meta name="fp-shell-version" content="${version}">`);
 
+/* 7) v3.14.3 · DIE LUECKE, DIE DREI RUNDEN GEKOSTET HAT.
+   Bis v3.14.2 gab es drei Stempel: index.html, version.js und den Worker.
+   `app.js` und `style.css` hatten KEINEN. Genau in diesen beiden Dateien lagen
+   aber die Layoutkorrekturen. Ein frisches index.html + frisches version.js
+   neben einem alten style.css war damit vollstaendig unsichtbar: die
+   Konsistenzpruefung aus v3.14.1 war gruen, der blaue Balken kam nicht, und die
+   Kopfzeile zeigte trotzdem die neue Nummer.
+   Jetzt tragen beide Dateien die Version IM URL. Eine neue Version ist eine
+   neue URL — ein alter Cache-Eintrag kann gar nicht mehr getroffen werden.
+   Das ist Verhinderung statt Erkennung; die Pruefung unten bleibt als
+   Rueckfallebene fuer den Fall, dass index.html selbst veraltet ausgeliefert wird. */
+patch('public/index.html', /href="\/style\.css(\?v=[^"]*)?"/, `href="/style.css?v=${version}"`);
+patch('public/index.html', /src="\/version\.js(\?v=[^"]*)?"/, `src="/version.js?v=${version}"`);
+patch('public/index.html', /src="\/app\.js(\?v=[^"]*)?"/, `src="/app.js?v=${version}"`);
+// Der Service Worker muss dieselben URLs vorhalten, sonst greift die
+// Offline-Rueckfallebene ins Leere.
+patch('public/sw.js', /const SHELL_VERSIONED = \[[^\]]*\];/,
+  `const SHELL_VERSIONED = ['/version.js?v=${version}', '/app.js?v=${version}', '/style.css?v=${version}'];`);
+// Stempel IM Stylesheet: erlaubt der App, ein veraltetes CSS direkt zu erkennen,
+// statt es aus Folgefehlern zu erraten.
+patch('public/style.css', /--fp-css-version:"[^"]*"/, `--fp-css-version:"${version}"`);
+
 // 5) Dokumentation / Quellkopf
 patch('README.md', /^# FusionPulse v[^\n]*/m, `# FusionPulse v${version}`);
 patch('public/app.js', /FusionPulse v\d+\.\d+\.\d+ — Frontend/, `FusionPulse v${version} — Frontend`);

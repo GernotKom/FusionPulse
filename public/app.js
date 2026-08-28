@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.14.2 — Frontend
+   FusionPulse v3.14.3 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1096,7 +1096,15 @@ async function loadHealth() {
     const r = await fetchWithTimeout('/api/health?' + p, { cache: 'no-store' }, 8_000);
     health = await r.json();
     if (health.version) {
-      $('#appver').textContent = 'v' + health.version;
+      /* v3.14.3: Hier stand `'v' + health.version` — die Kopfzeile zeigte also die
+         Version des WORKERS, nicht die des Codes im Browser. Sie wurde wenige
+         Sekunden nach dem Laden ueber den Wert aus version.js geschrieben. Damit
+         war die Nummer, die der Nutzer oben abliest, kein Beleg dafuer, dass die
+         neue Oberflaeche geladen ist — genau die Fehlannahme, die uns die letzte
+         Runde gekostet hat. Die Kopfzeile meldet jetzt den laufenden Code; die
+         Servernummer kommt nur dazu, wenn sie abweicht. */
+      const srv = String(health.version), ui = String(FP_VERSION);
+      $('#appver').textContent = srv === ui ? 'v' + ui : `v${ui} · Server v${srv}`;
       const v = $('#settingsVer'); if (v) v.textContent = 'v' + health.version;
       // Version-Mismatch Frontend ↔ Backend: alter Cache oder halbes Deployment.
       if (health.version !== FP_VERSION) {
@@ -3862,10 +3870,32 @@ $('#updateReload').onclick = hardReload;
    Schleife gedreht, sondern eine dauerhafte Warnung gezeigt. Eine Reload-
    Schleife waere hier der schlimmere Fehler: sie versteckt das Problem und
    macht die App unbenutzbar.                                                 */
+/* v3.14.3 · DIE LUECKE IN DIESER PRUEFUNG.
+   Sie verglich index.html gegen version.js. Beide sind kleine Dateien, die
+   praktisch immer gemeinsam frisch werden. `app.js` und `style.css` wurden
+   NICHT geprueft — und genau dort lagen die Layoutkorrekturen aus v3.14.0 und
+   v3.14.2. Der Zustand „index.html neu, version.js neu, style.css alt" war
+   damit vollstaendig unsichtbar: Pruefung gruen, kein blauer Balken, Kopfzeile
+   zeigt die neue Nummer — und das Scrollen ist trotzdem kaputt.
+   Das Stylesheet traegt jetzt `--fp-css-version` und wird mitgeprueft.
+   Der Wert steht in Anfuehrungszeichen, die getComputedStyle mitliefert. */
+function cssVersion(){
+  try{
+    const v=getComputedStyle(document.documentElement).getPropertyValue('--fp-css-version');
+    const t=String(v||'').trim().replace(/^["']|["']$/g,'');
+    return t||null;
+  }catch{ return null; }
+}
 function checkShellConsistency(){
   const shell=document.querySelector('meta[name="fp-shell-version"]')?.getAttribute('content')||null;
   const code=(typeof self!=='undefined' && self.FP_VERSION)?String(self.FP_VERSION):null;
-  if(!shell||!code||shell===code) return {ok:true,shell,code};
+  /* Fail-closed: ein fehlender Stempel ist KEIN Fehlstand. Ein altes CSS ohne
+     die Variable darf keine Falschwarnung ausloesen — dieselbe Regel wie beim
+     fehlenden Meta-Tag in v3.14.1. */
+  const css=cssVersion();
+  if(code && css && css!==code) return {ok:false,shell:css,code,part:'style.css',
+    action: sessionStorage.getItem('fp.shellFixTried')===code ? 'warn' : (sessionStorage.setItem('fp.shellFixTried',code),'reload')};
+  if(!shell||!code||shell===code) return {ok:true,shell,code,css};
   const KEY='fp.shellFixTried';
   const tried=sessionStorage.getItem(KEY)===code;
   if(!tried){
@@ -3881,14 +3911,14 @@ function checkShellConsistency(){
     console.warn(JSON.stringify({event:'shell_version_mismatch',shell:c.shell,code:c.code,action:c.action}));
     const bar=$('#updateBar'), txt=$('#updateText'), btn=$('#updateReload');
     if(c.action==='reload'){
-      if(txt) txt.textContent=`Unvollständige Auslieferung erkannt (Shell ${c.shell}, Code ${c.code}). Wird einmalig neu geladen.`;
+      if(txt) txt.textContent=`Unvollständige Auslieferung erkannt (${c.part||'index.html'} ${c.shell}, Code ${c.code}). Wird einmalig neu geladen.`;
       if(bar) bar.classList.remove('hidden');
       setTimeout(()=>{ hardReload(); }, 900);
     }else if(bar&&txt&&btn){
       /* Zweiter Fehlstand in derselben Sitzung: Der Neuladeversuch hat nichts
          geaendert. Dann liegt es am Server, nicht am Browser — das gehoert
          gesagt, statt es weiter zu versuchen. */
-      txt.textContent=`Die Auslieferung ist inkonsistent: index.html meldet ${c.shell}, der Code ${c.code}. Ein Neuladen hat das nicht behoben — die alte Datei kommt vom Server. Bis das behoben ist, können Anzeige- und Scrollfehler auftreten, die NICHT an den Einstellungen liegen.`;
+      txt.textContent=`Die Auslieferung ist inkonsistent: ${c.part||'index.html'} meldet ${c.shell}, der Code ${c.code}. Ein Neuladen hat das nicht behoben — die alte Datei kommt vom Server. Bis das behoben ist, können Anzeige- und Scrollfehler auftreten, die NICHT an den Einstellungen liegen.`;
       btn.textContent='Verstanden';
       btn.onclick=()=>bar.classList.add('hidden');
       bar.classList.remove('hidden');
