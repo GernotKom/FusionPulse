@@ -2447,8 +2447,14 @@ console.log('✓ FusionPulse v3.14.2 dock-measure/system-source regressions: OK'
   // -- 3. Die Kopfzeile darf nicht die Serverversion als laufenden Code ausgeben.
   assert.doesNotMatch(app, /\$\('#appver'\)\.textContent = 'v' \+ health\.version;/,
     'Die Kopfzeile darf NICHT die Worker-Version anzeigen — genau diese Fehlannahme kostete eine Runde');
-  assert.match(app, /srv === ui \? 'v' \+ ui : `v\$\{ui\} · Server v\$\{srv\}`/,
-    'Die Kopfzeile muss den laufenden Code melden und eine Abweichung sichtbar machen');
+  /* v3.14.5: Die Anzeige wanderte in renderVersionBadge() und zeigt beide Nummern
+     jetzt IMMER, nicht nur bei Abweichung. Die Invariante von v3.14.3 ist
+     unveraendert: die Kopfzeile meldet den laufenden Code, nicht den Worker.
+     Der ausgefuehrte Nachweis dafuer steht im v3.14.5-Block. */
+  assert.match(app, /renderVersionBadge\(String\(health\.version\)\)/,
+    'Die Kopfzeile muss ueber renderVersionBadge laufen');
+  assert.match(app, /function renderVersionBadge\(serverVersion\)\{/,
+    'renderVersionBadge muss existieren');
 
   /* -- Funktionsnachweis, AUSGEFUEHRT: die Pruefung selbst, alle vier Faelle.
         Ein Textmatch waere hier kein Nachweis — es geht um eine Fallunterscheidung. */
@@ -2579,3 +2585,74 @@ console.log('✓ FusionPulse v3.14.3 asset-stamp/css-consistency regressions: OK
 }
 
 console.log('✓ FusionPulse v3.14.4 body-box/foot-spacer regressions: OK');
+
+/* ====================================================================
+   v3.14.5 · Die Worker-Version steht jetzt dauerhaft im Kopf.
+   Bis v3.14.4 erschien sie NUR bei Abweichung. Bei Gleichstand stand
+   dort eine einzelne Nummer — und genau dann ist von aussen nicht
+   unterscheidbar, ob der Vergleich stattgefunden hat oder ob die
+   Anzeige auf die alte Einquellen-Logik zurueckgefallen ist. Nach drei
+   Runden Auslieferungsproblemen ist ein SICHTBARER Gleichstand die
+   nuetzlichere Information als ein stilles Nichts.
+   ==================================================================== */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const cssRaw = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  const css = cssRaw.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  assert.match(css, /\.sys\.ver\.mismatch\{color:var\(--yellow\)\}/,
+    'Ein Fehlstand muss im Kopf sichtbar sein, nicht nur im Tooltip');
+
+  const rv = app.slice(app.indexOf('function renderVersionBadge(serverVersion){'),
+                       app.indexOf('renderVersionBadge(null);'));
+  assert.ok(rv.length > 400 && rv.length < 3000, 'renderVersionBadge muss gefunden werden');
+  assert.doesNotMatch(rv, /srv===ui\s*\?/, 'Die Worker-Version darf nicht mehr an eine Bedingung geknuepft sein');
+
+  /* -- Funktionsnachweis, AUSGEFUEHRT. Sechs Faelle. */
+  {
+    const mk = (ui, srv, shell, cssV) => {
+      const el = { textContent: '', title: '', classList: { _m: false, toggle(_, v) { this._m = v; } } };
+      const doc = {
+        querySelector: (s) => s === '#appver' ? el
+          : s === 'meta[name="fp-shell-version"]' ? (shell ? { getAttribute: () => shell } : null) : null,
+        documentElement: {},
+      };
+      const fn = new Function('$', 'document', 'FP_VERSION', 'cssVersion',
+        rv + '; return renderVersionBadge;');
+      fn((s) => doc.querySelector(s), doc, ui, () => cssV)(srv);
+      return { text: el.textContent, title: el.title, mismatch: el.classList._m };
+    };
+
+    // 1. Gleichstand: BEIDE Nummern muessen trotzdem dastehen.
+    const ok = mk('3.14.5', '3.14.5', '3.14.5', '3.14.5');
+    assert.equal(ok.text, 'v3.14.5 · Worker 3.14.5',
+      'Bei Gleichstand muss die Worker-Version SICHTBAR bleiben — das war der Wunsch');
+    assert.equal(ok.mismatch, false, 'Gleichstand darf nicht als Fehlstand eingefaerbt werden');
+    assert.match(ok.title, /alle Stempel identisch/, 'Der Tooltip muss den Gleichstand benennen');
+
+    // 2. Vor der ersten Health-Antwort: ehrlicher Platzhalter statt falscher Nummer.
+    assert.equal(mk('3.14.5', null, '3.14.5', '3.14.5').text, 'v3.14.5 · Worker …',
+      'Ein unbekannter Worker-Stand darf nicht als Zahl erfunden werden');
+
+    // 3. Worker voraus (Deploy gelaufen, Browser noch alt).
+    const drift = mk('3.14.4', '3.14.5', '3.14.4', '3.14.4');
+    assert.equal(drift.text, 'v3.14.4 · Worker 3.14.5', 'Beide Staende muessen ablesbar sein');
+    assert.equal(drift.mismatch, true, 'Eine Abweichung muss eingefaerbt werden');
+
+    // 4. Der Fall aus v3.14.3: alles neu, nur das Stylesheet alt.
+    const staleCss = mk('3.14.5', '3.14.5', '3.14.5', '3.14.4');
+    assert.equal(staleCss.mismatch, true, 'Ein veraltetes Stylesheet muss auch hier auffallen');
+    assert.match(staleCss.title, /Stylesheet \(style\.css\): 3\.14\.4/,
+      'Der Tooltip muss den abweichenden Stempel beim Namen nennen');
+
+    // 5. Fail-closed: fehlende Stempel sind KEIN Fehlstand.
+    assert.equal(mk('3.14.5', '3.14.5', null, null).mismatch, false,
+      'Fehlende Stempel duerfen keine Falschwarnung ausloesen');
+
+    // 6. Die Kopfzeile meldet den laufenden Code, nicht den Worker — Invariante aus v3.14.3.
+    assert.ok(mk('3.14.4', '3.14.5', '3.14.4', '3.14.4').text.startsWith('v3.14.4'),
+      'Die fuehrende Nummer muss der geladene Code sein, nicht der Server');
+  }
+}
+
+console.log('✓ FusionPulse v3.14.5 version-badge regressions: OK');

@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.14.4 — Frontend
+   FusionPulse v3.14.5 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1103,8 +1103,14 @@ async function loadHealth() {
          neue Oberflaeche geladen ist — genau die Fehlannahme, die uns die letzte
          Runde gekostet hat. Die Kopfzeile meldet jetzt den laufenden Code; die
          Servernummer kommt nur dazu, wenn sie abweicht. */
-      const srv = String(health.version), ui = String(FP_VERSION);
-      $('#appver').textContent = srv === ui ? 'v' + ui : `v${ui} · Server v${srv}`;
+      /* v3.14.5: Bis v3.14.4 erschien die Worker-Version NUR bei Abweichung. Bei
+         Gleichstand stand dort nur eine Nummer — und genau dann ist nicht
+         unterscheidbar, ob der Vergleich stattgefunden hat oder ob die Anzeige
+         wieder auf die alte Einquellen-Logik zurueckgefallen ist. Nach drei
+         Runden Auslieferungsproblemen ist ein sichtbarer Gleichstand die
+         nuetzlichere Information als ein stilles Nichts. Beide Nummern stehen
+         jetzt IMMER da. */
+      renderVersionBadge(String(health.version));
       const v = $('#settingsVer'); if (v) v.textContent = 'v' + health.version;
       // Version-Mismatch Frontend ↔ Backend: alter Cache oder halbes Deployment.
       if (health.version !== FP_VERSION) {
@@ -4047,7 +4053,31 @@ function applyPrimaryBlockOrder(){
 applyPrimaryBlockOrder();
 applyTheme();
 renderSignalBanner();
-$('#appver').textContent = 'v' + FP_VERSION;
+/* ==== v3.14.5 · Versionsanzeige im Kopf =====================================
+   Vier Stempel muessen uebereinstimmen, damit die App das tut, was der Code
+   sagt: die Shell (index.html), die Oberflaeche (version.js), das Stylesheet
+   (style.css) und der Worker. Drei davon kennt der Browser sofort, den vierten
+   erst nach der ersten Health-Antwort. Sichtbar stehen Oberflaeche und Worker,
+   weil das die beiden sind, die beim Deploy auseinanderlaufen; die vollstaendige
+   Liste steht im Tooltip. Abweichungen werden eingefaerbt, nicht verschwiegen. */
+function renderVersionBadge(serverVersion){
+  const el=$('#appver'); if(!el) return;
+  const ui=String(FP_VERSION);
+  const srv=serverVersion==null?null:String(serverVersion);
+  const shell=document.querySelector('meta[name="fp-shell-version"]')?.getAttribute('content')||null;
+  const css=(typeof cssVersion==='function')?cssVersion():null;
+  el.textContent = srv==null ? `v${ui} · Worker …` : `v${ui} · Worker ${srv}`;
+  const stamps=[['Oberfläche (version.js)',ui],['Worker (Cloudflare)',srv||'wird geladen…'],
+                ['Shell (index.html)',shell||'kein Stempel'],['Stylesheet (style.css)',css||'kein Stempel']];
+  const known=[ui,srv,shell,css].filter(Boolean);
+  const mismatch=known.length>1 && new Set(known).size>1;
+  el.classList.toggle('mismatch',mismatch);
+  el.title=stamps.map(([k,v])=>`${k}: ${v}`).join(' · ')
+    + (mismatch
+        ? ' — ACHTUNG: die Stempel weichen ab. Bis das behoben ist, können Anzeige- und Scrollfehler auftreten, die NICHT an den Einstellungen liegen.'
+        : ' — alle Stempel identisch.');
+}
+renderVersionBadge(null);
 $('#settingsVer').textContent = 'v' + FP_VERSION;
 $('#sound').textContent = S.sound ? '🔊' : '🔇';
 $('#sound').title = S.sound ? 'Haupt-Ton EIN – alle nicht einzeln stummgeschalteten Signale hörbar (m)' : 'Haupt-Ton AUS – alle akustischen Signale stumm (m)';
