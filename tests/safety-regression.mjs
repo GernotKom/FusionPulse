@@ -2499,3 +2499,83 @@ console.log('✓ FusionPulse v3.14.2 dock-measure/system-source regressions: OK'
 }
 
 console.log('✓ FusionPulse v3.14.3 asset-stamp/css-consistency regressions: OK');
+
+/* ====================================================================
+   v3.14.4 · Warum drei Fussleisten-Korrekturen wirkungslos blieben.
+   `html,body{height:100%}` macht die body-Box genau fensterhoch. Der
+   Inhalt ist ein Vielfaches davon und laeuft heraus. `padding-bottom`
+   sitzt damit am unteren Rand DER BOX — rund eine Fensterhoehe weit
+   oben, mitten im Inhalt — und nicht hinter dem letzten Element. Zur
+   Scrollhoehe des Dokuments traegt es nichts bei.
+   Die Messung aus v3.14.2 war richtig, die Zahl stimmte, und sie floss
+   in eine Eigenschaft, die an dieser Stelle keine Wirkung haben KANN.
+   Belegende Asymmetrie: `padding-top` hat immer funktioniert, weil es
+   VOR dem Inhalt steht. `padding-bottom` nie.
+   ==================================================================== */
+{
+  const cssRaw = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  const css = cssRaw.replace(/\/\*[\s\S]*?\*\//g, '');   // Kommentare zitieren die alte Regel
+  const index = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+
+  // -- 1. Die Ursache selbst darf nicht zurueckkehren.
+  assert.doesNotMatch(css, /html\s*,\s*body\s*\{[^}]*height:100%/,
+    'body darf NICHT auf feste Fensterhoehe gesetzt werden — dann ist padding-bottom wirkungslos');
+  assert.doesNotMatch(css, /(^|\})\s*body\s*\{[^}]*[^-]height:100%/,
+    'Auch einzeln darf body keine feste Hoehe von 100% bekommen');
+  assert.match(css, /body\{margin:0;min-height:100%\}/,
+    'Die Box muss mit dem Inhalt wachsen duerfen');
+
+  // -- 2. Der tragende Mechanismus ist ein echtes Element im Fluss.
+  assert.match(css, /\.foot-spacer\{[^}]*height:calc\(var\(--fp-foot-h\) \+ 14px\)/,
+    'Der Abstandhalter muss seine Hoehe aus derselben Messung beziehen');
+  assert.match(index, /<div class="foot-spacer" aria-hidden="true"><\/div>/,
+    'Der Abstandhalter muss im Dokument existieren');
+
+  /* Er muss das LETZTE Element im Fluss sein — steht noch Inhalt dahinter,
+     schiebt er die falsche Stelle frei. Skripte zaehlen nicht, die erzeugen
+     keine Box. */
+  {
+    const body = index.slice(index.indexOf('<body'), index.indexOf('</body>'));
+    const after = body.slice(body.indexOf('<div class="foot-spacer"'));
+    const rest = after
+      .replace('<div class="foot-spacer" aria-hidden="true"></div>', '')
+      .replace(/<script[\s\S]*?<\/script>/g, '')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .trim();
+    assert.equal(rest, '', `Nach dem Abstandhalter darf kein Inhalt mehr folgen, gefunden: ${rest.slice(0, 120)}`);
+  }
+
+  // -- 3. Das padding bleibt als korrektes Boxmodell, ersetzt den Halter aber nicht.
+  assert.match(css, /body\{padding-bottom:calc\(var\(--fp-foot-h\) \+ 14px\)\}/,
+    'Das padding bleibt erhalten — es ist jetzt nur nicht mehr der einzige Mechanismus');
+
+  /* -- Funktionsnachweis, AUSGEFUEHRT: das Boxmodell nachgerechnet.
+        Gemessen am Screenshot vom 28.8.: zwei feste Leisten verdecken 117 px.
+        Mit fester Hoehe endet die body-Box eine Fensterhoehe weit oben; das
+        padding liegt dann VOR dem Inhaltsende und traegt null bei. */
+  {
+    const VIEWPORT = 715;      // sichtbare Hoehe in CSS-Pixeln
+    const CONTENT  = 9800;     // tatsaechliche Inhaltshoehe (langer Aktienradar)
+    const FOOT     = 117;      // .dock 66 + .signal-banner 51, am Screenshot gemessen
+    const PAD      = FOOT + 14;
+    const SPACER   = FOOT + 14;
+
+    // Scrollhoehe = Unterkante der body-Box ODER Unterkante des Inhalts, je nachdem was tiefer liegt.
+    const scrollHeight = (bodyBoxHeight, spacer) =>
+      Math.max(bodyBoxHeight + PAD, CONTENT + spacer);
+    const freeAtEnd = (h, spacer) => scrollHeight(h, spacer) - CONTENT;
+
+    // Vorher: feste Fensterhoehe, kein Abstandhalter.
+    assert.equal(freeAtEnd(VIEWPORT, 0), 0,
+      'Mit height:100% erzeugt padding-bottom KEINE Scrollflaeche — das war der Fehler');
+    // Nachher: Abstandhalter im Fluss.
+    assert.equal(freeAtEnd(VIEWPORT, SPACER), 131,
+      'Der Abstandhalter muss die volle Leistenhoehe plus Reserve freischieben');
+    assert.ok(freeAtEnd(VIEWPORT, SPACER) >= FOOT,
+      'Freigeschobene Flaeche muss mindestens beide Leisten decken');
+    // Auch mit korrigierter Box bleibt der Halter der tragende Mechanismus.
+    assert.ok(freeAtEnd(CONTENT, SPACER) >= FOOT, 'min-height darf das Ergebnis nicht verschlechtern');
+  }
+}
+
+console.log('✓ FusionPulse v3.14.4 body-box/foot-spacer regressions: OK');

@@ -5,7 +5,22 @@
   --pad:14px;
 }
 *{box-sizing:border-box}
-html,body{margin:0;height:100%}
+/* v3.14.4 · DIE URSACHE, DIE DREI ANLAEUFE UEBERSTANDEN HAT.
+   Hier stand `html,body{height:100%}`. Das macht die body-Box exakt so hoch wie
+   das Fenster. Der Inhalt ist ein Vielfaches davon und laeuft aus der Box heraus.
+   Folge: `body{padding-bottom:...}` sitzt am UNTEREN RAND DER BOX — also
+   ungefaehr eine Fensterhoehe weit oben, mitten im Inhalt — und nicht hinter dem
+   letzten Element. Die Scrollhoehe des Dokuments ergibt sich aus dem
+   ueberlaufenden Inhalt, und dazu traegt dieses padding NICHTS bei.
+   Damit war jede Fussleisten-Korrektur seit v3.14.0 wirkungslos: die Messung war
+   ab v3.14.2 richtig, die Zahl stimmte, sie floss in eine Eigenschaft, die an
+   dieser Stelle keine Wirkung haben KANN. Genau deshalb hat `padding-top` immer
+   funktioniert (es steht VOR dem Inhalt und schiebt ihn herunter) und
+   `padding-bottom` nie. Diese Asymmetrie haette mir in v3.14.0 auffallen muessen.
+   `min-height` laesst die Box mit dem Inhalt wachsen; das padding landet dann
+   tatsaechlich hinter dem letzten Element. */
+html{height:100%}
+body{margin:0;min-height:100%}
 body{
   background:var(--bg);color:var(--fg);font-size:14px;
   font-family:system-ui,-apple-system,"SF Pro Text","Segoe UI",Roboto,sans-serif;
@@ -614,6 +629,12 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
    Fokuskarte blieb dauerhaft verdeckt, auch am Ende des Scrollbereichs.
    Genau das war die Meldung „passt immer noch nicht beim Scrollen".
    Ich hatte in v3.12.0 den Kopf gemessen und den Fuss uebersehen. */
+/* v3.14.4: Das padding bleibt (korrektes Boxmodell), ist aber nicht mehr der
+   TRAGENDE Mechanismus. Ein echtes Element im Fluss erzeugt Scrollflaeche ohne
+   jede Bedingung — unabhaengig von height/min-height, Ueberlauf oder
+   Stapelkontext. Dieselbe Ueberlegung wie beim Wechsel sticky -> fixed in
+   v3.14.0: die deterministische Loesung schlaegt die bedingte. */
+.foot-spacer{display:block;width:100%;flex:none;height:calc(var(--fp-foot-h) + 14px)}
 body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;align-items:center;gap:9px;white-space:nowrap;font-size:10px;color:var(--dim)}.signal-idle b{color:var(--fg);font-size:11px}.draghandle{border:0;background:transparent;color:var(--dim);cursor:grab;padding:0 2px;font-size:15px;touch-action:none}.draghandle:active{cursor:grabbing}.stockrow.dragging,.depotchip.dragging{opacity:.5;outline:1px dashed var(--dim2)}.depotchip{touch-action:none}.depotchip .dragmark{margin-right:4px;color:var(--dim);font-size:10px}
 
 /* v3.1.0 VL: Intraday charts in large stock/coin views */
@@ -669,7 +690,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"3.14.3";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"3.14.4";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
