@@ -1492,3 +1492,47 @@ neu laden.
 - Sperrfrist 6 h über `localStorage['fp_sw_healed_at']`. Ohne sie entstünde eine
   Neulade-Schleife, die schlimmer wäre als der Fehler.
 - Kein `localStorage.clear()`. Tests halten alle drei Punkte fest.
+
+---
+
+## 8w. WAS v3.26.0 GEÄNDERT HAT — Bereichsordnung
+
+Rein strukturell, keine Rechnung angefasst.
+
+### Zwei Fehler, vom Nutzer benannt
+
+1. **Das AKTIEN-Band lag ZWISCHEN Coin-Liste und `#stocks`.** Technisch „über
+   den Aktien", gelesen als Abschluss der Coin-Liste. **Regel: eine Überschrift
+   gehört INS Element, das sie überschreibt.** Jetzt erstes Kind von `#stocks`.
+2. **Learning, Musterlabor, Modul 0, Lab und Marktmeinung waren Kinder von
+   `#stocks`.** Sie werten BEIDE Märkte aus und sind Rückblick. Jetzt ein
+   dritter Bereich `#labZone` mit `#bandLab`, hinter Coins und Aktien.
+
+Dritter Fehler, beim Prüfen selbst gefunden: das Krypto-Fokusfenster stand ÜBER
+seiner Überschrift, im Aktienbereich darunter. Beide Bereiche sind jetzt gleich
+aufgebaut: Band → Fokus → Top Picks → Momentum → …
+
+### Neue Invarianten (Suite 46)
+
+- Die **vollständige Abfolge** im Aktienbereich wird als Positionskette geprüft,
+  nicht als Vorhandensein. „Alles da, aber an der falschen Stelle" war genau der
+  Fehler.
+- Kein Auswertungsteil mehr innerhalb von `#stocks`.
+- **`VIEW_SECTIONS` muss der DOM-Reihenfolge folgen.** Sonst springt die
+  Markierung beim Scrollen, weil `markActiveSection` von oben nach unten läuft
+  und den letzten Treffer nimmt — fühlt sich wie ein Zufall an und überlebt
+  deshalb lange.
+
+### Sprungziele
+
+Die drei Bänder haben IDs (`#bandCoin`, `#bandStock`, `#bandLab`) und sind das
+erste Sprungziel ihres Reiters. Ein `[data-domain=…]`-Selektor wäre eleganter
+gewesen, aber die bestehende Sprungziel-Prüfung versteht nur `#id`, `.class` und
+Tagnamen — IDs sind hier der ehrlichere Weg als eine aufgeweichte Prüfung.
+
+### Bänder
+
+`.domain-band` hat viel Luft OBEN, wenig UNTEN. Umgekehrt war es der Fehler.
+`.domain-head` ist sticky unter der Kopfleiste — bei zwei Märkten mit
+verschiedenen Kostenmodellen ist „wo bin ich gerade" keine Kosmetik.
+Dritte Bereichsfarbe `--domain-lab`, neutralgrau, in den Einstellungen änderbar.

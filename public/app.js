@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.25.0 — Frontend
+   FusionPulse v3.26.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1093,6 +1093,7 @@ const TINTABLE_TILES=[
 const DOMAIN_TINTS=[
   ['coin','Bereichsfarbe Krypto','#8b7cff'],
   ['stock','Bereichsfarbe Aktien','#3fb0c9'],
+  ['lab','Bereichsfarbe Auswertung / Lab','#9aa7bd'],
 ];
 const TINT_CHOICES=[
   ['','Standard'],['#5b8cff','Blau'],['#8b7cff','Violett'],['#3fb0c9','Türkis'],
@@ -4870,25 +4871,35 @@ $('#dcopy').onclick = (e) => {
      · Der aktive Abschnitt wird beim Scrollen markiert. Eine dauerhaft sichtbare
        Leiste, die nicht zeigt wo man ist, ist nur eine Knopfreihe.            */
 const VIEW_SECTIONS = {
+/* v3.26.0: Die Liste MUSS der DOM-Reihenfolge folgen. Sonst springt der
+   Fortschrittsbalken beim Scrollen vor und zurueck, weil `markActiveSection`
+   von oben nach unten durchlaeuft und den letzten Treffer nimmt. */
   coins: [
+    ['#bandCoin',          'Krypto', 'Anfang des Kryptobereichs.'],
     ['.stage',            'Fokus',        'Krypto-Fokusfenster mit Heatmap — der ausgewählte Coin im Detail.'],
+    ['#topPicksCoin',     'Top Picks',    'Rangfolge nach erwartetem Netto-Euro je Tag, aus aufgezeichneten Fällen.'],
     ['#cryptoMovers',     'Mover',        'Coins mit der stärksten gemessenen Bewegung der letzten Stunde.'],
     ['#sentimentCard',    'Stimmung',     'Fear-&-Greed-Index. Reine Einordnung, 0 % BUY-Gewicht.'],
     ['main',              'Coin-Liste',   'Die vollständige Trefferliste unterhalb von Fokus und Heatmap.'],
   ],
   stocks: [
+    ['#bandStock',        'Aktien',       'Anfang des Aktienbereichs.'],
     ['.stockstage',       'Fokus',        'Aktien-Fokusfenster mit Heatmap.'],
-    ['#marketGainers',    'Mover',        'Momentum-Mover: Bewegung während der laufenden US-Handelszeit.'],
-    ['#sectorLaggards',   'Nachzügler',   'Sektor läuft, Titel hinkt noch — Grund hinzusehen, kein Kaufsignal.'],
-    ['#earningsBoard',    'Zahlen',       'Anstehende Quartalszahlen der beobachteten Titel, nach Sektor.'],
+    ['#topPicks',         'Top Picks',    'Rangfolge nach erwartetem Netto-Euro je Handelstag, aus aufgezeichneten Fällen.'],
+    ['#marketGainers',    'Momentum',     'Bewegung während der laufenden US-Handelszeit.'],
     ['#openingPanel',     'Premarket',    'Gaps vor der Eröffnung (Alpaca).'],
     ['#extendedWatch',    'Nachbörse',    'Bewegung nach Handelsschluss.'],
+    ['#sectorLaggards',   'Nachzügler',   'Sektor läuft, Titel hinkt noch — Grund hinzusehen, kein Kaufsignal.'],
+    ['#earningsBoard',    'Zahlen',       'Anstehende Quartalszahlen der beobachteten Titel, nach Sektor.'],
+    ['#gateFunnel',       'Trichter',     'Woran die Kauf-Freigaben im aktuellen Durchlauf hängen.'],
     ['#depotStrip',       'Depot',        'Deine mit ★ markierten Titel.'],
     ['#portfolioRisk',    'Risiko',       'Gesamtrisiko über alle offenen Positionen und Klumpungswarnung.'],
     ['#stockGroups',      'Liste',        'Die vollständige Aktien-Trefferliste.'],
   ],
   lab: [
+    ['#bandLab',            'Auswertung', 'Anfang des Auswertungsbereichs — Rückblick über beide Märkte.'],
     ['#learningReport',     'Learning',       'Was im Hintergrund gespeichert und ausgewertet wurde.'],
+    ['#patternLab',         'Musterlabor',    'Was war VOR einer Bewegung messbar? Ereignisstudie über die Aufzeichnungen.'],
     ['#attributionReport',  'Selbstauswertung','Modul 0: ehrliche Out-of-Sample-Bilanz je Setup.'],
     ['#experimentalPanel',  'Lab',            'Experimentelle Einflussgrößen, 0 % BUY-Gewicht.'],
     ['#aladdinCard',        'Marktmeinung',   'Hierarchische Marktmeinung aus Regime, Rotation, Breadth und Stress.'],

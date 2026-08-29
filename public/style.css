@@ -693,7 +693,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"3.25.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"3.26.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1386,3 +1386,34 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .bootfail-actions button{padding:6px 12px;border-radius:8px;cursor:pointer;
   border:1px solid #b0642a;background:#3a2716;color:#f0e2d2;font:inherit}
 .bootfail-actions button:hover{background:#4a3220}
+
+/* ═══════════════════════════════════ v3.26.0 · Dritter Bereich: Auswertung ══
+   Learning, Musterlabor, Modul 0 und Lab lagen INNERHALB des Aktienabschnitts.
+   Sie werten aber BEIDE Maerkte aus und sind Rueckblick, keine Handlungs-
+   grundlage — wer nach unten scrollte, landete zwischen zwei Aktienkacheln
+   ploetzlich in der Selbstauswertung. Jetzt ein eigener Bereich am Ende.
+   Der Ton ist bewusst neutralgrau: dieser Bereich soll nicht um Aufmerksamkeit
+   konkurrieren mit den beiden, in denen tatsaechlich gehandelt wird. */
+
+:root{ --domain-lab:#9aa7bd; }
+[data-domain="lab"]{ --domain:var(--domain-lab); }
+[data-domain].labzone{border-left:3px solid color-mix(in srgb, var(--domain) 45%, transparent);
+  padding-left:10px;margin-top:4px}
+[data-domain="lab"] .learning-report,
+[data-domain="lab"] .experimental-panel,
+[data-domain="lab"] .aladdin-card{border-left:2px solid color-mix(in srgb, var(--domain) 35%, transparent)}
+
+/* Das Band gehoert sichtbar ZUM Bereich darunter, nicht zwischen die Bereiche.
+   Deshalb viel Luft darueber, wenig darunter — sonst liest es sich als
+   Abschluss des vorigen Abschnitts. Genau das war der Fehler: die
+   Aktien-Ueberschrift wirkte wie das Ende der Coin-Liste. */
+.domain-band{margin:34px 0 6px}
+#stocks > .domain-band:first-child{margin-top:0}
+.domain-head{position:sticky;top:var(--fp-chrome-h,106px);z-index:5;
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+/* v3.26.0: Auch das Krypto-Fokusfenster gehoert sichtbar zu seinem Bereich —
+   vorher stand es UEBER der eigenen Ueberschrift, im Aktienbereich war es
+   umgekehrt. Zwei Bereiche, die gleich aufgebaut sind, muss man nicht zweimal
+   lernen. */
+[data-domain].stage{border-left:3px solid color-mix(in srgb, var(--domain) 45%, transparent);
+  padding-left:10px}

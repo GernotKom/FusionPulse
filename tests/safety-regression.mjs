@@ -1481,7 +1481,7 @@ console.log('✓ FusionPulse v3.9.0 fixed-size/mode-A regressions: OK');
     'Aktien: Fokus/Heatmap muss vor der Selbstauswertung stehen');
   assert.ok(pos('<div class="stockstage">') < pos('id="aladdinCard"'),
     'Aktien: Fokus/Heatmap muss vor der Aladdin-Kachel stehen');
-  assert.ok(pos('<div class="stage">') < pos('id="sentimentCard"'),
+  assert.ok(pos('<div class="stage" data-domain="coin">') < pos('id="sentimentCard"'),
     'Krypto: Fokus/Heatmap muss vor der Stimmungskachel stehen');
   assert.ok(pos('<div class="stockstage">') < pos('id="stockGroups"'),
     'Aktien: Fokus/Heatmap muss vor der Gruppenliste stehen');
@@ -3857,8 +3857,9 @@ console.log('✓ FusionPulse v3.21.0 heat/verdict/grid regressions: OK');
     'Die Beleg-Stufe muss weiterhin VOR jeder Tempo-Sortierung greifen');
 
   /* -- 6. Bereichstrennung und Kachelfarben -------------------------------- */
-  assert.match(idx, /<div class="domain-band" data-domain="coin">/, 'Der Kryptobereich muss ausgewiesen sein');
-  assert.match(idx, /<div class="domain-band" data-domain="stock">/, 'Der Aktienbereich muss ausgewiesen sein');
+  assert.match(idx, /id="bandCoin" class="domain-band" data-domain="coin"/, 'Der Kryptobereich muss ausgewiesen sein');
+  assert.match(idx, /id="bandStock" class="domain-band" data-domain="stock"/, 'Der Aktienbereich muss ausgewiesen sein');
+  assert.match(idx, /id="bandLab" class="domain-band" data-domain="lab"/, 'Der Auswertungsbereich muss ausgewiesen sein');
   assert.match(css, /\[data-domain="coin"\]\{ --domain:var\(--domain-coin\); \}/,
     'Die Bereichsfarbe muss ueber eine CSS-Variable laufen, damit sie einstellbar ist');
   // Jede faerbbare Kachel braucht BEIDES: den Schluessel im Code und den Haken
@@ -4144,3 +4145,113 @@ console.log('✓ FusionPulse v3.23.0 coin-lane/cost-model regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.24.0 endpoint-seam/boot-watchdog regressions: OK');
+
+/* ═════════════════════ v3.26.0 · Bereichsordnung und Abfolge ════════════════
+   ANLASS (Nutzer): „leg die Überschrift Aktien wirklich über die Aktien und
+   nicht unten bei den Coins hin. Abfolge Überschrift-Scope-Momentum … dann LAB"
+
+   Er hatte recht, und es waren zwei getrennte Fehler:
+
+   1) Das AKTIEN-Band stand ZWISCHEN Coin-Liste und Aktienabschnitt. Technisch
+      „über den Aktien", gelesen aber als Abschluss der Coin-Liste — weil die
+      Coin-Liste lang ist und nichts sie abschliesst. Eine Ueberschrift gehoert
+      INS Element, das sie ueberschreibt.
+   2) Die Auswertungsbereiche (Learning, Musterlabor, Modul 0, Lab,
+      Marktmeinung) lagen INNERHALB von `#stocks`. Wer nach unten scrollte,
+      landete zwischen zwei Aktienkacheln ploetzlich in der Selbstauswertung.
+      Sie werten BEIDE Maerkte aus und sind Rueckblick, keine Handlungsgrundlage.
+
+   Diese Suite prueft die tatsaechliche Reihenfolge im Markup — nicht, dass die
+   Elemente irgendwo vorkommen. Genau dieser Unterschied war das Problem. */
+{
+  const idx = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  const at = (needle, label) => {
+    const i = idx.indexOf(needle);
+    assert.ok(i > 0, `${label} nicht gefunden: ${needle}`);
+    return i;
+  };
+
+  /* -- 1. Die Ueberschrift steht IM Bereich, den sie ueberschreibt --------- */
+  const stocksOpen = at('<section id="stocks"', 'Aktienabschnitt');
+  const bandStock = at('id="bandStock"', 'Aktien-Band');
+  const radar = at('<h2>Aktienradar</h2>', 'Aktienradar-Ueberschrift');
+  assert.ok(stocksOpen < bandStock,
+    'Das AKTIEN-Band muss INNERHALB des Aktienabschnitts liegen — ausserhalb liest es sich als Ende der Coin-Liste');
+  assert.ok(bandStock < radar, 'Und direkt ueber „Aktienradar"');
+  // Es darf auch nichts Krypto-Bezogenes mehr dazwischenstehen.
+  const coinList = at('<section id="list"', 'Coin-Liste');
+  assert.ok(coinList < stocksOpen, 'Die Coin-Liste muss vor dem Aktienabschnitt enden');
+
+  /* -- 2. Die geforderte Abfolge im Aktienbereich -------------------------- */
+  const reihenfolge = [
+    ['id="bandStock"',       'Überschrift'],
+    ['<h2>Aktienradar</h2>', 'Umfang/Suche'],
+    ['class="stockstage"',   'Fokus'],
+    ['id="topPicks"',        'Top Picks'],
+    ['id="marketGainers"',   'Momentum'],
+    ['id="openingPanel"',    'Premarket'],
+    ['id="extendedWatch"',   'Nachbörse'],
+    ['id="sectorLaggards"',  'Nachzügler'],
+    ['id="earningsBoard"',   'Zahlen'],
+    ['id="gateFunnel"',      'Trichter'],
+    ['id="depotStrip"',      'Depot'],
+    ['id="portfolioRisk"',   'Risiko'],
+    ['id="stockGroups"',     'Liste'],
+  ];
+  let vorher = -1, vorLabel = 'Anfang';
+  for (const [needle, label] of reihenfolge) {
+    const pos = at(needle, label);
+    assert.ok(pos > vorher, `Abfolge verletzt: „${label}" muss NACH „${vorLabel}" stehen`);
+    vorher = pos; vorLabel = label;
+  }
+
+  /* -- 3. LAB liegt HINTER den Aktien, nicht darin ------------------------- */
+  const stocksClose = idx.indexOf('</section>', at('id="stockGroups"', 'Aktienliste'));
+  for (const [needle, label] of [['id="learningReport"', 'Learning'],
+                                 ['id="patternLab"', 'Musterlabor'],
+                                 ['id="attributionReport"', 'Selbstauswertung'],
+                                 ['id="experimentalPanel"', 'Lab'],
+                                 ['id="aladdinCard"', 'Marktmeinung']]) {
+    const pos = at(needle, label);
+    assert.ok(pos > stocksClose,
+      `${label} darf nicht mehr INNERHALB des Aktienabschnitts liegen — es wertet beide Maerkte aus`);
+  }
+  assert.ok(at('id="bandLab"', 'Lab-Band') < at('id="learningReport"', 'Learning'),
+    'Der Auswertungsbereich braucht seine Ueberschrift davor');
+  assert.ok(at('id="labZone"', 'Lab-Zone') > stocksClose, 'Und einen eigenen Behaelter');
+
+  /* -- 4. Drei Bereiche, drei Farben, alle einstellbar --------------------- */
+  for (const d of ['coin', 'stock', 'lab']) {
+    assert.ok(idx.includes(`data-domain="${d}"`), `Bereich ${d} muss im Markup markiert sein`);
+    assert.ok(css.includes(`[data-domain="${d}"]{ --domain:var(--domain-${d}); }`),
+      `Bereich ${d} braucht seine Farbvariable`);
+    assert.ok(app.includes(`['${d}','Bereichsfarbe`), `Bereich ${d} muss einstellbar sein`);
+  }
+
+  /* -- 5. Die Rubrikenleiste MUSS der DOM-Reihenfolge folgen --------------- */
+  // Sonst springt die Markierung beim Scrollen vor und zurueck, weil
+  // `markActiveSection` von oben nach unten laeuft und den letzten Treffer
+  // nimmt. Ein Fehler, der sich wie ein Zufall anfuehlt.
+  const block = app.slice(app.indexOf('const VIEW_SECTIONS'), app.indexOf('let activeView'));
+  for (const view of ['coins', 'stocks', 'lab']) {
+    const start = block.indexOf(`${view}: [`);
+    // Ende der Liste ist die Zeile "  ]," — NICHT das erste "],", das steht
+    // schon am Ende des ersten Eintrags. (Erster Anlauf hat genau das gefunden
+    // und dann "braucht mehrere Rubriken" gemeldet, obwohl alles da war.)
+    const end = block.indexOf('\n  ],', start);
+    const sels = [...block.slice(start, end).matchAll(/\['([^']+)',/g)].map((m) => m[1]);
+    assert.ok(sels.length >= 4, `${view} braucht mehrere Rubriken`);
+    let last = -1;
+    for (const sel of sels) {
+      if (!sel.startsWith('#')) continue;              // 'main' u. ae. sind Container
+      const pos = idx.indexOf(`id="${sel.slice(1)}"`);
+      assert.ok(pos > 0, `${view}: Sprungziel ${sel} fehlt im Markup`);
+      assert.ok(pos > last,
+        `${view}: die Rubrik ${sel} steht in der Leiste vor einem Element, das im Markup DAHINTER liegt`);
+      last = pos;
+    }
+  }
+}
+
+console.log('✓ FusionPulse v3.26.0 section-order regressions: OK');
