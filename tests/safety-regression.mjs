@@ -3881,3 +3881,152 @@ console.log('✓ FusionPulse v3.21.0 heat/verdict/grid regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.22.0 tempo/cost-load/domain regressions: OK');
+
+/* ══════════════════════ v3.23.0 · Kryptoschiene, eigenes Kostenmodell ═══════
+   Die Wahrscheinlichkeitsrechnung ist fuer beide Maerkte dieselbe, die
+   KOSTENFUNKTION nicht — und der Unterschied ist strukturell, nicht numerisch:
+
+     Aktien (flatex): FIXE 11,50 EUR je Order. Der Kostenanteil FAELLT mit der
+       Positionsgroesse. Kleine Positionen sind unwirtschaftlich.
+     Krypto (Bitpanda Fusion): keine Fixgebuehr, alles proportional
+       (Taker-Fee je Seite + Spread). Der Kostenanteil ist von der
+       Positionsgroesse UNABHAENGIG.
+
+   Bei 10.000 EUR liegen beide zufaellig fast gleichauf (0,38 % gegen 0,40 %).
+   Genau diese Scheingleichheit macht die Tests noetig: sie darf nicht dazu
+   verfuehren, ein Modell fuer beide zu benutzen. */
+{
+  const worker = workerText;
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  const idx = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const econSrc = worker.slice(worker.indexOf('const PICK_COST = {'),
+                               worker.indexOf('const LEGACY_WIN_PCT = 5;') + 26);
+  const core = worker.slice(worker.indexOf('const PICK = {'),
+    worker.indexOf('/* ---------------------------------------------------------------------------\n   v3.21.0 · DIE ZWEI FRAGEN'));
+  const diag = worker.slice(worker.indexOf('/* ---------------------------------------------------------------------------\n   v3.21.0 · DIE ZWEI FRAGEN'),
+    worker.indexOf('/* ---------------------------------------------------------------------------\n   Auswertung: Situationstypen'));
+  const wl = (w, n) => { if (n <= 0) return 0; const z = 1.96, p = w / n;
+    const d = 1 + z * z / n, c = p + z * z / (2 * n);
+    const m = z * Math.sqrt((p * (1 - p) + z * z / (4 * n)) / n);
+    return Math.max(0, (c - m) / d); };
+  const r1 = (x) => Math.round(x * 10) / 10, r2 = (x) => Math.round(x * 100) / 100;
+  const K = new Function('wilsonLower', 'LEARN_HORIZON_MS', 'r1', 'r2',
+    econSrc + core + diag +
+    ';return {PICK_COST,COIN_COST,TEMPO,tempoCap,pickCfg,pickCosts,roundTripPct,netEurAtMove,lossEurAtStop,requiredMovePct,costLoadPct,breakEvenHitRate,tempoOf};'
+  )(wl, 180 * 60_000, r1, r2);
+
+  const S = K.PICK_COST, C = K.COIN_COST;
+
+  /* -- 1. Die beiden Modelle muessen wirklich verschieden rechnen ---------- */
+  assert.equal(S.kind, 'fixed', 'Das Aktienmodell muss als fix gekennzeichnet sein');
+  assert.equal(C.kind, 'proportional', 'Das Kryptomodell muss als proportional gekennzeichnet sein');
+  assert.equal(K.pickCosts(S), 38, 'Aktien: 2x11,50 EUR + 0,15 % von 10.000 = 38 EUR');
+  assert.ok(Math.abs(K.pickCosts(C) - 40) < 0.01, 'Krypto: (2x0,15 % + 0,10 %) von 10.000 = 40 EUR');
+
+  /* -- 2. DER STRUKTURELLE UNTERSCHIED ------------------------------------- */
+  // Halbe Position: bei Krypto bleibt der Kostenanteil GLEICH, bei Aktien nicht.
+  const halbS = { ...S, notionalEur: 5000 }, halbC = { ...C, notionalEur: 5000 };
+  assert.equal(K.roundTripPct(C), K.roundTripPct(halbC),
+    'Krypto: der Rundlauf in Prozent MUSS von der Positionsgroesse unabhaengig sein');
+  assert.ok(K.roundTripPct(halbS) > K.roundTripPct(S) * 1.5,
+    `Aktien: der Rundlauf in Prozent MUSS bei halber Position deutlich steigen (${K.roundTripPct(halbS)} vs ${K.roundTripPct(S)})`);
+  // Und bei 10.000 EUR liegen sie fast gleichauf — die Falle, gegen die getestet wird.
+  assert.ok(Math.abs(K.roundTripPct(S) - K.roundTripPct(C)) < 0.05,
+    'Bei 10.000 EUR sind beide fast gleich — deshalb braucht es diese Tests');
+  // Konsequenz in Euro: kleine Kryptopositionen bleiben tragfaehig.
+  assert.ok(K.requiredMovePct(120, halbC) < K.requiredMovePct(120, halbS),
+    'Bei halber Position muss Krypto die niedrigere Huerde haben');
+
+  /* -- 3. Der Spread ist bei Krypto die halbe Rechnung --------------------- */
+  const eng = { ...C, spreadPct: 0.05 }, weit = { ...C, spreadPct: 0.80 };
+  assert.ok(Math.abs(K.pickCosts(eng) - 35) < 0.01, 'Enger Spread: 35 EUR Rundlauf');
+  assert.ok(Math.abs(K.pickCosts(weit) - 110) < 0.01, 'Weiter Spread: 110 EUR Rundlauf');
+  assert.ok(K.requiredMovePct(120, weit) - K.requiredMovePct(120, eng) > 0.7,
+    'Ein weiter Spread muss die noetige Zielweite spuerbar anheben — sonst ist er nicht wirksam');
+  // Fail-closed: ein fehlender/kaputter Spread darf es nie BESSER machen.
+  // Fail-closed bei fehlenden Angaben: teurer, nicht guenstiger, und nicht NaN.
+  for (const kaputt of [undefined, null, NaN, 'abc', '', 0, -1]) {
+    const cost = K.pickCosts({ ...C, spreadPct: kaputt });
+    assert.ok(Number.isFinite(cost), 'Ein fehlender Spread darf nicht NaN ergeben: ' + String(kaputt));
+    assert.ok(cost > K.pickCosts(eng),
+      'Ein fehlender Spread muss TEURER rechnen als ein gemessener enger: ' + String(kaputt));
+    assert.ok(cost > K.pickCosts(C),
+      'Er muss auch teurer sein als die Standardannahme — sonst verbessert Nichtwissen das Ergebnis');
+  }
+  for (const kaputt of [undefined, null, NaN]) {
+    assert.ok(Number.isFinite(K.pickCosts({ ...S, orderFeeEur: kaputt })),
+      'Auch im Aktienmodell darf eine fehlende Gebuehr nicht NaN ergeben');
+    assert.ok(Number.isFinite(K.pickCosts({ ...C, feePct: kaputt })),
+      'Eine fehlende Taker-Gebuehr darf nicht NaN ergeben');
+  }
+
+  /* -- 4. Die Zielweiten-Logik gilt in BEIDEN Maerkten --------------------- */
+  for (const [name, cfg] of [['Aktien', S], ['Krypto', C]]) {
+    let prev = 1;
+    for (const t of [1.5, 2.04, 3, 4, 6]) {
+      const q = K.breakEvenHitRate(t, -t / 2, cfg);
+      assert.ok(q < prev, `${name}: ein groesseres Ziel muss die noetige Trefferquote senken (${t} %)`);
+      prev = q;
+    }
+    assert.ok(K.costLoadPct(2.04, cfg) > K.costLoadPct(6, cfg) * 2,
+      `${name}: die Kostenlast muss bei kleinem Ziel deutlich hoeher sein`);
+    // Hin- und Rueckrechnung muessen auch im zweiten Modell invers sein.
+    for (const target of [60, 120, 300])
+      assert.ok(Math.abs(K.netEurAtMove(K.requiredMovePct(target, cfg), cfg) - target) < 0.01,
+        `${name}: requiredMovePct und netEurAtMove muessen invers sein`);
+  }
+
+  /* -- 5. 24/7 heisst mehr Gelegenheiten, aber nicht beliebig viele -------- */
+  assert.ok(K.tempoCap('coin') > K.tempoCap('stock'),
+    'Krypto laeuft durchgehend — der Deckel muss hoeher liegen als bei Aktien');
+  assert.ok(K.tempoCap('coin') <= 8,
+    'Er darf aber nicht ins Unrealistische wachsen: der Markt laeuft 24/7, der Mensch nicht');
+  const eps = (n) => Array.from({ length: n }, (_, i) => ({ symbol: `X${i}`, ts: i }));
+  const c = K.tempoOf(eps(210), 21, 20, 30, 'coin');
+  const st = K.tempoOf(eps(210), 21, 20, 30, 'stock');
+  assert.equal(c.perDayUsed, K.tempoCap('coin'), 'Der Kryptodeckel muss greifen');
+  assert.equal(st.perDayUsed, K.tempoCap('stock'), 'Der Aktiendeckel muss greifen');
+  assert.ok(c.evPerDay > st.evPerDay, 'Dieselbe Haeufigkeit ergibt bei Krypto mehr Ertrag je Tag');
+
+  /* -- 6. Die Auswertung darf NICHT zwei Code-Pfade haben ------------------ */
+  const mod = worker.slice(worker.indexOf('async function topPicks('),
+    worker.indexOf('/* ============================================================================\n   v3.17.0 · MUSTERLABOR'));
+  assert.match(mod, /const asset = opts\.asset === 'coin' \? 'coin' : 'stock';/,
+    'Die Anlageklasse muss ein Parameter sein');
+  assert.match(mod, /const baseCost = coin \? COIN_COST : PICK_COST;/,
+    'Nur das Kostenmodell darf sich unterscheiden');
+  assert.match(mod, /source IN \(\$\{srcHolder\}\)/,
+    'Die Quellen muessen je Anlageklasse gefiltert werden');
+  assert.ok(!mod.includes('async function topPicksCoin'),
+    'Es darf KEINEN zweiten Auswertungspfad geben — dort laufen sonst zwei Wahrheiten auseinander');
+  // Krypto-Quellen duerfen nicht in der Aktienauswertung landen und umgekehrt.
+  assert.match(mod, /const sources = coin \? \['Bitpanda Fusion'\] : \['Twelve Data', 'Tiingo IEX'\];/,
+    'Die Quellenlisten muessen sauber getrennt sein');
+
+  /* -- 7. Der Spread muss aufgezeichnet werden ----------------------------- */
+  // Dieselbe Lehre wie bei Situationstyp (v3.17.0) und Dollarumsatz (v3.18.0).
+  const pStart = worker.indexOf('function snapshotPayload(row)');
+  const payload = worker.slice(pStart, pStart + worker.slice(pStart).indexOf('\n}'));
+  assert.match(payload, /^\s+spreadPct: Number\.isFinite/m,
+    'Der Spread muss im Snapshot mitgeschrieben werden — als eigenes Feld, nicht unter anderem Namen');
+  assert.match(worker, /async function persistCoinLive\(env, rows\)/,
+    'Es braucht einen Zwischenspeicher fuer lebende Coin-Kandidaten');
+  assert.match(worker, /await persistCoinLive\(env,snap\.rows\|\|\[\]\);/,
+    'Der Cron muss ihn auch fuellen');
+
+  /* -- 8. Oberflaeche: eigene Kachel im Kryptobereich ---------------------- */
+  assert.match(idx, /id="topPicksCoin"[^>]*data-domain="coin"/,
+    'Die Krypto-Top-Picks muessen im Kryptobereich stehen, nicht bei den Aktien');
+  assert.match(idx, /id="topPicks"[^>]*data-domain="stock"/,
+    'Und die Aktien-Top-Picks im Aktienbereich — die Zuordnung darf nicht nur aus der Verschachtelung folgen');
+  assert.match(app, /const PICK_PANEL = \{ stock:'#topPicks', coin:'#topPicksCoin' \};/,
+    'Beide Kacheln muessen ueber denselben Renderer laufen');
+  assert.ok(!app.includes('function renderTopPicksCoin'),
+    'Kein zweiter Renderer — sonst driften die Darstellungen auseinander');
+  assert.ok(app.includes("['topPicksCoin','Top Picks · Krypto']"),
+    'Auch die Kryptokachel muss faerbbar sein');
+  assert.ok(idx.includes('data-tile="topPicksCoin"') && css.includes('[data-tile="topPicksCoin"]'),
+    'Und dafuer HTML-Markierung und CSS-Regel haben');
+}
+
+console.log('✓ FusionPulse v3.23.0 coin-lane/cost-model regressions: OK');

@@ -1319,3 +1319,55 @@ die beiden Seiten unterschiedlich behandelt werden.
   Aktien-Herleitung wäre falsch; das braucht eine eigene.
 - Keine Gruppierung nach Tageszeit — die Datenmenge trägt es noch nicht.
 - Der Live-`situationScore` bleibt unangetastet.
+
+---
+
+## 8t. WAS v3.23.0 GEÄNDERT HAT — Kryptoschiene
+
+### Der Grund, warum es keine Kopie sein durfte
+
+Wahrscheinlichkeitsrechnung identisch, **Kostenfunktion strukturell anders**:
+Aktien haben eine FIXE Ordergebühr (Kostenanteil fällt mit der Positionsgröße),
+Krypto hat gar keine (Kostenanteil konstant). Bei 10.000 € liegen beide
+Rundlaufkosten fast gleichauf (0,38 % gegen 0,40 %) — **diese Scheingleichheit
+ist die Falle.** Bei 2.500 € sind es 0,86 % gegen 0,40 %.
+
+`PICK_COST.kind = 'fixed'`, `COIN_COST.kind = 'proportional'`. `pickCosts()`
+verzweigt danach; alles andere ist gemeinsam.
+
+### Ein Code-Pfad, zwei Modelle
+
+`topPicks(env, {asset})` — nur `baseCost` und `sources` unterscheiden sich.
+Client: `PICK_PANEL = {stock:'#topPicks', coin:'#topPicksCoin'}`, ein Renderer.
+**Zwei Tests verbieten ausdrücklich ein zweites `topPicksCoin` bzw.
+`renderTopPicksCoin`** — dort würden zwei Wahrheiten auseinanderlaufen.
+
+### Fail-closed-Verstoß, vom eigenen Test gefunden
+
+Erster Entwurf prüfte fehlende Kostenangaben mit `Number.isFinite`.
+`Number(null)` und `Number('')` sind **0, nicht NaN** → eine fehlende
+Spread-Angabe wäre als KOSTENLOS durchgegangen.
+
+**Regel für den nächsten Bearbeiter:** bei jeder Kosten-, Gebühren- oder
+Spread-Angabe gilt `Number.isFinite(n) && n > 0`, sonst pessimistischer
+Rückfallwert. `Number.isFinite` allein reicht NICHT.
+Rückfallwerte: `COIN_SPREAD_UNKNOWN = 0.30`, `COIN_FEE_UNKNOWN = 0.25` —
+bewusst teurer als die Standardannahmen.
+
+### Weiteres
+
+- `spreadPct` in `snapshotPayload` (dritte Wiederholung der Lehre nach
+  Situationstyp v3.17.0 und Dollarumsatz v3.18.0).
+- `persistCoinLive` / `readCoinLive` (`fp_meta` key `coin_live:last`).
+- `TEMPO.MAX_TRADES_PER_DAY_COIN = 5` statt 3 — 24/7-Markt, aber ~16 wache
+  Stunden. Bewusst niedrig gehalten.
+- `#topPicksCoin` im Kryptobereich, färbbar, `data-domain="coin"`.
+
+### Bewusst NICHT gemacht
+
+- Die live gelesene Bitpanda-Gebührenstufe (`runScan` → `/account`) ist noch
+  nicht mit der Top-Picks-Auswertung verbunden. Kleiner, sauberer nächster
+  Schritt.
+- Kein Krypto-Äquivalent zur Sektorlogik (BTC-Dominanz, L1/L2/Meme-Kohorten):
+  braucht eine eigene Herleitung, keine Umbenennung der Aktienlogik.
+- Keine Sonderbehandlung für Staking/Lending/Tausch in der Steuerrechnung.

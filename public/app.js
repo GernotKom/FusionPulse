@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.22.0 — Frontend
+   FusionPulse v3.23.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1031,7 +1031,8 @@ const TINTABLE_TILES=[
   /* v3.22.0: Die faerbbaren Elemente lagen bisher ALLE in der Aktien-Fokuskarte.
      Die grossen Discovery-Kacheln, die den meisten Platz einnehmen, waren gar
      nicht dabei — deshalb wirkte die Einstellung, als gaebe es sie nicht. */
-  ['topPicks','Top Picks'],
+  ['topPicks','Top Picks · Aktien'],
+  ['topPicksCoin','Top Picks · Krypto'],
   ['gainers','Momentum-Mover'],
   ['opening','Premarket / Opening'],
   ['extended','Nachbörse / Extended Hours'],
@@ -2230,7 +2231,7 @@ function setLearningPoll(){clearInterval(learningTimer);learningTimer=setInterva
   /* v3.20.0: Die AUSWERTUNG aendert sich langsam, die lebenden Kandidaten
      darin schnell. Fuenf Minuten ist der Takt des Radars — schneller waere
      nur Last ohne neuen Inhalt. */
-  clearInterval(pickTimer);pickTimer=setInterval(()=>{if(document.visibilityState==='visible')loadTopPicks();},5*60_000);}
+  clearInterval(pickTimer);pickTimer=setInterval(()=>{if(document.visibilityState==='visible')loadAllTopPicks();},5*60_000);}
 
 /* Modul 1 UI: Aladdin-Style Market Recommendation oberhalb des Radars.
    Reine Anzeige der serverseitigen Marktmeinung; kein Score-Eingriff. */
@@ -3971,19 +3972,27 @@ let patternData=null, patternTimer=null;
    Sie sortiert die lebenden Radar-Kandidaten nach dieser Zahl, nicht nach dem
    Live-Score. Fehlende Beleglage hebt einen Kandidaten NIE nach oben; sie wird
    ausgewiesen. 0 % Gewicht in Score, Ampel und Freigabe.                     */
-let pickData = null, pickTimer = null;
+/* v3.23.0: zwei Datensaetze, EIN Renderer. Aktien und Krypto unterscheiden
+   sich in der Kostenstruktur, nicht in der Auswertung — ein zweiter Renderer
+   waere die naechste Stelle, an der zwei Wahrheiten auseinanderlaufen. */
+const pickData = { stock:null, coin:null };
+let pickTimer = null;
+const PICK_PANEL = { stock:'#topPicks', coin:'#topPicksCoin' };
 
-async function loadTopPicks(){
+async function loadTopPicks(asset='stock'){
+  const a = asset==='coin' ? 'coin' : 'stock';
   try{
     const q=new URLSearchParams();
     if(S.token) q.set('t',S.token);
+    q.set('asset', a);
     // Die Zielgroesse ist die des Nutzers, nicht eine Konstante im Server.
     q.set('netEur', String(Math.max(20, Number(S.minNetProfitStock)||120)));
     const r=await fetch('/api/toppicks?'+q,{cache:'no-store'});
-    pickData=await r.json();
-  }catch(e){ pickData={configured:true,state:'error',error:String(e.message||e)}; }
-  renderTopPicks();
+    pickData[a]=await r.json();
+  }catch(e){ pickData[a]={configured:true,state:'error',error:String(e.message||e)}; }
+  renderTopPicks(a);
 }
+const loadAllTopPicks=()=>Promise.allSettled([loadTopPicks('stock'),loadTopPicks('coin')]);
 
 const PICK_TIER_LABEL={belegt:'belegt',duenn:'dünne Belege',unbelegt:'nicht bewertbar'};
 const PICK_RANK_LABEL={
@@ -3993,11 +4002,16 @@ const PICK_RANK_LABEL={
   belegtNegativ:'Beleg spricht dagegen',
 };
 
-function renderTopPicks(){
-  const el=$('#topPicks'); if(!el) return;
-  const d=pickData;
-  const head=(extra='')=>`<div class="ophead"><b>🎯 Top Picks · erwarteter Netto-Euro</b>`
-    +`<span title="Rangfolge nach dem, was derselbe Situationstyp in aufgezeichneten, abgeschlossenen Fällen tatsächlich eingebracht hat — nach 2×${num(S.orderFeeEur??11.5,2)} € Gebühr, Ausführungsreibung und ${num(S.taxPct??27.5,1)} % KESt. Keine Vorhersage, eine Auszählung.">nach Kosten und Steuer · keine Vorhersage</span>`
+function renderTopPicks(asset='stock'){
+  const a=asset==='coin'?'coin':'stock';
+  const el=$(PICK_PANEL[a]); if(!el) return;
+  const d=pickData[a];
+  const icon=a==='coin'?'🪙':'📈';
+  const marktTag=a==='coin'?'Krypto · Bitpanda Fusion' : 'Aktien · flatex US-Direkthandel';
+  const head=(extra='')=>`<div class="ophead"><b>🎯 Top Picks ${icon} ${esc(marktTag)}</b>`
+    +`<span title="${esc(a==='coin'
+      ? `Krypto: KEINE Fixgebühr. Alles proportional — Taker-Gebühr je Seite plus Spread, zusammen rund ${d?.roundTripPct ?? '?'} % Rundlauf, plus ${num(S.taxPct??27.5,1)} % KESt. Der Kostenanteil ist deshalb von der Positionsgröße unabhängig; du kannst beliebig klein handeln, ohne extra bestraft zu werden.`
+      : `Aktien: FIXE ${num(S.orderFeeEur??11.5,2)} € je Order plus Ausführungsreibung, zusammen rund ${d?.roundTripPct ?? '?'} % Rundlauf bei ${eur(d?.cost?.notionalEur??10000,0)}, plus ${num(S.taxPct??27.5,1)} % KESt. Der Kostenanteil FÄLLT mit der Positionsgröße — kleine Positionen sind hier unwirtschaftlich.`)}">${a==='coin'?'proportionale Kosten':'fixe Ordergebühr'} · keine Vorhersage</span>`
     +`<small>0 % Gewicht in Score, Ampel und Freigabe</small>${extra}</div>`;
 
   if(!d) { paintPanel(el, head()+'<span class="hint">Wird geladen.</span>'); return; }
@@ -4013,7 +4027,12 @@ function renderTopPicks(){
     /* v3.22.0: Warum kleine Ziele die schlechtesten sind — als Zahl, nicht als
        Behauptung. Bei 2 % Zielweite fressen 38 € Fixkosten 18,6 % des
        Bruttogewinns, bei 6 % nur 6,3 %. Die Mindestzielweite ist ein BODEN. */
-    +`<div title="Anteil der Fixkosten (2 Orders + Ausführungsreibung) am Bruttogewinn bei der Mindestzielweite. Je kleiner das Ziel, desto größer dieser Anteil — deshalb ist die Mindestzielweite ein Boden und kein Wunschwert. Bei 6 % Zielweite wären es nur noch rund 6 %."><span>Kostenlast am Mindestziel</span><b>${num(d.costLoadAtMin,1)} %</b></div>`
+    +`<div title="${esc(a==='coin'
+      ? 'Anteil der Rundlaufkosten (Taker-Gebühr beide Seiten + Spread) am Bruttogewinn bei der Mindestzielweite. Je kleiner das Ziel, desto größer dieser Anteil. Anders als bei Aktien ändert sich nichts, wenn du die Position verkleinerst — die Kosten sind proportional.'
+      : 'Anteil der Fixkosten (2 Orders + Ausführungsreibung) am Bruttogewinn bei der Mindestzielweite. Je kleiner das Ziel, desto größer dieser Anteil — deshalb ist die Mindestzielweite ein Boden und kein Wunschwert. Bei 6 % Zielweite wären es nur noch rund 6 %.')}"><span>Kostenlast am Mindestziel</span><b>${num(d.costLoadAtMin,1)} %</b></div>`
+    +`<div title="${esc(a==='coin'
+      ? `Rundlaufkosten in Prozent des Einsatzes. Bei Krypto eine Konstante: sie bleibt gleich, egal ob du 2.500 € oder 20.000 € einsetzt. ${d.spreadNote||''}`
+      : 'Rundlaufkosten in Prozent des Einsatzes. Bei Aktien hängt diese Zahl an der Positionsgröße: bei 2.500 € wären es 0,86 % statt 0,38 %, weil die 23 € Ordergebühr fix sind.')}"><span>Rundlauf</span><b>${num(d.roundTripPct,2)} %</b></div>`
     +`</div>`;
 
   /* Der Befund selbst, sichtbar statt behauptet. */
@@ -4043,7 +4062,7 @@ function renderTopPicks(){
   const picks=(d.picks||[]).slice(0,10).map(p=>
     `<button type="button" class="opcard pick-card rank-${esc(p.rank)}" data-openstock="${esc(p.symbol)}" `
     +`title="${esc(`${p.symbol} · ${p.situation}. ${PICK_RANK_LABEL[p.rank]||''}. ${p.why||''} ${p.plan?`Plan aus der Auswertung: Ziel ${p.plan.targetPct} %, Stop ${p.plan.stopPct} % (${p.plan.source}).`:''} ${p.n?`${p.n} vergleichbare Episoden aufgezeichnet.`:'Für diesen Situationstyp liegen noch zu wenige abgeschlossene Fälle vor — der Kandidat wird deshalb NICHT nach oben gereiht.'} Klick öffnet ihn im Fokusfenster. Kein Kaufsignal.`)}">`
-    +`<b>${esc(p.symbol)}${isFavStock(p.symbol)?' ★':''}</b>`
+    +`<b>${esc(a==='coin'?sym(p.symbol):p.symbol)}${a==='stock'&&isFavStock(p.symbol)?' ★':''}</b>`
     +`<span class="situation-tag">${esc(p.situation)}</span>`
     +`<span class="pick-ev ${p.evEur==null?'':(p.evEur>0?'good':'bad')}">${p.evEur==null?'kein Beleg':(p.evEur>0?'+':'')+eur(p.evEur,0)+' erwartet'}</span>`
     +`<span>${p.movePct!=null?(Number(p.movePct)>=0?'+':'')+num(p.movePct,1)+' % Tag':'Bewegung n.v.'}</span>`
@@ -4058,8 +4077,20 @@ function renderTopPicks(){
     +`<small class="hint">${esc(d.note||'')}</small>`
     +(d.tempoNote?`<small class="hint pick-tempo-note">${esc(d.tempoNote)}</small>`:'');
 
-  const wrote=paintPanel(el, head(categoryFreshness(d.radarTs))+math+legacy+body);
-  if(wrote) el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>{
+  const spreadLine=a==='coin'&&d.spreadNote
+    ? `<small class="pick-note">${esc(d.spreadNote)}</small>` : '';
+  const wrote=paintPanel(el, head(categoryFreshness(d.radarTs))+math+legacy+spreadLine+body);
+  if(!wrote) return;
+  if(a==='coin'){
+    // Coin-Karten oeffnen die Coin-Detailansicht, nicht die Aktien-Fokuskarte.
+    el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>{
+      const pair=b.dataset.openstock||'';
+      if(rows.some(r=>r.pair===pair)) select(pair,true);
+      else { $('#q').value=String(pair).split('-')[0]; render(); }
+    }));
+    return;
+  }
+  el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>{
     focusStock=b.dataset.openstock||''; renderStocks();
     document.querySelector('.stockstage')?.scrollIntoView({behavior:'smooth',block:'start'});
   }));
@@ -4655,7 +4686,7 @@ $('#scan').onclick = async () => {
   // v3.4.2: manueller blauer Refresh bedeutet ECHTE Aktualisierung. FokusScope zuerst,
   // danach der gesamte Aktien-Snapshot; alte Cache-Daten duerfen nicht als Refresh gelten.
   if(focusStock) await searchStockNow(focusStock,true);
-  await Promise.allSettled([scan(true), scanStocks(true), scanOpeningMomentum(true), loadExperimental(true), loadCrowd(true), loadSentiment(false), loadEarnings(false), loadLearning(), loadTopPicks(), loadAttribution(), loadAladdin(), loadHealth()]);
+  await Promise.allSettled([scan(true), scanStocks(true), scanOpeningMomentum(true), loadExperimental(true), loadCrowd(true), loadSentiment(false), loadEarnings(false), loadLearning(), loadAllTopPicks(), loadAttribution(), loadAladdin(), loadHealth()]);
 };
 $('#sound').onclick = () => {
   S.sound = !S.sound; saveSettings();
@@ -4988,7 +5019,7 @@ loadSentiment(false);
 loadEarnings(false);
 wireEarningsEditor();
 loadPatterns();
-loadTopPicks();
+loadAllTopPicks();
 loadLearning();
 loadAttribution();
 loadAladdin();

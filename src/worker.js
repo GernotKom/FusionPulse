@@ -2472,7 +2472,25 @@ async function crowdPulse(env,symbols,force=false){
    Laden des Moduls ausgewertet, `pickCfg` und `requiredMovePct` stehen erst
    weiter unten. Ein Test prueft, dass beide Wege dieselbe Zahl ergeben.
    ========================================================================== */
-const PICK_COST = { notionalEur: 10000, orderFeeEur: 11.5, frictionPct: 0.15, taxPct: 27.5 };
+/* Zwei STRUKTURELL verschiedene Kostenmodelle. Der Unterschied ist keine
+   Zahlenfrage, er aendert die Strategie:
+     Aktien (flatex US-Direkthandel): FIXE 11,50 EUR je Order. Der Kostenanteil
+       faellt mit der Positionsgroesse — kleine Positionen sind unwirtschaftlich.
+     Krypto (Bitpanda Fusion): KEINE Fixgebuehr, alles proportional (Taker-Fee
+       je Seite plus Spread). Der Kostenanteil ist von der Positionsgroesse
+       UNABHAENGIG — man kann beliebig klein handeln, ohne bestraft zu werden.
+   Zufaellig liegen beide Rundlaufkosten bei 10.000 EUR fast gleichauf
+   (0,38 % gegen 0,40 % bei 0,1 % Spread). Das taeuscht: bei 2.500 EUR Einsatz
+   sind es 0,86 % gegen weiterhin 0,40 %. */
+const PICK_COST = { kind: 'fixed', notionalEur: 10000, orderFeeEur: 11.5, frictionPct: 0.15, taxPct: 27.5 };
+const COIN_COST = { kind: 'proportional', notionalEur: 10000, feePct: 0.15, spreadPct: 0.10, taxPct: 27.5 };
+/* Rueckfallwerte, wenn Gebuehr oder Spread FEHLEN. Bewusst PESSIMISTISCH und
+   nicht gleich den Standardwerten: 0,10 % Spread gilt fuer BTC und ETH, nicht
+   fuer den Rest. Ein unbekannter Spread muss teurer rechnen als ein gemessener
+   enger, sonst verbessert fehlende Information das Ergebnis — genau die Regel,
+   gegen die diese App an jeder Stelle gebaut ist. */
+const COIN_SPREAD_UNKNOWN = 0.30;
+const COIN_FEE_UNKNOWN = 0.25;
 const ECON_NET_EUR = 120;                       // Zielgroesse aus Handover Abschnitt 4
 const ECON_FIX_EUR = PICK_COST.orderFeeEur * 2 + PICK_COST.notionalEur * (PICK_COST.frictionPct / 100);
 /** Zielweite, ab der ein Trade ECON_NET_EUR netto uebrig laesst: 2,04 %. */
@@ -2673,6 +2691,14 @@ function snapshotPayload(row){
     dollarVol: Number.isFinite(Number(row?.dollarVol)) ? Math.round(Number(row.dollarVol))
       : (Number.isFinite(Number(row?.volume)) && Number.isFinite(Number(row?.priceUsd))
          ? Math.round(Number(row.volume)*Number(row.priceUsd)) : null),
+    /* v3.23.0: Der SPREAD ist bei Krypto der groesste Kostenblock ueberhaupt —
+       bei Bitpanda Fusion gibt es keine Fixgebuehr, alles ist proportional.
+       Er stand bisher NICHT in der Aufzeichnung, also liess sich die
+       Kryptorechnung nur mit einer Annahme fuehren. Dritte Wiederholung
+       derselben Lehre nach Situationstyp (v3.17.0) und Dollarumsatz (v3.18.0):
+       was man nicht aufzeichnet, kann man nie kalibrieren. */
+    spreadPct: Number.isFinite(Number(row?.spreadPct))
+      ? Math.round(Number(row.spreadPct) * 10000) / 10000 : null,
   });
 }
 async function d1StoreRows(env, rows, opts={}){
@@ -2963,7 +2989,26 @@ const pickCfg = (cfg) => ({ ...PICK_COST, ...(cfg || {}) });
 /** Fixkosten eines vollstaendigen Trades: zwei Orders plus Ausfuehrungsreibung. */
 function pickCosts(cfg) {
   const c = pickCfg(cfg);
-  return c.orderFeeEur * 2 + c.notionalEur * (c.frictionPct / 100);
+  /* `Number(null)` und `Number('')` sind 0, nicht NaN. Eine reine
+     `Number.isFinite`-Pruefung haette eine fehlende Angabe deshalb als
+     KOSTENLOS durchgelassen — der teuerste denkbare Fehler an dieser Stelle.
+     Es gilt deshalb: nur ein POSITIVER Zahlenwert zaehlt als Angabe. */
+  const given = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.abs(n) : null; };
+  if (c.kind === 'proportional') {
+    const fee = given(c.feePct) ?? COIN_FEE_UNKNOWN;
+    const spread = given(c.spreadPct) ?? COIN_SPREAD_UNKNOWN;
+    return c.notionalEur * ((fee * 2 + spread) / 100);
+  }
+  const fixed = given(c.orderFeeEur) ?? 11.5;
+  const fric = given(c.frictionPct) ?? 0.15;
+  return fixed * 2 + c.notionalEur * (fric / 100);
+}
+/** Rundlaufkosten in Prozent des Einsatzes. Bei Krypto ist das eine Konstante,
+ *  bei Aktien haengt sie an der Positionsgroesse — genau darin liegt der
+ *  strategische Unterschied zwischen beiden Maerkten. */
+function roundTripPct(cfg) {
+  const c = pickCfg(cfg);
+  return c.notionalEur > 0 ? pickCosts(c) / c.notionalEur * 100 : null;
 }
 /** Netto-Euro eines Gewinntrades bei Zielweite `pct` %. Kosten mindern den
  *  steuerpflichtigen Gewinn — genau so rechnet auch `sizing()` im Client. */
@@ -3083,25 +3128,34 @@ function breakEvenHitRate(targetPct, stopPct, cfg) {
    rechnerisch richtig, praktisch nicht ausfuehrbar.
    ========================================================================== */
 const TEMPO = {
-  MAX_TRADES_PER_DAY: 3,   // realistische Obergrenze bei einer Position je Trade
-  MIN_DAYS: 5,             // unter so vielen Handelstagen keine Frequenzaussage
+  /* Aktien: eine US-Session dauert 6,5 Stunden. Bei rund 40 Minuten typischer
+     Haltedauer und einer Position je Trade sind drei Durchgaenge realistisch.
+     Krypto: der Markt laeuft 24/7, der Mensch nicht. Gerechnet wird mit rund
+     16 wachen Stunden, also fuenf statt drei. Beides sind bewusst NIEDRIGE
+     Annahmen: ein zu hoher Deckel liesse haeufige schwache Setups gewinnen,
+     die sich in Wirklichkeit gar nicht alle halten lassen. */
+  MAX_TRADES_PER_DAY: 3,
+  MAX_TRADES_PER_DAY_COIN: 5,
+  MIN_DAYS: 5,             // unter so vielen Tagen keine Frequenzaussage
 };
-function tempoOf(episodes, tradingDays, evEur, medianMinutes) {
+const tempoCap = (asset) => asset === 'coin' ? TEMPO.MAX_TRADES_PER_DAY_COIN : TEMPO.MAX_TRADES_PER_DAY;
+function tempoOf(episodes, tradingDays, evEur, medianMinutes, asset) {
   const n = (episodes || []).length;
   if (!n || !(tradingDays >= TEMPO.MIN_DAYS))
     return { perDay: null, evPerDay: null, evPerHour: null,
       tempoNote: `Weniger als ${TEMPO.MIN_DAYS} Handelstage im Fenster — eine Aussage zur Haeufigkeit waere geraten.` };
+  const cap = tempoCap(asset);
   const perDayRaw = n / tradingDays;
-  const perDay = Math.min(TEMPO.MAX_TRADES_PER_DAY, perDayRaw);
-  const capped = perDayRaw > TEMPO.MAX_TRADES_PER_DAY;
+  const perDay = Math.min(cap, perDayRaw);
+  const capped = perDayRaw > cap;
   return {
     perDay: r2(perDayRaw), perDayUsed: r2(perDay), capped,
     evPerDay: evEur == null ? null : Math.round(evEur * perDay),
     evPerHour: (evEur == null || !(medianMinutes > 0)) ? null
       : Math.round(evEur / (medianMinutes / 60)),
     tempoNote: capped
-      ? `${r2(perDayRaw)} Gelegenheiten je Handelstag gemessen, gerechnet wird mit ${TEMPO.MAX_TRADES_PER_DAY} — mehr laesst sich mit einer Position je Trade nicht halten.`
-      : `${r2(perDayRaw)} Gelegenheiten je Handelstag ueber ${tradingDays} Tage.`,
+      ? `${r2(perDayRaw)} Gelegenheiten je Tag gemessen, gerechnet wird mit ${cap} — mehr laesst sich mit einer Position je Trade nicht halten.`
+      : `${r2(perDayRaw)} Gelegenheiten je Tag ueber ${tradingDays} Tage.`,
   };
 }
 /** Wie viel vom Bruttogewinn fressen die Fixkosten? Die Zahl erklaert, warum
@@ -3301,14 +3355,29 @@ function optimizeGrid(episodes, minTargetPct, cfg) {
    ------------------------------------------------------------------------- */
 async function topPicks(env, opts = {}) {
   const netEur = Number.isFinite(Number(opts.netEur)) ? Number(opts.netEur) : PICK.DEFAULT_NET_EUR;
-  const cfg = pickCfg(opts.cost);
+  /* v3.23.0 · Zwei Anlageklassen, EINE Auswertung, aber ZWEI Kostenmodelle.
+     Bewusst kein zweiter Code-Pfad: die Wahrscheinlichkeitsrechnung ist
+     identisch, nur die Kostenfunktion unterscheidet sich. Ein Duplikat waere
+     die naechste Stelle, an der zwei Wahrheiten auseinanderlaufen. */
+  const asset = opts.asset === 'coin' ? 'coin' : 'stock';
+  const coin = asset === 'coin';
+  const baseCost = coin ? COIN_COST : PICK_COST;
+  const override = { ...(opts.cost || {}) };
+  if (coin) {
+    // Spread und Gebuehr sind bei Krypto die ganze Kostenrechnung — deshalb
+    // muessen beide von aussen setzbar sein (Gebuehrenstufe, gemessener Spread).
+    if (Number.isFinite(Number(opts.spreadPct))) override.spreadPct = Math.abs(Number(opts.spreadPct));
+    if (Number.isFinite(Number(opts.feePct))) override.feePct = Math.abs(Number(opts.feePct));
+  }
+  const cfg = { ...baseCost, ...override };
   const targetPct = requiredMovePct(netEur, cfg);
   // Der maximal zulaessige Stop folgt aus dem Ziel, nicht umgekehrt.
   const maxStopPct = targetPct / PICK.MIN_REWARD_RISK;
   const wanted = Number(opts.stopPct);
   const stopPct = -Math.min(maxStopPct, Number.isFinite(wanted) && wanted !== 0 ? Math.abs(wanted) : maxStopPct);
   const base = {
-    configured: true, version: APP_VERSION,
+    configured: true, version: APP_VERSION, asset,
+    costKind: cfg.kind, roundTripPct: r2(roundTripPct(cfg)),
     horizonMin: Math.round(LEARN_HORIZON_MS / 60_000),
     windowDays: Math.round(PICK.WINDOW_MS / 86_400_000),
     cost: cfg, netEurTarget: netEur, stopPct,
@@ -3319,19 +3388,21 @@ async function topPicks(env, opts = {}) {
     maxStopPct: r2(maxStopPct), minRewardRisk: PICK.MIN_REWARD_RISK,
     breakEvenHitPct: Math.round(breakEvenHitRate(targetPct, stopPct, cfg) * 100),
     minEvidence: PICK.MIN_EVIDENCE, thinEvidence: PICK.THIN_EVIDENCE,
-    maxTradesPerDay: TEMPO.MAX_TRADES_PER_DAY,
+    maxTradesPerDay: tempoCap(asset),
     costLoadAtMin: costLoadPct(targetPct, cfg),
   };
   if (!env?.DB) return { ...base, state: 'nodb', situations: [], picks: [], note: 'Ohne D1 gibt es keine aufgezeichneten Ergebnisse. Es wird bewusst nichts geschaetzt.' };
   await ensureD1Schema(env);
 
   const since = Date.now() - PICK.WINDOW_MS;
+  const sources = coin ? ['Bitpanda Fusion'] : ['Twelve Data', 'Tiingo IEX'];
+  const srcHolder = sources.map(() => '?').join(',');
   const rows = (await env.DB.prepare(
     `SELECT symbol,ts,bucket5,max_pct,min_pct,success_ts,reach_ts,mae_pre,atr_pct,score,payload
        FROM market_snapshots
-      WHERE resolved_ts IS NOT NULL AND asset_type='stock'
-        AND source IN ('Twelve Data','Tiingo IEX') AND ts>=?
-      ORDER BY ts DESC LIMIT ?`).bind(since, PICK.ROW_LIMIT).all()).results || [];
+      WHERE resolved_ts IS NOT NULL AND asset_type=?
+        AND source IN (${srcHolder}) AND ts>=?
+      ORDER BY ts DESC LIMIT ?`).bind(asset, ...sources, since, PICK.ROW_LIMIT).all()).results || [];
 
   // Episoden statt Snapshots — dieselbe Regel wie in Modul 0 und im Musterlabor.
   const episodes = collapseEpisodes(rows);
@@ -3364,7 +3435,7 @@ async function topPicks(env, opts = {}) {
     const planTarget = usable ? grid.targetPct : r2(targetPct);
     const planEv = usable ? grid.evFull : exp.evEur;
     const planMin = usable ? (grid.medianMinutesFull ?? grid.medianMinutes) : outcome.medianMinutes;
-    const tempo = tempoOf(eps, tradingDays, planEv, planMin);
+    const tempo = tempoOf(eps, tradingDays, planEv, planMin, asset);
     // Gegenprobe an der alten 5-%-Schwelle. Sie steht bewusst DANEBEN, damit
     // der Unterschied sichtbar ist, statt behauptet werden zu muessen.
     const legacy = pickOutcome(eps, LEGACY_WIN_PCT, stopPct);
@@ -3382,9 +3453,23 @@ async function topPicks(env, opts = {}) {
                  || (Math.max(b.evEur ?? -1e9, b.evBest ?? -1e9)) - (Math.max(a.evEur ?? -1e9, a.evBest ?? -1e9)));
 
   const evidence = new Map(situations.map((s) => [s.situation, s]));
+  /* Gemessener Spread aus den Aufzeichnungen — ab v3.23.0 mitgeschrieben.
+     Solange er fehlt, steht die Annahme aus dem Kostenmodell da UND der Hinweis
+     darauf. Eine Annahme als Messung auszugeben waere hier besonders teuer:
+     bei Krypto ist der Spread die halbe Kostenrechnung. */
+  const spreads = [];
+  for (const e of episodes) {
+    try { const v = Number(JSON.parse(e.payload || '{}').spreadPct);
+      if (Number.isFinite(v) && v >= 0) spreads.push(v * (v < 0.05 ? 100 : 1)); } catch { /* ignorieren */ }
+  }
+  spreads.sort((a, b) => a - b);
+  const spreadMeasured = spreads.length >= 20 ? r2(spreads[Math.floor(spreads.length / 2)]) : null;
 
   // Lebende Kandidaten aus dem persistierten Radar mit der Beleglage verbinden.
-  const radar = await readPersistedIexRadar(env);
+  /* Lebende Kandidaten: bei Aktien aus dem persistierten IEX-Radar, bei Krypto
+     aus dem letzten Scan-Snapshot. Fehlt er, bleibt die Liste leer — die
+     Auswertung der Situationstypen steht trotzdem. */
+  const radar = coin ? await readCoinLive(env) : await readPersistedIexRadar(env);
   const live = (radar?.rows || []).slice(0, 40);
   const picks = rankPicks(live.map((r) => {
     const key = String(r.situation || 'WATCH').toUpperCase();
@@ -3443,6 +3528,12 @@ async function topPicks(env, opts = {}) {
 
   return {
     ...base, state: episodes.length ? 'ok' : 'empty',
+    spreadAssumedPct: coin ? r2(cfg.spreadPct) : null,
+    spreadMeasuredPct: coin ? spreadMeasured : null,
+    spreadNote: !coin ? null
+      : spreadMeasured == null
+      ? `Der Spread wird seit v3.23.0 mitgeschrieben, aber noch nicht in ausreichender Zahl. Gerechnet wird mit der Annahme ${r2(cfg.spreadPct)} % — pruefe sie an der Spread-Anzeige im Coin-Detail.`
+      : `Gemessener Median-Spread ${spreadMeasured} % ueber ${spreads.length} Aufzeichnungen. Gerechnet wird mit ${r2(cfg.spreadPct)} %.`,
     rowsScanned: rows.length, rowsCapped: rows.length >= PICK.ROW_LIMIT,
     episodes: episodes.length, withSituation, tradingDays,
     situations, picks, radarTs: radar?.ts || null, note, tempoNote,
@@ -4061,6 +4152,7 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
     try{
       const snap=await getSnapshot(env,{},true);
       await d1StoreRows(env,snap.rows||[],{source:'Bitpanda Fusion',assetType:'coin',now});
+      await persistCoinLive(env,snap.rows||[]);
       setApiState('crypto','ok'); await persistApiState(env,'crypto','ok',`${snap.rows?.length||0} Rows`,now);
     }catch(e){
       const state=classifyError(e); setApiState('crypto',state,e?.message);
@@ -4318,6 +4410,44 @@ function iexRadarQuote(x,prev=null){
   if(ageMin!=null) situationScore-=Math.min(18,ageMin*0.7);
   const score=Math.max(0,situationScore);
   return {symbol,last,prevClose,open:Number.isFinite(open)?open:null,high:Number.isFinite(high)?high:null,low:Number.isFinite(low)?low:null,volume:Number.isFinite(volume)?volume:null,movePct,openPct,gapPct,rangePct,rangePosition,spreadPct,speedPct,accelPct,volDelta,volPulsePct,score,situationScore:score,situation,prevSituation,lifecycle,transitioned,ignition,reasons,ts,ageMin,source:'Tiingo IEX Situation Radar',buyWeight:0};
+}
+/* v3.23.0 · Lebende Coin-Kandidaten fuer die Krypto-Top-Picks.
+   Der Aktienradar hat mit `iex_radar:last` bereits so einen Zwischenspeicher;
+   fuer Coins gab es keinen, weil der Scan bisher immer live lief. Fuer die
+   Auswertung braucht es aber einen Stand, der auch dann da ist, wenn gerade
+   kein Scan laeuft — sonst waere die Kachel bei jedem Seitenaufruf leer.
+   Bewusst schlank: nur die Felder, die die Rangfolge braucht. */
+async function persistCoinLive(env, rows){
+  if(!env?.DB || !Array.isArray(rows) || !rows.length) return;
+  try{
+    await ensureD1Schema(env);
+    const ts=Date.now(), clean=rows.slice(0,40).map(r=>({
+      symbol:String(r.pair||r.symbol||'').toUpperCase(),
+      situation:r.situationType||r.situation||'WATCH',
+      lifecycle:r.lifecycle||null,
+      situationScore:dbNum(r.situationScore)??dbNum(r.quality)??0,
+      movePct:dbNum(r.ret60)??dbNum(r.ret15)??null,
+      speedPct:dbNum(r.ret15)??null,
+      spreadPct:dbNum(r.spreadPct)!=null?dbNum(r.spreadPct)*100:null,  // Bruch -> Prozent
+      reasons:Array.isArray(r.situationReasons)?r.situationReasons.slice(0,3):[],
+      ts,
+    })).filter(x=>x.symbol);
+    if(!clean.length) return;
+    await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
+      .bind('coin_live:last',safeJson({ts,rows:clean}),ts).run();
+  }catch(e){ console.warn(JSON.stringify({event:'coin_live_cache_write_failed',message:String(e?.message||e),ts:Date.now()})); }
+}
+async function readCoinLive(env, maxAgeMs=30*60_000){
+  if(!env?.DB) return null;
+  try{
+    await ensureD1Schema(env);
+    const r=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind('coin_live:last').first();
+    if(!r?.value) return null;
+    const p=JSON.parse(r.value), ts=Number(p?.ts||r.updated_ts||0);
+    if(!ts || Date.now()-ts>maxAgeMs) return null;
+    return p?.rows?.length ? {ts,rows:p.rows} : null;
+  }catch{ return null; }
 }
 async function readPersistedIexRadar(env){
   if(!env?.DB) return null;
@@ -4956,8 +5086,11 @@ export default {
     if (url.pathname === '/api/toppicks') {
       try {
         return json(await topPicks(env, {
+          asset: url.searchParams.get('asset'),
           netEur: url.searchParams.get('netEur'),
           stopPct: url.searchParams.get('stopPct'),
+          spreadPct: url.searchParams.get('spreadPct'),
+          feePct: url.searchParams.get('feePct'),
         }), 200, { 'cache-control':'no-store' });
       } catch(e){ return json({configured:true,state:'error',error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
     }
