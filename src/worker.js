@@ -1072,7 +1072,21 @@ const STOCK_SEARCH_CATALOG = [
   ['Rohstoffe','AEM','Agnico Eagle Mines Limited'], ['Rohstoffe','AG','First Majestic Silver Corp.'],
   ['Gesundheit','ABSI','Absci Corporation'], ['Energie','CEG','Constellation Energy Corporation'],
   ['Gesundheit','UTHR','United Therapeutics Corporation'], ['Technologie','VEEV','Veeva Systems Inc.'],
-  ['Gesundheit','SDGR','Schrödinger, Inc.']
+  ['Gesundheit','SDGR','Schrödinger, Inc.'],
+  /* v3.18.0 · Nachtrag zu P-A4. Die Katalog-Reserve nuetzt nur so viel, wie im
+     Katalog steht — und fuer Edelmetalle standen dort GENAU ZWEI Titel. Der
+     rotierende Einstieg haette also immer dieselben zwei gezogen. Ergaenzt sind
+     liquide, US-gelistete Werte aus der Prioritaetsliste; alles darunter
+     scheitert ohnehin am Preis- oder Umsatz-Gitter.
+     Sie bekommen dadurch AUFMERKSAMKEIT, keinen Bonus: der Katalog ist ein
+     Ansehpfad, kein Score-Eingang. */
+  ['Rohstoffe','NEM','Newmont Corporation'], ['Rohstoffe','GOLD','Barrick Mining Corporation'],
+  ['Rohstoffe','FCX','Freeport-McMoRan Inc.'], ['Rohstoffe','WPM','Wheaton Precious Metals Corp.'],
+  ['Rohstoffe','KGC','Kinross Gold Corporation'], ['Rohstoffe','PAAS','Pan American Silver Corp.'],
+  ['Rohstoffe','SBSW','Sibanye Stillwater Limited'], ['Rohstoffe','HL','Hecla Mining Company'],
+  /* Pharma war mit 7 von 63 ebenfalls duenn vertreten. */
+  ['Gesundheit','VRTX','Vertex Pharmaceuticals Incorporated'], ['Gesundheit','REGN','Regeneron Pharmaceuticals, Inc.'],
+  ['Gesundheit','GILD','Gilead Sciences, Inc.'], ['Gesundheit','BMY','Bristol-Myers Squibb Company']
 ];
 const STOCK_SEARCH_BY_SYMBOL = new Map(STOCK_SEARCH_CATALOG.map(([sector, symbol, name]) => [symbol, { sector, symbol, name }]));
 function resolveStockQuery(raw) {
@@ -2553,7 +2567,7 @@ async function d1StoreSnapshotRow(env, row, {source='server',assetType='stock',n
      (ts,bucket5,source,asset_type,symbol,sector,phase,price,score,crv,rvol,ret15,ret60,atr_pct,liquidity_vacuum,sector_lag,crowd_score,structure_pct,executability,light,payload)
      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(now,bucket5,source,assetType,symbol,row.sector||null,row.marketPhase||row.phase||null,price,
-    f.score,f.crv,f.rv,f.r15,f.r60,f.atr,f.vac,f.lag,crowdScore,f.structure,dbNum(row.executability),row.light||null,safeJson({setup:row.setup||null,phaseAction:row.phaseAction||null,verdict:row.verdict||null})).run();
+    f.score,f.crv,f.rv,f.r15,f.r60,f.atr,f.vac,f.lag,crowdScore,f.structure,dbNum(row.executability),row.light||null,snapshotPayload(row)).run();
   const flags=serverLeadFlags(enriched);
   const ev=[];
   for(const k of LEARN_SIGNAL_LABELS){
@@ -2566,6 +2580,40 @@ async function d1StoreSnapshotRow(env, row, {source='server',assetType='stock',n
 }
 async function d1BatchChunks(env, stmts, size=50){
   for(let i=0;i<stmts.length;i+=size) await env.DB.batch(stmts.slice(i,i+size));
+}
+/* v3.17.0 · BEFUND: Der Snapshot speicherte nur `setup` — den ALTEN, groben
+   Musternamen. Die neun Typen der Situation Engine (SQUEEZE RELEASE, BREAKOUT
+   PRESSURE, ...), die Lebenszyklus-Phase und die Reife, also genau das, was die
+   Oberflaeche seit v3.4.3 anzeigt und woran der Nutzer sich orientiert, wurden
+   NIE mitgeschrieben. Modul 0 gruppiert deshalb bis heute nach `setup` und
+   konnte ueber die Situationstypen gar nichts lernen.
+
+   Das laesst sich nicht rueckwirkend heilen: was nicht aufgezeichnet wurde, ist
+   weg. Ab hier wird es mitgeschrieben, damit die Auswertung in einigen Wochen
+   eine echte Grundlage hat. Bis dahin steht in der Oberflaeche ausdruecklich,
+   dass die Situationstypen noch keine Historie haben — geschaetzt wird nichts.
+
+   Eine Stelle, zwei Aufrufer: sonst laufen die beiden Schreibpfade auseinander,
+   und genau das war in v3.10.0 schon einmal der Fehler (`sectorLag` nur auf
+   EINEM Datenpfad berechnet). */
+function snapshotPayload(row){
+  return safeJson({
+    setup: row?.setup || null,
+    phaseAction: row?.phaseAction || null,
+    verdict: row?.verdict || null,
+    situation: row?.situationType || row?.situation || null,
+    lifecycle: row?.radarLifecycle || row?.lifecycle || null,
+    maturity: Number.isFinite(Number(row?.preSignalMaturity)) ? Math.round(Number(row.preSignalMaturity)) : null,
+    prioritySector: row?.prioritySector || null,
+    /* v3.18.0: Der IEX-Dollarumsatz wird ab hier MITGESCHRIEBEN. Er ist die
+       Groesse, gegen die MOM_MIN_DOLLARVOL prueft — und sie stand nirgends in
+       der Aufzeichnung. Deshalb liess sich die Schwelle seit v3.9.0 nur raten.
+       Dieselbe Lehre wie beim Situationstyp: was man nicht aufzeichnet, kann
+       man nie kalibrieren. Rueckwirkend ist auch das nicht zu heilen. */
+    dollarVol: Number.isFinite(Number(row?.dollarVol)) ? Math.round(Number(row.dollarVol))
+      : (Number.isFinite(Number(row?.volume)) && Number.isFinite(Number(row?.priceUsd))
+         ? Math.round(Number(row.volume)*Number(row.priceUsd)) : null),
+  });
 }
 async function d1StoreRows(env, rows, opts={}){
   if(!env.DB || !rows?.length) return;
@@ -2606,7 +2654,7 @@ async function d1StoreRows(env, rows, opts={}){
       (ts,bucket5,source,asset_type,symbol,sector,phase,price,score,crv,rvol,ret15,ret60,atr_pct,liquidity_vacuum,sector_lag,crowd_score,structure_pct,executability,light,payload)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(now,bucket5,source,assetType,symbol,row.sector||null,row.marketPhase||row.phase||null,price,
         f.score,f.crv,f.rv,f.r15,f.r60,f.atr,f.vac,f.lag,crowdScore,f.structure,dbNum(row.executability),row.light||null,
-        safeJson({setup:row.setup||null,phaseAction:row.phaseAction||null,verdict:row.verdict||null})));
+        snapshotPayload(row)));
     const flags=serverLeadFlags(enriched);
     for(const k of LEARN_SIGNAL_LABELS){
       if(!flags[k]) continue;
@@ -2777,6 +2825,221 @@ function bucketStats(episodes){
     stopRateAll:stopRate(episodes), medianMaxAll:medianMax(episodes),
   };
 }
+/* ============================================================================
+   v3.17.0 · MUSTERLABOR — was ging einem Anstieg voraus, was einem Abfall?
+   ----------------------------------------------------------------------------
+   DIE UR-IDEE: Der Cron zeichnet seit v3.0 jede Minute Snapshots in D1 auf.
+   Jeder Snapshot traegt neun gemessene Kennzahlen UND — nach Ablauf des
+   Lernhorizonts — sein tatsaechliches Ergebnis (`max_pct`/`min_pct`). Damit
+   laesst sich die Frage beantworten, die noch nie gestellt wurde:
+   *Sahen die Titel, die danach stiegen, VORHER anders aus als die, die fielen?*
+
+   Das ist eine Ereignisstudie, kein Modell. Sie sagt nicht voraus. Sie zeigt,
+   ob in den aufgezeichneten Daten ueberhaupt ein Unterschied steckt — und
+   zeigt genauso deutlich, wenn KEINER drin ist. Der zweite Fall ist der
+   wahrscheinlichere und der wertvollere: dann weiss der Nutzer, dass diese
+   Kennzahlen die Bewegung nicht ankuendigen, statt es weiter zu vermuten.
+
+   VIER EHRLICHKEITSREGELN, die hier haerter greifen als sonst irgendwo:
+   1. Nur AUFGELOESTE Snapshots (`resolved_ts`). Kein Repainting.
+   2. Episoden statt Snapshots: 5-Minuten-Aufnahmen derselben Bewegung sind
+      keine unabhaengigen Faelle. `collapseEpisodes()` wie in Modul 0.
+   3. Unter ATTR.MIN_SAMPLE je Gruppe gibt es KEIN Urteil — die Kennzahl wird
+      als "zu wenige Faelle" ausgewiesen, nicht als schwacher Effekt.
+   4. Die Trennschaerfe wird gegen eine ZUFALLSGRENZE gestellt. Bei kleinem n
+      erreicht auch reines Rauschen scheinbar hohe Werte; die Grenze waechst
+      deshalb mit sinkendem n. Wer sie nicht reisst, gilt als "kein Signal".
+
+   0 % Gewicht in Score, Gate, Ampel und Freigabe. Reine Beobachtung.
+   ============================================================================ */
+const PATTERN_FEATURES = [
+  ['rvol',      'RVOL',              'rv'],
+  ['ret15',     'Bewegung 15 Min',   'r15'],
+  ['ret60',     'Bewegung 60 Min',   'r60'],
+  ['atr_pct',   'Schwankungsbreite', 'atr'],
+  ['score',     'Score',             'score'],
+  ['crv',       'CRV',               'crv'],
+  ['liquidity_vacuum','Liquiditaetsvakuum','vac'],
+  ['sector_lag','Sektor-Rueckstand', 'lag'],
+  ['crowd_score','Crowd/Search',     'crowd'],
+  ['structure_pct','Strukturpotenzial','structure'],
+];
+const PATTERN = {
+  WINDOW_MS: 14*24*60*60_000,  // zwei Wochen: genug Faelle, ohne die CPU zu sprengen
+  ROW_LIMIT: 6000,
+  PRE_MIN: 60, POST_MIN: 120, STEP_MIN: 5,   // Verlaufsfenster um das Ereignis
+};
+/** Flaeche unter der ROC-Kurve ohne Sortierbibliothek: Wahrscheinlichkeit, dass
+ *  ein zufaelliger Fall aus A einen hoeheren Wert hat als einer aus B.
+ *  0,5 = kein Unterschied. Bindungen zaehlen als halber Treffer. */
+function aucSeparation(a, b){
+  const A=a.filter(Number.isFinite), B=b.filter(Number.isFinite);
+  if(!A.length || !B.length) return null;
+  let wins=0;
+  for(const x of A) for(const y of B) wins += x>y ? 1 : x===y ? 0.5 : 0;
+  return wins/(A.length*B.length);
+}
+/** Inverse Standardnormalverteilung (Acklam-Naeherung, Fehler < 1e-9 im
+ *  benoetigten Bereich). Gebraucht fuer die Mehrfachtestkorrektur unten. */
+function zQuantile(p){
+  if(!(p>0&&p<1)) return NaN;
+  const a=[-3.969683028665376e+01,2.209460984245205e+02,-2.759285104469687e+02,1.383577518672690e+02,-3.066479806614716e+01,2.506628277459239e+00];
+  const b=[-5.447609879822406e+01,1.615858368580409e+02,-1.556989798598866e+02,6.680131188771972e+01,-1.328068155288572e+01];
+  const c=[-7.784894002430293e-03,-3.223964580411365e-01,-2.400758277161838e+00,-2.549732539343734e+00,4.374664141464968e+00,2.938163982698783e+00];
+  const d=[7.784695709041462e-03,3.224671290700398e-01,2.445134137142996e+00,3.754408661907416e+00];
+  const pl=0.02425;
+  if(p<pl){const q=Math.sqrt(-2*Math.log(p));
+    return (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5])/((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1);}
+  if(p>1-pl){const q=Math.sqrt(-2*Math.log(1-p));
+    return -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5])/((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1);}
+  const q=p-0.5,r=q*q;
+  return (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q/(((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1);
+}
+/** Ab welcher Trennschaerfe ist der Wert bei DIESER Stichprobe mehr als Zufall?
+ *  Naeherung ueber die Standardabweichung der AUC unter der Nullhypothese
+ *  (Hanley/McNeil-Vereinfachung).
+ *
+ *  MEHRFACHTESTKORREKTUR, und zwar aus einem konkreten Anlass: Der erste Entwurf
+ *  pruefte alle zehn Kennzahlen gegen 95 %. Bei zehn gleichzeitigen Tests findet
+ *  man dann rein rechnerisch in jedem zweiten Durchlauf eine "Entdeckung", die
+ *  keine ist — der Regressionstest hat genau das sofort aufgedeckt. Modul 0
+ *  korrigiert seit v3.5.4 aus demselben Grund (siehe ATTR/Bonferroni).
+ *  Die Schwelle wird deshalb auf die ZAHL DER GEPRUEFTEN KENNZAHLEN bezogen:
+ *  alpha = 0,05 / k. Bei k=10 entspricht das z = 2,81 statt 1,96 — die Huerde
+ *  steigt sichtbar, und das ist beabsichtigt. Lieber ein echter Fund weniger
+ *  als eine erfundene Regelmaessigkeit, die wie Wissen aussieht. */
+function aucNoiseFloor(nA, nB, tests=1){
+  if(!(nA>0 && nB>0)) return null;
+  const k=Math.max(1,Number(tests)||1);
+  const z=zQuantile(1-0.05/(2*k));
+  const sd=Math.sqrt((nA+nB+1)/(12*nA*nB));
+  return Math.min(0.98, 0.5 + z*sd);
+}
+function medianOf(arr){
+  const v=arr.filter(Number.isFinite).sort((x,y)=>x-y);
+  if(!v.length) return null;
+  const m=Math.floor(v.length/2);
+  return v.length%2 ? v[m] : (v[m-1]+v[m])/2;
+}
+async function patternLab(env){
+  if(!env?.DB) return {configured:false,state:'nodb',
+    note:'Ohne D1-Verbindung gibt es keine Aufzeichnung und damit nichts auszuwerten.',version:APP_VERSION};
+  await ensureD1Schema(env);
+  const since=Date.now()-PATTERN.WINDOW_MS;
+  const rows=(await env.DB.prepare(
+    `SELECT symbol,ts,bucket5,price,score,crv,rvol,ret15,ret60,atr_pct,liquidity_vacuum,
+            sector_lag,crowd_score,structure_pct,max_pct,min_pct,resolved_ts,payload
+     FROM market_snapshots
+     WHERE asset_type='stock' AND source IN ('Twelve Data','Tiingo IEX') AND ts>=?
+     ORDER BY ts ASC LIMIT ${PATTERN.ROW_LIMIT}`).bind(since).all()).results||[];
+
+  // --- Ereignisse: nur aufgeloeste Faelle, danach zu Episoden zusammengefasst.
+  const resolved=rows.filter(r=>r.resolved_ts!=null);
+  const episodes=collapseEpisodes(resolved);
+  const groupOf=(r)=>Number(r.max_pct)>=ATTR.WIN_PCT ? 'up'
+    : Number(r.min_pct)<=ATTR.STOP_PCT ? 'down' : 'flat';
+  const groups={up:[],down:[],flat:[]};
+  for(const e of episodes) groups[groupOf(e)].push(e);
+
+  // --- Fingerabdruck: Median je Kennzahl und Gruppe + Trennschaerfe up/down.
+  const features=PATTERN_FEATURES.map(([col,label])=>{
+    const val=(g)=>groups[g].map(x=>Number(x[col]));
+    const up=val('up'), down=val('down');
+    const nUp=up.filter(Number.isFinite).length, nDown=down.filter(Number.isFinite).length;
+    const auc=aucSeparation(up,down), floor=aucNoiseFloor(nUp,nDown,PATTERN_FEATURES.length);
+    const enough=nUp>=ATTR.MIN_SAMPLE && nDown>=ATTR.MIN_SAMPLE;
+    // Fail-closed: zu wenige Faelle ergeben KEIN schwaches Urteil, sondern gar keines.
+    const verdict = !enough ? 'zu wenige Fälle'
+      : auc==null ? 'nicht messbar'
+      : (auc>=floor ? 'trennt' : auc<=1-floor ? 'trennt invers' : 'kein Signal');
+    return {key:col,label,
+      medianUp:medianOf(up), medianDown:medianOf(down), medianFlat:medianOf(val('flat')),
+      nUp,nDown, auc:auc==null?null:+auc.toFixed(3),
+      noiseFloor:floor==null?null:+floor.toFixed(3), enough, verdict};
+  });
+
+  /* --- Kursverlauf um das Ereignis. Der Snapshot-Raster ist bewusst LUECKIG:
+     der Deep-Scan sieht pro Zyklus nur rund 20 von bis zu 80 Titeln. Es wird
+     deshalb je Zeitfenster gemittelt, was DA ist, und die Zahl der Beitraege
+     mitgeliefert — statt Luecken zu interpolieren und Dichte vorzutaeuschen. */
+  const bySymbol=new Map();
+  for(const r of rows){ const k=String(r.symbol);
+    (bySymbol.get(k) ?? bySymbol.set(k,[]).get(k)).push(r); }
+  const offsets=[]; for(let m=-PATTERN.PRE_MIN;m<=PATTERN.POST_MIN;m+=PATTERN.STEP_MIN) offsets.push(m);
+  const acc={up:new Map(),down:new Map(),flat:new Map()};
+  for(const g of ['up','down','flat']) for(const m of offsets) acc[g].set(m,[]);
+  for(const g of ['up','down','flat']){
+    for(const anchor of groups[g].slice(0,400)){
+      const base=Number(anchor.price); if(!(base>0)) continue;
+      const list=bySymbol.get(String(anchor.symbol))||[];
+      for(const r of list){
+        const dm=Math.round((Number(r.ts)-Number(anchor.ts))/60_000);
+        if(dm<-PATTERN.PRE_MIN||dm>PATTERN.POST_MIN) continue;
+        const slot=Math.round(dm/PATTERN.STEP_MIN)*PATTERN.STEP_MIN;
+        const px=Number(r.price); if(!(px>0)) continue;
+        acc[g].get(slot)?.push((px/base-1)*100);
+      }
+    }
+  }
+  const path=Object.fromEntries(['up','down','flat'].map(g=>[g,
+    offsets.map(m=>{ const v=acc[g].get(m)||[];
+      return {m, pct:v.length?+(medianOf(v)).toFixed(3):null, n:v.length}; })]));
+
+  /* --- v3.18.0 · KALIBRIERUNG AUS VORHANDENEN DATEN -------------------------
+     Seit v3.9.0 steht dreimal "geraten, nicht gemessen" auf der offenen Liste,
+     mit der Begruendung, es brauche Zaehler aus einem laufenden Handelstag.
+     DAS STIMMT NICHT: `max_pct` und `atr_pct` liegen laengst je Snapshot in D1.
+
+     Gerechnet wird die Verteilung von `max_pct / atr_pct` — wie viele
+     Schwankungsbreiten eine Bewegung NACH der Aufzeichnung noch laeuft. Genau
+     diese Zahl braucht die Zielformel, die heute `1,0 x Tagesspanne` raet.
+
+     Ausgewiesen werden Perzentile UND die Erreichungsquote je Vielfachem. Die
+     Quote ist die ehrlichere Zahl: "Ziel bei 1,0 ATR wurde in 38 % der Faelle
+     erreicht" sagt mehr als jedes Perzentil. Unter ATR.MIN_SAMPLE gibt es
+     wieder KEIN Ergebnis, nur den Fuellstand. */
+  const ratios=episodes.map(e=>{
+    const atr=Number(e.atr_pct), mx=Number(e.max_pct);
+    return (atr>0 && Number.isFinite(mx)) ? mx/atr : null;
+  }).filter(Number.isFinite).sort((a,b)=>a-b);
+  const pct=(q)=>ratios.length?+(ratios[Math.min(ratios.length-1,Math.floor(q*ratios.length))]).toFixed(2):null;
+  const hitRate=(k)=>ratios.length?Math.round(ratios.filter(x=>x>=k).length/ratios.length*100):null;
+  let withDollarVol=0;
+  for(const e of episodes){ try{ if(JSON.parse(e.payload||'{}').dollarVol!=null) withDollarVol++; }catch{} }
+  const calibration={
+    n:ratios.length, enough:ratios.length>=ATTR.MIN_SAMPLE,
+    p50:pct(0.50), p60:pct(0.60), p75:pct(0.75), p90:pct(0.90),
+    reach:[0.5,1,1.5,2,3].map(k=>({k, pct:hitRate(k)})),
+    currentTargetMultiple:1.0,
+    dollarVolCoverage:{withDollarVol,total:episodes.length},
+    note: ratios.length>=ATTR.MIN_SAMPLE
+      ? 'Gemessen an aufgeloesten Aufzeichnungen: so viele Schwankungsbreiten lief eine Bewegung nach der Aufzeichnung noch. Beschreibt die Vergangenheit, setzt nichts automatisch.'
+      : `Noch ${ATTR.MIN_SAMPLE-ratios.length} Episoden bis zur ersten belastbaren Messung.`,
+  };
+
+  // --- Situationstypen: erst ab v3.17.0 aufgezeichnet. Ehrlich ausweisen.
+  let withSituation=0;
+  for(const e of episodes){ try{ if(JSON.parse(e.payload||'{}').situation) withSituation++; }catch{} }
+
+  const nTotal=episodes.length;
+  const enoughOverall=groups.up.length>=ATTR.MIN_SAMPLE && groups.down.length>=ATTR.MIN_SAMPLE;
+  return {
+    configured:true, state:nTotal?'ok':'empty',
+    windowDays:Math.round(PATTERN.WINDOW_MS/86_400_000),
+    rowsScanned:rows.length, rowsCapped:rows.length>=PATTERN.ROW_LIMIT,
+    resolvedRows:resolved.length, episodes:nTotal,
+    counts:{up:groups.up.length,down:groups.down.length,flat:groups.flat.length},
+    minSample:ATTR.MIN_SAMPLE, winPct:ATTR.WIN_PCT, stopPct:ATTR.STOP_PCT,
+    enoughOverall, features, offsets, path, calibration,
+    situationCoverage:{withSituation,total:nTotal,
+      note:'Die Situationstypen werden erst seit v3.17.0 mitgeschrieben. Aeltere Aufzeichnungen kennen sie nicht — das laesst sich nicht rueckwirkend ergaenzen.'},
+    note: !nTotal ? 'Noch keine aufgeloesten Aufzeichnungen im Fenster.'
+      : enoughOverall ? 'Ereignisstudie ueber aufgeloeste Aufzeichnungen. Beschreibt, was VOR der Bewegung messbar war — keine Vorhersage, 0 % Gewicht in Score und Freigabe.'
+      : `Zu wenige Faelle fuer ein Urteil: mindestens ${ATTR.MIN_SAMPLE} je Gruppe noetig. Angezeigt wird der Zwischenstand, bewertet wird nichts.`,
+    version:APP_VERSION,
+  };
+}
+
 /* ============================================================================
    PAKET A · MODUL 0 SCHARF: Stummschalten + Rehabilitation (v3.5.7, additiv)
    ----------------------------------------------------------------------------
@@ -3792,7 +4055,24 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
      der Radar ohnehin nominiert hat — es wird also nichts erfunden, nur die
      Reihenfolge geaendert. Reicht ein Sektor nicht, verfaellt sein Platz an den
      allgemeinen Radar statt leer zu bleiben. */
-  const sectorPick=[];
+  /* v3.18.0 · P-A4: ZWEITE Quelle fuer die Reserve — der statische Katalog.
+     ANLASS, ausgezaehlt: von 52 Edelmetall-Tickern steht KEINER in
+     LARGE_CAP_RADAR_SYMBOLS und genau einer im Katalog. 98 % sind damit nur
+     ueber das Momentum-Gitter erreichbar (>=3 % Bewegung UND >=2 Mio. $
+     IEX-Umsatz ~ 80 Mio. $ Gesamtumsatz). Der reservierte Platz verfiel
+     deshalb an den meisten Tagen still — die Sektor-Priorisierung aus v3.15.0
+     war fuer Edelmetalle praktisch wirkungslos.
+
+     Die Radarquelle behaelt VORRANG. Der Katalog springt nur ein, wenn der
+     Radar fuer diesen Sektor nichts hergibt. Ein Katalogtitel ist ausdruecklich
+     KEINE Radar-Nominierung: der Radar hat ihn nicht auffaellig gefunden, er
+     wird nur angesehen. Deshalb traegt er `sectorFillFromCatalog` und wird in
+     der Oberflaeche anders beschriftet.
+
+     Was das NICHT tut: keinen Score, kein Gate, keine Ampel, keine Freigabe.
+     Ein Titel aus einem Prioritaetssektor bekommt Aufmerksamkeit, keinen
+     Bonus — dieselbe Regel wie fuer Radar und BOATS seit v3.3.4. */
+  const sectorPick=[], sectorFromCatalog=new Set();
   for(const [name] of PRIORITY_SECTORS){
     let took=0;
     for(const x of radar.rows||[]){
@@ -3800,6 +4080,14 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       if(picked.has(x.symbol))continue;
       if(prioritySectorOf(x.symbol)!==name)continue;
       picked.add(x.symbol);sectorPick.push(x.symbol);took++;
+    }
+    if(took>=SECTOR_RESERVE_PER_SECTOR) continue;
+    // Rotierender Einstieg, damit nicht jeden Zyklus derselbe Titel kommt.
+    const pool=STOCK_SEARCH_CATALOG.filter(e=>prioritySectorOf(e[1])===name);
+    for(let i=0;i<pool.length && took<SECTOR_RESERVE_PER_SECTOR;i++){
+      const sym=String(pool[(i+cycle)%pool.length][1]||'').toUpperCase();
+      if(!sym||picked.has(sym))continue;
+      picked.add(sym);sectorPick.push(sym);sectorFromCatalog.add(sym);took++;
     }
   }
   for(const x of radar.rows||[]){if(!picked.has(x.symbol)){picked.add(x.symbol);radarPick.push(x.symbol);}if(radarPick.length>=capRadar)break;}
@@ -3834,6 +4122,8 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       row.radarLifecycle=life;
       // v3.15.0: nur Kennzeichnung. Kein Score, kein Gate, keine Ampel haengt daran.
       row.prioritySector=prioritySectorOf(sym);
+      // v3.18.0: Aufmerksamkeit aus dem Katalog ist KEINE Radar-Nominierung.
+      if(sectorFromCatalog.has(sym)) row.sectorFillFromCatalog=true;
       return row;
     }catch(e){console.warn(JSON.stringify({event:'tiingo_stock_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));return null;}
   })).filter(Boolean);
@@ -4037,6 +4327,11 @@ export default {
     if (url.pathname === '/api/experimental') {
       try { return json(await experimentalPulse(url.searchParams.get('force') === '1'), 200, { 'cache-control':'no-store' }); }
       catch (e) { return json({state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/patterns') {
+      try { return json(await patternLab(env),200,{ 'cache-control':'no-store' }); }
+      catch(e){ return json({configured:true,state:'error',error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
     }
 
     if (url.pathname === '/api/earnings') {

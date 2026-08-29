@@ -32,6 +32,17 @@ function stubEl() {
 
 export function loadClient(overrides = {}) {
   const store = new Map();
+  /* v3.18.0: `querySelector` gab bei JEDEM Aufruf ein NEUES Stub-Element
+     zurueck. Damit liess sich nicht pruefen, was eine render-Funktion
+     tatsaechlich geschrieben hat — man konnte nur pruefen, dass sie nicht
+     abstuerzt. Genau dieselbe Luecke wie beim `style`-Stub in v3.15.0: der
+     Harness lief durch und sagte nichts aus.
+     Elemente werden jetzt je Selektor gemerkt und sind ueber `el(sel)`
+     auslesbar. Das macht die Anzeige zum ersten Mal ueberpruefbar. */
+  const elCache = new Map();
+  const elFor = (sel) => { const k=String(sel);
+    if(!elCache.has(k)) elCache.set(k, stubEl());
+    return elCache.get(k); };
   const doc = {
     readyState: 'complete',
     documentElement: stubEl(),
@@ -41,13 +52,16 @@ export function loadClient(overrides = {}) {
     visibilityState: 'visible',
     createElement(){ return stubEl(); },
     createTextNode(){ return stubEl(); },
-    getElementById(){ return stubEl(); },
-    querySelector(){ return stubEl(); },
+    getElementById(id){ return elFor('#'+id); },
+    querySelector(sel){ return elFor(sel); },
     querySelectorAll(){ return []; },
     addEventListener(){}, removeEventListener(){}
   };
   const ctx = {
     console,
+    /* Brücke in den VM-Kontext: der Epilog wird IM Kontext ausgewertet,
+       `elFor` liegt aber draußen. */
+    __elFor: elFor,
     document: doc,
     navigator: { userAgent: 'node', onLine: true, serviceWorker: { register: async()=>({}), getRegistrations: async()=>[], addEventListener(){}, removeEventListener(){}, controller:null, ready: new Promise(()=>{}) }, vibrate(){} },
     location: { href: 'https://test.local/', search: '', hostname: 'test.local', protocol: 'https:', reload(){} },
@@ -90,7 +104,9 @@ export function loadClient(overrides = {}) {
   portfolioExposure, portfolioBlocksNewBuy, portfolioBudgetEur, sectorOfSymbol, positionRiskEur,
   stockStrength, DEFAULTS,
   GLOSS, gloss, gl, glossForSetup, glossForSituation, GLOSS_GROUPS, GLOSS_LABEL,
+  el: __elFor,
   stockOpportunity, momentumOverlayRow,
+  gateMissesOf, renderGateFunnel, GATE_LABEL, GATE_ORDER, patternCalibration,
   coinHeadline, buyReady, sizing, stockHeatmapMark, crowdStatus, crowdTrack, refreshRate,
   get crowdMeta(){return crowdMeta;}, set crowdMeta(v){crowdMeta=v;},
   get crowdMap(){return crowdMap;}, set crowdMap(v){crowdMap=v;},

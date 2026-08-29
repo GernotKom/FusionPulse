@@ -3040,3 +3040,284 @@ console.log('✓ FusionPulse v3.16.0 mode-A-no-release regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.16.1 manual-earnings-editor regressions: OK');
+
+/* ====================================================================
+   v3.17.0 · MUSTERLABOR. Ereignisstudie ueber die serverseitig
+   aufgezeichneten Snapshots: Was war VOR einer Bewegung messbar?
+
+   Diese Suite ist die wichtigste der ganzen Datei, weil hier zum ersten
+   Mal eine STATISTISCHE Aussage entsteht. Eine falsch-positive Statistik
+   ist gefaehrlicher als gar keine — sie sieht aus wie Wissen.
+   Geprueft wird deshalb gegen BEKANNTE Wahrheit, ausgefuehrt:
+     A) eingebauter Unterschied  -> MUSS gefunden werden
+     B) reines Rauschen          -> darf NICHT gemeldet werden
+     C) kleine Stichprobe        -> KEIN Urteil, nicht "schwacher Effekt"
+     D) keine Datenbank          -> keine Behauptung
+   ==================================================================== */
+{
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const cut = (a, b) => { const i = w.indexOf(a), j = w.indexOf(b, i);
+    assert.ok(i >= 0 && j > i, `Anker fehlt: ${a}`); return w.slice(i, j); };
+  const src = cut('const PATTERN_FEATURES =', 'async function patternLab(env){')
+    + cut('async function patternLab(env){', '\n/* ============================================================================\n   PAKET A');
+  assert.ok(src.length > 2500, 'Der Musterlabor-Block muss gefunden werden');
+  // Die Auswertung darf NICHTS bewerten. Kein Gate, kein Score, keine Ampel.
+  for (const forbidden of ['buyReady', 'minCrvStock', 'light=', 'score=', 'tradeMode'])
+    assert.ok(!src.includes(forbidden), `Das Musterlabor darf nichts bewerten: "${forbidden}"`);
+
+  const deps = cut('function collapseEpisodes(rows){', 'function bucketStats(');
+  assert.ok(src.includes('aucNoiseFloor(nUp,nDown,PATTERN_FEATURES.length)'),
+    'Die Zufallsgrenze muss auf die ZAHL der geprueften Kennzahlen bezogen sein');
+  const api = new Function('ATTR', 'APP_VERSION', 'ensureD1Schema', 'safeJson',
+    deps + src + '; return {patternLab, aucSeparation, aucNoiseFloor, medianOf, zQuantile};')(
+    { MIN_SAMPLE: 20, WIN_PCT: 5, STOP_PCT: -1.5 }, 'test', async () => {}, JSON.stringify);
+
+  // Eigene Fixture (Checkliste 4). Jeder Fall bekommt ein eigenes Symbol UND
+  // einen eigenen Tag, damit collapseEpisodes ihn als eigene Episode zaehlt.
+  const DAY = 86400000;
+  const mkDB = (n, separable, rnd) => {
+    const rows = [];
+    for (let i = 0; i < n; i++) {
+      /* Zeitpunkte bewusst INNERHALB der US-Sitzung (14–19 Uhr UTC).
+         `collapseEpisodes()` gruppiert nach UTC-Kalendertag; eine Episode, die
+         ueber Mitternacht laeuft, zaehlte doppelt. In Produktion kann das nicht
+         vorkommen (US-Handel liegt 13:30–20:00 UTC) — die Fixture darf es dann
+         auch nicht kuenstlich erzeugen, sonst prueft der Test einen Fall, den
+         es nicht gibt, und verdeckt den, den es gibt. */
+      const up = i % 2 === 0;
+      const midnight = Math.floor(Date.now() / DAY) * DAY;
+      const ts = midnight - (12 - Math.floor(i / 6)) * DAY + 14 * 3600_000 + (i % 6) * 3600_000;
+      const noise = () => rnd() * 2 - 1;
+      const rvol = separable ? (up ? 2.4 : 1.1) + noise() * 0.25 : 1.7 + noise() * 0.9;
+      const base = { symbol: 'S' + i, ts, bucket5: Math.floor(ts / 300000), price: 100,
+        score: 6 + noise(), crv: 2 + noise(), rvol, ret15: noise(), ret60: noise(),
+        atr_pct: 1.5 + noise() * 0.2, liquidity_vacuum: noise(), sector_lag: noise(),
+        crowd_score: 50 + noise() * 10, structure_pct: 3 + noise(),
+        max_pct: up ? 7 : 0.4, min_pct: up ? -0.3 : -3.0,
+        resolved_ts: ts + 2 * 3600_000, payload: '{"setup":"breakout"}' };
+      rows.push(base);
+      /* Drei WEITERE aufgeloeste Aufnahmen DERSELBEN Bewegung (gleiches Symbol,
+         gleicher Tag, andere 5-Minuten-Bucket). Ohne collapseEpisodes zaehlten
+         sie als vier unabhaengige Faelle — die Stichprobe waere vervierfacht und
+         jede Zufallsschwankung sähe signifikant aus. Erst diese Zeilen machen
+         die Negativkontrolle dazu ueberhaupt sichtbar. */
+      for (const dup of [5, 10, 15]) rows.push({ ...base, ts: ts + dup * 60000,
+        bucket5: Math.floor((ts + dup * 60000) / 300000) });
+      for (const dm of [-30, 30]) rows.push({ ...base, ts: ts + dm * 60000,
+        bucket5: Math.floor((ts + dm * 60000) / 300000),
+        price: 100 * (1 + (up ? dm / 25 : -dm / 33) / 100), resolved_ts: null });
+    }
+    return { prepare: () => ({ bind: () => ({ all: async () => ({ results: rows }) }) }) };
+  };
+  // Deterministischer Zufall: ein Test, der mal faellt und mal nicht, ist keiner.
+  const mulberry = (a) => () => { a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+
+  // ---- A) Der eingebaute Unterschied MUSS gefunden werden.
+  const A = await api.patternLab({ DB: mkDB(120, true, mulberry(7)) });
+  assert.equal(A.state, 'ok');
+  assert.ok(A.enoughOverall, 'Bei 60/60 Faellen muss ein Urteil moeglich sein');
+  const rv = A.features.find((f) => f.key === 'rvol');
+  assert.equal(rv.verdict, 'trennt', 'Ein eingebauter Unterschied MUSS erkannt werden');
+  assert.ok(rv.auc > rv.noiseFloor, 'Die Trennschaerfe muss ueber der Zufallsgrenze liegen');
+  assert.ok(rv.medianUp > rv.medianDown, 'Die Richtung des Unterschieds muss stimmen');
+  const others = A.features.filter((f) => f.key !== 'rvol' && f.enough);
+  assert.ok(others.length >= 8, 'Die uebrigen Kennzahlen muessen mitausgewertet werden');
+  assert.ok(others.every((f) => f.verdict === 'kein Signal'),
+    'Kennzahlen ohne eingebauten Unterschied duerfen NICHTS melden');
+  assert.ok(A.path.up.some((p) => p.m < 0 && p.pct != null),
+    'Der Verlauf braucht Stuetzstellen VOR dem Ereignis — das ist der Sinn der Sache');
+
+  /* Episoden statt Snapshots. Die Fixture enthaelt je Fall VIER aufgeloeste
+     Aufnahmen derselben Bewegung. Werden sie nicht zusammengefasst, ist die
+     Stichprobe vervierfacht und jede Zufallsschwankung sieht signifikant aus —
+     der gefaehrlichste denkbare Fehler in dieser Auswertung. */
+  assert.ok(A.resolvedRows >= 4 * A.episodes,
+    'Die Fixture muss mehrere Aufnahmen je Bewegung enthalten, sonst prueft dieser Test nichts');
+  assert.equal(A.episodes, 120,
+    'Aufnahmen derselben Bewegung duerfen NICHT als unabhaengige Faelle zaehlen');
+  assert.equal(A.counts.up + A.counts.down + A.counts.flat, A.episodes,
+    'Jede Episode gehoert in genau eine Gruppe');
+
+  // ---- B) Rauschen darf keine Funde erzeugen. Das ist die eigentliche Huerde:
+  //         ohne Zufallsgrenze findet man bei 10 Kennzahlen fast immer etwas.
+  let falsePositives = 0;
+  for (let k = 0; k < 5; k++) {
+    const B = await api.patternLab({ DB: mkDB(120, false, mulberry(100 + k)) });
+    falsePositives += B.features.filter((f) => f.enough && /^trennt/.test(f.verdict)).length;
+  }
+  assert.equal(falsePositives, 0,
+    `Rauschen darf KEINE Funde erzeugen, war ${falsePositives} von 50. Ohne die Mehrfachtestkorrektur ist genau das der Fall — der erste Entwurf meldete hier regelmaessig eine "Entdeckung".`);
+  // Die Korrektur muss die Huerde messbar anheben, nicht nur dastehen.
+  assert.ok(api.aucNoiseFloor(60, 60, 10) > api.aucNoiseFloor(60, 60, 1) + 0.03,
+    'Die Mehrfachtestkorrektur muss die Zufallsgrenze spuerbar anheben');
+  assert.ok(Math.abs(api.zQuantile(0.975) - 1.96) < 0.001, 'Die Quantilfunktion muss stimmen');
+
+  // ---- C) Kleine Stichprobe: KEIN Urteil, auch kein vorsichtiges.
+  const C = await api.patternLab({ DB: mkDB(20, true, mulberry(3)) });
+  assert.equal(C.enoughOverall, false, 'Bei 10/10 Faellen darf es kein Gesamturteil geben');
+  assert.ok(C.features.every((f) => f.verdict === 'zu wenige Fälle'),
+    'Zu wenige Faelle ergeben KEIN schwaches Urteil, sondern gar keines — fail-closed');
+
+  // ---- D) Ohne Datenbank wird nichts behauptet.
+  const D = await api.patternLab({});
+  assert.equal(D.state, 'nodb');
+  assert.equal(D.configured, false, 'Ohne D1 darf kein Ergebnis vorgetaeuscht werden');
+
+  // ---- Der Situationstyp wird ab jetzt mitgeschrieben. Er FEHLTE bisher —
+  //      deshalb konnte Modul 0 ueber die neun Situationstypen nie etwas lernen.
+  assert.match(w, /function snapshotPayload\(row\)\{/, 'Eine Stelle fuer den Payload, nicht zwei');
+  assert.equal((w.match(/snapshotPayload\(row\)/g) || []).length, 3,
+    'Beide Schreibpfade muessen denselben Payload benutzen (Lehre aus v3.10.0)');
+  for (const k of ['situation', 'lifecycle', 'maturity'])
+    assert.ok(new RegExp(`${k}:`).test(w.slice(w.indexOf('function snapshotPayload'), w.indexOf('async function d1StoreRows'))),
+      `Der Snapshot muss "${k}" mitschreiben`);
+
+  // ---- Darstellung: keine Ampelfarben. Eine Beobachtung ueber die
+  //      Vergangenheit darf sich die Bedeutung "handelbar" nicht ausleihen.
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const tone = app.slice(app.indexOf('const PAT_TONE='), app.indexOf('const PAT_NAME='));
+  for (const lamp of ['#13cf8b', '#f2c015', '#ef4f57', 'var(--green)', 'var(--red)', 'var(--yellow)'])
+    assert.ok(!tone.includes(lamp), `Das Musterlabor darf keine Ampelfarbe verwenden: ${lamp}`);
+  const index = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(index, /id="patternLab"/, 'Das Musterlabor braucht einen sichtbaren Ort');
+  assert.match(app, /loadPatterns\(\)/, 'Es muss beim Start geladen werden');
+  // Luecken bleiben Luecken (Lehre aus v3.9.3: nicht messbare Werte nie als 0).
+  const pathFn = app.slice(app.indexOf('function patternPath(d){'), app.indexOf('function renderPatternLab()'));
+  assert.match(pathFn, /if\(!Number\.isFinite\(p\.pct\)\)\{\s*open=false;\s*continue;\s*\}/,
+    'Fehlende Stuetzstellen muessen die Linie unterbrechen, nicht interpoliert werden');
+}
+
+console.log('✓ FusionPulse v3.17.0 pattern-lab regressions: OK');
+
+/* ====================================================================
+   v3.18.0 · Vier Punkte aus einem Befund:
+     1. Freigabe-Trichter — zaehlt, WO die Kandidaten haengenbleiben.
+        Der Fehler aus v3.16.0 (`netCRV` als Gate fuer Modus A) war eine
+        Woche lang unsichtbar, weil es diese Zaehlung nicht gab.
+     2. Kalibrierung der Zielweite aus VORHANDENEN Aufzeichnungen.
+     3. Sektor-Reserve darf aus dem Katalog nachziehen (P-A4).
+     4. Dollarumsatz wird mitgeschrieben, damit MOM_MIN_DOLLARVOL
+        irgendwann messbar wird statt geraten zu bleiben.
+   ==================================================================== */
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient(); const S = C.S;
+  await new Promise((r) => setImmediate(r));
+  S.claudeMode = false; S.tradeMode = 'off'; S.sizeMode = 'fixed'; S.fixedTradeEur = 10000;
+  S.equity = 20000; S.riskPct = 1; S.minCrvStock = 3; S.minTp2PctStock = 0; S.maxLossEur = 0;
+  C.stockMeta = { market:{ key:'regular' }, refreshedSymbols:['OK','BAD'], ts: Date.now() };
+  const good = () => ({ symbol:'OK', name:'Gut', priceUsd:50, priceEur:46, marketPhase:'regular',
+    liveQuoteOk:true, liveQuoteAgeSec:20, updated:new Date().toISOString(),
+    light:'green', score:8.0, netCRV:4.0, tp2Pct:6.5, relVol:2,
+    entryUsd:50, stopUsd:49.4, tp1Usd:51.6, tp2Usd:53.3, buyCapacityEur:500000,
+    entryEur:46, stopEur:45.5, tp1Eur:47.5, tp2Eur:49.0 });
+
+  // ---- 1a. Der Trichter benennt die EINZIGE offene Bedingung.
+  const bad = good(); bad.symbol = 'BAD'; bad.netCRV = 1.2;
+  C.stockRows = [bad];
+  /* Inhalt vergleichen, nicht Identitaet: der Client laeuft in einem eigenen
+     VM-Kontext, seine Arrays haben einen anderen Prototyp und scheitern an
+     deepStrictEqual — ein Test, der aus DIESEM Grund faellt, sagt nichts aus. */
+  assert.equal(C.gateMissesOf(bad).join(','), 'crv',
+    'Bei nur verletztem CRV darf genau diese eine Bedingung gemeldet werden');
+  assert.equal(C.gateMissesOf(good()).join(','), '',
+    'Ein einwandfreier Kandidat hat keine offene Bedingung');
+
+  // ---- 1b. KEINE Zweitrechnung. Der Trichter liest die Urteile, die die
+  //          Freigabe ohnehin faellt — sonst koennen beide auseinanderlaufen
+  //          (Lehre aus v3.10.0, `sectorLag` nur auf einem Datenpfad).
+  const tr = C.stockTradeability(bad);
+  assert.equal(tr.crvOk, false, 'stockTradeability muss das CRV-Urteil herausgeben');
+  assert.equal(tr.hasSize, true, 'stockTradeability muss melden, ob eine Groesse berechenbar war');
+  assert.equal(tr.tp2Ok, true, 'stockTradeability muss das Ziel-Urteil herausgeben');
+  assert.notEqual(C.stockLevel(bad), 3, 'Trichter und Freigabe muessen dasselbe sagen');
+  assert.equal(C.stockLevel(good()), 3, 'Der einwandfreie Kandidat muss weiterhin frei sein');
+
+  // ---- 1c. Die Anzeige. Erst durch das gemerkte Stub-Element im Harness
+  //          ueberhaupt pruefbar — vorher liess sich nur feststellen, dass
+  //          die render-Funktion nicht abstuerzt.
+  C.stockRows = [good(), bad, { ...good(), symbol:'X1', light:'yellow', netCRV:1.0 }];
+  C.renderGateFunnel();
+  const html = C.el('#gateFunnel').innerHTML;
+  assert.ok(html.length > 100, 'Der Trichter muss tatsaechlich etwas schreiben');
+  assert.match(html, /1 von 3 frei/, 'Freie Kandidaten werden gezaehlt');
+  assert.match(html, /CRV unter Mindestwert/, 'Die bindende Bedingung muss erscheinen');
+  assert.match(html, /nie gegriffen/, 'Tote Gitter muessen ausgewiesen werden');
+  /* Die kursive Zahl ist der EIGENTLICHE Nutzen des Trichters: wie oft war
+     diese Bedingung die EINZIGE offene? Nur sie beantwortet "woran haengt es
+     wirklich". Ohne diese Pruefung merkt der Test nicht, wenn die Zaehlung
+     wegfaellt — die Negativkontrolle hat genau das aufgedeckt. */
+  assert.match(html, /CRV unter Mindestwert <b>2<\/b><i>·1<\/i>/,
+    'Der Trichter muss zeigen, wie oft eine Bedingung die EINZIGE offene war');
+  assert.match(html, /Ampel nicht grün <b>1<\/b>(?!<i>)/,
+    'Eine Bedingung, die nie allein blockiert, darf keine Entscheider-Zahl tragen');
+  assert.doesNotMatch(html, /BUY|Kauf-Freigabe erteilt/, 'Der Trichter erteilt keine Freigabe');
+
+  // ---- 1d. In Modus A gibt es keine Freigabekette. Sie trotzdem zu zaehlen,
+  //          waere irrefuehrend — dann stuende dort "Ampel nicht gruen" als
+  //          Grund, obwohl die Kette gar nicht durchlaufen wird.
+  S.tradeMode = 'A';
+  const m = good();
+  m.momentum = { light:'green', score:7.5, verdict:'x', blockers:[], entryUsd:50, stopUsd:49.2,
+    tp1Usd:52, tp2Usd:54, entryEur:46, stopEur:45.3, tp1Eur:47.9, tp2Eur:49.7,
+    tp2Pct:8, stopPct:1.6, rewardRisk:5, quoteFresh:true, quoteAgeSec:20 };
+  C.stockRows = [m]; C.momentumOverlayRow(m); C.renderGateFunnel();
+  const hA = C.el('#gateFunnel').innerHTML;
+  assert.match(hA, /keine Freigabekette/, 'In Modus A muss der Trichter erklaeren statt zu zaehlen');
+  assert.doesNotMatch(hA, /CRV unter/, 'Keine irrefuehrende Zaehlung in Modus A');
+  S.tradeMode = 'off';
+
+  // ---- 2. Kalibrierung: unter der Mindestzahl KEIN Faktor, nur Fuellstand.
+  const thin = C.patternCalibration({ calibration:{ n:5, enough:false,
+    note:'Noch 15 Episoden bis zur ersten belastbaren Messung.' } });
+  assert.match(thin, /Noch 15 Episoden/, 'Zu wenig Daten ergibt den Fuellstand, keinen Faktor');
+  assert.doesNotMatch(thin, /%<\/b>/, 'Ohne belastbare Messung darf keine Quote erscheinen');
+  const cal = C.patternCalibration({ calibration:{ n:80, enough:true, p50:1.4, p75:2.6,
+    currentTargetMultiple:1,
+    reach:[{k:0.5,pct:71},{k:1,pct:58},{k:1.5,pct:44},{k:2,pct:31},{k:3,pct:18}] } });
+  assert.match(cal, /58%/, 'Die Erreichungsquote je Zielweite muss erscheinen');
+  assert.match(cal, /current/, 'Der heute eingestellte Faktor muss markiert sein');
+  assert.match(cal, /setzt nichts automatisch/,
+    'Es muss dranstehen, dass die Messung nichts automatisch veraendert');
+
+  // ---- 3./4. Worker: Reserve-Pool und Dollarumsatz.
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const lines = w.split('\n');
+  const endOf = (start) => { for (let i = start; i < lines.length; i++)
+    if (lines[i].trim() === '];') return i + 1; };
+  const grab = (head, name) => { const a = lines.findIndex((x) => x.startsWith(head)) + 1;
+    return lines.slice(a - 1, endOf(a)).join('\n').replace(head, `const ${name}`); };
+  const uni = new Function(grab('const STOCK_UNIVERSE', 'U') + '; return U;')();
+  const cat = new Function(`const STOCK_UNIVERSE=${JSON.stringify(uni)};`
+    + grab('const STOCK_SEARCH_CATALOG', 'C') + '; return C;')();
+  const prio = new Function(grab('const PRIORITY_SECTORS', 'P') + '; return P;')();
+  const catSyms = new Set(cat.map((x) => x[1]));
+
+  /* P-A4: Die Katalog-Reserve nuetzt nur so viel, wie im Katalog steht. Genau
+     das war der Fehler von v3.15.0 in neuer Form — die Reserve gab es, sie lief
+     nur ins Leere. Jeder Prioritaetssektor braucht deshalb einen Pool, der eine
+     Rotation ueberhaupt zulaesst. */
+  for (const [name, set] of prio) {
+    const pool = [...set].filter((x) => catSyms.has(x));
+    assert.ok(pool.length >= 5,
+      `Sektor "${name}" hat nur ${pool.length} Katalogtitel — die Reserve zieht dann immer dieselben`);
+  }
+  // Der Katalog ist ein Ansehpfad. Ein Titel daraus ist KEINE Radar-Nominierung.
+  assert.match(w, /sectorFillFromCatalog/, 'Katalog-Nachzieher muessen gekennzeichnet sein');
+  const reserve = w.slice(w.indexOf('const sectorPick=[]'), w.indexOf('for(const x of radar.rows||[]){if(!picked.has'));
+  assert.match(reserve, /if\(took>=SECTOR_RESERVE_PER_SECTOR\) continue;/,
+    'Der Katalog darf NUR einspringen, wenn der Radar den Platz nicht gefuellt hat');
+  for (const forbidden of ['score', 'light', 'crv', 'buyReady'])
+    assert.ok(!reserve.includes(forbidden),
+      `Die Sektor-Reserve darf nichts bewerten: "${forbidden}"`);
+
+  // Dollarumsatz: die Groesse, gegen die MOM_MIN_DOLLARVOL prueft, stand nie
+  // in der Aufzeichnung. Deshalb liess sich die Schwelle nur raten.
+  const payload = w.slice(w.indexOf('function snapshotPayload'), w.indexOf('async function d1StoreRows'));
+  assert.match(payload, /dollarVol:/, 'Der Dollarumsatz muss mitgeschrieben werden');
+  assert.match(w, /dollarVolCoverage/, 'Der Fuellstand des neuen Feldes muss ausgewiesen werden');
+}
+
+console.log('✓ FusionPulse v3.18.0 gate-funnel/calibration/sector-reserve regressions: OK');

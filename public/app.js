@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.16.1 — Frontend
+   FusionPulse v3.18.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -543,8 +543,14 @@ function stockTradeability(r) {
     && planOk
     && rewardRiskOk
     && lossOk;
+  /* v3.18.0 additiv: Die Einzelurteile werden mit HERAUSGEGEBEN, damit der
+     Freigabe-Trichter sie nicht ein zweites Mal rechnen muss. Eine zweite
+     Rechnung koennte von dieser hier abweichen — genau der Fehler, der in
+     v3.10.0 `sectorLag` auf einem Datenpfad hat verhungern lassen. Es aendert
+     `ok` nicht: dieselben Ausdruecke, nur zusaetzlich benannt. */
   return { ok, tp2Pct, netProfit, netCrv:gateCrv, structuralCrv, planEfficiency, planOk, marketOk, minNet, minCrv, minPlanEfficiency:FUSION_MIN_PLAN_EFFICIENCY, claude,
-    fixedSize:fixed, rewardRisk, minRewardRisk, rewardRiskOk, worstCase, maxLoss, lossOk, netOk };
+    fixedSize:fixed, rewardRisk, minRewardRisk, rewardRiskOk, worstCase, maxLoss, lossOk, netOk,
+    minTp2, tp2Ok:tp2Pct>=minTp2, crvOk:gateCrv>=minCrv, hasSize:!!sz };
 }
 /* ==== v3.6.0 · GLOSSAR ======================================================
    Ein zentraler Ort fuer jede Erklaerung, statt derselbe Begriff an fuenf
@@ -2189,7 +2195,10 @@ async function loadLearning(){
     mergeServerHistories();renderLearningStatus();renderLearningReport();render();renderStocks();
   }catch(e){learningData={configured:true,state:'error',error:String(e.message||e)};renderLearningStatus();}
 }
-function setLearningPoll(){clearInterval(learningTimer);learningTimer=setInterval(()=>{if(document.visibilityState==='visible'){loadLearning();loadAttribution();loadAladdin();}},120_000);}
+function setLearningPoll(){clearInterval(learningTimer);learningTimer=setInterval(()=>{if(document.visibilityState==='visible'){loadLearning();loadAttribution();loadAladdin();}},120_000);
+  /* Muster aendern sich ueber Tage, nicht Minuten. Halbstuendlich genuegt und
+     haelt die D1-Abfrage (bis 6000 Zeilen) aus dem normalen Takt heraus. */
+  clearInterval(patternTimer);patternTimer=setInterval(()=>{if(document.visibilityState==='visible')loadPatterns();},30*60_000);}
 
 /* Modul 1 UI: Aladdin-Style Market Recommendation oberhalb des Radars.
    Reine Anzeige der serverseitigen Marktmeinung; kein Score-Eingriff. */
@@ -2947,7 +2956,7 @@ function renderStocks() {
   (stockRows||[]).forEach(claudeOverlayRow); // Claude-Modus-Ansicht idempotent anwenden
   (stockRows||[]).forEach(momentumOverlayRow); // v3.9.0: Modus A danach, ebenfalls idempotent
   const box=$('#stockGroups'),st=$('#stockState'),counts=$('#stockCounts'); if(!box||!st)return;
-  renderDepotStrip(); renderPortfolioRisk(); renderCrowdStatus(); renderMarketGainers(); renderExtendedWatch(); renderOpeningPanel(); renderSectorLaggards(); renderEarningsBoard(); renderEarningsEditor();
+  renderDepotStrip(); renderPortfolioRisk(); renderCrowdStatus(); renderMarketGainers(); renderExtendedWatch(); renderOpeningPanel(); renderSectorLaggards(); renderEarningsBoard(); renderEarningsEditor(); renderGateFunnel();
   if(stockMeta.configured===false){box.innerHTML='';st.textContent='Aktien-Datenquelle fehlt';st.className='badge err';if(counts)counts.textContent='Aktienradar nicht konfiguriert';stockHeatmap([]);return;}
   const search=($('#stockQ')?.value||'').trim().toUpperCase(); const filter=$('#stockF')?.value||'';
   let stockFiltered=stockRows.filter(r=>(!search||r.symbol.toUpperCase().includes(search)||String(r.name||'').toUpperCase().includes(search)));
@@ -3770,6 +3779,239 @@ function renderEarningsBoard(){
   }));
 }
 
+/* ==== v3.18.0 · FREIGABE-TRICHTER ===========================================
+   ANLASS: Eine Woche lang kam keine einzige Freigabe. Um herauszufinden warum,
+   habe ich ein Wegwerf-Skript gebraucht — und dann stand da: das Gate war
+   `netCRV`, eine Kennzahl des anderen Modells. Fuer den Radar gibt es seit
+   v3.4.0 `radarGateStats`; fuer die FREIGABEKETTE gab es nichts. Deshalb war
+   der Fehler unsichtbar, obwohl er in jedem Durchlauf passierte.
+
+   Der Trichter zaehlt, WO die Kandidaten haengenbleiben. Zwei Zahlen je Gitter:
+   - `hit`     — wie oft war diese Bedingung verletzt
+   - `only`    — wie oft war sie die EINZIGE verletzte
+
+   `only` ist die wichtige. Sie beantwortet "was genau haelt mich auf?", und sie
+   entlarvt zugleich TOTE GITTER: eine Bedingung, deren `hit` ueber viele
+   Durchlaeufe 0 bleibt, sichert nichts — sie taeuscht Sicherheit vor. Genau der
+   Fall von MIN_REWARD_RISK_FIXED, das ich in Modus A mit einem Median von 18,5
+   gemessen habe. Im ChatGPT-Strang mit seinen engeren Zielen kann es sehr wohl
+   binden — deshalb wird es hier GEMESSEN und nicht auf Verdacht entfernt.
+
+   Der Trichter rechnet nichts und aendert nichts. Er liest dieselben Funktionen,
+   die ohnehin ueber die Freigabe entscheiden, und zaehlt mit.               */
+const GATE_LABEL={
+  light:'Ampel nicht grün', score:'Score zu niedrig', crv:'CRV unter Mindestwert',
+  plan:'Plan-Effizienz zu niedrig', net:'Netto-Ertrag zu klein',
+  rr:'Ziel:Stop unter Mindestwert', tp2:'Ziel zu nah', market:'Markt geschlossen',
+  loss:'Verlust am Stop über deinem Deckel',
+  fresh:'Kurs nicht live', size:'Keine Positionsgröße berechenbar',
+};
+const GATE_ORDER=['light','score','fresh','market','size','crv','plan','net','rr','tp2','loss'];
+
+/** Welche Bedingungen verletzt DIESE Zeile? Liest ausschliesslich die
+ *  Funktionen, die die Freigabe ohnehin bestimmt — keine Zweitrechnung, die
+ *  auseinanderlaufen koennte (Lehre aus v3.10.0). */
+function gateMissesOf(r){
+  const miss=[];
+  if(r?.light!=='green') miss.push('light');
+  const minScore=(S.claudeMode&&r?.claude)?CLAUDE_MIN_SCORE_STOCK:FUSION_MIN_SCORE_STOCK;
+  if(!(Number(r?.score)>=minScore)) miss.push('score');
+  if(stockFreshness(r).key!=='live') miss.push('fresh');
+  const t=stockTradeability(r);
+  if(!t.hasSize) miss.push('size');
+  if(!t.marketOk) miss.push('market');
+  if(!t.crvOk)    miss.push('crv');
+  if(!t.planOk)   miss.push('plan');
+  if(!t.netOk)    miss.push('net');
+  if(!t.rewardRiskOk) miss.push('rr');
+  if(!t.tp2Ok)    miss.push('tp2');
+  if(!t.lossOk)   miss.push('loss');
+  return miss;
+}
+
+function renderGateFunnel(){
+  const el=$('#gateFunnel'); if(!el) return;
+  const rows=(stockRows||[]).filter(r=>r&&r.symbol);
+  const head=`<b>⌛ Freigabe-Trichter</b>`;
+  if(!rows.length){ el.innerHTML=head+'<span class="hint">Noch keine Kandidaten im Durchlauf.</span>'; return; }
+
+  /* In Modus A gibt es per Entwurf keine Freigabe (v3.16.0). Ein Trichter, der
+     dann "Ampel nicht gruen" zaehlt, waere irrefuehrend — die Kette laeuft dort
+     gar nicht erst an. Das gehoert gesagt, nicht gezaehlt. */
+  const modeA=rows.some(modeAActive);
+  if(modeA){
+    el.innerHTML=head+`<span class="gf-note" title="Modus A ist ein Aufmerksamkeitsfilter und gibt bewusst keine Kauf-Freigabe. Die Freigabekette wird deshalb gar nicht durchlaufen — es gibt hier nichts zu zählen. Schalte Modus A aus, um zu sehen, woran die Freigaben des FusionPulse-Regelwerks hängen.">In Modus A gibt es keine Freigabekette — es gibt nichts zu zählen. ${rows.length} Kandidaten werden angezeigt.</span>`;
+    return;
+  }
+
+  const hit={}, only={};
+  let free=0;
+  for(const r of rows){
+    const m=gateMissesOf(r);
+    if(!m.length){ free++; continue; }
+    for(const k of m) hit[k]=(hit[k]||0)+1;
+    if(m.length===1) only[m[0]]=(only[m[0]]||0)+1;
+  }
+  const shown=GATE_ORDER.filter(k=>hit[k]);
+  const chips=shown.map(k=>{
+    const o=only[k]||0;
+    return `<span class="gf-chip${o?' decisive':''}" title="${esc(
+      `${GATE_LABEL[k]}: bei ${hit[k]} von ${rows.length} Kandidaten verletzt.`
+      +(o?` Bei ${o} davon war es die EINZIGE offene Bedingung — dort hängt es also wirklich.`
+          :' Bei keinem war es die einzige offene Bedingung; es blockiert nie allein.')
+    )}">${esc(GATE_LABEL[k])} <b>${hit[k]}</b>${o?`<i>·${o}</i>`:''}</span>`;
+  }).join('');
+  const dead=GATE_ORDER.filter(k=>!hit[k]);
+  el.innerHTML=head
+    +`<span class="gf-sum" title="Kandidaten im aktuellen Durchlauf, die ALLE Bedingungen erfüllen. Der Trichter zeigt darunter, woran die übrigen hängen.">${free} von ${rows.length} frei</span>`
+    +`<div class="gf-chips">${chips||'<span class="hint">Keine Bedingung verletzt.</span>'}</div>`
+    +(dead.length?`<small class="gf-dead" title="${esc('Diese Bedingungen haben in diesem Durchlauf bei KEINEM Kandidaten gegriffen. Über viele Durchläufe hinweg ist das der Hinweis auf ein totes Gitter: eine Schwelle, die nie bindet, sichert nichts, sondern täuscht Sicherheit vor. Ein einzelner Durchlauf beweist das noch nicht — es ist eine Beobachtung, keine Empfehlung.')}">nie gegriffen: ${dead.map(k=>esc(GATE_LABEL[k])).join(' · ')}</small>`:'')
+    +`<small class="hint">Fette Zahl: wie oft verletzt. Kursive Zahl dahinter: wie oft die <b>einzige</b> offene Bedingung — dort hängt es wirklich. Der Trichter zählt nur; er verändert nichts.</small>`;
+}
+
+/* ==== v3.17.0 · MUSTERLABOR ==================================================
+   Die Ur-Idee endlich sichtbar: Der Cron zeichnet seit v3.0 jede Minute
+   Snapshots auf, jeder mit neun gemessenen Kennzahlen und — nach Ablauf des
+   Lernhorizonts — seinem tatsaechlichen Ergebnis. Ausgewertet wurde daraus
+   bisher nur die Trefferquote je Setup (Modul 0). Die Frage, WIE ein Titel VOR
+   der Bewegung aussah, hat nie jemand gestellt.
+
+   Zwei Darstellungen, bewusst verschieden:
+
+   1. FINGERABDRUCK — je Kennzahl der Median der Faelle, die danach STIEGEN,
+      gegen den der Faelle, die danach FIELEN. Zwei Balken, gemeinsame Skala.
+      Liegen sie uebereinander, kuendigt diese Kennzahl nichts an. Genau das
+      ist ein Ergebnis, kein fehlendes Ergebnis.
+
+   2. VERLAUF — der mediane Kursweg von 60 Minuten VOR bis 120 Minuten NACH dem
+      Zeitpunkt der Aufzeichnung, getrennt nach Ausgang. Die linke Haelfte ist
+      die interessante: dort steht, was VORHER passiert ist.
+
+   GESTALTUNGSREGEL, die hier hart gilt: Es werden bewusst KEINE Ampelfarben
+   verwendet. Gruen/gelb/rot bedeuten in dieser App "handelbar" — eine
+   Beobachtung ueber die Vergangenheit darf sich diese Bedeutung nicht leihen.
+   Deshalb Blau (stieg), Violett (fiel), Grau (seitwaerts).                  */
+let patternData=null, patternTimer=null;
+
+async function loadPatterns(){
+  try{
+    const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
+    const r=await fetch('/api/patterns?'+q,{cache:'no-store'});
+    patternData=await r.json();
+  }catch(e){ patternData={configured:true,state:'error',error:String(e.message||e)}; }
+  renderPatternLab();
+}
+
+const PAT_TONE={up:'#5b8cff',down:'#a97bff',flat:'#6b7a94'};
+const PAT_NAME={up:'stieg danach',down:'fiel danach',flat:'seitwärts'};
+
+/** Zwei Balken auf gemeinsamer Skala. Der Nutzen liegt in der DECKUNG:
+ *  gleich lange Balken heissen, dass diese Kennzahl nichts ankuendigt. */
+function patternBar(f){
+  const vals=[f.medianUp,f.medianDown,f.medianFlat].filter(v=>Number.isFinite(v));
+  if(!vals.length) return '';
+  const lo=Math.min(0,...vals), hi=Math.max(0,...vals), span=(hi-lo)||1;
+  const x=(v)=>((v-lo)/span)*100;
+  const zero=x(0);
+  const bar=(v,g)=>Number.isFinite(v)
+    ? `<i class="pat-bar" style="left:${Math.min(x(v),zero).toFixed(1)}%;width:${Math.abs(x(v)-zero).toFixed(1)}%;background:${PAT_TONE[g]}" title="${esc(`${PAT_NAME[g]}: Median ${num(v,2)}`)}"></i>` : '';
+  const dim=!f.enough;
+  return `<div class="pat-row${dim?' thin':''}">
+    <b title="${esc(gloss(f.key==='rvol'?'rvol':f.key==='crv'?'crv':f.key==='score'?'score':f.key==='atr_pct'?'atr':'')||f.label)}">${esc(f.label)}</b>
+    <div class="pat-track"><span class="pat-zero" style="left:${zero.toFixed(1)}%"></span>${bar(f.medianUp,'up')}${bar(f.medianDown,'down')}</div>
+    <span class="pat-verdict" data-v="${esc(f.verdict)}" title="${esc(
+      f.enough
+        ? `Trennschärfe ${num(f.auc,3)}. Ab ${num(f.noiseFloor,3)} wäre der Unterschied bei dieser Stichprobe (${f.nUp} gestiegen / ${f.nDown} gefallen) mehr als Zufall. 0,5 heißt: kein Unterschied. Das ist eine Beobachtung über die Vergangenheit, keine Vorhersage — und sie verändert weder Score noch Freigabe.`
+        : `Nur ${f.nUp} gestiegene und ${f.nDown} gefallene Fälle. Für ein Urteil sind je ${patternData?.minSample||20} nötig. Es wird bewusst nichts geschätzt.`)}">${esc(f.verdict)}</span>
+  </div>`;
+}
+
+/** Verlaufskurve. Fehlende Stuetzstellen werden UEBERSPRUNGEN, nicht
+ *  interpoliert — sonst taeuscht die Linie eine Dichte vor, die es im
+ *  lueckigen Snapshot-Raster nicht gibt (Lehre aus v3.9.3). */
+function patternPath(d){
+  const W=460,H=150,PADL=34,PADB=18,PADT=8;
+  const all=['up','down','flat'].flatMap(g=>(d.path?.[g]||[]).map(p=>p.pct)).filter(Number.isFinite);
+  if(all.length<4) return '<span class="hint">Noch zu wenige Stützstellen für einen Verlauf.</span>';
+  const lo=Math.min(...all), hi=Math.max(...all), span=(hi-lo)||1;
+  const ms=d.offsets||[], m0=Math.min(...ms), m1=Math.max(...ms);
+  const px=(m)=>PADL+((m-m0)/((m1-m0)||1))*(W-PADL-6);
+  const py=(v)=>PADT+(1-(v-lo)/span)*(H-PADT-PADB);
+  const line=(g)=>{
+    let dstr='', open=false;
+    for(const p of d.path?.[g]||[]){
+      if(!Number.isFinite(p.pct)){ open=false; continue; }
+      dstr += (open?'L':'M')+px(p.m).toFixed(1)+' '+py(p.pct).toFixed(1)+' '; open=true;
+    }
+    return dstr?`<path d="${dstr}" fill="none" stroke="${PAT_TONE[g]}" stroke-width="2" stroke-linejoin="round"/>`:'';
+  };
+  const grid=[lo,(lo+hi)/2,hi].map(v=>
+    `<text x="4" y="${(py(v)+3).toFixed(1)}" class="pat-ax">${num(v,1)}%</text>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" class="pat-svg" role="img"
+    aria-label="Medianer Kursverlauf um den Zeitpunkt der Aufzeichnung, getrennt nach Ausgang">
+    <line x1="${px(0).toFixed(1)}" y1="${PADT}" x2="${px(0).toFixed(1)}" y2="${H-PADB}" class="pat-now"/>
+    <text x="${px(0).toFixed(1)}" y="${H-5}" class="pat-ax pat-mid">Aufzeichnung</text>
+    <text x="${PADL}" y="${H-5}" class="pat-ax">−${d.offsets?Math.abs(m0):60} Min</text>
+    <text x="${(W-6).toFixed(0)}" y="${H-5}" class="pat-ax pat-end">+${m1} Min</text>
+    ${grid}${line('flat')}${line('down')}${line('up')}
+  </svg>`;
+}
+
+/** Kalibrierung: wie viele Schwankungsbreiten lief eine Bewegung nach der
+ *  Aufzeichnung noch? Diese Zahl braucht die Zielformel, die heute 1,0 raet. */
+function patternCalibration(d){
+  const c=d?.calibration; if(!c) return '';
+  const head=`<div class="pat-cal-head"><b>Zielweite — gemessen statt geraten</b>`
+    +`<span title="Verhältnis von tatsächlich erreichter Bewegung zur Schwankungsbreite. Die Zielformel setzt heute den Faktor 1,0 an, ohne dass dieser Wert je gemessen wurde.">Faktor auf die Schwankungsbreite</span></div>`;
+  if(!c.enough) return `<div class="pat-cal">${head}<span class="hint">${esc(c.note||'')} (${Number(c.n||0)} Episoden mit brauchbarer Schwankungsbreite)</span></div>`;
+  const rows=(c.reach||[]).map(x=>{
+    const cur=Math.abs(Number(x.k)-Number(c.currentTargetMultiple||1))<0.01;
+    return `<span class="pat-cal-cell${cur?' current':''}" title="${esc(
+      `Ziel bei ${num(x.k,1)} × Schwankungsbreite wurde in ${x.pct} % der ${c.n} ausgewerteten Episoden erreicht.`
+      +(cur?' Das ist der Faktor, den die Zielformel heute verwendet.':''))}">
+      <i>${num(x.k,1)}×</i><b>${Number(x.pct)}%</b></span>`;
+  }).join('');
+  return `<div class="pat-cal">${head}<div class="pat-cal-grid">${rows}</div>`
+    +`<small class="hint">Erreichungsquote je Zielweite über ${Number(c.n)} Episoden. Median ${num(c.p50,2)}×, oberes Viertel ab ${num(c.p75,2)}×. `
+    +`Der heute eingestellte Faktor ${num(c.currentTargetMultiple,1)}× ist markiert. `
+    +`<b>Das setzt nichts automatisch</b> — es zeigt nur, wie oft das Ziel in der Vergangenheit erreicht wurde.</small></div>`;
+}
+
+function renderPatternLab(){
+  const el=$('#patternLab'); if(!el) return;
+  const head=`<div class="ophead"><b>🔬 Musterlabor · was ging der Bewegung voraus?</b>`
+    +`<span title="Ereignisstudie über die serverseitig aufgezeichneten Snapshots. Sie beschreibt, was VOR einer Bewegung messbar war — sie sagt nichts voraus und verändert weder Score noch Ampel noch Freigabe.">Beobachtung · 0 % BUY-Gewicht</span>`
+    +`<small>aufgelöste Aufzeichnungen</small></div>`;
+  if(!patternData){ el.innerHTML=head+'<span class="hint">Auswertung wird geladen.</span>'; return; }
+  const d=patternData;
+  if(d.state==='nodb'||d.configured===false){ el.innerHTML=head+`<span class="hint">${esc(d.note||'Keine D1-Verbindung.')}</span>`; return; }
+  if(d.state==='error'){ el.innerHTML=head+`<span class="hint">Auswertung fehlgeschlagen: ${esc(d.error||'unbekannt')}</span>`; return; }
+  if(!d.episodes){ el.innerHTML=head+`<span class="hint">${esc(d.note||'Noch nichts ausgewertet.')}</span>`; return; }
+
+  const c=d.counts||{};
+  const legend=['up','down','flat'].map(g=>
+    `<span class="pat-key"><i style="background:${PAT_TONE[g]}"></i>${esc(PAT_NAME[g])} <b>${Number(c[g]||0)}</b></span>`).join('');
+  const verdictLine = d.enoughOverall
+    ? (d.features||[]).some(f=>f.enough&&/^trennt/.test(f.verdict))
+      ? `<b class="pat-found">Es gibt einen messbaren Unterschied.</b> Die unten markierten Kennzahlen sahen vor Anstiegen anders aus als vor Abfällen.`
+      : `<b class="pat-none">Kein Unterschied gefunden.</b> Über ${Number(d.episodes)} ausgewertete Fälle sah keine der Kennzahlen vor einem Anstieg anders aus als vor einem Abfall. Das ist ein Ergebnis, kein Fehler: Diese Werte kündigen die Bewegung nicht an.`
+    : `<b class="pat-thin">Noch kein Urteil möglich.</b> Für eine Aussage werden je ${Number(d.minSample||20)} gestiegene und gefallene Fälle gebraucht; vorhanden sind ${Number(c.up||0)} und ${Number(c.down||0)}. Angezeigt wird der Zwischenstand.`;
+
+  const sit=d.situationCoverage||{};
+  const sitLine = sit.total && sit.withSituation<sit.total
+    ? `<small class="hint">Von ${Number(sit.total)} Fällen tragen ${Number(sit.withSituation)} einen Situationstyp. ${esc(sit.note||'')}</small>` : '';
+
+  el.innerHTML=head
+    +`<div class="pat-legend">${legend}<span class="pat-meta" title="${esc(`Fenster ${d.windowDays} Tage · ${d.rowsScanned} Aufzeichnungen gelesen${d.rowsCapped?' (Obergrenze erreicht, älteres fehlt)':''} · ${d.resolvedRows} davon aufgelöst · zu ${d.episodes} Episoden zusammengefasst, damit Aufnahmen derselben Bewegung nicht mehrfach zählen. „Stieg" heißt: danach mindestens ${d.winPct} % über dem Kurs. „Fiel" heißt: mindestens ${Math.abs(d.stopPct)} % darunter.`)}">${Number(d.windowDays)} Tage · ${Number(d.episodes)} Episoden</span></div>`
+    +`<p class="pat-verdictline">${verdictLine}</p>`
+    +`<div class="pat-chart">${patternPath(d)}</div>`
+    +`<small class="pat-cap">Medianer Kursweg um den Zeitpunkt der Aufzeichnung. Die <b>linke</b> Hälfte ist die interessante — dort steht, was vorher passierte. Lücken bleiben Lücken; es wird nichts interpoliert.</small>`
+    +`<div class="pat-grid">${(d.features||[]).map(patternBar).join('')}</div>`
+    +patternCalibration(d)
+    +sitLine
+    +`<small class="hint">Warum das hier steht und nicht bei den Kaufentscheidungen: Ein Muster, das in der Vergangenheit vor Anstiegen lag, ist noch kein Grund zu kaufen — es kann Zufall sein, und der Markt ändert sich. Diese Auswertung ändert deshalb <b>nichts automatisch</b>. Sie ist dafür da, dass wir beide sehen, ob überhaupt etwas drinsteckt.</small>`;
+}
+
 /* ==== v3.11.0 · Aufmerksamkeitsimpuls =======================================
    Wunsch: Empfehlungen dieser Art sollen blinkend hervorgehoben werden.
 
@@ -4558,6 +4800,7 @@ loadCrowd(false);
 loadSentiment(false);
 loadEarnings(false);
 wireEarningsEditor();
+loadPatterns();
 loadLearning();
 loadAttribution();
 loadAladdin();

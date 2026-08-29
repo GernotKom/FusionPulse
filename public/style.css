@@ -693,7 +693,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"3.16.1";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"3.18.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1221,3 +1221,66 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .intraday-chart{border-color:var(--tint-chart,var(--line));background:var(--tint-chart-bg,var(--panel2))}
 .learning-report{border-color:var(--tint-learning,var(--line));background:var(--tint-learning-bg,var(--panel2))}
 .model-compare{border-color:var(--tint-modelCompare,var(--line));background:var(--tint-modelCompare-bg,var(--panel2))}
+
+/* v3.17.0 · Musterlabor.
+   BEWUSST KEINE AMPELFARBEN: gruen/gelb/rot bedeuten in dieser App
+   "handelbar". Eine Beobachtung ueber die Vergangenheit darf sich diese
+   Bedeutung nicht ausleihen — sonst liest man ein Kaufsignal in eine
+   Statistik hinein. Blau = stieg danach, Violett = fiel danach, Grau =
+   seitwaerts. Diese vier Farben sind aus demselben Grund NICHT ueber die
+   Kachelfarben (v3.15.0) einstellbar. */
+.pattern-lab{display:block}
+.pat-legend{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:2px 0 8px}
+.pat-key{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--dim)}
+.pat-key i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.pat-key b{color:var(--fg)}
+.pat-meta{margin-left:auto;font-size:11px;color:var(--dim2);cursor:help}
+.pat-verdictline{margin:0 0 10px;font-size:12px;color:var(--dim);line-height:1.5}
+.pat-verdictline b{color:var(--fg)}
+.pat-found{color:#8fb4ff}
+.pat-none,.pat-thin{color:var(--dim)}
+.pat-chart{margin:2px 0 4px}
+.pat-svg{width:100%;height:auto;display:block}
+.pat-now{stroke:var(--line2);stroke-width:1;stroke-dasharray:3 3}
+.pat-ax{fill:var(--dim2);font-size:9px}
+.pat-mid{text-anchor:middle}
+.pat-end{text-anchor:end}
+.pat-cap{display:block;font-size:11px;color:var(--dim2);margin:0 0 12px;line-height:1.45}
+.pat-grid{display:flex;flex-direction:column;gap:3px;margin-bottom:8px}
+.pat-row{display:grid;grid-template-columns:9.5em 1fr 7.5em;gap:8px;align-items:center;font-size:11px}
+.pat-row.thin{opacity:.5}
+.pat-row>b{color:var(--dim);font-weight:600;cursor:help}
+.pat-track{position:relative;height:13px;border-radius:4px;background:var(--panel);overflow:hidden}
+.pat-zero{position:absolute;top:0;bottom:0;width:1px;background:var(--line2)}
+.pat-bar{position:absolute;top:2px;height:9px;border-radius:2px;opacity:.85;min-width:1px}
+.pat-bar+.pat-bar{top:2px;height:9px;opacity:.6}
+.pat-verdict{font-size:10px;color:var(--dim2);text-align:right;cursor:help}
+.pat-verdict[data-v^="trennt"]{color:#8fb4ff;font-weight:700}
+@media(max-width:640px){
+  .pat-row{grid-template-columns:7em 1fr 5.5em;font-size:10px}
+}
+
+/* v3.18.0 · Freigabe-Trichter und Kalibrierung.
+   Wieder KEINE Ampelfarben: Der Trichter sagt "hier hängt es", nicht
+   "das ist schlecht". Akzentblau fuer die entscheidende Bedingung. */
+.gate-funnel{display:block}
+.gate-funnel>b{font-size:12px}
+.gf-sum{float:right;font-size:11px;color:var(--dim);cursor:help}
+.gf-note{display:block;margin-top:6px;font-size:11px;color:var(--dim);cursor:help;line-height:1.45}
+.gf-chips{display:flex;flex-wrap:wrap;gap:5px;margin:8px 0 6px}
+.gf-chip{font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:6px;
+  padding:2px 7px;cursor:help;white-space:nowrap}
+.gf-chip b{color:var(--fg);margin-left:3px}
+.gf-chip i{color:var(--accent);font-style:italic;margin-left:3px}
+.gf-chip.decisive{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.gf-dead{display:block;font-size:10px;color:var(--dim2);margin-bottom:5px;cursor:help}
+.pat-cal{margin:10px 0 6px;padding-top:8px;border-top:1px solid var(--line)}
+.pat-cal-head{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;font-size:12px}
+.pat-cal-head span{font-size:10px;color:var(--dim2);cursor:help}
+.pat-cal-grid{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0 5px}
+.pat-cal-cell{display:inline-flex;flex-direction:column;align-items:center;gap:1px;
+  border:1px solid var(--line);border-radius:6px;padding:3px 9px;cursor:help}
+.pat-cal-cell i{font-style:normal;font-size:10px;color:var(--dim2)}
+.pat-cal-cell b{font-size:12px;color:var(--fg)}
+.pat-cal-cell.current{border-color:var(--accent)}
+.pat-cal-cell.current i{color:var(--accent)}

@@ -8,16 +8,16 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/style.css?v=3.16.1">
+<link rel="stylesheet" href="/style.css?v=3.18.0">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
-<script src="/version.js?v=3.16.1"></script>
-<title>FusionPulse 3.16.1</title>
+<script src="/version.js?v=3.18.0"></script>
+<title>FusionPulse 3.18.0</title>
 <!-- v3.14.1: Versionsstempel der SHELL (index.html). Wird von sync-version.mjs
      gesetzt und beim Start gegen FP_VERSION aus version.js verglichen. Weichen
      die beiden ab, ist eine halb aktualisierte Auslieferung im Umlauf: neues
      app.js/style.css auf altem index.html. Das erzeugt Fehler, die wie
      Layout-Probleme aussehen, aber keine sind — und kostet beim Suchen Stunden. -->
-<meta name="fp-shell-version" content="3.16.1">
+<meta name="fp-shell-version" content="3.18.0">
 </head>
 <body>
 
@@ -197,6 +197,7 @@
          die Oberflaeche dazu nie. Die Maske steht bewusst DIREKT unter der
          Tafel — dort faellt auf, dass ein Termin fehlt, und dort wird er
          eingetragen. Reine Datenpflege: kein Score, kein Gate, keine Ampel. -->
+    <div id="gateFunnel" class="openingpanel gate-funnel" title="Zählt, woran die Kauf-Freigaben im aktuellen Durchlauf hängen. Reine Zählung — verändert nichts."></div>
     <section id="earningsEditor" class="openingpanel earn-edit" title="Eigene Quartalstermine eintragen. Manuelle Termine gelten vor dem automatischen Kalender und funktionieren auch dann, wenn dieser nichts liefert. Reine Terminliste — 0 % Gewicht in Score und Kauf-Freigabe.">
       <div class="ophead">
         <b>✎ Eigener Quartalstermin</b>
@@ -231,6 +232,7 @@
     <section id="portfolioRisk" class="portfolio-card" title="Modul 2: Gesamt-Risiko ueber alle offenen Positionen und Klumpungswarnung. Rechnet zusammen, was das Einzeltrade-Risiko fuer sich nicht zeigt. Veraendert keinen Score."></section>
     <div class="experimental-grid">
       <section id="learningReport" class="learning-report" title="Was hat FusionPulse im Hintergrund gelernt? Zeigt gespeicherte Beobachtungen und Systemzustände; verändert keine BUY-Regel automatisch."></section>
+      <section id="patternLab" class="learning-report pattern-lab" title="Musterlabor: Was war VOR einer Bewegung messbar? Ereignisstudie über die serverseitig aufgezeichneten Snapshots. Reine Beobachtung — 0 % Gewicht in Score, Ampel und Freigabe."></section>
       <section id="attributionReport" class="learning-report" title="Modul 0: ehrliche Selbstauswertung. Welche Setups hatten out-of-sample tatsächlich einen Vorteil? Der Overfitting-Wächter empfiehlt Abschaltungen, ändert aber nichts automatisch am Score."></section>
       <section id="experimentalPanel" class="experimental-panel" title="Experimentelle externe Einflussgrößen. 1–5 Sterne bewerten ausschließlich die aktuelle Dynamik/Aktivität, nicht die erwartete Kursrichtung. Diese Ebene hat derzeit 0 % Gewicht im BUY-Score."></section>
       <section class="experimental-note">
@@ -388,6 +390,6 @@
      Muss das LETZTE Element im Fluss bleiben. Hoehe kommt aus derselben
      Messung wie alles andere (--fp-foot-h). -->
 <div class="foot-spacer" aria-hidden="true"></div>
-<script src="/app.js?v=3.16.1"></script>
+<script src="/app.js?v=3.18.0"></script>
 </body>
 </html>
