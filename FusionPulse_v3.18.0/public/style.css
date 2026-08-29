@@ -1,0 +1,1286 @@
+:root{
+  --bg:#080b14; --panel:#0f1626; --panel2:#151f36; --line:#212e4a; --line2:#2c3c5e;
+  --fg:#e9eefc; --dim:#8494b4; --dim2:#5d6d8c;
+  --green:#13cf8b; --yellow:#f2c015; --red:#ef4f57; --accent:#5b8cff;
+  --pad:14px;
+}
+*{box-sizing:border-box}
+/* v3.14.4 · DIE URSACHE, DIE DREI ANLAEUFE UEBERSTANDEN HAT.
+   Hier stand `html,body{height:100%}`. Das macht die body-Box exakt so hoch wie
+   das Fenster. Der Inhalt ist ein Vielfaches davon und laeuft aus der Box heraus.
+   Folge: `body{padding-bottom:...}` sitzt am UNTEREN RAND DER BOX — also
+   ungefaehr eine Fensterhoehe weit oben, mitten im Inhalt — und nicht hinter dem
+   letzten Element. Die Scrollhoehe des Dokuments ergibt sich aus dem
+   ueberlaufenden Inhalt, und dazu traegt dieses padding NICHTS bei.
+   Damit war jede Fussleisten-Korrektur seit v3.14.0 wirkungslos: die Messung war
+   ab v3.14.2 richtig, die Zahl stimmte, sie floss in eine Eigenschaft, die an
+   dieser Stelle keine Wirkung haben KANN. Genau deshalb hat `padding-top` immer
+   funktioniert (es steht VOR dem Inhalt und schiebt ihn herunter) und
+   `padding-bottom` nie. Diese Asymmetrie haette mir in v3.14.0 auffallen muessen.
+   `min-height` laesst die Box mit dem Inhalt wachsen; das padding landet dann
+   tatsaechlich hinter dem letzten Element. */
+html{height:100%}
+body{margin:0;min-height:100%}
+body{
+  background:var(--bg);color:var(--fg);font-size:14px;
+  font-family:system-ui,-apple-system,"SF Pro Text","Segoe UI",Roboto,sans-serif;
+  -webkit-tap-highlight-color:transparent;overscroll-behavior:none;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+button,select,input{
+  font:inherit;background:var(--panel2);color:var(--fg);
+  border:1px solid var(--line);border-radius:9px;padding:7px 11px;cursor:pointer;
+}
+button:active{transform:scale(.97)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.hidden{display:none !important}
+.ta{text-align:right}
+.good{color:var(--green)} .bad{color:var(--red)}
+kbd{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:11px}
+.mono,.lvv,.c-sz,.c-r,.c-qh{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
+
+/* ═══════════════════════════════════════════════════════════ Kopfzeile ═══ */
+header{
+  position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:9px;
+  padding:9px var(--pad);background:#080b14f2;backdrop-filter:blur(16px);
+  border-bottom:1px solid var(--line);
+}
+.hstat{min-width:0;flex:1}
+.hstat b{display:block;font-size:12.5px;font-weight:700;letter-spacing:.2px}
+.hstat b.riskon{color:var(--green)} .hstat b.riskoff{color:var(--red)} .hstat b.neutral{color:var(--dim)}
+#status{display:block;font-size:10.5px;color:var(--dim2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#status[data-state=busy]{color:var(--accent)}
+#status[data-state=err]{color:var(--red)}
+.hclock b{font-family:ui-monospace,monospace;font-size:14px;font-variant-numeric:tabular-nums;
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:5px 8px;display:block}
+.hclock b.soon{color:var(--yellow);border-color:#f2c01566}
+.hcounts{display:flex;gap:3px}
+.hcounts span{padding:5px 8px;border-radius:7px;background:var(--panel);font-size:12px;font-weight:800;
+  font-variant-numeric:tabular-nums}
+.hcounts .g{color:var(--green)} .hcounts .y{color:var(--yellow)} .hcounts .r{color:var(--dim2)}
+#wake.on{border-color:var(--yellow);color:var(--yellow)}
+
+/* ══════════════════════════════════════════════ Bühne: Fokus + Karte ═══ */
+.stage{display:grid;grid-template-columns:1fr 250px;gap:10px;padding:10px var(--pad) 0;align-items:start}
+
+/* ─────────────────────────────────────────────────────── Fokus-Panel ─── */
+.focus{display:grid;grid-template-columns:1fr 132px;gap:14px;
+  background:var(--panel);border:1px solid var(--line);border-radius:15px;padding:14px;min-height:236px}
+.focus.green{border-color:#13cf8b99;background:linear-gradient(150deg,#0c2c26,#0d1424 62%)}
+.focus.yellow{border-color:#f2c01566;background:linear-gradient(150deg,#2a2410,#0d1424 62%)}
+.focus.red{border-color:var(--line)}
+.focus.inzone{box-shadow:0 0 0 1px #ffffff35,0 12px 34px -18px var(--green)}
+.focus.empty{grid-template-columns:1fr;place-items:center;text-align:center}
+.fempty b{display:block;font-size:17px;margin-bottom:5px}
+.fempty span{color:var(--dim);font-size:12.5px}
+.fmain{min-width:0;display:flex;flex-direction:column}
+.fhead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.fhead h2{margin:0;font-size:29px;letter-spacing:-.9px;line-height:1}
+.fhead h2 small{font-size:15px;font-weight:500;color:var(--dim);letter-spacing:0;margin-left:7px;
+  font-family:ui-monospace,monospace}
+.fsetup{margin:5px 0 0;font-size:12.5px;color:var(--fg);opacity:.85}
+.fpins{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
+.pin{font-size:10px;color:var(--dim);background:var(--panel2);border:1px solid var(--line);
+  border-radius:7px;padding:4px 7px;white-space:nowrap}
+.pin b{color:var(--fg);font-size:12px;font-variant-numeric:tabular-nums}
+.pin.q b{color:var(--accent)} .pin.h b{color:#7fd6ff}
+.fblock{margin-top:10px;background:#ef4f5716;border:1px solid #ef4f5744;border-radius:9px;
+  padding:7px 10px;font-size:11.5px;line-height:1.5}
+.fgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:12px 0}
+.fgrid>div{background:#ffffff08;border-radius:9px;padding:7px 9px;min-width:0}
+.fgrid span{display:block;font-size:9.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+.fgrid b{font-size:14px;font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.factions{display:flex;gap:6px;flex-wrap:wrap;margin-top:auto}
+.factions button{font-size:12px;padding:8px 11px}
+.fwarn{margin:8px 0 0;font-size:11px;color:var(--yellow)}
+
+/* ─────────────────────────────────────────────────────── Preisleiter ─── */
+.ladder{position:relative;height:100%;min-height:200px;border-left:2px solid var(--line2);margin-left:4px}
+.lzone{position:absolute;left:-4px;right:0;background:#5b8cff2e;border-top:1px dashed #5b8cff99;
+  border-bottom:1px dashed #5b8cff99;border-radius:2px}
+.lv{position:absolute;left:0;right:0;transform:translateY(-50%);display:flex;align-items:center;gap:4px;
+  font-size:9.5px;white-space:nowrap}
+.lv::before{content:"";width:9px;height:2px;background:currentColor;flex:0 0 auto;margin-left:-5px}
+.lvl{color:var(--dim);font-size:8.5px;text-transform:uppercase;letter-spacing:.4px}
+.lvv{font-size:10px;color:var(--fg)}
+.lvr{margin-left:auto;font-size:9px;opacity:.75}
+.lv.tp2{color:var(--green)} .lv.tp1{color:#7fd6ff}
+.lv.entry{color:var(--accent)} .lv.stop{color:var(--red)}
+.lpx{position:absolute;left:-7px;transform:translateY(-50%);display:flex;align-items:center;
+  transition:top .55s cubic-bezier(.4,0,.2,1);z-index:3}
+.lpx::before{content:"";width:0;height:0;border:5px solid transparent;border-left-color:#fff}
+.lpx span{background:#fff;color:#000;font-size:9.5px;font-weight:800;border-radius:4px;padding:1px 4px;
+  font-family:ui-monospace,monospace}
+.lpx.inzone::before{border-left-color:var(--green)}
+.lpx.inzone span{background:var(--green);color:#04150f}
+
+/* ────────────────────────────────────────────────────────── 2D-Karte ─── */
+.mapwrap{background:var(--panel);border:1px solid var(--line);border-radius:15px;padding:11px}
+.maphead{display:flex;justify-content:space-between;font-size:9.5px;color:var(--dim);margin-bottom:6px}
+.mdim{color:var(--dim2)}
+#map{width:100%;aspect-ratio:1;display:block;border-radius:9px;overflow:visible}
+#map .quad{opacity:.5}
+#map .qa{fill:#13cf8b1c} #map .qb{fill:#f2c0150f} #map .qc{fill:#5b8cff0d}
+#map .ax{stroke:var(--line2);stroke-width:1;stroke-dasharray:3 3}
+#map .dot{cursor:pointer}
+#map .dot .hit{fill:transparent;stroke:none}
+#map .dot .core{fill:var(--dim2);stroke:#0a0f18;stroke-width:1.7;paint-order:stroke;transition:r .25s,fill .25s}
+#map .dot text{fill:#fff;font-size:5.8px;text-anchor:middle;font-weight:850;pointer-events:none;paint-order:stroke;stroke:#08101a;stroke-width:1.35px}
+#map .dot.light-green .core{fill:var(--green)} #map .dot.light-yellow .core{fill:var(--yellow)} #map .dot.light-red .core{fill:#52647d}
+#map .dot.sel .core{stroke:#fff;stroke-width:3}
+#map .trail{fill:none;stroke-width:1.35;stroke-linecap:round;stroke-linejoin:round;opacity:.28;stroke:#7f91aa}
+#map .trail.green{stroke:var(--green);opacity:.48} #map .trail.yellow{stroke:var(--yellow);opacity:.40}
+#map .dot.buy-ready .core{animation:mapbuy 1.25s ease-in-out infinite}
+@keyframes mapbuy{50%{stroke-width:4;filter:drop-shadow(0 0 5px var(--green))}}
+.maplegend{display:flex;flex-direction:column;gap:3px;margin-top:8px;font-size:9.5px;color:var(--dim)}
+.maplegend span{display:flex;align-items:center;gap:5px}
+.maplegend i{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.maplegend .q-handeln{background:var(--green)}
+.maplegend .q-blockiert{background:var(--yellow)}
+.maplegend .q-liquide{background:#43597f}
+
+/* ═════════════════════════════════════════════════════════════ Filter ═══ */
+nav{display:flex;gap:8px;align-items:center;padding:12px var(--pad) 8px}
+nav input#q{flex:1;max-width:210px}
+#stamp{margin-left:auto;font-size:10.5px;color:var(--dim2);font-family:ui-monospace,monospace}
+
+/* ══════════════════════════════════════════════════════ Dichte Liste ═══ */
+main{padding:0 var(--pad) 88px}
+.thead,.row{display:grid;
+  grid-template-columns:112px 82px minmax(120px,1fr) 52px 108px 44px 76px 62px;
+  gap:9px;align-items:center}
+.thead{padding:0 10px 6px;font-size:9.5px;color:var(--dim2);text-transform:uppercase;letter-spacing:.6px;
+  border-bottom:1px solid var(--line)}
+.row{padding:7px 10px;border-bottom:1px solid #ffffff09;cursor:pointer;font-size:12.5px;
+  border-left:2px solid transparent}
+.row:hover{background:#ffffff07}
+.row.sel{background:#5b8cff1c;border-left-color:var(--accent)}
+.row.green{border-left-color:var(--green)}
+.row.green.sel{background:#13cf8b1f}
+.row.yellow{border-left-color:#f2c01577}
+.row.red{opacity:.62}
+.row.inzone .c-sym{text-shadow:0 0 12px #fff6}
+.c-sym{display:flex;align-items:center;gap:6px;font-weight:700}
+.dotc{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:var(--dim2)}
+.dotc.green{background:var(--green);box-shadow:0 0 8px var(--green)}
+.dotc.yellow{background:var(--yellow)}
+.c-sym i{font-style:normal;font-size:8px}
+.c-sym i.up{color:var(--green)} .c-sym i.dn{color:var(--red)}
+.spk{width:100%;height:22px;color:#ffffff4d;display:block}
+.row.green .spk{color:#6ef0c0} .row.yellow .spk{color:#ffe27a}
+.c-set{font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dim)}
+.row.green .c-set,.row.yellow .c-set{color:var(--fg)}
+.c-age{font-size:10.5px;color:var(--dim2)}
+.c-qh{font-size:11px} .c-qh b{color:var(--accent)} .c-qh i{color:var(--dim2);font-style:normal;margin:0 2px}
+.c-sz{font-size:11.5px}
+
+/* Zonenlage: ein Balken, drei Marken. Position ersetzt Zahlenvergleich. */
+.zb{position:relative;height:16px;background:#ffffff0d;border-radius:4px}
+.zb i{position:absolute;top:0;bottom:0}
+.zb-zone{background:#5b8cff4d;border-left:1px solid #5b8cffcc;border-right:1px solid #5b8cffcc;border-radius:2px}
+.zb-stop{width:2px;background:var(--red)}
+.zb-px{width:3px;background:#fff;border-radius:2px;box-shadow:0 0 6px #fff9;transition:left .55s cubic-bezier(.4,0,.2,1)}
+.zb.hit .zb-px{background:var(--green);box-shadow:0 0 9px var(--green)}
+
+.more{width:100%;margin:12px 0;background:transparent;border-style:dashed;color:var(--dim);font-size:12px}
+.legend{color:var(--dim2);font-size:11px;margin-top:18px;line-height:1.9}
+
+/* ═════════════════════════════════════════════════════ Aktions-Dock ═══ */
+/* v3.14.2: `bottom:52px` war ein geratener Festwert fuer die Hoehe der
+   Signalleiste — verboten seit v3.12.0, hier uebersehen. Bricht die Leiste
+   um (schmales Fenster, Analyse-Dock in zweiter Zeile), ueberlappt das Dock
+   sie. Jetzt aus derselben Messung wie alles andere. */
+.dock{position:fixed;left:0;right:0;bottom:var(--fp-banner-h);z-index:30;display:flex;align-items:center;gap:12px;
+  padding:11px var(--pad);
+  background:#0f1626f5;backdrop-filter:blur(16px);border-top:1px solid var(--line)}
+.dock.green{border-top-color:var(--green)}
+.dock.yellow{border-top-color:#f2c01577}
+.dockinfo{min-width:0;flex:1}
+.dockinfo b{font-size:15px;font-weight:800;margin-right:9px}
+.dockinfo span{font-size:11.5px;color:var(--dim);font-family:ui-monospace,monospace}
+.dock button{padding:11px 18px}
+
+/* ══════════════════════════════════════════════════════════════ Modal ═══ */
+.modal{position:fixed;inset:0;display:none;place-items:center;background:#000000cc;padding:14px;z-index:50}
+.modal.open{display:grid}
+.modal article{position:relative;width:min(640px,96vw);max-height:90vh;overflow:auto;
+  background:var(--panel);border:1px solid var(--line);border-radius:17px;padding:20px}
+.modal article>button[id=x],.modal article>button[id=sClose]{position:absolute;right:12px;top:12px;
+  font-size:18px;line-height:1;padding:3px 10px}
+.dhead{display:flex;justify-content:flex-start;gap:20px;align-items:flex-start;
+  padding-bottom:12px;border-bottom:1px solid var(--line);margin-bottom:6px}
+.dhead>div:first-child{flex:1}
+.dhead h2{margin:0;font-size:23px}
+.dhead p{margin:3px 0 0;color:var(--dim);font-size:11.5px}
+.dhead.green h2{color:var(--green)} .dhead.yellow h2{color:var(--yellow)}
+.dscore{text-align:right}
+.dscore b{display:block;font-size:23px;font-variant-numeric:tabular-nums}
+.dscore span{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);margin:18px 0 8px}
+.factor{display:grid;grid-template-columns:152px 1fr 32px;gap:9px;align-items:center;margin:6px 0;font-size:12px}
+.fbar{height:7px;background:#00000055;border-radius:9px;overflow:hidden}
+.fbar i{display:block;height:100%;border-radius:9px;transition:width .4s}
+.factor b{text-align:right;font-family:ui-monospace,monospace}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
+.metric{background:var(--panel2);border-radius:9px;padding:8px;font-size:9.5px;color:var(--dim)}
+.metric b{display:block;font-size:13px;color:var(--fg);font-family:ui-monospace,monospace;margin-top:2px}
+.hint{font-size:12px;color:var(--dim)} .hint b{color:var(--fg)}
+.journalbox{margin-top:18px;padding-top:13px;border-top:1px solid var(--line);
+  display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.journalbox small{color:var(--dim);font-size:11px}
+.settings label{display:block;margin:11px 0;font-size:12px;color:var(--dim)}
+.settings label input{display:block;width:100%;margin-top:5px;color:var(--fg)}
+.settings label.row{display:flex;align-items:center;gap:9px;grid-template-columns:none;padding:0;border:0}
+.settings label.row input{width:auto;margin:0}
+.settings h2{margin:0 0 6px;font-size:19px}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 10px}
+
+/* ═════════════════════════════════════════════════════════ Responsive ═══ */
+@media(max-width:1000px){
+  .stage{grid-template-columns:1fr}
+  .mapwrap{display:grid;grid-template-columns:170px 1fr;gap:12px;align-items:center}
+  .maphead{grid-column:1/-1;margin:0}
+  .maplegend{flex-direction:row;flex-wrap:wrap;gap:10px;margin:0}
+  .thead,.row{grid-template-columns:100px 66px minmax(90px,1fr) 46px 92px 40px 66px 56px;gap:7px}
+}
+@media(max-width:680px){
+  header{gap:6px;padding:8px 10px;flex-wrap:wrap}
+  .hstat{order:-1;flex-basis:100%}
+  .focus{grid-template-columns:1fr 108px;padding:12px}
+  .fhead h2{font-size:24px}
+  .fgrid{grid-template-columns:repeat(2,1fr)}
+  .metrics{grid-template-columns:repeat(2,1fr)}
+  .factor{grid-template-columns:104px 1fr 28px}
+  .thead{display:none}
+  .row{grid-template-columns:1fr 74px 54px;grid-template-areas:
+    "sym r sz" "set set set" "zone zone age";
+    gap:4px 8px;padding:9px 10px;border-bottom:1px solid #ffffff12}
+  .c-sym{grid-area:sym} .c-r{grid-area:r} .c-sz{grid-area:sz}
+  .c-set{grid-area:set} .c-zone{grid-area:zone} .c-age{grid-area:age;text-align:right}
+  .c-spk,.c-qh{display:none}
+  .legend{display:none}
+}
+
+
+/* v2.2 themes + hover trade preview */
+:root[data-theme="light"]{--bg:#f5f7fb;--panel:#ffffff;--panel2:#edf1f7;--line:#d8dfeb;--line2:#c4cedd;--fg:#172033;--dim:#60708b;--dim2:#8491a5;--accent:#356fe5}
+:root[data-theme="warm"]{--bg:#f4efe7;--panel:#fffaf3;--panel2:#eee6da;--line:#d9cdbd;--line2:#c8b9a5;--fg:#2c2925;--dim:#746b61;--dim2:#968b7e;--accent:#476f9f}
+:root[data-theme="light"] body,:root[data-theme="warm"] body{background:var(--bg);color:var(--fg)}
+:root[data-theme="light"] header,:root[data-theme="warm"] header{background:color-mix(in srgb,var(--bg) 94%,transparent)}
+:root[data-theme="light"] .dock,:root[data-theme="warm"] .dock{background:color-mix(in srgb,var(--panel) 96%,transparent)}
+:root[data-theme="light"] .row,:root[data-theme="warm"] .row{border-bottom-color:var(--line)}
+:root[data-theme="light"] .row:hover,:root[data-theme="warm"] .row:hover{background:#00000006}
+.settings select{display:block;width:100%;margin-top:5px}.methods{margin:12px 0;color:var(--dim);font-size:12px;line-height:1.5}.methods summary{cursor:pointer;color:var(--fg);font-weight:700}.taxnote{color:var(--dim2);font-size:9.5px}
+.row{position:relative}.tradepeek{display:none;position:absolute;z-index:80;left:70px;top:70%;width:min(560px,80vw);padding:12px 14px;background:var(--panel);border:1px solid var(--line2);border-radius:12px;box-shadow:0 18px 45px #0005;color:var(--fg);line-height:1.65;font-size:12px;pointer-events:none}.row:hover .tradepeek{display:block}.row:hover{z-index:40}
+@media(hover:none){.tradepeek{display:none!important}}
+
+/* ═══════════════════════════════════════════════ v2.3 Klarheit/Tooltips ═══ */
+.appver{display:block;margin-top:2px;font-size:9px;color:var(--dim2);font-family:ui-monospace,monospace}
+.tradeplan{display:grid;grid-template-columns:repeat(3,minmax(130px,1fr));gap:7px;margin:10px 0;padding:10px;border:1px solid var(--line2);border-radius:10px;background:var(--panel2)}
+.tradeplan>b{grid-column:1/-1;font-size:10px;letter-spacing:.8px;color:var(--dim);text-transform:uppercase}
+.tradeplan span{font-size:10px;color:var(--dim);padding:5px 7px;border-radius:7px;background:color-mix(in srgb,var(--panel) 70%,transparent)}
+.tradeplan strong{display:block;margin-top:2px;color:var(--fg);font-size:13px;font-family:ui-monospace,monospace}
+.stocks{margin:24px 0 6px;padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
+.stocks-head{display:flex;gap:12px;align-items:center;justify-content:space-between}.stocks-head h2{margin:0;font-size:18px}.stocks-head small,.stocknote{color:var(--dim);font-size:11px}.badge{font-size:10px;padding:5px 8px;border:1px solid var(--line2);border-radius:999px;color:var(--yellow);background:var(--panel2)}
+.stockgroups{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:9px;margin-top:10px}.stock-sector{background:var(--panel2);border-radius:9px;padding:9px}.stock-sector h3{margin:0 0 6px}.stockrow{display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid var(--line)}
+.quota h2{margin-top:0}.quota p{line-height:1.55}
+
+/* v2.3: hell, aber bewusst gedämpft – Signal-Farben bleiben kontrastreich */
+:root[data-theme="light"]{--bg:#d8dde6;--panel:#edf0f5;--panel2:#cbd2dd;--line:#aab5c5;--line2:#8e9caf;--fg:#172033;--dim:#4e5d73;--dim2:#66758a;--green:#087f56;--yellow:#8a6500;--red:#b52d3a;--accent:#275fb8}
+:root[data-theme="warm"]{--bg:#d8cdbd;--panel:#eee6da;--panel2:#d0c2af;--line:#ad9c86;--line2:#91806a;--fg:#29251f;--dim:#61584d;--dim2:#786d5f;--green:#187451;--yellow:#806000;--red:#ad3540;--accent:#3e638f}
+:root[data-theme="light"] .focus.green,:root[data-theme="warm"] .focus.green{background:linear-gradient(150deg,#c7e1d7,var(--panel) 62%)}
+:root[data-theme="light"] .focus.yellow,:root[data-theme="warm"] .focus.yellow{background:linear-gradient(150deg,#e8dab0,var(--panel) 62%)}
+:root[data-theme="light"] .row.red,:root[data-theme="warm"] .row.red{opacity:.82}
+@media(max-width:680px){.tradeplan{grid-template-columns:repeat(2,minmax(120px,1fr))}.stocks-head{align-items:flex-start;flex-direction:column}}
+
+
+/* ═════════════════════════════════════════════════════ v2.4 Alert UX ═══ */
+.row,.focus{transition:background .35s,border-color .35s,box-shadow .35s,opacity .35s}
+.row.green.tone-1{background:color-mix(in srgb,var(--green) 6%,transparent)}
+.row.green.tone-2{background:color-mix(in srgb,var(--green) 12%,transparent)}
+.row.green.tone-3{background:color-mix(in srgb,var(--green) 20%,transparent)}
+.row.yellow.tone-1{background:color-mix(in srgb,var(--yellow) 5%,transparent)}
+.row.yellow.tone-2{background:color-mix(in srgb,var(--yellow) 10%,transparent)}
+.row.yellow.tone-3{background:color-mix(in srgb,var(--yellow) 16%,transparent)}
+.row.red.tone-1{background:color-mix(in srgb,var(--red) 3%,transparent)}
+.row.red.tone-2{background:color-mix(in srgb,var(--red) 7%,transparent)}
+.row.red.tone-3{background:color-mix(in srgb,var(--red) 11%,transparent)}
+.focus.green.tone-2{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--green) 35%,transparent)}
+.focus.green.tone-3{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--green) 60%,transparent),0 0 24px color-mix(in srgb,var(--green) 15%,transparent)}
+.focus.yellow.tone-3{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--yellow) 45%,transparent)}
+.buy-ready{border-color:var(--green)!important}
+.row.buy-ready,.focus.buy-ready{animation:buyPulse 1.45s ease-in-out infinite}
+@keyframes buyPulse{
+  0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--green) 15%,transparent)}
+  50%{box-shadow:0 0 0 3px color-mix(in srgb,var(--green) 65%,transparent),0 0 22px color-mix(in srgb,var(--green) 35%,transparent)}
+}
+@media(prefers-reduced-motion:reduce){.row.buy-ready,.focus.buy-ready{animation:none;box-shadow:0 0 0 2px var(--green)}}
+.buybadge{font-size:10px;font-weight:850;color:var(--green);border:1px solid color-mix(in srgb,var(--green) 55%,var(--line));
+  background:color-mix(in srgb,var(--green) 12%,var(--panel2));border-radius:999px;padding:4px 8px}
+.pairmute,.rowmute{padding:3px 6px;min-width:0;font-size:11px;line-height:1;border-radius:7px}
+.rowmute{margin-left:auto;background:transparent;border-color:transparent;opacity:.7}
+.rowmute:hover{opacity:1;border-color:var(--line)}
+.c-sym{min-width:0}
+.metricbox.positive,.c-r.positive{background:color-mix(in srgb,var(--green) 13%,transparent)!important}
+.metricbox.wait,.c-r.wait{background:color-mix(in srgb,var(--yellow) 12%,transparent)!important}
+.metricbox.negative,.c-r.negative{background:color-mix(in srgb,var(--red) 11%,transparent)!important}
+.c-r.positive,.c-r.wait,.c-r.negative{border-radius:5px;padding:3px 5px}
+#cog{margin-left:0}
+
+
+/* ═════════════════════════════════════════════════ Aktienradar v3.0.7 ═══ */
+.stock-sector h3{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
+.stockrow{display:grid;grid-template-columns:52px 1fr 48px 66px;align-items:center;gap:7px;border-left:3px solid transparent;padding:7px 6px;border-radius:7px;margin:2px 0}
+.stockrow.green{border-left-color:var(--green);background:color-mix(in srgb,var(--green) 10%,transparent)}
+.stockrow.yellow{border-left-color:var(--yellow);background:color-mix(in srgb,var(--yellow) 8%,transparent)}
+.stockrow.red{border-left-color:var(--red);background:color-mix(in srgb,var(--red) 5%,transparent);opacity:.75}
+.stockrow.buy{animation:buyPulse 1.45s ease-in-out infinite}
+.stockrow b{font-size:12px}.stockrow small{font-size:10px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stockscore{text-align:right;font-family:ui-monospace,monospace;font-weight:800}.stockcrv{text-align:right;font-family:ui-monospace,monospace}
+.stockbadge{display:inline-block;font-size:8.5px;border-radius:999px;padding:2px 5px;margin-left:4px;background:var(--panel);border:1px solid var(--line)}
+.badge.ok{color:var(--green);border-color:color-mix(in srgb,var(--green) 55%,var(--line))}.badge.err{color:var(--red)}
+.stocktip{cursor:help}
+
+
+/* ════════════════════════════════════════════════════════════════════════════
+   v3.0.7 — Systemstatus, Update-Hinweis, Aktienradar, Light-Mode-Überarbeitung
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* ───────────────────────────────────────────────── Update-/Versionshinweis ─ */
+.updatebar{
+  position:sticky;top:0;z-index:60;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:9px var(--pad);background:color-mix(in srgb,var(--accent) 22%,var(--panel));
+  border-bottom:1px solid var(--accent);font-size:12.5px;font-weight:600
+}
+.updatebar button{padding:6px 12px;font-size:12px}
+
+/* ─────────────────────────────────────────────────────────── Systemstatus ─ */
+.sysbar{display:flex;align-items:center;gap:6px;margin-top:3px;font-size:10px;color:var(--dim2);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;flex-wrap:wrap}
+.sysSep{opacity:.45}
+.sys{display:inline-flex;align-items:center;gap:4px;cursor:help;white-space:nowrap}
+.sys i{width:7px;height:7px;border-radius:50%;background:var(--dim2);display:inline-block;flex:0 0 auto}
+.sys[data-state=ok] i{background:var(--green);box-shadow:0 0 7px color-mix(in srgb,var(--green) 70%,transparent)}
+.sys[data-state=warn] i{background:var(--yellow);box-shadow:0 0 7px color-mix(in srgb,var(--yellow) 60%,transparent)}
+.sys[data-state=err] i{background:var(--red);box-shadow:0 0 7px color-mix(in srgb,var(--red) 60%,transparent)}
+.sys[data-state=busy] i{background:var(--dim2);animation:sysPulse 1.4s ease-in-out infinite}
+.sys.ver{color:var(--dim);font-weight:700;letter-spacing:.3px}
+/* v3.14.5: Ein Fehlstand der Versionsstempel muss im Kopf sichtbar sein,
+   nicht nur im Tooltip. */
+.sys.ver.mismatch{color:var(--yellow)}
+@keyframes sysPulse{0%,100%{opacity:.35}50%{opacity:1}}
+@media(prefers-reduced-motion:reduce){.sys[data-state=busy] i{animation:none}}
+.appver{display:none}                       /* durch .sysbar ersetzt */
+
+/* ──────────────────────────────────────────────── Reife-Zähler in der Liste ─ */
+.c-age .stk{display:block;font-style:normal;font-size:8.5px;opacity:.65;line-height:1.3}
+
+/* ─────────────────────────────────────── Einstellungen: Verfahrensschalter ─ */
+.settings h3{margin:20px 0 6px;color:var(--fg);font-size:11px;letter-spacing:.9px;
+  border-bottom:1px solid var(--line);padding-bottom:5px}
+.complist{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:2px 12px;margin:6px 0 4px}
+.complist label{margin:3px 0;cursor:help}
+.actions.compact{margin:4px 0 6px}
+.actions.compact button{font-size:11.5px;padding:6px 10px}
+.factor.off{opacity:.45}
+.factor.off em{font-style:normal;font-size:10px}
+
+/* ═══════════════════════════════════════════════════ Aktienradar v3.0.7 ═══ */
+.stockbadges{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.badge.warn{color:var(--yellow);border-color:color-mix(in srgb,var(--yellow) 60%,var(--line))}
+#stockCounts{display:block;margin-top:3px;cursor:help}
+
+.stockgroups{grid-template-columns:repeat(auto-fit,minmax(268px,1fr))}
+.stock-sector{padding:11px}
+
+/* Karte statt Zeile: Ticker, Firmenname, Kennzahlen, Klartext-Einschätzung. */
+.stockrow{
+  display:block;position:relative;padding:10px 11px;margin:6px 0;border-radius:10px;
+  border-left:4px solid var(--line2);background:#ffffff06;
+  transition:background .35s,border-color .35s,box-shadow .35s
+}
+.stockrow .sr-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.stockrow .sr-tic{font-size:19px;font-weight:800;letter-spacing:-.4px;line-height:1.1}
+.stockrow .sr-name{font-size:12px;color:var(--fg);opacity:.86;margin-top:1px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stockrow .sr-nums{margin-top:5px;font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-variant-numeric:tabular-nums;display:flex;gap:6px;align-items:baseline;cursor:help}
+.stockrow .sr-nums i{font-style:normal;color:var(--dim2)}
+.stockrow .sr-verdict{margin-top:4px;font-size:12px;font-weight:700;cursor:help}
+.stockrow .sr-px{margin-top:3px;font-size:11px;color:var(--dim);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.stockrow .conv{font-style:normal;opacity:.75}
+.stockrow .rowmute{opacity:.55}
+.stockrow .rowmute:hover{opacity:1}
+
+.stockrow.green{border-left-color:var(--green)}
+.stockrow.yellow{border-left-color:var(--yellow)}
+.stockrow.red{border-left-color:var(--red);opacity:.86}
+.stockrow.green.tone-1{background:color-mix(in srgb,var(--green) 7%,transparent)}
+.stockrow.green.tone-2{background:color-mix(in srgb,var(--green) 13%,transparent)}
+.stockrow.green.tone-3{background:color-mix(in srgb,var(--green) 21%,transparent)}
+.stockrow.yellow.tone-1{background:color-mix(in srgb,var(--yellow) 6%,transparent)}
+.stockrow.yellow.tone-2{background:color-mix(in srgb,var(--yellow) 11%,transparent)}
+.stockrow.yellow.tone-3{background:color-mix(in srgb,var(--yellow) 17%,transparent)}
+.stockrow.red.tone-1{background:color-mix(in srgb,var(--red) 4%,transparent)}
+.stockrow.red.tone-2{background:color-mix(in srgb,var(--red) 8%,transparent)}
+.stockrow.red.tone-3{background:color-mix(in srgb,var(--red) 12%,transparent)}
+/* v3.5.8 P0: Verdict-Farbe folgt der Kopf-Headline, nicht der Zeilenampel.
+   Hoehere Spezifitaet als .stockrow.<light> .sr-verdict, damit ein gruenes
+   Muster mit unwirtschaftlichem Plan nicht mehr gruen "Kauf" signalisiert. */
+.stockrow .sr-verdict.hl-green{color:var(--green)}
+.stockrow .sr-verdict.hl-yellow{color:var(--yellow)}
+.stockrow .sr-verdict.hl-red{color:var(--red)}
+.stockrow .sr-verdict.hl-muted{color:var(--dim)}
+.pk-verdict.muted{color:var(--dim)}
+.sf-title>strong.sf-verdict{cursor:help}
+.sf-title>strong.hl-green{color:var(--green)}
+.sf-title>strong.hl-yellow{color:var(--yellow)}
+.sf-title>strong.hl-red{color:var(--red)}
+.sf-title>strong.hl-muted{color:var(--dim)}
+.stockfocus-card.muted{border-color:var(--line2)}
+.stockrow.green .sr-verdict{color:var(--green)}
+.stockrow.yellow .sr-verdict{color:var(--yellow)}
+.stockrow.red .sr-verdict{color:var(--red)}
+.stockrow.buy{border-color:var(--green)}
+
+/* Detailfläche beim Mouseover — Tooltips darin sind bewusst bedienbar. */
+.stockpeek{
+  display:none;position:absolute;z-index:90;left:8px;top:calc(100% - 6px);
+  width:min(520px,84vw);padding:13px 15px;background:var(--panel);
+  border:1px solid var(--line2);border-radius:13px;box-shadow:0 22px 52px #0006;
+  color:var(--fg);font-size:11.5px;line-height:1.5;pointer-events:auto
+}
+.stockrow.peek-open .stockpeek{display:block}
+/* v3.0.7: kein sofortiges focus-within; Detail nur nach 2,3 s ruhigem Hover */
+.stockrow.peek-open{z-index:70}
+.stockpeek header{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;
+  padding-bottom:8px;margin-bottom:9px;border-bottom:1px solid var(--line)}
+.stockpeek header b{font-size:14px}
+.pk-tic{font-size:10.5px;color:var(--dim);font-family:ui-monospace,monospace;cursor:help}
+.pk-verdict{margin-left:auto;font-size:11.5px;font-weight:700}
+.pk-verdict.green{color:var(--green)}.pk-verdict.yellow{color:var(--yellow)}.pk-verdict.red{color:var(--red)}
+.pkgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px}
+.pk{background:#ffffff08;border-radius:8px;padding:6px 8px;cursor:help;min-width:0}
+.pk span{display:block;font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+.pk b{font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-variant-numeric:tabular-nums;display:block;margin-top:2px;overflow-wrap:anywhere}
+.stockpeek footer{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);
+  font-size:10px;color:var(--dim2)}
+@media(hover:none){.stockpeek{display:none!important}}
+
+/* ══════════════════════════════════ Light Mode überarbeitet (v3.0.7) ═══ */
+/* Kein Reinweiß mehr: gedämpftes Off-White als Fläche, kräftigere Signalfarben,
+   spürbar stärkere Farbfüllung der Zeilen, damit Grün/Gelb/Rot trennscharf sind. */
+:root[data-theme="light"]{
+  --bg:#e4e8ef; --panel:#f1f3f7; --panel2:#d9dfe9;
+  --line:#bcc5d4; --line2:#9aa6ba;
+  --fg:#131a27; --dim:#48566c; --dim2:#66748a;
+  --green:#046b45; --yellow:#7d5600; --red:#a81f2e; --accent:#2359b5;
+}
+:root[data-theme="warm"]{
+  --bg:#ded4c6; --panel:#f0e9de; --panel2:#d3c6b3;
+  --line:#b3a48f; --line2:#95836d; --fg:#26221c;
+  --dim:#5a5147; --dim2:#736a5d;
+  --green:#12683f; --yellow:#7a5500; --red:#a12c38; --accent:#3a5f8c;
+}
+:root[data-theme="light"] .focus.green{background:linear-gradient(150deg,#c6e2d5,var(--panel) 60%)}
+:root[data-theme="light"] .focus.yellow{background:linear-gradient(150deg,#ecdcb0,var(--panel) 60%)}
+:root[data-theme="light"] .focus.red{background:linear-gradient(150deg,#eed2d5,var(--panel) 60%)}
+:root[data-theme="warm"] .focus.red{background:linear-gradient(150deg,#e8cfcc,var(--panel) 60%)}
+:root[data-theme="light"] .row.red,:root[data-theme="warm"] .row.red{opacity:.9}
+
+/* Farbflächen im Hellmodus kräftiger: helle Untergründe schlucken Transparenz. */
+:root[data-theme="light"] .row.green.tone-1,:root[data-theme="warm"] .row.green.tone-1{background:color-mix(in srgb,var(--green) 11%,transparent)}
+:root[data-theme="light"] .row.green.tone-2,:root[data-theme="warm"] .row.green.tone-2{background:color-mix(in srgb,var(--green) 19%,transparent)}
+:root[data-theme="light"] .row.green.tone-3,:root[data-theme="warm"] .row.green.tone-3{background:color-mix(in srgb,var(--green) 28%,transparent)}
+:root[data-theme="light"] .row.yellow.tone-1,:root[data-theme="warm"] .row.yellow.tone-1{background:color-mix(in srgb,var(--yellow) 10%,transparent)}
+:root[data-theme="light"] .row.yellow.tone-2,:root[data-theme="warm"] .row.yellow.tone-2{background:color-mix(in srgb,var(--yellow) 17%,transparent)}
+:root[data-theme="light"] .row.yellow.tone-3,:root[data-theme="warm"] .row.yellow.tone-3{background:color-mix(in srgb,var(--yellow) 25%,transparent)}
+:root[data-theme="light"] .row.red.tone-1,:root[data-theme="warm"] .row.red.tone-1{background:color-mix(in srgb,var(--red) 7%,transparent)}
+:root[data-theme="light"] .row.red.tone-2,:root[data-theme="warm"] .row.red.tone-2{background:color-mix(in srgb,var(--red) 12%,transparent)}
+:root[data-theme="light"] .row.red.tone-3,:root[data-theme="warm"] .row.red.tone-3{background:color-mix(in srgb,var(--red) 17%,transparent)}
+:root[data-theme="light"] .stockrow,:root[data-theme="warm"] .stockrow{background:#00000005}
+:root[data-theme="light"] .stockrow.green.tone-2,:root[data-theme="warm"] .stockrow.green.tone-2{background:color-mix(in srgb,var(--green) 18%,transparent)}
+:root[data-theme="light"] .stockrow.green.tone-3,:root[data-theme="warm"] .stockrow.green.tone-3{background:color-mix(in srgb,var(--green) 26%,transparent)}
+:root[data-theme="light"] .stockrow.yellow.tone-2,:root[data-theme="warm"] .stockrow.yellow.tone-2{background:color-mix(in srgb,var(--yellow) 16%,transparent)}
+:root[data-theme="light"] .stockrow.yellow.tone-3,:root[data-theme="warm"] .stockrow.yellow.tone-3{background:color-mix(in srgb,var(--yellow) 24%,transparent)}
+:root[data-theme="light"] .pk,:root[data-theme="warm"] .pk{background:#00000008}
+:root[data-theme="light"] .fgrid>div,:root[data-theme="warm"] .fgrid>div{background:#00000009}
+:root[data-theme="light"] .stockpeek,:root[data-theme="warm"] .stockpeek{box-shadow:0 22px 52px #0000002e}
+:root[data-theme="light"] .spk,:root[data-theme="warm"] .spk{color:#0000004d}
+:root[data-theme="light"] .zb,:root[data-theme="warm"] .zb{background:#00000010}
+:root[data-theme="light"] .zb-px,:root[data-theme="warm"] .zb-px{background:#0e1420;box-shadow:0 0 6px #0e142066}
+:root[data-theme="light"] .lpx::before,:root[data-theme="warm"] .lpx::before{border-left-color:#0e1420}
+:root[data-theme="light"] .lpx span,:root[data-theme="warm"] .lpx span{background:#0e1420;color:#fff}
+:root[data-theme="light"] .lpx.inzone span,:root[data-theme="warm"] .lpx.inzone span{background:var(--green);color:#fff}
+:root[data-theme="light"] #map .q-liquide circle,:root[data-theme="warm"] #map .q-liquide circle{fill:#7d8ba1}
+:root[data-theme="light"] #map .dot.sel circle,:root[data-theme="warm"] #map .dot.sel circle{stroke:#0e1420;fill:#0e1420}
+:root[data-theme="light"] #map .dot.sel text,:root[data-theme="warm"] #map .dot.sel text{fill:var(--fg)}
+:root[data-theme="light"] .maplegend .q-liquide,:root[data-theme="warm"] .maplegend .q-liquide{background:#7d8ba1}
+
+/* ═════════════════════════════════════════════════════════ Responsive ═══ */
+@media(max-width:680px){
+  .sysbar{font-size:9.5px;gap:5px}
+  .stockgroups{grid-template-columns:1fr}
+  .stockrow .sr-tic{font-size:17px}
+  .complist{grid-template-columns:1fr}
+  .updatebar{font-size:11.5px;padding:8px 10px}
+}
+
+
+/* v3.0.7 — 120-Minuten-Verlauf, gemeinsame Suche, Aktienfokus */
+.histband{display:inline-flex;gap:2px;vertical-align:middle;margin:3px 4px 0 0}.histband .hb{width:13px;height:5px;border-radius:2px;background:var(--line2);display:block}.histband .hb.green{background:var(--green)}.histband .hb.yellow{background:var(--yellow)}.histband .hb.red{background:var(--red)}.trendarr{font-size:11px;font-weight:900;color:var(--fg)}
+.insightbar{display:grid;grid-template-columns:1fr .55fr 1.45fr;gap:8px;margin:8px 0 10px}.insightbar>div{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:7px 9px;min-width:0}.insightbar span{display:block;color:var(--dim);font-size:9px;text-transform:uppercase;letter-spacing:.45px;margin-bottom:3px}.insightbar b{font-size:11px;line-height:1.25}.insightbar .histband .hb{width:16px;height:6px}
+.stockfocus{margin:10px 0 14px}.stockfocus-card{border:1px solid var(--line);border-radius:14px;background:var(--panel2);padding:13px;box-shadow:0 8px 24px #0002}.stockfocus-card.green{border-color:color-mix(in srgb,var(--green) 55%,var(--line))}.stockfocus-card.buy{box-shadow:0 0 0 1px var(--green),0 8px 30px #0003}.sf-title{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.sf-title small{color:var(--dim);letter-spacing:.7px}.sf-title h3{font-size:20px;margin:3px 0}.sf-title h3 b{font-family:ui-monospace,monospace;color:var(--dim)}.sf-title>strong{font-size:12px;white-space:nowrap}.sf-grid{display:grid;grid-template-columns:repeat(3,minmax(130px,1fr));gap:7px;margin:10px 0}.sf-grid span{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px;font-size:9px;color:var(--dim)}.sf-grid b{display:block;color:var(--fg);font-size:12px;margin-top:2px}.stockfocus-empty{padding:12px;border:1px dashed var(--line2);border-radius:10px;color:var(--dim)}
+.fwarn{line-height:1.35}.fwarn span{text-decoration:underline dotted;cursor:help}
+@media(max-width:760px){.insightbar{grid-template-columns:1fr 1fr}.insightbar>div:last-child{grid-column:1/-1}.sf-grid{grid-template-columns:repeat(2,minmax(120px,1fr))}.sf-title{flex-direction:column}.histband .hb{width:10px}}
+
+
+/* ═════════════════════════════════════════════════ v3.0.7 Suche + Favoriten ═══ */
+.searchgo{min-width:38px;padding:7px 9px;font-size:14px}
+.favbtn{border:0;background:transparent;color:var(--dim);padding:2px 4px;min-width:22px;font-size:17px;line-height:1;cursor:pointer}
+.favbtn:hover,.favbtn.on{color:var(--yellow);transform:scale(1.06)}
+.c-sym{display:flex;align-items:center;gap:3px}.c-sym .favbtn{margin-left:-3px}
+.stockrow .sr-head{justify-content:flex-start}.stockrow .sr-head .rowmute{margin-left:auto}
+@media(max-width:680px){nav input#q{max-width:none}.searchgo{min-width:34px}}
+
+/* ===== v3.0.7: Suche, Depot/Favoriten, klickbare Aktien-Heatmap, Opening Momentum ===== */
+.coinbar,.stocktools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.stocktools{margin:10px 0}.stocktools input{flex:1;min-width:220px}
+.depotstrip{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 10px;margin:8px 0;border:1px solid var(--line);border-radius:10px;background:var(--panel2);font-size:11px;color:var(--dim)}
+.depotstrip>b{color:var(--fg)}.depotchip{border:1px solid var(--line2);background:var(--panel);color:var(--fg);border-radius:999px;padding:4px 8px;font:700 10px ui-monospace,monospace;cursor:pointer}.depotchip:hover{border-color:var(--yellow)}
+.openingpanel{margin:8px 0 12px;padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}
+.ophead{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}.ophead>b{font-size:13px}.ophead>span{color:var(--yellow);font-size:11px}.ophead>small{margin-left:auto;color:var(--dim)}
+.opgrid{display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:6px}.opcard{padding:7px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:inherit;font:inherit;text-align:left;display:grid;gap:2px;font-size:9px;cursor:pointer}.opcard b{font:800 12px ui-monospace,monospace}.opcard em{font-style:normal;color:var(--dim)}.opcard.green{border-color:color-mix(in srgb,var(--green) 55%,var(--line))}.opcard.yellow{border-color:color-mix(in srgb,var(--yellow) 55%,var(--line))}
+.stockstage{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(260px,.8fr);gap:12px;align-items:stretch}.stockmapwrap{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:8px;min-height:245px}.stockmapwrap svg{display:block;width:100%;height:215px;border-radius:9px;overflow:hidden}.stockmapwrap .stockbg{fill:var(--panel)}.stockmapwrap .quad{opacity:.55}.stockmapwrap .qa{fill:#13cf8b1c}.stockmapwrap .qb{fill:#f2c0150f}.stockmapwrap .qc{fill:#5b8cff0d}.stockmapwrap .ax{stroke:var(--line2);stroke-width:1;stroke-dasharray:3 3}.stockmapwrap .dot{cursor:pointer}.stockmapwrap .dot .hit{fill:transparent;stroke:none}.stockmapwrap .dot text{font-size:6px;text-anchor:middle;pointer-events:none;fill:#fff;font-weight:850;paint-order:stroke;stroke:#08101a;stroke-width:1.1px}.stockmapwrap .dot .core{fill:var(--dim2);stroke:#0a0f18;stroke-width:1.8;paint-order:stroke}.stockmapwrap .light-green .core{fill:var(--green)}.stockmapwrap .light-yellow .core{fill:var(--yellow)}.stockmapwrap .light-red .core{fill:#52647d}.stockmapwrap .stocktrail{fill:none;stroke:var(--dim2);stroke-width:1.3;stroke-linecap:round;stroke-linejoin:round;opacity:.3}.stockmapwrap .stocktrail.green{stroke:var(--green);opacity:.48}.stockmapwrap .stocktrail.yellow{stroke:var(--yellow);opacity:.42}.stockmapwrap .dot.buy-ready .core{animation:mapbuy 1.25s ease-in-out infinite}
+.sr-px small{display:block;color:var(--dim);font-size:9px;margin-top:2px}
+@media(max-width:900px){.stockstage{grid-template-columns:1fr}.opgrid{grid-template-columns:repeat(2,minmax(120px,1fr))}.stockmapwrap{min-height:220px}.stockmapwrap svg{height:190px}}
+
+/* v3.0.7: klare Handlungs-/Historienanzeige */
+.potential-size{color:var(--yellow)}.no-trade-size{color:var(--dim)}.action-size{color:var(--green)}
+.sf-history{display:flex;align-items:center;gap:8px;margin:8px 0;padding:7px 9px;background:var(--panel2);border:1px solid var(--line);border-radius:9px}.sf-history>span{font-size:9px;text-transform:uppercase;letter-spacing:.4px;color:var(--dim)}.sf-history .histband .hb{width:18px;height:7px}
+.sr-hist{margin-top:5px}.sr-hist .histband .hb{width:12px;height:5px}
+.histband .hb.none{background:transparent;border:1px solid var(--line2);box-sizing:border-box}
+
+/* v3.0.7 — Experimental Lab + Crowd/Search Tachometer */
+.experimental-grid{display:grid;grid-template-columns:minmax(0,2.2fr) minmax(230px,1fr);gap:10px;margin:8px 0 12px}
+.experimental-panel,.experimental-note{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:10px}
+.experimental-note{display:flex;flex-direction:column;gap:6px;color:var(--dim);font-size:11px}.experimental-note b{color:var(--fg);font-size:13px}
+.exp-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}.exp-head small{color:var(--dim)}
+.exp-cards{display:grid;grid-template-columns:repeat(5,minmax(105px,1fr));gap:7px}.exp-card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:8px;min-height:72px}.exp-card b{display:block;font-size:11px}.exp-stars{font-size:13px;letter-spacing:1px;margin:5px 0 3px}.exp-card small{color:var(--dim);display:block;font-size:9px;line-height:1.25}.exp-na{opacity:.55}
+.crowd-wrap{display:flex;align-items:center;gap:7px;margin-top:5px}.crowd-gauge{--v:0;position:relative;width:58px;height:31px;overflow:hidden;flex:0 0 58px}.crowd-gauge:before{content:"";position:absolute;left:0;top:0;width:58px;height:58px;border-radius:50%;background:conic-gradient(from 270deg,#ef5a5a 0deg,#e8b93d 70deg,#3fcf8e 150deg,#1b2433 150deg 360deg);mask:radial-gradient(circle at 50% 50%,transparent 0 17px,#000 18px)}.crowd-needle{position:absolute;left:28px;bottom:0;width:2px;height:23px;background:var(--fg);transform-origin:50% 100%;transform:rotate(calc(-90deg + var(--v)*1.8deg));border-radius:2px}.crowd-gauge:after{content:"";position:absolute;left:24px;bottom:-4px;width:10px;height:10px;border-radius:50%;background:var(--fg)}.crowd-label{font-size:9px;color:var(--dim);line-height:1.15}.crowd-label b{display:block;color:var(--fg);font-size:11px}.crowd-na .crowd-gauge{opacity:.3}.crowd-na .crowd-needle{display:none}
+.stockrow .crowd-wrap{margin-top:6px}.stockrow .crowd-gauge{transform:scale(.82);transform-origin:left center;margin-right:-8px}.sf-crowd{grid-column:auto}
+@media(max-width:900px){.experimental-grid{grid-template-columns:1fr}.exp-cards{grid-template-columns:repeat(2,minmax(110px,1fr))}}
+/* v3.0.7 — Early Edge + Historical Twin */
+.edge-strip{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}.edge-strip span{font-size:9px!important;color:var(--dim);background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:4px 7px!important;cursor:help}.sf-grid+.sf-history{margin-top:5px}.stockfocus-card>.edge-strip{margin:7px 0}.stockrow>.edge-strip{opacity:.9}
+
+/* ========================= FusionPulse 3.0 · Tablet UX / D1 status ===== */
+.viewbar{position:sticky;top:58px;z-index:18;display:flex;gap:8px;padding:7px 12px;background:color-mix(in srgb,var(--bg,#080b14) 91%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid rgba(255,255,255,.06)}
+.viewbar button{min-width:90px;padding:7px 12px;border-radius:999px;font-weight:700}
+#learningState[data-state="ok"]{border-color:rgba(72,210,130,.5)}
+#learningState[data-state="warn"]{border-color:rgba(242,188,67,.55)}
+#learningState[data-state="busy"]{opacity:.8}
+@media (max-width:900px){
+  .viewbar{justify-content:center}   /* v3.12.0: Versatz kommt aus --fp-head-h */
+  .viewbar button{flex:1;max-width:190px}
+  .stockbadges{display:grid!important;grid-template-columns:1fr;gap:5px}
+  .stockstage{grid-template-columns:1fr!important}
+  .stockmapwrap{min-height:300px}
+  .experimental-grid{grid-template-columns:1fr!important}
+}
+
+
+/* v3.0.4 — Aktien-Fokus: rechte Preisskala mit Aktuell / SL / TP1 / TP2 */
+.stockfocus-card{display:grid;grid-template-columns:minmax(0,1fr) 142px;gap:14px;align-items:stretch}
+.sf-focus-main{min-width:0;display:flex;flex-direction:column}
+.stock-ladder{position:relative;min-height:250px;border-left:2px solid var(--line2);margin-left:3px;padding-left:8px}
+.slv,.sl-price{position:absolute;left:-6px;right:0;transform:translateY(-50%);display:flex;align-items:center;gap:5px;white-space:nowrap;font-size:9px}
+.slv:before{content:"";width:10px;height:2px;background:currentColor;flex:0 0 auto}
+.slv span,.sl-price span{font-size:8px;text-transform:uppercase;letter-spacing:.35px;color:var(--dim)}
+.slv b,.sl-price b{margin-left:auto;font:800 10px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg);font-variant-numeric:tabular-nums}
+.slv.tp2{color:var(--green)}.slv.tp1{color:#7fd6ff}.slv.entry{color:var(--accent)}.slv.stop{color:var(--red)}
+.sl-price{z-index:3;left:-8px;color:#fff}.sl-price:before{content:"";width:0;height:0;border:5px solid transparent;border-left-color:#fff;flex:0 0 auto}
+.sl-price span,.sl-price b{background:#fff;color:#071019;padding:2px 4px}.sl-price span{border-radius:4px 0 0 4px}.sl-price b{border-radius:0 4px 4px 0;margin-left:-5px}
+.stock-ladder-na{display:flex;flex-direction:column;justify-content:center;gap:4px;color:var(--dim);font-size:10px}.stock-ladder-na small{font-weight:800;color:var(--fg)}
+@media(max-width:760px){.stockfocus-card{grid-template-columns:minmax(0,1fr) 118px;gap:10px}.stock-ladder{min-height:290px}.slv b,.sl-price b{font-size:9px}.slv span,.sl-price span{font-size:7.5px}}
+@media(max-width:520px){.stockfocus-card{grid-template-columns:1fr}.stock-ladder{min-height:210px;margin:8px 2px 0 8px}}
+
+/* v3.0.7: Countdown eindeutig beschriftet */
+.hclock small{display:block;font-size:9px;line-height:1.05;opacity:.65;white-space:nowrap}
+
+.stock-interpret{margin-top:10px;padding:10px 12px;border:1px solid currentColor;border-radius:9px;display:grid;gap:4px;opacity:.92}.stock-interpret span{line-height:1.35}.stock-interpret small{opacity:.7}
+
+.stock-updated{display:block;opacity:.66;font-size:10px;margin-top:3px}.crowd-confirm{margin-left:4px}.crowd-confirm .crowd-gauge{filter:saturate(.85)}
+
+/* v3.0.11 signal origin + compact favourites */
+.signal-banner{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;gap:7px;align-items:center;padding:7px max(10px,env(safe-area-inset-right)) calc(7px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));background:color-mix(in srgb,var(--panel) 96%,transparent);border-top:1px solid var(--line);box-shadow:0 -7px 24px #0005;overflow-x:auto;backdrop-filter:blur(12px)}
+.signal-banner.hidden{display:flex !important}.signal-content{display:flex;gap:7px;align-items:center;min-width:0;overflow-x:auto;flex:1}.analysis-method-dock{margin-left:auto;flex:0 1 58%;min-width:260px;display:flex;align-items:center;gap:7px;padding:5px 8px;border:1px solid var(--line2);border-radius:9px;background:var(--panel2);white-space:nowrap;overflow:hidden}.analysis-method-dock b{font-size:9px;color:var(--accent);letter-spacing:.7px}.analysis-method-dock span{font-size:9px;color:var(--fg);overflow:hidden;text-overflow:ellipsis}.signal-chip{flex:0 0 auto;border:1px solid var(--line);border-radius:9px;padding:5px 9px;background:var(--panel2);color:var(--fg);text-align:left;animation:signalFlash 1.1s ease-in-out 2}.signal-chip b{display:block;font-size:11px}.signal-chip span{font-size:9px;color:var(--dim)}
+@keyframes signalFlash{50%{box-shadow:0 0 0 2px #fff9,0 0 18px #fff7;background:color-mix(in srgb,var(--panel2) 55%,white)}}
+.row.signal-hot,.stockrow.signal-hot{position:relative}.row.signal-hot:after,.stockrow.signal-hot:after{content:"";position:absolute;right:0;top:4px;bottom:4px;width:4px;border-radius:4px;background:#fff;box-shadow:0 0 10px #fff,0 0 18px #fff8;animation:signalStrip 1.2s ease-in-out 3}
+@keyframes signalStrip{50%{opacity:.25}}
+.flat-favorites{grid-column:1/-1}.flat-favorites .stockrow{max-width:none}
+.stockrow .sr-name{display:flex;flex-direction:column}.stockrow .sr-name b{font-size:12px}.stockrow .sr-name small{font-size:10px}
+
+/* v3.1.0 reorder + permanent signal info */
+/* v3.14.0 · DERSELBE FEHLER WIE OBEN, UNTEN UEBERSEHEN.
+   Hier standen feste 108 px fuer die Hoehe der unteren Signalleiste. Die Leiste
+   ist aber `position:fixed` und ihre Hoehe variiert mit Inhalt und Umbruch —
+   bei einem aktiven Plan traegt sie zwei Zeilen. War sie hoeher als 108 px,
+   liess sich das Seitenende nicht mehr freischeiben: der untere Teil der
+   Fokuskarte blieb dauerhaft verdeckt, auch am Ende des Scrollbereichs.
+   Genau das war die Meldung „passt immer noch nicht beim Scrollen".
+   Ich hatte in v3.12.0 den Kopf gemessen und den Fuss uebersehen. */
+/* v3.14.4: Das padding bleibt (korrektes Boxmodell), ist aber nicht mehr der
+   TRAGENDE Mechanismus. Ein echtes Element im Fluss erzeugt Scrollflaeche ohne
+   jede Bedingung — unabhaengig von height/min-height, Ueberlauf oder
+   Stapelkontext. Dieselbe Ueberlegung wie beim Wechsel sticky -> fixed in
+   v3.14.0: die deterministische Loesung schlaegt die bedingte. */
+.foot-spacer{display:block;width:100%;flex:none;height:calc(var(--fp-foot-h) + 14px)}
+body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;align-items:center;gap:9px;white-space:nowrap;font-size:10px;color:var(--dim)}.signal-idle b{color:var(--fg);font-size:11px}.draghandle{border:0;background:transparent;color:var(--dim);cursor:grab;padding:0 2px;font-size:15px;touch-action:none}.draghandle:active{cursor:grabbing}.stockrow.dragging,.depotchip.dragging{opacity:.5;outline:1px dashed var(--dim2)}.depotchip{touch-action:none}.depotchip .dragmark{margin-right:4px;color:var(--dim);font-size:10px}
+
+/* v3.1.0 VL: Intraday charts in large stock/coin views */
+.intraday-chart{margin:10px 0;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);min-width:0}
+.intraday-chart>span{display:block;font-size:9px;color:var(--dim);margin-bottom:5px;text-transform:uppercase;letter-spacing:.5px}
+.intraday-chart .spk{display:block;width:100%;height:76px;color:var(--accent)}
+.coin-intraday .spk{height:92px}
+.stockrow{cursor:pointer}.stockrow button{cursor:pointer}
+
+/* v3.1.0 VL scan provenance */
+.stock-updated.fresh-live{color:var(--green);font-weight:700}.stock-updated.fresh-cached{color:var(--dim)}.stock-updated.fresh-stale{color:var(--yellow);font-weight:700}.stock-updated.fresh-na{color:var(--dim2)}
+
+.opportunity-watch{display:flex;gap:8px;align-items:center;margin:8px 0;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}.opportunity-watch b{font-size:11px}.opportunity-watch span{font-size:10px;color:var(--dim)}.opportunity-watch.ready{border-color:color-mix(in srgb,var(--green) 55%,var(--line))}
+
+.zone-label{display:block;margin-top:2px;font-size:8px;line-height:1;letter-spacing:.04em;color:var(--dim2);text-align:center;white-space:nowrap}.zone-label.in{color:var(--green);font-weight:800}.zone-label.below{color:var(--yellow)}.zone-label.above{color:var(--dim)}
+
+/* v3.1.5 header/status, permanent banner and regime explanation */
+.hcenter-tools{display:flex;align-items:center;gap:8px;margin-left:auto}
+.mini-status{display:flex;align-items:center;gap:5px;padding:4px 7px;border:1px solid var(--line);border-radius:999px;background:var(--panel)}
+.mini-dot{font:800 10px ui-monospace,monospace;line-height:1;color:var(--dim2)}
+.mini-dot.ok{color:var(--green)}.mini-dot.warn{color:var(--yellow)}.mini-dot.err{color:var(--red)}.mini-dot.busy{color:var(--dim2);opacity:.75}
+.regime-btn{display:block;padding:0;border:0;background:transparent;border-radius:0;text-align:left;font-size:12.5px;font-weight:700;letter-spacing:.2px;color:var(--fg)}
+.regime-btn.riskon{color:var(--green)}.regime-btn.riskoff{color:var(--red)}.regime-btn.neutral{color:var(--dim)}
+.hstat{position:relative}.regime-explain{position:absolute;left:0;top:24px;z-index:75;width:min(420px,82vw);padding:10px 12px;border:1px solid var(--line2);border-radius:10px;background:var(--panel2);box-shadow:0 12px 30px #0009;color:var(--fg);font-size:11px;line-height:1.35}
+.regime-explain b{display:inline;font-size:11px}.regime-explain small{display:block;margin-top:5px;color:var(--dim)}
+.signal-banner{min-height:52px;visibility:visible!important;opacity:1!important}
+.tiingo-testbox{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
+.tiingo-testbox div{display:grid;gap:3px}.tiingo-testbox small{color:var(--dim);line-height:1.3}.tiingo-testbox small.ok{color:var(--green)}.tiingo-testbox small.warn{color:var(--yellow)}.tiingo-testbox small.err{color:var(--red)}
+@media(max-width:760px){.hcenter-tools{order:2;margin-left:0}.mini-status{padding:4px 6px}.regime-explain{top:27px}.tiingo-testbox{align-items:flex-start;flex-direction:column}}
+
+/* v3.1.6: schnelle Tooltips für Kopfzeile (ca. 220 ms statt Browser-title-Verzögerung) */
+.fast-tip{position:relative}
+.fast-tip::after{content:attr(data-tip);position:absolute;left:50%;top:calc(100% + 7px);transform:translateX(-50%) translateY(-2px);z-index:180;max-width:min(360px,82vw);width:max-content;padding:7px 9px;border:1px solid var(--line2);border-radius:8px;background:var(--panel2);box-shadow:0 8px 24px #0009;color:var(--fg);font:500 10.5px/1.3 system-ui,sans-serif;letter-spacing:0;white-space:normal;pointer-events:none;opacity:0;visibility:hidden;transition:opacity .08s ease .22s,transform .08s ease .22s,visibility 0s linear .30s}
+.fast-tip:hover::after,.fast-tip:focus-visible::after{opacity:1;visibility:visible;transform:translateX(-50%) translateY(0);transition-delay:.22s,.22s,0s}
+.regime-btn.fast-tip::after{left:0;transform:translateY(-2px);text-align:left}
+.regime-btn.fast-tip:hover::after,.regime-btn.fast-tip:focus-visible::after{transform:translateY(0)}
+.hclock.fast-tip::after{right:0;left:auto;transform:translateY(-2px);text-align:left}
+.hclock.fast-tip:hover::after,.hclock.fast-tip:focus-visible::after{transform:translateY(0)}
+@media(max-width:760px){.fast-tip::after{display:none}}
+
+/* v3.3.0 — permanent header + resource/learning transparency
+   v3.12.0 · UMBAU: Hier standen feste Pixelwerte (62 px, an anderer Stelle
+   104 px), die die Hoehe der Kopfzeile RATEN mussten. Drei Fehler folgten daraus:
+     1. `body{padding-top:62px}` deckte nur die Kopfzeile ab, nicht die 44 px
+        hohe Reiterleiste darunter — der Inhalt begann zu weit oben und schob
+        sich beim Scrollen unter die Leiste. Das Coin-Fokusfenster ist das erste
+        Element darunter und stiess deshalb als Erstes an.
+     2. Sobald die Kopfzeile umbrach (sie ist `flex-wrap`), stimmte kein einziger
+        der festen Werte mehr.
+     3. Sprungziele landeten hinter der Leiste, die man gerade angeklickt hatte.
+   Jetzt wird die tatsaechliche Hoehe zur Laufzeit gemessen und in --fp-head-h /
+   --fp-nav-h geschrieben (siehe measureChrome() in app.js). Die Werte hier sind
+   nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
+/* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
+   nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
+:root{--fp-css-version:"3.18.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+body{padding-top:var(--fp-chrome-h)}
+body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
+/* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
+   Sticky hat mehrere stille Ausfallgruende (Elternbox, overflow, Stapelkontext),
+   die man einem Screenshot nicht ansieht. Da die Kopfzeile ohnehin `fixed` ist
+   und ihre Hoehe seit v3.12.0 gemessen wird, ist `fixed` hier die deterministische
+   Loesung: die Leiste haengt immer exakt unter dem Kopf, ohne Bedingungen. */
+.viewbar{position:fixed!important;top:var(--fp-head-h)!important;left:0;right:0;z-index:210}
+/* Jedes Sprungziel muss unter der Leiste hervorkommen, nicht dahinter. */
+[id],.stage,.stockstage{scroll-margin-top:calc(var(--fp-chrome-h) + 10px)}
+.resource-strip{display:flex;flex-direction:column;min-width:122px;max-width:190px;padding:4px 7px;border:1px solid var(--line);border-radius:8px;background:var(--panel);font-size:9px;line-height:1.2}
+.resource-strip b{font-size:9px!important}.resource-strip span{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.resource-strip.err{border-color:color-mix(in srgb,var(--red) 80%,var(--line))}
+.learning-report{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:10px;min-height:90px}
+.learning-report .lr-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:7px}
+.learning-report .lr-grid span{padding:6px;border:1px solid var(--line);border-radius:8px;font-size:9px;color:var(--dim)}
+.learning-report .lr-grid b{display:block;color:var(--fg);font-size:12px}
+.learning-report small{color:var(--dim)}
+@media(max-width:760px){.resource-strip{order:8;min-width:100%;max-width:none}.learning-report .lr-grid{grid-template-columns:repeat(2,1fr)}}   /* v3.12.0: die festen 104 px sind entfallen — gemessen statt geraten */
+.company-name{display:block!important;font-size:11px!important;color:var(--fg)!important;margin-top:1px}.company-focus,.company-exchange{display:block;font-size:9px;color:var(--dim);max-width:620px;line-height:1.25;margin-top:2px}
+
+/* v3.3.1 — Stabilisierung: verständliche Funktionalitätsampel, Suche, Signal-Herkunft */
+.mini-status{gap:6px;border-radius:10px;flex-wrap:wrap}
+.mini-dot{display:inline-flex;align-items:center;gap:4px;font:700 9px/1.1 system-ui,sans-serif;color:var(--dim)}
+.mini-dot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--dim2);box-shadow:0 0 0 1px #0005}
+.mini-dot.ok::before{background:var(--green)}.mini-dot.warn::before{background:var(--yellow)}.mini-dot.err::before{background:var(--red)}.mini-dot.busy::before{background:var(--dim2)}
+.mini-dot.ok,.mini-dot.warn,.mini-dot.err,.mini-dot.busy{color:var(--fg)}
+/* v3.14.6 · DIE AMPEL WAR KEINE AMPEL MEHR.
+   Vier Zustaende, aber nur zwei davon hatten eine Textfarbe: `orange` und `err`.
+   `ok` und `warn` faerbten ausschliesslich den 1px-Rahmen, und zwar mit 47 %
+   Deckkraft (#f2c01577). Neben der uebrigen Kopfzeile ist das praktisch
+   unsichtbar — der Zustand war zwar korrekt berechnet, aber nicht ablesbar.
+   Dazu kam: die Leiste hatte als einziges Statuselement im Kopf keinen Punkt,
+   waehrend Krypto/Aktien/Tiingo/Cloudflare daneben welche haben.
+   Jetzt traegt jeder Zustand einen echten Punkt in der Zustandsfarbe, einen
+   deutlich sichtbaren Rahmen und eine passende Textfarbe. Die Bewertung selbst
+   ist UNVERAENDERT — es aendert sich nur, ob man sie sieht. */
+.resource-strip b::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;
+  margin-right:5px;vertical-align:baseline;background:var(--dim2);box-shadow:0 0 0 1px #0006}
+.resource-strip.ok b::before{background:var(--green)}
+.resource-strip.warn b::before{background:var(--yellow)}
+.resource-strip.orange b::before{background:#ff8a3d}
+.resource-strip.err b::before{background:var(--red)}
+.resource-strip.ok{border-color:color-mix(in srgb,var(--green) 75%,var(--line));background:color-mix(in srgb,var(--green) 7%,var(--panel))}
+.resource-strip.ok span{color:#8fe4c2}
+.resource-strip.warn{border-color:color-mix(in srgb,var(--yellow) 75%,var(--line));background:color-mix(in srgb,var(--yellow) 7%,var(--panel))}
+.resource-strip.warn span{color:#f2d98a}
+.resource-strip.orange{border-color:#ff8a3d;background:#ff8a3d12}.resource-strip.orange span{color:#ffc18f}
+.resource-strip.err{background:#ef5a5a14}.resource-strip.err span{color:#ff9c9c}
+.stock-search-wrap{position:relative;flex:1;min-width:240px}.stock-search-wrap input{width:100%;box-sizing:border-box;padding-right:34px!important;background:color-mix(in srgb,var(--panel2) 72%,#fff 8%)!important;border-color:color-mix(in srgb,var(--line2) 75%,#fff 18%)!important}.stock-search-wrap input:focus{border-color:var(--accent)!important;box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 20%,transparent)}
+.searchclear{position:absolute;right:6px;top:50%;transform:translateY(-50%);min-width:24px!important;width:24px;height:24px;padding:0!important;border:0!important;border-radius:50%;background:var(--line2)!important;color:var(--fg)!important;font-size:17px;line-height:1}.searchclear.hidden{display:none!important}
+.stock-search-preview{flex:1 1 100%;min-height:18px;font-size:10px;color:var(--dim)}.stock-search-preview:empty{display:none}.stock-search-preview button{padding:5px 8px;border:1px solid color-mix(in srgb,var(--green) 50%,var(--line));border-radius:8px;background:color-mix(in srgb,var(--green) 8%,var(--panel2));color:var(--fg);font-size:10px}
+.signal-item{display:inline-flex;align-items:stretch;flex:0 0 auto}.signal-item .signal-chip{border-radius:9px 0 0 9px}.signal-ack{min-width:30px;padding:4px 7px;border-left:0;border-radius:0 9px 9px 0;background:var(--panel2);color:var(--green);font-weight:900}.signal-ack:hover{background:color-mix(in srgb,var(--green) 12%,var(--panel2))}
+.opcard.move-up{border-color:color-mix(in srgb,var(--green) 55%,var(--line));background:color-mix(in srgb,var(--green) 7%,var(--panel))}.opcard.move-down{border-color:color-mix(in srgb,var(--red) 55%,var(--line));background:color-mix(in srgb,var(--red) 7%,var(--panel))}
+.gfinance{display:inline-flex;align-items:center;margin-left:7px;padding:3px 6px;border:1px solid var(--line2);border-radius:7px;background:var(--panel);color:var(--accent);font:700 9px/1.1 system-ui,sans-serif;text-decoration:none;vertical-align:middle}.gfinance:hover{border-color:var(--accent)}.gfinance.mini{margin-left:2px;padding:2px 5px;font-size:8px}.sr-head .gfinance.mini{margin-left:2px}.sr-head .rowmute{margin-left:auto}
+@media(max-width:760px){.mini-status{max-width:100%}.mini-dot{font-size:8px}.stock-search-wrap{min-width:100%}.stock-search-preview{order:9}.gfinance{font-size:8px}}
+
+/* v3.3.2 — Live-Aktiensuche + klar sichtbarer Whole-Market-Radar */
+.stock-search-preview{display:flex;flex-wrap:wrap;gap:6px;min-height:24px;margin-top:5px}
+.stock-search-preview button{border:1px solid #36527b;background:#14233b;color:#eaf2ff;border-radius:8px;padding:5px 8px;cursor:pointer;text-align:left}
+.stock-search-preview button:hover{background:#1b3152}
+.stock-search-preview small{opacity:.7;margin-left:4px}
+.search-looking{color:#9fb2d2}.search-notfound{color:#e0b35c}
+
+/* v3.3.2 UX-Ergaenzung: Richtung sofort lesbar + klarer Finance-Link */
+.opcard.move-up{background:color-mix(in srgb,var(--green) 11%,var(--panel));}
+.opcard.move-down{background:color-mix(in srgb,var(--red) 11%,var(--panel));}
+.trend-pct{font-weight:850}.trend-pct.up{color:var(--green)}.trend-pct.down{color:var(--red)}
+.gfinance.focus-link{margin-left:10px;padding:5px 9px;font-size:10px;border-color:color-mix(in srgb,var(--accent) 60%,var(--line2));background:color-mix(in srgb,var(--accent) 10%,var(--panel));white-space:nowrap}
+.gfinance.focus-link:hover{background:color-mix(in srgb,var(--accent) 18%,var(--panel))}
+
+/* v3.3.3 Health-Ampel: Grau blinkt nur waehrend laufender/noch nicht verifizierter Pruefung. */
+@keyframes fp-status-check{0%,100%{opacity:.38}50%{opacity:1}}
+.mini-dot.busy::before{animation:fp-status-check 1.05s ease-in-out infinite}
+
+/* v3.3.7 selected-stock live/freshness bar */
+.focus-livebar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0 8px;padding:6px 8px;border-radius:8px;font-size:11px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.035)}
+.focus-livebar.live{border-color:rgba(36,211,138,.55);background:rgba(36,211,138,.09)}
+.focus-livebar.stale{border-color:rgba(255,190,61,.55);background:rgba(255,190,61,.09)}
+.focus-livebar b{letter-spacing:.04em}.focus-livebar.live b{color:#55e6a8}.focus-livebar.stale b{color:#ffd05a}
+.sf-grid span small{display:block;opacity:.72;font-size:9px;margin-top:2px}
+
+/* v3.3.8: discovery click must show a focus target immediately */
+.stockfocus-loading{display:flex;flex-direction:column;gap:8px;min-height:150px;padding:18px}.stockfocus-loading h3{margin:0;font-size:1.55rem}.stockfocus-loading span{color:var(--muted,#93a4bd);max-width:720px}
+
+/* v3.4.0: Fokusziel bleibt unter Sticky Header + Viewbar vollständig sichtbar. */
+.stockfocus{scroll-margin-top:118px}
+.focus-livebar button{margin-left:auto;padding:3px 7px;border-radius:7px;font-size:9px}
+
+/* v3.4.2 — permanente kompakte Anzeige der aktiven Analyseverfahren */
+.analysis-footer{margin:14px 0 76px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);color:var(--dim);font-size:10px;line-height:1.45;display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.analysis-footer b{color:var(--fg)}.analysis-footer small{margin-left:auto;color:var(--dim2)}
+@media(max-width:760px){.analysis-footer small{width:100%;margin-left:0}}
+
+@media(max-width:900px){.analysis-method-dock{flex-basis:48%;min-width:210px}.analysis-method-dock span{max-width:45vw}}
+@media(max-width:620px){.signal-banner{align-items:flex-start;flex-wrap:wrap}.analysis-method-dock{order:-1;width:100%;flex-basis:100%;min-width:0}.analysis-method-dock span{max-width:none}}
+
+/* v3.4.3 category freshness + situation labels */
+.freshness-chip{display:inline-flex;align-items:center;gap:4px;margin-left:auto;padding:3px 7px;border:1px solid var(--line2);border-radius:999px;font-size:9px;font-weight:800;white-space:nowrap}
+.freshness-chip.green{color:var(--green);border-color:color-mix(in srgb,var(--green) 55%,var(--line));background:color-mix(in srgb,var(--green) 10%,var(--panel2))}
+.freshness-chip.yellow{color:var(--yellow);border-color:color-mix(in srgb,var(--yellow) 55%,var(--line));background:color-mix(in srgb,var(--yellow) 10%,var(--panel2))}
+.freshness-chip.orange{color:#ff9d42;border-color:#ff9d4277;background:#ff9d4212}
+.freshness-chip.red{color:var(--red);border-color:color-mix(in srgb,var(--red) 60%,var(--line));background:color-mix(in srgb,var(--red) 11%,var(--panel2))}
+.situation-tag{display:inline-block;width:max-content;padding:2px 6px;border:1px solid var(--line2);border-radius:999px;font-size:8.5px;font-weight:800;letter-spacing:.03em;color:var(--accent);background:var(--panel2)}
+@media(max-width:760px){.freshness-chip{width:max-content;margin-left:0}}
+.analysis-inline{display:block;margin:5px 0 2px;padding:5px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel2);color:var(--dim);font-size:9px;line-height:1.35}.analysis-inline b{color:var(--accent)}
+
+/* Modul 0: Attribution & Overfitting-Guard */
+/* v3.9.1 · BEFUND: Die Aktions-Spalte (Wächter-Schalter) lag ausserhalb des
+   sichtbaren Bereichs. Ursache war NICHT ein zu schmales Layout, sondern die
+   Kombination aus `overflow-x:auto` und den macOS-Overlay-Scrollbalken: der
+   Scrollbereich existierte, war aber unsichtbar und damit nicht auffindbar.
+   Ein Schalter, den man nicht sieht, ist kein Schalter.
+   Drei Massnahmen, absichtlich zusammen:
+   1. Die Aktions-Spalte klebt rechts (`sticky`) und bleibt immer erreichbar.
+   2. Der Scrollbalken wird dauerhaft sichtbar gemacht, damit klar ist, dass
+      die Tabelle ueberhaupt seitlich laeuft.
+   3. Unter 900 px bricht die Tabelle in Karten um — auf dem 13-Zoll-MacBook
+      in der zweispaltigen Ansicht ist das der Regelfall, nicht der Sonderfall. */
+.attr-wrap{overflow-x:auto;margin:.5rem 0;scrollbar-width:thin}
+.attr-wrap::-webkit-scrollbar{height:9px}
+.attr-wrap::-webkit-scrollbar-thumb{background:var(--line,#3a3a3a);border-radius:5px}
+.attr-wrap::-webkit-scrollbar-track{background:transparent}
+.attr-table{width:100%;border-collapse:collapse;font-size:.82rem}
+.attr-table th,.attr-table td{text-align:left;padding:.3rem .5rem;border-bottom:1px solid var(--line,#2a2a2a)}
+.attr-table th.attr-action,.attr-table td.attr-action{position:sticky;right:0;z-index:2;background:var(--card,#161b22);box-shadow:-8px 0 8px -6px rgba(0,0,0,.55)}
+.attr-table tr.attr-overfit td.attr-action{background:#2a1a1c}
+.attr-table tr.attr-disable td.attr-action{background:#2a2118}
+.attr-table tr.attr-keep td.attr-action{background:#16241d}
+@media(max-width:900px){
+  .attr-wrap{overflow-x:visible}
+  .attr-table,.attr-table tbody,.attr-table tr,.attr-table td{display:block;width:100%}
+  .attr-table thead{position:absolute;left:-9999px}
+  .attr-table tr{border:1px solid var(--line,#2a2a2a);border-radius:8px;margin:0 0 .5rem;padding:.35rem .5rem}
+  .attr-table td{border-bottom:0;padding:.15rem 0;display:flex;justify-content:space-between;gap:.6rem;align-items:center}
+  .attr-table td::before{content:attr(data-lbl);opacity:.6;font-size:.9em;flex:0 0 auto}
+  .attr-table td.attr-action{position:static;box-shadow:none;background:transparent;margin-top:.3rem;border-top:1px solid var(--line,#2a2a2a);padding-top:.4rem}
+}
+.attr-table em{opacity:.65;font-style:normal;font-size:.9em}
+.attr-table tr.attr-overfit td{background:rgba(220,60,60,.12)}
+.attr-table tr.attr-disable td{background:rgba(230,140,50,.12)}
+.attr-table tr.attr-keep td{background:rgba(60,200,120,.10)}
+.attr-recs{margin-top:.5rem;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}
+.attr-recs span{background:rgba(230,140,50,.18);border-radius:.4rem;padding:.15rem .5rem;font-size:.8rem}
+.attr-recs small{flex-basis:100%;opacity:.7}
+
+/* Modul 1: Aladdin Market Recommendation */
+.aladdin-card{margin:0 0 1rem;padding:.9rem 1.1rem;border:1px solid var(--line,#2a2a2a);border-radius:.8rem;background:linear-gradient(180deg,rgba(80,120,220,.06),transparent)}
+.ala-head{display:flex;justify-content:space-between;align-items:baseline;gap:1rem;flex-wrap:wrap;margin-bottom:.6rem}
+.ala-head small{opacity:.65}
+.ala-regime{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin-bottom:.7rem}
+.ala-badge{font-weight:700;font-size:1.05rem;padding:.25rem .7rem;border-radius:.5rem}
+.ala-on .ala-badge{background:rgba(60,200,120,.18);color:#3ec878}
+.ala-off .ala-badge{background:rgba(220,70,70,.18);color:#e05555}
+.ala-neutral .ala-badge{background:rgba(180,180,180,.15)}
+.ala-conf{opacity:.7;font-size:.85rem}
+.ala-grid{display:grid;grid-template-columns:1fr 1fr;gap:.5rem .9rem;margin-bottom:.6rem}
+.ala-cell{display:flex;flex-direction:column;gap:.15rem}
+.ala-k{font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;opacity:.55}
+.ala-v{font-size:.9rem}
+.ala-v.up{color:#3ec878}.ala-v.down{color:#e0a055}
+.ala-v small{opacity:.6;font-weight:400}
+.ala-stance{padding:.45rem .6rem;background:rgba(80,120,220,.10);border-radius:.5rem;font-size:.9rem;margin-bottom:.4rem}
+.ala-risk,.ala-inval{font-size:.82rem;opacity:.82;margin-bottom:.3rem}
+.ala-risk b,.ala-inval b{opacity:.9}
+.ala-foot{font-size:.76rem;opacity:.5;margin-top:.3rem}
+@media(max-width:640px){.ala-grid{grid-template-columns:1fr}}
+
+/* v3.5.6 · VL: große Aktien-Heatmap + verständliche Quadranten */
+.stockstage{grid-template-columns:minmax(0,2.35fr) minmax(250px,.65fr)}
+.stockmapwrap{min-height:390px;padding:12px}.stockmapwrap svg{height:360px}
+.stockmapwrap .qd{fill:#ef5a5a0d}.stockmapwrap .quad-label{font:800 6.8px/1 system-ui,sans-serif;letter-spacing:.35px;text-anchor:middle;fill:var(--dim);paint-order:stroke;stroke:var(--panel);stroke-width:2px;pointer-events:none}.stockmapwrap .ql-tr{fill:var(--green)}.stockmapwrap .ql-tl{fill:var(--yellow)}.stockmapwrap .ql-br{fill:#f09a68}.stockmapwrap .ql-bl{fill:var(--dim2)}
+@media(max-width:900px){.stockmapwrap{min-height:360px}.stockmapwrap svg{height:330px}}
+
+/* v3.5.6 · reale Position / Live-Tradeplan */
+.position-panel{margin:10px 0;padding:11px;border:1px solid var(--line2);border-radius:11px;background:color-mix(in srgb,var(--panel2) 88%,transparent)}.position-panel.active{border-color:color-mix(in srgb,var(--green) 48%,var(--line2))}.position-head{display:grid;gap:3px;margin-bottom:8px}.position-head b{font-size:12px}.position-head small{color:var(--dim);font-size:9.5px}.position-entry,.position-actions{display:flex;gap:7px;align-items:end;flex-wrap:wrap}.position-entry label,.position-actions label{display:grid;gap:3px;font-size:9px;color:var(--dim)}.position-entry input,.position-actions input{width:125px;padding:7px 8px;border:1px solid var(--line2);border-radius:8px;background:var(--panel);color:var(--fg)}.position-entry button,.position-actions button{padding:7px 10px}.position-metrics{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:6px;margin:7px 0 9px}.position-metrics span{display:grid;gap:2px;padding:7px 8px;border:1px solid var(--line);border-radius:8px;background:var(--panel);font-size:9px;color:var(--dim)}.position-metrics b{font-size:11px;color:var(--fg)}
+.position-alarm{position:fixed;inset:0;z-index:400;display:grid;place-items:center;background:#000b;padding:18px}.position-alarm>div{width:min(560px,92vw);display:grid;gap:11px;padding:20px;border:2px solid var(--red);border-radius:14px;background:var(--panel);box-shadow:0 0 45px #ef5a5a66;animation:positionPulse 1.15s ease-in-out infinite}.position-alarm b{font-size:20px}.position-alarm span{font-size:14px;line-height:1.4}.position-alarm small{color:var(--dim)}.position-alarm button{justify-self:start;padding:9px 14px}@keyframes positionPulse{50%{box-shadow:0 0 70px #ef5a5aaa}}
+@media(max-width:720px){.position-metrics{grid-template-columns:repeat(2,minmax(110px,1fr))}.position-entry input,.position-actions input{width:110px}}
+
+/* Paket A: Stummschalten / Rehabilitation in Modul 0 */
+.attr-btn{font-size:.72rem;padding:.15rem .5rem;border-radius:.4rem;border:1px solid var(--line,#333);background:transparent;color:inherit;cursor:pointer}
+.attr-btn:hover{background:rgba(255,255,255,.08)}
+.attr-btn.warn{border-color:rgba(230,140,50,.5);color:#e0a055}
+.attr-muted-badge{font-size:.7rem;opacity:.75}
+/* v3.5.8 P2: Schieberegler pro Setup-Zeile. Rechts/gruen = aktiv (darf BUY
+   erzeugen), links/grau = gestummt. Zustand und Aktion in EINEM Element. */
+.attr-btn.ok{border-color:color-mix(in srgb,var(--green) 50%,var(--line));color:var(--green)}
+.attr-toggle{display:inline-flex;align-items:center;gap:.4rem;cursor:pointer;user-select:none}
+.attr-toggle input{position:absolute;opacity:0;width:0;height:0}
+.attr-toggle .attr-track{position:relative;width:34px;height:18px;border-radius:999px;background:var(--line2,#444);border:1px solid var(--line,#333);transition:background .15s ease}
+.attr-toggle .attr-knob{position:absolute;top:1px;left:1px;width:14px;height:14px;border-radius:50%;background:var(--dim,#999);transition:transform .15s ease,background .15s ease}
+.attr-toggle input:checked+.attr-track{background:color-mix(in srgb,var(--green) 45%,transparent);border-color:color-mix(in srgb,var(--green) 60%,var(--line))}
+.attr-toggle input:checked+.attr-track .attr-knob{transform:translateX(16px);background:var(--green)}
+.attr-toggle input:focus-visible+.attr-track{outline:2px solid var(--green);outline-offset:2px}
+.attr-toggle em{font-style:normal;font-size:.7rem;color:var(--dim);min-width:4.6em}
+.attr-toggle.is-muted em{color:var(--dim);opacity:.85}
+.attr-scope-note{display:block;margin-top:.55rem;padding:.45rem .6rem;border:1px dashed var(--line2,#444);border-radius:.5rem;font-size:.72rem;color:var(--dim);cursor:help;line-height:1.45}
+.rec-with-action{display:inline-flex;align-items:center;gap:.4rem}
+.attr-table tr.attr-is-muted td{opacity:.6}
+.attr-recs.reenable{background:rgba(60,200,120,.10)}
+.attr-recs.reenable span{background:rgba(60,200,120,.18)}
+.attr-muted-list{margin-top:.5rem;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}
+.attr-muted-list span{background:rgba(150,150,150,.15);border-radius:.4rem;padding:.15rem .5rem;font-size:.8rem}
+.attr-muted-list small{flex-basis:100%;opacity:.65}
+
+/* ==== v3.5.9 · Modul 2: Portfolio-Risiko & Klumpung ======================== */
+.portfolio-card{margin:10px 0;padding:11px 13px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}
+.portfolio-card .pf-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:.5rem}
+.portfolio-card .pf-head b{font-size:.95rem}
+.portfolio-card .pf-head small,.portfolio-card .hint{color:var(--dim);font-size:.72rem;line-height:1.5}
+.pf-budget{display:flex;flex-wrap:wrap;gap:.45rem;margin:.6rem 0 .4rem}
+.pf-budget span{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.35rem .55rem;font-size:.66rem;color:var(--dim)}
+.pf-budget b{display:block;color:var(--fg);font-size:.82rem;margin-top:2px}
+.pf-bar{position:relative;height:9px;border-radius:999px;background:var(--panel);border:1px solid var(--line);overflow:hidden}
+.pf-bar>span{display:block;height:100%;background:var(--green);transition:width .2s ease}
+.pf-bar.warn>span{background:var(--yellow)}
+.pf-bar.full>span{background:var(--red)}
+.pf-sectors{display:flex;flex-wrap:wrap;gap:.35rem;margin:.55rem 0}
+.pf-sec{font-size:.68rem;color:var(--dim);background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.25rem .55rem;cursor:help}
+.pf-sec b{color:var(--fg)}
+.pf-sec.hot{border-color:color-mix(in srgb,var(--yellow) 60%,var(--line));color:var(--yellow)}
+.pf-warn{margin-top:.45rem;padding:.5rem .6rem;border-radius:.5rem;font-size:.74rem;line-height:1.5;border:1px solid var(--line2)}
+.pf-warn.cluster{border-color:color-mix(in srgb,var(--yellow) 55%,var(--line));background:color-mix(in srgb,var(--yellow) 8%,transparent)}
+.pf-warn.near{border-color:color-mix(in srgb,var(--yellow) 40%,var(--line))}
+.pf-warn.full{border-color:color-mix(in srgb,var(--red) 55%,var(--line));background:color-mix(in srgb,var(--red) 8%,transparent)}
+.pf-warn.cost{border-style:dashed;color:var(--dim)}
+.pf-warn.unknown{color:var(--dim);border-style:dashed}
+.pf-note{display:block;margin-top:.55rem;font-size:.68rem;color:var(--dim);line-height:1.5;cursor:help}
+
+/* ==== v3.6.0 · Glossar-Markierung ========================================== */
+/* Begriffe mit Mouseover-Erklaerung bekommen eine dezente gepunktete Linie,
+   damit erkennbar ist, WO eine Erklaerung hinterlegt ist. */
+abbr.gl{text-decoration:underline dotted color-mix(in srgb,var(--dim) 70%,transparent);text-underline-offset:3px;cursor:help;border:0}
+abbr.gl:hover{text-decoration-color:var(--fg)}
+.attr-table th{cursor:help}
+.complist-note{margin:.2rem 0 .55rem;font-size:.72rem;line-height:1.5;color:var(--dim);cursor:help}
+.pf-budget span,.pf-bar,.pf-warn{cursor:help}
+.sr-tic{cursor:help}
+
+/* v3.6.1: Punkte, deren Muster gut ist, deren Trade sich aber wirtschaftlich
+   nicht lohnt, werden hohl gezeichnet. Voll = auch wirtschaftlich tragfaehig. */
+.dot.econ-weak .core{fill:transparent;stroke:currentColor;stroke-width:1.6;stroke-dasharray:2.5 2}
+.dot.econ-weak text{opacity:.75}
+/* Hotfix v3.6.2: Die 3.6.1-Labels waren zu lang und randbuendig — sie sind
+   ineinandergelaufen und haben die Punkte ueberlagert. Zurueck zur bewaehrten
+   Optik: kurz, mittig ueber dem Quadranten, zweizeilig, mit Halo gegen die
+   Punkte. Die ausfuehrliche Erklaerung steht im Mouseover der Karte. */
+#map .quad-label,#stockMap .quad-label{font:800 6.4px/1 system-ui,sans-serif;letter-spacing:.3px;text-anchor:middle;paint-order:stroke;stroke-width:2.2px;pointer-events:none;opacity:.88}
+#map .quad-label .ql2,#stockMap .quad-label .ql2{font-weight:600;font-size:5.4px;letter-spacing:.2px;opacity:.72}
+#map .quad-label{stroke:#0b1220;fill:var(--dim)}
+#map .qd{fill:#ef5a5a0d}
+#map .ql-tr{fill:var(--green)}#map .ql-tl{fill:var(--yellow)}#map .ql-br{fill:#f09a68}#map .ql-bl{fill:var(--dim2)}
+.stockmapwrap .quad-label .ql2{font-weight:600;font-size:5.4px;letter-spacing:.2px;opacity:.72}
+
+/* ==== v3.6.1 · Crowd-Status, Glossar-Panel, Scope-Frequenz ================= */
+.crowd-status{margin:8px 0;padding:.5rem .65rem;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
+.crowd-status b{display:block;font-size:.8rem;cursor:help}
+.crowd-status small{display:block;margin-top:.25rem;font-size:.7rem;color:var(--dim);line-height:1.5}
+.crowd-status.off{border-style:dashed}
+.crowd-status.off b{color:var(--dim)}
+.crowd-status.err{border-color:color-mix(in srgb,var(--red) 50%,var(--line))}
+.crowd-status.err b{color:var(--red)}
+.crowd-status.wait b{color:var(--yellow)}
+.crowd-status.ok b{color:var(--green)}
+.gloss-intro{font-size:.74rem;color:var(--dim);line-height:1.5;margin:.2rem 0 .5rem;cursor:help}
+.gloss-list{max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:.5rem .6rem;background:var(--panel)}
+.gloss-group h4{margin:.5rem 0 .3rem;font-size:.74rem;color:var(--dim);letter-spacing:.4px;text-transform:uppercase}
+.gloss-group:first-child h4{margin-top:0}
+.gloss-item{border-bottom:1px solid var(--line);padding:.3rem 0}
+.gloss-item:last-child{border-bottom:0}
+.gloss-item summary{cursor:pointer;font-size:.8rem;list-style:revert}
+.gloss-item p{margin:.35rem 0 .45rem;font-size:.75rem;color:var(--dim);line-height:1.55}
+.focus-freq{cursor:help}
+.focus-freq.hot{color:var(--green)}
+.focus-freq.cold{color:var(--dim)}
+
+/* v3.6.3: Kennzahlen-Zeile im Fokusfenster — jeder Begriff einzeln erklaert.
+   Die Trenner bleiben unmarkiert, damit nur die erklaerten Teile unterstrichen
+   sind und man auf einen Blick sieht, wo eine Erklaerung liegt. */
+.sf-tags i{font-style:normal;opacity:.45;text-decoration:none}
+.sf-tags abbr.gl{text-decoration-color:color-mix(in srgb,var(--dim) 55%,transparent)}
+.sr-nums span[title]{cursor:help}
+
+/* ==== v3.6.4 · Heatmap-Spuren, Datenstand, Legende ========================= */
+/* Bewegungsrichtung: rechts oben ist die Ecke, in der ein Trade moeglich wird. */
+.stockmapwrap .trailwrap .stocktrail{stroke:var(--dim2);opacity:.28}
+.stockmapwrap .dir-sweet .stocktrail{stroke:var(--green);opacity:.85;stroke-width:1.8}
+.stockmapwrap .dir-back .stocktrail{stroke:#52647d;opacity:.3;stroke-dasharray:2 2.5}
+.stockmapwrap .dir-side .stocktrail{stroke:var(--yellow);opacity:.42}
+.stockmapwrap .dir-flat .stocktrail{opacity:.18}
+.stockmapwrap .trailhead{fill:var(--green);opacity:.9}
+.stockmapwrap .trailwrap.focus .stocktrail{stroke-width:2.4;opacity:1}
+.stockmapwrap .trailwrap.focus .trailhead{opacity:1}
+.stockmapwrap .trailwrap.focus:not(.dir-sweet) .stocktrail{stroke:var(--fg);opacity:.75}
+
+/* Legende: erklaert die beiden Punktformen, die sonst raten lassen. */
+.maplegend2{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:7px;font-size:9px;color:var(--dim);line-height:1.4}
+.maplegend2 span{display:inline-flex;align-items:center;gap:4px;cursor:help}
+.maplegend2 i{display:inline-block;width:9px;height:9px;border-radius:50%;flex:0 0 9px}
+.maplegend2 i.full{background:var(--green)}
+.maplegend2 i.hollow{background:transparent;border:1.5px dashed var(--yellow)}
+.maplegend2 i.arrow{width:12px;height:2px;border-radius:0;background:var(--green)}
+
+/* Datenstand: die wichtigste Zeile im Fokusfenster. */
+.data-session{cursor:help;font-weight:600}
+.data-session.ok{color:var(--green)}
+.data-session.aged{color:var(--yellow)}
+.data-session.old{color:#f09a68}
+.data-session.warn{color:var(--red)}
+.stock-updated.ds-old,.stock-updated.ds-warn{color:#f09a68}
+#stockFocusPlan{cursor:pointer}
+
+/* ==== v3.7.0 · Krypto-Stimmungsindex (Fear & Greed) ======================== */
+.sentiment-card{margin:8px 0;padding:.55rem .7rem;border:1px solid var(--line);border-radius:11px;background:var(--panel2)}
+.sentiment-card b{display:block;font-size:.85rem;cursor:help}
+.sentiment-card small{display:block;margin-top:.3rem;font-size:.7rem;color:var(--dim);line-height:1.5;cursor:help}
+.sentiment-card small b{display:inline;font-size:inherit;color:var(--dim2)}
+.sentiment-card.off{border-style:dashed}
+.sentiment-card.off b{color:var(--dim)}
+.sentiment-card.stale{border-style:dashed}
+.sentiment-card.extreme-fear b{color:#5b8cff}
+.sentiment-card.fear b{color:#7aa2e8}
+.sentiment-card.neutral b{color:var(--dim2)}
+.sentiment-card.greed b{color:var(--yellow)}
+.sentiment-card.extreme-greed b{color:#ef5a5a}
+.fng-bar{position:relative;height:7px;margin:.45rem 0 .2rem;border-radius:999px;cursor:help;
+  background:linear-gradient(90deg,#5b8cff 0%,#7aa2e8 24%,#8a94a6 50%,#f2c015 74%,#ef5a5a 100%);opacity:.85}
+.fng-mark{position:absolute;top:50%;width:3px;height:15px;margin-left:-1.5px;border-radius:2px;
+  background:var(--fg);transform:translateY(-50%);box-shadow:0 0 0 1.5px var(--panel2)}
+.fng-scale{display:flex;justify-content:space-between;font-size:.6rem;color:var(--dim2)}
+.fng-scale i{font-style:normal}
+
+/* v3.8.2: Terminwarnung Quartalszahlen. Reine Warnung, kann nur abwerten. */
+.earn-warn{cursor:help;font-weight:600;color:var(--yellow)}
+.earn-warn.critical{color:#f09a68;padding:.1rem .4rem;border:1px solid color-mix(in srgb,#f09a68 55%,var(--line));border-radius:.4rem}
+.earn-row{font-size:.66rem;color:var(--yellow);cursor:help}
+
+/* v3.9.1 · Handelbarkeits-Hinweis im Fokusfenster. Bewusst zurückhaltend
+   eingefärbt: es ist eine Wahrscheinlichkeitsaussage aus dem Primärlisting,
+   keine bestätigte Verfügbarkeit — und sie verändert keinen Score. */
+.flatex-hint{display:inline-block;margin:.15rem 0;padding:.05rem .4rem;border-radius:6px;font-size:.78rem;cursor:help;border:1px solid var(--line,#2a2a2a)}
+.flatex-hint.ft-ok{color:#7fd6a4;border-color:rgba(80,200,140,.35)}
+.flatex-hint.ft-no{color:#e6a06a;border-color:rgba(230,140,50,.35)}
+.flatex-hint.ft-unknown{color:var(--dim,#9aa4b2)}
+
+/* v3.9.2 · Kompaktes Handelbarkeits-Symbol in der Trefferliste. Bewusst nur ein
+   Zeichen mit Tooltip: die Zeile ist ohnehin dicht, und die Aussage ist eine
+   Wahrscheinlichkeit, keine Kennzahl — sie soll keine Zahl verdrängen. */
+.flatex-dot{font-size:.78rem;line-height:1;cursor:help;opacity:.85;margin-left:.15rem}
+.flatex-dot.ft-no{opacity:1}
+.flatex-dot.ft-unknown{opacity:.5}
+
+/* v3.9.2 · Zweiter und dritter Fund des Erreichbarkeits-Audits.
+   Die Signalleiste am unteren Rand scrollt horizontal und enthält anklickbare
+   Signal-Chips. Dasselbe Muster wie beim Wächter-Schalter: Der Scrollbereich
+   existiert, der Balken ist unter macOS unsichtbar — Chips rechts außen sind
+   damit nicht auffindbar. Hier reicht der erzwungene Balken, weil die Chips
+   gleichrangig sind: es gibt keine "wichtigste Spalte", die kleben müsste. */
+.signal-banner,.signal-content{scrollbar-width:thin}
+.signal-banner::-webkit-scrollbar,.signal-content::-webkit-scrollbar{height:7px}
+.signal-banner::-webkit-scrollbar-thumb,.signal-content::-webkit-scrollbar-thumb{background:var(--line,#3a3a3a);border-radius:4px}
+.signal-banner::-webkit-scrollbar-track,.signal-content::-webkit-scrollbar-track{background:transparent}
+
+/* v3.9.3 · Kürzel am Anfang einer Aufwärtsspur. Ein reiner Tooltip war in einem
+   dichten Punktfeld nicht treffbar — der Nutzer sah eine grüne Spur, konnte aber
+   nicht erkennen, zu welchem Titel sie gehört. Das Kürzel sitzt am ANFANG der Spur,
+   nicht an der Spitze, weil dort die Punkte stehen und es sonst überdeckt würde. */
+.stockmapwrap .trailtag{fill:var(--green);font-size:5.2px;font-weight:700;letter-spacing:.2px;text-anchor:middle;paint-order:stroke;stroke:var(--panel,#0d1117);stroke-width:1.6px;pointer-events:none;opacity:.95}
+.stockmapwrap .trailwrap.focus .trailtag{opacity:1;font-size:5.8px}
+
+/* v3.10.0 · Kontext an Momentum-Kandidaten und Sektor-Nachzügler.
+   Die Momentum-Liste ist das Produkt der App, nicht ihr Trostpreis — sie hat
+   CRWD gefunden, bevor der Nutzer ihn auf dem Schirm hatte. Die Gestaltung
+   soll das tragen, ohne eine Kaufempfehlung vorzutäuschen. */
+.mom-context{display:flex;flex-wrap:wrap;gap:.22rem;margin-top:.26rem;width:100%}
+.mom-context span{font-size:.68rem;line-height:1.25;padding:.06rem .32rem;border-radius:5px;border:1px solid var(--line,#2a2a2a);cursor:help}
+.mc-lag{color:#8fd4ff;border-color:rgba(110,180,255,.38)!important;font-weight:600}
+.mc-why{color:var(--dim,#9aa4b2)}
+.mc-ft.ft-no{color:#e6a06a;border-color:rgba(230,140,50,.35)!important}
+.mc-ft.ft-unknown{color:var(--dim,#9aa4b2);opacity:.75}
+.stage-note{display:block;margin:.2rem 0 .45rem;font-size:.74rem;color:var(--dim,#9aa4b2);cursor:help;font-style:italic}
+.opcard.lag-card{border-color:rgba(110,180,255,.32)}
+.lag-gap{color:#8fd4ff;font-weight:700}
+.lag-flatex{font-size:.7rem;opacity:.85}
+.lag-flatex.ft-no{color:#e6a06a;opacity:1}
+
+/* v3.11.0 · Aufmerksamkeitsimpuls für einen NEUEN Sektor-Nachzügler.
+   Bewusst ein weicher Puls und kein hartes Blinken: Hartes Blinken ist bei
+   längerer Bildschirmarbeit ermüdend, in seltenen Fällen ein Auslöser für
+   photosensitive Reaktionen, und es lässt sich schwer ignorieren, wenn man
+   gerade etwas anderes liest. Der Puls fällt auf, ohne sich aufzudrängen —
+   und er endet nach 24 Sekunden von selbst.
+   `prefers-reduced-motion` ist eine Systemeinstellung des Nutzers und hat
+   Vorrang: dort bleibt der Rahmen statisch hervorgehoben. */
+@keyframes fp-attn{
+  0%,100%{box-shadow:0 0 0 0 rgba(110,180,255,0);border-color:rgba(110,180,255,.32)}
+  50%    {box-shadow:0 0 0 4px rgba(110,180,255,.22);border-color:rgba(140,200,255,.95)}
+}
+.opcard.pulse-new{animation:fp-attn 1.5s ease-in-out infinite;position:relative}
+.opcard.pulse-new::after{
+  content:'NEU';position:absolute;top:-7px;right:-6px;
+  background:#8fd4ff;color:#0d1117;font-size:.58rem;font-weight:800;
+  letter-spacing:.4px;padding:.05rem .28rem;border-radius:4px;pointer-events:none
+}
+@media(prefers-reduced-motion:reduce){
+  .opcard.pulse-new{animation:none;border-color:rgba(140,200,255,.95);box-shadow:0 0 0 2px rgba(110,180,255,.28)}
+}
+
+/* v3.11.0 · Quartalszahlen-Tafel, nach Sektor gruppiert. */
+.earn-sector{margin:.4rem 0 .55rem}
+.earn-sec-name{display:flex;align-items:center;gap:.4rem;font-size:.78rem;letter-spacing:.3px;text-transform:uppercase;color:var(--dim,#9aa4b2);margin:0 0 .25rem}
+.earn-sec-name i{font-style:normal;font-size:.68rem;background:var(--line,#2a2a2a);border-radius:8px;padding:0 .34rem;color:var(--fg,#e6edf3)}
+.earn-rows{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:.3rem}
+.earn-row{display:flex;align-items:center;gap:.4rem;padding:.28rem .45rem;border:1px solid var(--line,#2a2a2a);border-radius:7px;background:transparent;color:inherit;cursor:pointer;text-align:left;font:inherit}
+.earn-row:hover{border-color:rgba(140,200,255,.55)}
+.earn-row b{font-size:.84rem;min-width:3.4em}
+.earn-when{font-size:.72rem;font-weight:700;color:#8fd4ff}
+.earn-date{font-size:.68rem;color:var(--dim,#9aa4b2);margin-left:auto}
+.earn-src{font-size:.68rem;opacity:.55}
+.earn-src.manual{opacity:.95;color:#8fd4ff}
+.earn-ft{font-size:.7rem;opacity:.8}
+/* Termine innerhalb von 24 h sind die einzigen, die farblich herausstechen —
+   alles andere bleibt ruhig, sonst verliert die Hervorhebung ihren Zweck. */
+.earn-row.soon{border-color:rgba(230,140,50,.5);background:rgba(230,140,50,.07)}
+.earn-row.soon .earn-when{color:#e6a06a}
+
+/* v3.16.0 · Eingabemaske fuer eigene Quartalstermine.
+   Bewusst KEINE Ampelfarbe: „wirkt" sagt etwas ueber die Gueltigkeit eines
+   Datums aus, nichts ueber Handelbarkeit. Deshalb Akzentblau wie bei der
+   Sektor-Marke aus v3.15.0, nicht gruen. `flex-wrap` statt Scrollbereich —
+   das Muster aus dem Erreichbarkeits-Audit wird hier gar nicht erst gebaut. */
+.earn-form{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+.earn-form label{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--dim)}
+.earn-form input,.earn-form select{min-width:8.5em}
+.earn-form #earnSym{text-transform:uppercase;letter-spacing:.5px;min-width:6.5em}
+.earn-state{min-height:1.1em;margin:7px 0 0;font-size:12px;color:var(--dim)}
+.earn-state[data-tone="ok"]{color:var(--fg)}
+.earn-state[data-tone="warn"],.earn-state[data-tone="err"]{color:#e6a06a}
+.earn-manual-list{margin-top:8px;display:flex;flex-direction:column;gap:4px}
+.earn-manual-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:5px 8px;
+  border:1px solid var(--line);border-radius:7px}
+.earn-manual-row.active{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.earn-manual-row>b{font-size:13px;min-width:4em}
+.earn-manual-date{font-size:12px;color:var(--dim)}
+.earn-manual-slot{font-size:11px;font-weight:700;color:var(--dim);cursor:help}
+.earn-manual-state{font-size:11px;color:var(--dim2);cursor:help}
+.earn-manual-state[data-state="active"]{color:var(--accent);font-weight:600}
+.earn-off{font-size:10px;color:var(--dim2);border:1px solid var(--line);border-radius:6px;
+  padding:0 5px;cursor:help}
+.earn-del{margin-left:auto;font-size:11px;padding:2px 8px;line-height:1.6}
+.earn-del.armed{border-color:#e6a06a;color:#e6a06a;font-weight:700}
+
+/* v3.12.0 · Zweistufige Reiterleiste.
+   Die Hauptbereiche bleiben immer gleich, damit sie als Orientierung taugen;
+   die Rubriken darunter wechseln. Beide Zeilen zusammen sind flacher als eine
+   umgebrochene Zeile mit dreizehn gleichrangigen Reitern — und die Leiste soll
+   Platz sparen, nicht welchen fressen. */
+.viewbar{flex-direction:column;align-items:stretch;gap:5px}
+.vb-main{display:flex;gap:8px;flex-wrap:wrap}
+/* reach-audit-ok: .vb-sub — Umbruch wäre hier falsch: eine zweite Zeile Rubriken
+   macht die klebende Leiste hoch und frisst genau den Platz, den sie sichtbar
+   halten soll. Die Chips sind gleichrangig, es gibt also auch keine "wichtigste
+   Spalte", die kleben müsste. Der Scrollbalken ist erzwungen sichtbar, und die
+   Rubriken sind zusätzlich über die drei Hauptbereiche erreichbar. */
+.vb-sub{display:flex;gap:5px;overflow-x:auto;scrollbar-width:thin;padding-bottom:1px}
+.vb-sub::-webkit-scrollbar{height:6px}
+.vb-sub::-webkit-scrollbar-thumb{background:var(--line,#3a3a3a);border-radius:3px}
+.vb-sub::-webkit-scrollbar-track{background:transparent}
+.vb-tab[aria-selected="true"]{border-color:rgba(140,200,255,.85);color:var(--fg,#e6edf3);font-weight:700}
+.vb-sec{flex:0 0 auto;font-size:10.5px;padding:3px 8px;border:1px solid var(--line,#2a2a2a);
+  border-radius:999px;background:transparent;color:var(--dim,#9aa4b2);cursor:pointer;white-space:nowrap}
+.vb-sec:hover{border-color:rgba(140,200,255,.5);color:var(--fg,#e6edf3)}
+/* Der aktive Abschnitt: eine dauerhaft sichtbare Leiste, die nicht zeigt wo man
+   ist, wäre nur eine Knopfreihe. */
+.vb-sec.on{border-color:rgba(140,200,255,.9);color:#8fd4ff;font-weight:700}
+@media(max-width:760px){.vb-main{justify-content:center}.vb-sec{font-size:10px;padding:3px 7px}}
+
+/* v3.12.0 · Richtung an JEDER Spur, nicht nur an den grünen.
+   Vorher trugen ausschließlich Aufwärtsspuren Kürzel und Pfeilspitze — abwärts
+   laufende Striche waren namenlos und richtungslos. Die Farbe trägt die Aussage
+   jetzt mit: grün nach rechts oben (Muster wird sauberer und handelbarer),
+   gedämpftes Orange nach links unten (verliert an Qualität), grau seitwärts.
+   Bewusst nicht Rot für abwärts: das ist eine Beobachtung, kein Alarm. */
+.stockmapwrap .trailhead.dir-sweet{fill:var(--green)}
+.stockmapwrap .trailhead.dir-back{fill:#e6a06a;opacity:.85}
+.stockmapwrap .trailhead.dir-side{fill:var(--dim2,#7d8da3);opacity:.75}
+.stockmapwrap .trailtag.dir-sweet{fill:var(--green)}
+.stockmapwrap .trailtag.dir-back{fill:#e6a06a;opacity:.9}
+.stockmapwrap .trailtag.dir-side{fill:var(--dim,#9aa4b2);opacity:.85}
+
+/* v3.15.0 · Modellvergleich. Die Zustandsfarben hier sind AMPELFARBEN und
+   deshalb von der Kachelfarb-Einstellung (v3.15.0, Variante A) ausgenommen. */
+.model-compare{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:9px;margin-top:9px}
+.model-compare>b{display:block;font-size:11px;color:var(--fg)}
+.model-compare>b small{font-weight:400;color:var(--dim);font-size:9px;margin-left:6px}
+.model-compare>small{display:block;margin-top:7px;font-size:9px;color:var(--dim);line-height:1.3}
+.model-compare.dissent{border-color:color-mix(in srgb,var(--yellow) 55%,var(--line))}
+.model-compare.dissent>small{color:#f2d98a}
+.mc-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:7px}
+@media(max-width:760px){.mc-row{grid-template-columns:1fr}}
+.mc-cell{display:flex;flex-direction:column;gap:2px;padding:7px;border:1px solid var(--line);
+  border-left:3px solid var(--dim2);border-radius:9px;background:var(--panel);min-width:0}
+.mc-cell b{font-size:10px;color:var(--fg)}
+.mc-cell i{font-style:normal;font-size:12px;font-weight:800;color:var(--fg)}
+.mc-cell small{font-size:9px;color:var(--dim);line-height:1.25;overflow-wrap:anywhere}
+.mc-cell.mc-block{color:#ffb0b0}
+.mc-cell .mc-block{color:#d9a6a6}
+.mc-cell.hl-green{border-left-color:var(--green)}.mc-cell.hl-green i{color:var(--green)}
+.mc-cell.hl-yellow{border-left-color:var(--yellow)}.mc-cell.hl-yellow i{color:var(--yellow)}
+.mc-cell.hl-red{border-left-color:#52647d}.mc-cell.hl-red i{color:var(--dim)}
+.mc-cell.mc-active{background:color-mix(in srgb,var(--accent) 9%,var(--panel));border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.mc-cell.mc-na{opacity:.55}
+/* v3.15.0: Kennzeichnung des Prioritaetssektors. Bewusst in Akzentblau und NICHT
+   in einer Ampelfarbe — er sagt nichts ueber die Handelbarkeit aus. */
+.prio-sector{font-size:9px;font-weight:800;color:var(--accent);letter-spacing:.4px;
+  border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line));border-radius:7px;padding:1px 5px}
+/* v3.15.0 · Kachelfarben (Variante A). Nur Rahmen und Flaeche neutraler
+   Kacheln. Jede Regel hier ist bewusst OHNE Ampelbezug — kein Selektor
+   beruehrt .hl-*, .mc-cell.hl-*, .resource-strip.* oder ein Statusband. */
+.tint-box{display:grid;gap:5px;margin-top:7px}
+.tint-row{display:flex;align-items:center;justify-content:space-between;gap:9px;font-size:10px;color:var(--dim)}
+.tint-row select{padding:4px 7px;font-size:10px}
+.sf-grid>span{border-color:var(--tint-sfGrid,var(--line));background:var(--tint-sfGrid-bg,var(--panel))}
+.stock-interpret{border-color:var(--tint-interpret,var(--line));background:var(--tint-interpret-bg,var(--panel2))}
+.intraday-chart{border-color:var(--tint-chart,var(--line));background:var(--tint-chart-bg,var(--panel2))}
+.learning-report{border-color:var(--tint-learning,var(--line));background:var(--tint-learning-bg,var(--panel2))}
+.model-compare{border-color:var(--tint-modelCompare,var(--line));background:var(--tint-modelCompare-bg,var(--panel2))}
+
+/* v3.17.0 · Musterlabor.
+   BEWUSST KEINE AMPELFARBEN: gruen/gelb/rot bedeuten in dieser App
+   "handelbar". Eine Beobachtung ueber die Vergangenheit darf sich diese
+   Bedeutung nicht ausleihen — sonst liest man ein Kaufsignal in eine
+   Statistik hinein. Blau = stieg danach, Violett = fiel danach, Grau =
+   seitwaerts. Diese vier Farben sind aus demselben Grund NICHT ueber die
+   Kachelfarben (v3.15.0) einstellbar. */
+.pattern-lab{display:block}
+.pat-legend{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:2px 0 8px}
+.pat-key{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--dim)}
+.pat-key i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.pat-key b{color:var(--fg)}
+.pat-meta{margin-left:auto;font-size:11px;color:var(--dim2);cursor:help}
+.pat-verdictline{margin:0 0 10px;font-size:12px;color:var(--dim);line-height:1.5}
+.pat-verdictline b{color:var(--fg)}
+.pat-found{color:#8fb4ff}
+.pat-none,.pat-thin{color:var(--dim)}
+.pat-chart{margin:2px 0 4px}
+.pat-svg{width:100%;height:auto;display:block}
+.pat-now{stroke:var(--line2);stroke-width:1;stroke-dasharray:3 3}
+.pat-ax{fill:var(--dim2);font-size:9px}
+.pat-mid{text-anchor:middle}
+.pat-end{text-anchor:end}
+.pat-cap{display:block;font-size:11px;color:var(--dim2);margin:0 0 12px;line-height:1.45}
+.pat-grid{display:flex;flex-direction:column;gap:3px;margin-bottom:8px}
+.pat-row{display:grid;grid-template-columns:9.5em 1fr 7.5em;gap:8px;align-items:center;font-size:11px}
+.pat-row.thin{opacity:.5}
+.pat-row>b{color:var(--dim);font-weight:600;cursor:help}
+.pat-track{position:relative;height:13px;border-radius:4px;background:var(--panel);overflow:hidden}
+.pat-zero{position:absolute;top:0;bottom:0;width:1px;background:var(--line2)}
+.pat-bar{position:absolute;top:2px;height:9px;border-radius:2px;opacity:.85;min-width:1px}
+.pat-bar+.pat-bar{top:2px;height:9px;opacity:.6}
+.pat-verdict{font-size:10px;color:var(--dim2);text-align:right;cursor:help}
+.pat-verdict[data-v^="trennt"]{color:#8fb4ff;font-weight:700}
+@media(max-width:640px){
+  .pat-row{grid-template-columns:7em 1fr 5.5em;font-size:10px}
+}
+
+/* v3.18.0 · Freigabe-Trichter und Kalibrierung.
+   Wieder KEINE Ampelfarben: Der Trichter sagt "hier hängt es", nicht
+   "das ist schlecht". Akzentblau fuer die entscheidende Bedingung. */
+.gate-funnel{display:block}
+.gate-funnel>b{font-size:12px}
+.gf-sum{float:right;font-size:11px;color:var(--dim);cursor:help}
+.gf-note{display:block;margin-top:6px;font-size:11px;color:var(--dim);cursor:help;line-height:1.45}
+.gf-chips{display:flex;flex-wrap:wrap;gap:5px;margin:8px 0 6px}
+.gf-chip{font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:6px;
+  padding:2px 7px;cursor:help;white-space:nowrap}
+.gf-chip b{color:var(--fg);margin-left:3px}
+.gf-chip i{color:var(--accent);font-style:italic;margin-left:3px}
+.gf-chip.decisive{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.gf-dead{display:block;font-size:10px;color:var(--dim2);margin-bottom:5px;cursor:help}
+.pat-cal{margin:10px 0 6px;padding-top:8px;border-top:1px solid var(--line)}
+.pat-cal-head{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;font-size:12px}
+.pat-cal-head span{font-size:10px;color:var(--dim2);cursor:help}
+.pat-cal-grid{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0 5px}
+.pat-cal-cell{display:inline-flex;flex-direction:column;align-items:center;gap:1px;
+  border:1px solid var(--line);border-radius:6px;padding:3px 9px;cursor:help}
+.pat-cal-cell i{font-style:normal;font-size:10px;color:var(--dim2)}
+.pat-cal-cell b{font-size:12px;color:var(--fg)}
+.pat-cal-cell.current{border-color:var(--accent)}
+.pat-cal-cell.current i{color:var(--accent)}

@@ -1,0 +1,4450 @@
+import { APP_VERSION } from './version.js';
+
+/* ============================================================================
+   FusionPulse v3.4.0 — Cloudflare Worker
+   Momentum- & Einstiegszonen-Scanner für Bitpanda Fusion (EUR-Paare)
+
+   Design-Prinzipien:
+   - Subrequest-Budget hart begrenzt (Free Plan: 50 externe fetch()/Invocation)
+   - Fusion Market-Data-Limit: 240 req/min → serverseitiger Cache + Single-Flight
+   - Signale NUR auf geschlossenen Kerzen (kein Repainting), Live-Bar separat
+   - Multi-Timeframe aus EINEM 5m-Request (Resampling 15m/1h) → 0 Extra-Requests
+   - Orderbuch wird für Slippage/Depth genutzt, nicht nur für den Spread
+   ========================================================================== */
+
+const API = 'https://api.fusion.bitpanda.com/v1';
+
+const CFG = {
+  CANDLE_LIMIT: 200,      // 200 × 5m ≈ 16,6 h Historie
+  DEEP_MAX: 20,           // Paare mit Kerzen-Download
+  BOOK_MAX: 10,           // Paare mit Orderbuch (nur Top-Kandidaten)
+  BOOK_DEPTH: 50,         // Level pro Seite (max 100)
+  POOL: 6,                // CF: max 6 gleichzeitige ausgehende Verbindungen
+  TTL_MS: 18_000,         // Snapshot-Gültigkeit
+  SLIP_BAND: 0.0015,      // 0,15 % → bis hierhin gilt "ohne nennenswerte Slippage"
+  IMB_BAND: 0.005,        // ±0,5 % Fenster für Orderbuch-Imbalance
+  DEFAULT_FEE: 0.0015,    // Fallback-Taker-Fee falls /account nicht lesbar
+};
+
+/* ------------------------------------------------- Analyse-Komponenten v3.0.7
+   Jede Komponente ist einzeln abschaltbar. Wichtig: eine abgeschaltete
+   Komponente darf NICHT als "negativ ausgefallen" in den Score eingehen.
+   Deshalb wird nicht mit 0 multipliziert, sondern das Gewicht aus der Summe
+   entfernt und der Rest neu normiert (gewichteter Mittelwert statt Summe). */
+const COMPONENTS = ['vwap', 'ema21', 'rs', 'mtf', 'volume', 'book', 'squeeze', 'pullback', 'elliott'];
+const ALL_ON = new Set(COMPONENTS);
+
+/** parts = [[componentKey|null, wert, gewicht], …]; null = immer aktiv. */
+function weighted(parts, on) {
+  let sum = 0, w = 0;
+  for (const [key, val, weight] of parts) {
+    if (key && !on.has(key)) continue;
+    if (!Number.isFinite(val)) continue;
+    sum += val * weight; w += weight;
+  }
+  return w > 0 ? sum / w : 5;              // nichts aktiv → neutral, nicht 0
+}
+
+function parseComponents(raw) {
+  if (raw == null || raw === '') return new Set(ALL_ON);
+  const wanted = String(raw).split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const on = new Set(wanted.filter((x) => COMPONENTS.includes(x)));
+  return on.size ? on : new Set(ALL_ON);   // leere Auswahl wäre unbrauchbar
+}
+
+/* ---------------------------------------------------------------- Utilities */
+const num = (x) => { const n = Number(x); return Number.isFinite(n) ? n : 0; };
+const clamp = (x, lo = 0, hi = 10) => Math.max(lo, Math.min(hi, Number.isFinite(x) ? x : lo));
+const r1 = (x) => x == null || !Number.isFinite(Number(x)) ? null : Math.round(Number(x) * 10) / 10;
+const r2 = (x) => Math.round(x * 100) / 100;
+const mean = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
+const sd = (a) => { if (a.length < 2) return 0; const m = mean(a); return Math.sqrt(mean(a.map((x) => (x - m) ** 2))); };
+const z = (x, arr) => { const s = sd(arr); return s > 0 ? (x - mean(arr)) / s : 0; };
+const median = (a) => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); const i = s.length >> 1; return s.length % 2 ? s[i] : (s[i - 1] + s[i]) / 2; };
+const maxOf = (a) => a.reduce((m, x) => (x > m ? x : m), -Infinity);
+const minOf = (a) => a.reduce((m, x) => (x < m ? x : m), Infinity);
+
+/** Begrenzte Parallelität — respektiert CF-Limit von 6 offenen Verbindungen. */
+async function pool(items, limit, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (i < items.length) { const k = i++; out[k] = await fn(items[k], k); }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+/* -------------------------------------------------------------- Fusion-Fetch */
+const FUSION_UPSTREAM_TIMEOUT_MS = 5_500;
+async function fetchUpstreamWithTimeout(url, options = {}, timeoutMs = FUSION_UPSTREAM_TIMEOUT_MS) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort('timeout'), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: ac.signal });
+  } catch (e) {
+    if (ac.signal.aborted) throw new Error(`Fusion Upstream Timeout nach ${Math.round(timeoutMs/1000)} s`);
+    throw e;
+  } finally { clearTimeout(timer); }
+}
+function makeClient(key) {
+  let used = 0;
+  return {
+    get used() { return used; },
+    async get(path, params = {}) {
+      used++;
+      const u = new URL(`${API}/${path}`);
+      for (const [k, v] of Object.entries(params)) if (v != null) u.searchParams.set(k, v);
+      const res = await fetchUpstreamWithTimeout(u, { headers: { 'x-api-key': key, accept: 'application/json' } });
+      if (res.status === 429) throw new Error('Fusion Rate-Limit (429) – Intervall erhöhen');
+      if (!res.ok) throw new Error(`Fusion ${res.status} @ ${path}: ${(await res.text()).slice(0, 140)}`);
+      return res.json();
+    },
+  };
+}
+
+/* ------------------------------------------------------ Kerzen & Resampling */
+function toCandles(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((c) => ({
+      t: num(c.timestamp) * (num(c.timestamp) > 1e11 ? 0.001 : 1), // Doku: Sekunden
+      o: num(c.open), h: num(c.high), l: num(c.low), c: num(c.close), v: num(c.volume),
+    }))
+    .filter((c) => c.c > 0 && c.t > 0)
+    .sort((a, b) => a.t - b.t);
+}
+
+/** 5m-Kerzen zu höherem TF verdichten (bucketSec = 900 → 15m, 3600 → 1h). */
+function resample(cs, bucketSec, closedOnly = false) {
+  const out = [];
+  let cur = null;
+  for (const c of cs) {
+    const b = Math.floor(c.t / bucketSec) * bucketSec;
+    if (!cur || cur.t !== b) { cur = { t: b, o: c.o, h: c.h, l: c.l, c: c.c, v: c.v }; out.push(cur); }
+    else { cur.h = Math.max(cur.h, c.h); cur.l = Math.min(cur.l, c.l); cur.c = c.c; cur.v += c.v; }
+  }
+  if (closedOnly && out.length && cs.length > 1) {
+    const diffs = cs.slice(1).map((c, i) => c.t - cs[i].t).filter((d) => d > 0);
+    const step = diffs.length ? Math.min(...diffs) : 0;
+    if (cs.at(-1).t + step < out.at(-1).t + bucketSec) out.pop();
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------- Indikatoren */
+function ema(vals, n) {
+  if (!vals.length) return [];
+  const k = 2 / (n + 1); const out = [vals[0]];
+  for (let i = 1; i < vals.length; i++) out.push(vals[i] * k + out[i - 1] * (1 - k));
+  return out;
+}
+
+/** Wilder-ATR (nicht der naive Mittelwert der True Ranges). */
+function atr(cs, n = 14) {
+  if (cs.length < n + 1) return 0;
+  const tr = [];
+  for (let i = 1; i < cs.length; i++) {
+    const p = cs[i - 1].c;
+    tr.push(Math.max(cs[i].h - cs[i].l, Math.abs(cs[i].h - p), Math.abs(cs[i].l - p)));
+  }
+  let a = mean(tr.slice(0, n));
+  for (let i = n; i < tr.length; i++) a = (a * (n - 1) + tr[i]) / n;
+  return a;
+}
+
+function rsi(closes, n = 14) {
+  if (closes.length < n + 1) return 50;
+  let g = 0, l = 0;
+  for (let i = 1; i <= n; i++) { const d = closes[i] - closes[i - 1]; d >= 0 ? (g += d) : (l -= d); }
+  g /= n; l /= n;
+  for (let i = n + 1; i < closes.length; i++) {
+    const d = closes[i] - closes[i - 1];
+    g = (g * (n - 1) + Math.max(d, 0)) / n;
+    l = (l * (n - 1) + Math.max(-d, 0)) / n;
+  }
+  return l === 0 ? 100 : 100 - 100 / (1 + g / l);
+}
+
+/** Rollender VWAP über n Bars (Typical Price × Volumen). */
+function vwap(cs, n) {
+  const w = cs.slice(-n);
+  let pv = 0, vv = 0;
+  for (const c of w) { const tp = (c.h + c.l + c.c) / 3; pv += tp * c.v; vv += c.v; }
+  return vv > 0 ? pv / vv : (w.length ? w.at(-1).c : 0);
+}
+
+/** Steigung + Bestimmtheitsmaß einer linearen Regression → Trendqualität. */
+function linreg(vals) {
+  const n = vals.length; if (n < 3) return { slope: 0, rsq: 0 };
+  const xm = (n - 1) / 2, ym = mean(vals);
+  let sxy = 0, sxx = 0, syy = 0;
+  for (let i = 0; i < n; i++) { const dx = i - xm, dy = vals[i] - ym; sxy += dx * dy; sxx += dx * dx; syy += dy * dy; }
+  const slope = sxx ? sxy / sxx : 0;
+  const rsq = sxx && syy ? (sxy * sxy) / (sxx * syy) : 0;
+  return { slope, rsq };
+}
+
+/** Bollinger-Bandbreite (relativ) — Basis für Kompression/Squeeze. */
+function bbWidth(closes, n = 20) {
+  const w = closes.slice(-n); if (w.length < n) return 0;
+  const m = mean(w); return m ? (2 * sd(w)) / m : 0;
+}
+
+/* ---------------------------------------------------------------- Orderbuch */
+/**
+ * Statt nur Best-Bid/Ask: echte Tiefe auswerten.
+ * - spread          relativer Spread
+ * - imbalance       Notional-Übergewicht Bid vs. Ask im ±0,5 %-Fenster (-1..+1)
+ * - buyCapacity     EUR, die man kaufen kann bevor der Preis 0,15 % läuft
+ * - sellCapacity    dito für den Ausstieg (wichtig für den Stop!)
+ * - slipBps         erwartete Slippage in bps für eine Referenzgröße
+ */
+function bookMetrics(book, refNotional = 2000) {
+  if (!book?.bids?.length || !book?.asks?.length) return null;
+  const bids = book.bids.map((b) => ({ p: num(b.price), q: num(b.quantity) })).filter((x) => x.p > 0 && x.q > 0);
+  const asks = book.asks.map((a) => ({ p: num(a.price), q: num(a.quantity) })).filter((x) => x.p > 0 && x.q > 0);
+  if (!bids.length || !asks.length) return null;
+
+  const bid = bids[0].p, ask = asks[0].p, mid = (bid + ask) / 2;
+  const spread = mid > 0 ? (ask - bid) / mid : null;
+
+  const inBand = (arr, lo, hi) => arr.filter((x) => x.p >= lo && x.p <= hi)
+    .reduce((s, x) => s + x.p * x.q, 0);
+  const bidN = inBand(bids, mid * (1 - CFG.IMB_BAND), mid);
+  const askN = inBand(asks, mid, mid * (1 + CFG.IMB_BAND));
+  const imbalance = bidN + askN > 0 ? (bidN - askN) / (bidN + askN) : 0;
+
+  const cap = (arr, limitPrice, up) => arr
+    .filter((x) => (up ? x.p <= limitPrice : x.p >= limitPrice))
+    .reduce((s, x) => s + x.p * x.q, 0);
+  const buyCapacity = cap(asks, ask * (1 + CFG.SLIP_BAND), true);
+  const sellCapacity = cap(bids, bid * (1 - CFG.SLIP_BAND), false);
+
+  // VWAP-Slippage für refNotional gegen die Ask-Seite
+  let rest = refNotional, cost = 0, qty = 0;
+  for (const a of asks) {
+    const n = Math.min(rest, a.p * a.q);
+    cost += n; qty += n / a.p; rest -= n;
+    if (rest <= 0) break;
+  }
+  const fillPx = qty > 0 ? cost / qty : ask;
+  const slipBps = rest > 0 ? 999 : Math.max(0, (fillPx / ask - 1) * 10_000);
+
+  return { bid, ask, mid, spread, imbalance, buyCapacity, sellCapacity, slipBps };
+}
+
+
+/* ==== v3.10.0 · Sektor-Nachzuegler ==========================================
+   BEFUND: `sectorLag` wurde ausschliesslich im Twelve-Data-Zweig berechnet
+   (siehe unten). Der Tiingo-Deep-Scan — also der PRIMAERE Pfad — setzte den
+   Wert in `tiingoAnalyseOne` auf null und hat ihn nie nachgerechnet. Damit war
+   die Kennzahl im Normalbetrieb dauerhaft leer, obwohl die UI sie auswertet.
+
+   Praktische Folge, am realen Fall des Nutzers: Nach starken NVDA-Zahlen laeuft
+   die Halbleiter- und Security-Nachbarschaft an. Ein Titel wie CRWD, der noch
+   hinterherhinkt, IST der Nachzuegler — und genau das haette diese Kennzahl
+   angezeigt. Sie war auf dem produktiven Pfad schlicht nicht vorhanden.
+
+   Kostet nichts: alle Zeilen liegen bereits im Speicher, keine API-Abfrage.
+   Verändert KEINEN Score und KEINE BUY-Freigabe — reine Discovery.          */
+function applySectorLag(rows){
+  /* ACHTUNG: `Number(null)` ist 0 und damit endlich. Ein reiner isFinite-Test
+     laesst fehlende Werte als gemessene Null durch — genau der Fehlertyp, der
+     in v3.9.3 die Phantomspur in der Heatmap erzeugt hat. Deshalb hier explizit
+     auf null/undefined/'' pruefen, bevor gerechnet wird. */
+  const measured=(v)=>v!=null && v!=='' && Number.isFinite(Number(v));
+  const bySector=new Map();
+  for(const r of rows||[]){
+    const sec=r?.sector; if(!sec||sec==='Discovery') continue;
+    if(!measured(r.ret15)) continue;   // fail-closed: nicht schaetzen
+    const a=bySector.get(sec)||[]; a.push(r); bySector.set(sec,a);
+  }
+  for(const r of rows||[]){
+    const sec=r?.sector;
+    if(!sec||sec==='Discovery'||!measured(r.ret15)){
+      r.sectorLeaderRet15=null; r.sectorLag=null; r.sectorPeers=0; continue;
+    }
+    const peers=(bySector.get(sec)||[]).filter(x=>x.symbol!==r.symbol);
+    // Ein einzelner Titel bildet keinen Sektor ab. Unter drei Vergleichstiteln
+    // bleibt der Wert bewusst leer statt eine Scheinaussage zu erzeugen.
+    if(peers.length<2){ r.sectorLeaderRet15=null; r.sectorLag=null; r.sectorPeers=peers.length; continue; }
+    const leader=Math.max(...peers.map(x=>Number(x.ret15)));
+    r.sectorLeaderRet15=+leader.toFixed(2);
+    r.sectorLag=+Math.max(-10,Math.min(10,leader-Number(r.ret15))).toFixed(2);
+    r.sectorPeers=peers.length;
+  }
+  return rows;
+}
+
+/* ============================================================== Kern-Analyse */
+function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv = 2 }) {
+  if (c5.length < 60) return null;
+  // "Nur Elliott" ist ein Modus, kein Sonderfall im Scoring: die Komponenten-
+  // auswahl wird auf Elliott reduziert, alles andere läuft unverändert weiter.
+  const on = mode === 'elliott' ? new Set(['elliott']) : (comp instanceof Set ? comp : new Set(ALL_ON));
+
+  // --- Anti-Repaint: laufende Kerze abtrennen -------------------------------
+  const live = c5.at(-1);
+  const cs = c5.slice(0, -1);                 // nur geschlossene Bars
+  if (cs.length < 55) return null;
+
+  const cl = cs.map((x) => x.c);
+  const vol = cs.map((x) => x.v);
+  const px = cs.at(-1).c;
+  const A = atr(cs, 14);
+  const atrPct = px ? A / px : 0.01;
+  if (atrPct <= 0) return null;
+
+  // --- Multi-Timeframe aus denselben Daten ---------------------------------
+  const c15 = resample(cs, 900, true);
+  const c60 = resample(cs, 3600, true);
+  const tfBias = (c) => {
+    const v = c.map((x) => x.c); if (v.length < 12) return 0;
+    const e9 = ema(v, 9).at(-1), e21 = ema(v, 21).at(-1);
+    const { slope, rsq } = linreg(v.slice(-12));
+    const dir = Math.sign(e9 - e21);
+    return dir * Math.min(1, Math.abs(slope) / (A || 1e-9) * 3) * (0.4 + 0.6 * rsq);
+  };
+  const b15 = tfBias(c15), b60 = tfBias(c60);
+  const mtf = clamp(5 + b15 * 2.6 + b60 * 2.4);           // 0..10, 5 = neutral
+
+  // --- Momentum, volatilitätsnormiert (cross-asset vergleichbar) -----------
+  const ret = (k) => (cl.length > k ? px / cl.at(-1 - k) - 1 : 0);
+  const rAtr = (k) => ret(k) / (atrPct * Math.sqrt(k));    // Return in ATR-Einheiten
+  const momoRaw = rAtr(3) * 1.0 + rAtr(6) * 0.7 + rAtr(12) * 0.45;
+  const momentum = clamp(5 + momoRaw * 1.9);
+
+  // --- Volumenbeschleunigung als echter z-Score (kein Overlap) -------------
+  const vRecent = mean(vol.slice(-3));
+  const vBase = vol.slice(-27, -3);                        // sauber disjunkt
+  const vBaseMean = mean(vBase);
+  const volZ = z(vRecent, vBase);
+  const relVol = vBaseMean > 0 ? vRecent / vBaseMean : null;
+  const ret15 = ret(3) * 100;                              // 3 × 5 Minuten
+  const ret60 = ret(12) * 100;                             // 12 × 5 Minuten
+  const volumeAcceleration = clamp(5 + volZ * 1.8);
+
+  // --- Kompression / Squeeze ----------------------------------------------
+  const bbNow = bbWidth(cl, 20);
+  const bbHist = [];
+  for (let i = 20; i <= 60; i += 4) bbHist.push(bbWidth(cl.slice(0, cl.length - i + 20), 20));
+  const bbMed = median(bbHist.filter((x) => x > 0)) || bbNow || 1;
+  const compression = clamp(10 - (bbNow / bbMed) * 5);
+
+  // --- Relative Stärke vs. BTC (vol-normiert) ------------------------------
+  let relativeStrength = null, btcBias = 0;
+  if (btc5 && btc5.length > 40) {
+    const bc = btc5.slice(0, -1).map((x) => x.c);
+    const bAtrPct = atr(btc5.slice(0, -1), 14) / (bc.at(-1) || 1);
+    const bRet = (k) => bc.at(-1) / bc.at(-1 - k) - 1;
+    const d6 = ret(6) / atrPct - bRet(6) / (bAtrPct || 1e-9);
+    const d12 = ret(12) / atrPct - bRet(12) / (bAtrPct || 1e-9);
+    relativeStrength = clamp(5 + d6 * 1.1 + d12 * 0.7);
+    btcBias = bRet(12) / (bAtrPct || 1e-9);
+  }
+
+  // --- Trendqualität -------------------------------------------------------
+  const e9 = ema(cl, 9).at(-1), e21 = ema(cl, 21).at(-1), e50 = ema(cl, 50).at(-1);
+  const { slope, rsq } = linreg(cl.slice(-20));
+  const stack = (e9 > e21 ? 1 : -1) + (e21 > e50 ? 1 : -1);
+  const trendQuality = clamp(5 + stack * 1.3 + (slope / (A || 1e-9)) * 2.2 * rsq + rsq * 1.4);
+
+  // --- VWAP-Struktur: zwei Zeitfenster, zwei Aufgaben ----------------------
+  // Kurz (24 Bars ~ 2 h): Anker fuer die Einstiegszone. Ein langer Rolling-VWAP
+  // liegt in einem Trend dauerhaft 5-15 ATR unter dem Preis und taugt dafuer nicht.
+  // Lang (78 Bars ~ 6,5 h): Regime-Filter und Marktbreite.
+  const vwapS = vwap(cs, 24);
+  const vwapL = vwap(cs, 78);
+  const vwapDev = A ? (px - vwapS) / A : 0;                // Abweichung in ATR
+  const emaDev = A ? (px - e21) / A : 0;                   // Abstand zur EMA21 in ATR
+  const aboveVwap = px >= vwapL;
+  const wasBelow = cl.slice(-10, -2).some((c) => c < vwapS - 0.4 * A);
+
+  // --- Range / Position ----------------------------------------------------
+  const w20 = cs.slice(-20);
+  const hi20 = maxOf(w20.map((x) => x.h)), lo20 = minOf(w20.map((x) => x.l));
+  const posInRange = hi20 > lo20 ? (px - lo20) / (hi20 - lo20) : 0.5;
+  const swingLow = minOf(cs.slice(-8).map((x) => x.l));
+  const swingHigh = maxOf(cs.slice(-24).map((x) => x.h));
+
+  // --- Erschöpfung: Dochte + Klimax-Volumen + RSI + VWAP-Distanz ----------
+  const rsi14 = rsi(cl, 14);
+  const last3 = cs.slice(-3);
+  const wickRatio = mean(last3.map((c) => {
+    const rng = c.h - c.l; return rng > 0 ? (c.h - Math.max(c.o, c.c)) / rng : 0;
+  }));
+  const extended = vwapDev > 1.5;                          // nur dann ist Klimax = Erschoepfung
+  const exhaustion = clamp(
+    Math.max(0, rsi14 - 70) * 0.18 +
+    Math.max(0, vwapDev - 2) * 1.6 +
+    Math.max(0, wickRatio - 0.45) * 5.0 +
+    Math.max(0, volZ - 3) * (extended ? 1.2 : 0.18)
+  );
+
+  // --- Orderbuch -----------------------------------------------------------
+  const bm = book || null;
+  const spread = bm?.spread ?? null;
+  const imbalance = bm?.imbalance ?? 0;
+  const bookKnown = !!bm;
+  const liquidity = bm
+    ? clamp(10 - (spread ?? 0.004) * 900 - Math.max(0, 3 - Math.log10(Math.max(bm.buyCapacity, 1))) * 1.6)
+    : null;
+  const bookScore = bookKnown ? clamp(5 + imbalance * 4.5) : null;
+
+  // --- Setup-Klassifikation ------------------------------------------------
+  let regime = 'Neutral', setup = 'Beobachten', orderType = 'limit', setupFit = 4;
+
+  // Reihenfolge = Prioritaet. Spezifische Muster vor unspezifischen.
+  const diag = { b60: r2(b60), b15: r2(b15), vwapDev: r2(vwapDev), emaDev: r2(emaDev), rsi: Math.round(rsi14),
+                 posInRange: r2(posInRange), volZ: r2(volZ), momentum: r1(momentum) };
+  const flushLeg = ret(10) < -1.6 * atrPct;               // vorheriger Abverkauf
+  const reclaimLeg = ret(3) > 0.5 * atrPct;               // aktuelle Gegenbewegung
+
+  // v3.0.7: Ein Muster wird nur noch erkannt, wenn seine Komponente aktiv ist.
+  // Abgeschaltete Volumenprüfung heißt "nicht geprüft", nicht "nicht erfüllt".
+  const cVol = on.has('volume');
+  const cEma = on.has('ema21');
+
+  if (flushLeg && reclaimLeg && (!cVol || volZ > 0.9)) {
+    regime = 'Reversal'; setup = 'Flush → Reclaim'; orderType = 'limit'; setupFit = 8.2;
+  } else if (on.has('pullback') && b60 > 0.05 && (!cEma || (emaDev > -2.6 && emaDev < 0.5))
+             && rsi14 >= 33 && rsi14 <= 64 && momentum < 6.6) {
+    regime = 'Pullback'; setup = 'Pullback an VWAP/EMA21'; orderType = 'limit'; setupFit = 9.3;
+  } else if (on.has('squeeze') && compression >= 6.0 && (!cVol || volumeAcceleration >= 5.4)
+             && posInRange >= 0.55 && b60 >= -0.15) {
+    regime = 'Kompression'; setup = 'Squeeze → Breakout'; orderType = 'stop'; setupFit = 8.9;
+  } else if (on.has('vwap') && wasBelow && vwapDev > 0.1 && vwapDev < 1.6
+             && (!cVol || volZ > 0.6) && b15 > 0) {
+    regime = 'Reclaim'; setup = 'VWAP-Reclaim'; orderType = 'limit'; setupFit = 8.7;
+  } else if (on.has('rs') && relativeStrength >= 6.9 && Math.abs(btcBias) < 1.0
+             && b60 >= -0.05 && exhaustion < 6) {
+    regime = 'RS-Rotation'; setup = 'Relative Stärke vs. BTC'; orderType = 'limit'; setupFit = 8.0;
+  } else if (on.has('mtf') && momentum > 6.5 && (!cVol || volumeAcceleration > 5.8) && exhaustion < 6.5) {
+    regime = 'Expansion'; setup = 'Trend-Expansion (spät)'; orderType = 'stop'; setupFit = 6.2;
+  }
+
+  // --- Einstiegszone statt Einstiegspunkt ---------------------------------
+  // Rücksetzer-Anker nur aus den aktiven Struktur-Komponenten. Ist keine aktiv,
+  // bleibt der ATR-Rahmen als Anker — nicht ein Wert aus einer abgeschalteten Analyse.
+  const anchorRefs = [];
+  if (on.has('vwap')) anchorRefs.push(vwapS);
+  if (on.has('ema21')) anchorRefs.push(e21);
+  const structAnchor = anchorRefs.length ? maxOf(anchorRefs) : px - 0.45 * A;
+  const anchor = orderType === 'stop'
+    ? Math.max(hi20, px) + 0.10 * A                     // Ausbruchs-Trigger
+    : Math.max(Math.min(px, structAnchor), px - 0.9 * A); // Rücksetzer-Anker
+  const zoneLow = orderType === 'stop' ? anchor : anchor - 0.30 * A;
+  const zoneHigh = orderType === 'stop' ? anchor + 0.25 * A : anchor + 0.30 * A;
+  const entry = (zoneLow + zoneHigh) / 2;
+
+  // --- Echte Kosten zuerst: 2x Gebuehr + Spread + geschaetzte Slippage ----
+  // Der Stop muss die Kosten kennen, sonst baut man Setups, die der Spread frisst.
+  const slip = (bm?.slipBps ?? 12) / 10_000;
+  const costPct = fee * 2 + (spread ?? 0.0018) + slip;
+  const cost = entry * costPct;
+
+  // --- Stop: strukturell, aber ATR- und kostenbezogen begrenzt ------------
+  // KEIN fixer Prozentboden: 1,5 % sind bei BTC absurd weit und bei einem
+  // volatilen Small Cap viel zu eng. Der Referenzrahmen ist immer die ATR.
+  const structStop = swingLow - 0.25 * A;          // knapp unter das letzte Swing-Tief
+  // Strukturstop nehmen, aber nie weiter als 1,6 ATR:
+  const preferred = entry - Math.max(structStop, entry - 1.6 * A);
+  // Untergrenze: 1,0 ATR (enger wird auf 5m routinemaessig ausgestoppt) UND
+  // mindestens 2,8x die Roundtrip-Kosten.
+  const minDist = Math.max(1.0 * A, cost * 2.8);
+  const maxDist = 2.60 * A;                        // sonst ist der Trade kein Daytrade mehr
+  const riskPerUnit = Math.min(maxDist, Math.max(minDist, preferred));
+  // Wenn der Stop nicht mindestens 2,5x die Roundtrip-Kosten ist, ist das Setup
+  // mathematisch tot - egal wie huebsch die Indikatoren aussehen.
+  const costRatio = cost > 0 ? riskPerUnit / cost : 99;
+  const stop = entry - riskPerUnit;
+  if (riskPerUnit <= 0 || stop <= 0) return null;
+
+  // --- Ziele: Struktur zuerst, sonst R-Vielfaches --------------------------
+  const structTarget = swingHigh - 0.15 * A;
+  const tp1 = entry + riskPerUnit * 1.0;
+  const tp2 = structTarget >= entry + riskPerUnit * 1.8 ? structTarget : entry + riskPerUnit * 2.2;
+  const tp2Source = tp2 === structTarget ? 'Struktur (Swing-Hoch)' : '2,2 R';
+  const netCRV = (tp2 - entry - cost) / (riskPerUnit + cost);
+  const netCRV1 = (tp1 - entry - cost) / (riskPerUnit + cost);
+
+  // --- Zwei unabhaengige Achsen -------------------------------------------
+  // "Rot" hatte bisher zwei voellig verschiedene Bedeutungen: kein Setup
+  // (Signalproblem) oder zu teuer (Ausfuehrungsproblem). Getrennt gemessen
+  // wird der interessanteste Fall sichtbar: gutes Setup, schlechte
+  // Ausfuehrbarkeit -> auf Spread-Verengung warten statt verwerfen.
+  // Die Handelbarkeit ist eine Sicherheitsachse (Kosten, Spread, Tiefe) und
+  // bleibt bewusst IMMER aktiv, auch wenn Analysekomponenten abgeschaltet sind.
+  const spreadScore = spread == null ? null : clamp(10 - spread * 1100);
+  const execParts = [
+    [bookKnown, liquidity, 0.38],
+    [true, Math.min(10, costRatio * 2), 0.30],
+    [spreadScore != null, spreadScore, 0.18],
+    [true, Math.min(10, (netCRV / 3) * 10), 0.14],
+  ].filter(([known]) => known);
+  const execWeight = execParts.reduce((a,x)=>a+x[2],0) || 1;
+  let executability = clamp(execParts.reduce((a,x)=>a+x[1]*x[2],0) / execWeight);
+  // Sicherheitsinvariante: unbekanntes Orderbuch darf niemals grün ermöglichen.
+  if (!bookKnown) executability = Math.min(executability, 6.4);
+
+  // --- Elliott-Wellen-Heuristik ---------------------------------------------
+  // Keine subjektive Wellenbeschriftung: bewertet Impuls-/Korrekturstruktur aus
+  // Swing-Extremen, Trendstaffelung und Fibonacci-nahem Pullback. Ergänzend nutzen.
+  const recent = cs.slice(-34);
+  const rh = recent.map(x=>x.h), rl = recent.map(x=>x.l);
+  const impulse = (maxOf(rh.slice(-18,-7)) - minOf(rl.slice(-26,-18))) / (A || 1);
+  const pullHi = maxOf(rh.slice(-12,-4)), pullLo = minOf(rl.slice(-8));
+  const retr = pullHi > pullLo && impulse > 0 ? (pullHi - px) / Math.max(A, pullHi-pullLo) : 0;
+  const fibFit = Math.min(Math.abs(retr-.382), Math.abs(retr-.5), Math.abs(retr-.618));
+  const higherStructure = cl.at(-1) > cl.at(-13) && minOf(rl.slice(-8)) >= minOf(rl.slice(-20,-8));
+  const elliott = clamp(5 + Math.min(2.2, impulse*.28) + (higherStructure?1.4:-1.0) + Math.max(0,1.5-fibFit*5) - Math.max(0,exhaustion-6)*.35);
+
+  if (mode === 'elliott') {
+    setup = elliott >= 7 ? 'Impulsstruktur (Elliott)'
+          : elliott >= 5 ? 'Korrektur / unklar (Elliott)'
+          : 'Gegen die Wellenstruktur';
+    regime = 'Elliott';
+    setupFit = clamp(elliott);
+  }
+
+  // --- Scores (v3.0.7: gewichteter Mittelwert über AKTIVE Komponenten) ------
+  const quality = clamp(weighted([
+    [null,       setupFit,            0.30],
+    ['mtf',      mtf,                 0.21],
+    ['volume',   volumeAcceleration,  0.16],
+    ['rs',       relativeStrength,    0.13],
+    ['squeeze',  compression,         0.11],
+    ['ema21',    trendQuality,        0.09],
+    ['vwap',     aboveVwap ? 8.5 : 3.5, 0.09],
+    ['elliott',  elliott,             0.12],
+  ], on) - Math.max(0, exhaustion - 5) * 0.34);
+
+  const score = clamp(weighted([
+    ['mtf',      mtf,                 0.18],
+    [null,       setupFit,            0.16],
+    ['book',     liquidity,           0.14],
+    ['volume',   volumeAcceleration,  0.12],
+    ['rs',       relativeStrength,    0.11],
+    ['ema21',    trendQuality,        0.10],
+    ['book',     bookScore,           0.09],
+    ['squeeze',  compression,         0.06],
+    ['mtf',      momentum,            0.04],
+    ['vwap',     aboveVwap ? 8.5 : 3.5, 0.08],
+    ['elliott',  elliott,             0.10],
+  ], on) - exhaustion * 0.10);
+
+  // Pre-Move: was passiert BEVOR die Bewegung sichtbar ist
+  const premove = clamp(weighted([
+    ['squeeze',  compression,         0.26],
+    ['volume',   volumeAcceleration,  0.22],
+    ['book',     bookScore,           0.16],
+    ['rs',       relativeStrength,    0.14],
+    ['mtf',      mtf,                 0.12],
+    ['book',     liquidity,           0.10],
+    ['elliott',  elliott,             0.10],
+  ], on) - Math.max(0, momentum - 7.2) * 1.4);
+
+  let modeScore = score, modeQuality = quality;
+  if (mode === 'elliott') { modeScore = elliott; modeQuality = elliott; }
+  else if (mode === 'momentum') { modeScore = clamp(momentum*.38 + volumeAcceleration*.34 + compression*.18 + relativeStrength*.10); modeQuality = modeScore; }
+  else if (mode === 'trend') { modeScore = clamp(mtf*.38 + trendQuality*.30 + setupFit*.22 + (aboveVwap?10:3)*.10); modeQuality = modeScore; }
+  else if (mode === 'micro') { modeScore = clamp(weighted([[null,liquidity,.40],['book',bookScore,.32],['book',spreadScore,.18],[null,Math.min(10,costRatio*2),.10]], on)); modeQuality = modeScore; }
+
+
+  // --- Ampel ---------------------------------------------------------------
+  let light = 'red';
+  const viable = netCRV >= 1.0 && costRatio >= 2.5 && exhaustion < 8.5;
+  const tradable = viable && netCRV >= minCrv && bookKnown && (spread == null || spread <= 0.0025)
+                   && liquidity >= 6 && exhaustion < 7;
+  if (modeQuality >= 7.0 && executability >= 6.5 && tradable && (mode === 'elliott' || setupFit >= 7)) light = 'green';
+  else if (viable && (modeQuality >= 6.0 || (mode === 'composite' && premove >= 7.2))) light = 'yellow';
+
+  // Quadrant fuer die 2D-Karte im Dashboard
+  const quadrant = modeQuality >= 6 
+    ? (executability >= 6 ? 'handeln' : 'blockiert')   // gutes Setup, teuer
+    : (executability >= 6 ? 'liquide'  : 'ignorieren');
+
+  // Warum NICHT grün? (spart im Trade-Alltag enorm viel Grübelzeit)
+  const blockers = [];
+  if (netCRV < minCrv) blockers.push(`CRV ${r2(netCRV)}:1 < Minimum ${r2(minCrv)}:1`);
+  if (costRatio < 2.5) blockers.push(`Kosten fressen den Stop (${r1(costRatio)}x)`);
+  if (spread != null && spread > 0.0025) blockers.push(`Spread ${(spread * 100).toFixed(2)} %`);
+  if (bookKnown && liquidity < 6) blockers.push('dünne Tiefe');
+  if (!bookKnown) blockers.push('Orderbuch ungeprüft');
+  if (exhaustion >= 7) blockers.push('überdehnt');
+  if (setupFit < 7) blockers.push('kein klares Setup');
+  if (modeScore < 7.0) blockers.push(`Score ${r1(modeScore)}`);
+
+  // ---- v3.5.0 CLAUDE-MODUS (additiv) ---------------------------------------
+  // Befund: netCRV = (2,2r - c)/(r + c) erreicht 2,0 erst ab costRatio r/c >= 15;
+  // der Code selbst limitiert den Stop aber auf max. 2,6 ATR und verlangt nur
+  // costRatio >= 2,5 -> "gruen" war bei realen Bitpanda-Kosten praktisch
+  // unerreichbar (ausser bei seltenen weiten Strukturzielen). Der Claude-Modus
+  // nutzt erreichbare, aber weiterhin kostenehrliche Gates plus Erwartungswert.
+  // Sicherheitsinvarianten bleiben: ohne Orderbuch niemals gruen.
+  const claude = (() => {
+    // Drei-Ausgaenge-EV (Management: nach TP1 Stop -> Breakeven), Kosten 1,2x je Einheit Risiko.
+    const p1 = Math.max(0.40, Math.min(0.66,
+      0.44 + (modeQuality - 5) * 0.045 + (setupFit - 5) * 0.02 - Math.max(0, exhaustion - 5) * 0.02));
+    const p2 = Math.max(0.35, Math.min(0.55, 0.42 + (modeQuality - 6) * 0.02));
+    const R1 = (tp1 - entry) / riskPerUnit, R2 = (tp2 - entry) / riskPerUnit;
+    const costR = (cost / riskPerUnit) * 1.2;
+    const cHit = p1;
+    const cNetPlanR = ((0.5 * (tp1 - entry) + 0.5 * (tp2 - entry)) - cost) / (riskPerUnit + cost);
+    const cExpectancyR = +((p1 * 0.5 * R1 + p1 * p2 * 0.5 * R2 - (1 - p1) * 1 - costR)).toFixed(2);
+    const setupOk = mode === 'elliott' ? elliott >= 6.6 : setupFit >= 6.5;
+    const cGreen = viable && bookKnown && (spread == null || spread <= 0.0035)
+      && liquidity >= 5.5 && exhaustion < 7 && costRatio >= 3.2 && netCRV >= 1.4
+      && modeQuality >= 6.6 && executability >= 6.0 && setupOk && cExpectancyR >= 0.10;
+    const cYellow = !cGreen && viable && (modeQuality >= 5.6 || premove >= 6.8);
+    const cBlockers = [];
+    if (!bookKnown) cBlockers.push('Orderbuch ungeprueft (fail-closed)');
+    if (spread != null && spread > 0.0035) cBlockers.push(`Spread ${(spread * 100).toFixed(2)} %`);
+    if (bookKnown && liquidity < 5.5) cBlockers.push('duenne Tiefe');
+    if (costRatio < 3.2) cBlockers.push(`Stop nur ${r1(costRatio)}x Kosten (< 3,2x)`);
+    if (netCRV < 1.4) cBlockers.push(`Netto-CRV ${r2(netCRV)}:1 < 1,4:1`);
+    if (modeQuality < 6.6) cBlockers.push(`Qualitaet ${r1(modeQuality)} < 6,6`);
+    if (!setupOk) cBlockers.push('kein klares Setup-Muster');
+    if (exhaustion >= 7) cBlockers.push('ueberdehnt');
+    if (cExpectancyR < 0.10) cBlockers.push(`Erwartungswert ${cExpectancyR}R < +0,10R`);
+    return {
+      light: cGreen ? 'green' : cYellow ? 'yellow' : 'red',
+      score: r1(modeScore), netCRV: r2(netCRV),
+      planR: r2(cNetPlanR), hitPct: Math.round(cHit * 100), expectancyR: cExpectancyR,
+      blockers: cBlockers.slice(0, 5),
+    };
+  })();
+
+  // Sparkline: letzte 48 Closes normalisiert 0..100
+  const sp = cl.slice(-48);
+  const spLo = minOf(sp), spHi = maxOf(sp);
+  const spark = sp.map((c) => Math.round(spHi > spLo ? ((c - spLo) / (spHi - spLo)) * 100 : 50));
+
+  return {
+    claude,
+    pair, light, score: r1(modeScore), premove: r1(premove), regime, setup, orderType,
+    quality: r1(modeQuality), executability: r1(executability), quadrant, analysisMode: mode,
+    components: [...on], blockers,
+    // Faktoren
+    momentum: r1(momentum), volumeAcceleration: r1(volumeAcceleration),
+    ret15: r2(ret15), ret60: r2(ret60), relVol: relVol == null ? null : r2(relVol),
+    relativeStrength: relativeStrength == null ? null : r1(relativeStrength), compression: r1(compression),
+    trendQuality: r1(trendQuality), mtf: r1(mtf), bookScore: r1(bookScore),
+    exhaustion: r1(exhaustion), liquidity: r1(liquidity), elliott: r1(elliott),
+    // Preise
+    price: live.c, closedPrice: px, zoneLow, zoneHigh, entry, stop, tp1, tp2,
+    vwap: vwapS, vwapLong: vwapL, emaDev: r2(emaDev), ema21: e21, vwapDev: r2(vwapDev), rsi: Math.round(rsi14), atrPct: r2(atrPct * 100),
+    riskPct: r2((riskPerUnit / entry) * 100),
+    netCRV: r2(netCRV), netCRV1: r2(netCRV1), costPct: r2(costPct * 100),
+    costRatio: r1(costRatio), tp2Source, diag,
+    // Orderbuch
+    spreadPct: spread, imbalance: r2(imbalance),
+    buyCapacity: bm ? Math.round(bm.buyCapacity) : null,
+    sellCapacity: bm ? Math.round(bm.sellCapacity) : null,
+    slipBps: bm ? Math.round(bm.slipBps) : null,
+    inZone: live.c >= zoneLow && live.c <= zoneHigh,
+    aboveVwap, spark,
+    barCloseIn: Math.max(0, 300 - Math.floor((Date.now() / 1000 - live.t) % 300)),
+  };
+}
+
+/* ================================================================= Scanning */
+async function runScan(key, opts = {}) {
+  const c = makeClient(key);
+  const deepMax = Math.min(CFG.DEEP_MAX, Math.max(4, opts.deep || CFG.DEEP_MAX));
+
+  // Gebührenstufe einmal live holen — macht das CRV ehrlich (1 Subrequest)
+  let fee = CFG.DEFAULT_FEE;
+  try {
+    const acc = await c.get('account');
+    const f = num(acc?.takerFee ?? acc?.feeTier?.takerFee ?? acc?.fees?.taker);
+    if (f > 0 && f < 0.02) fee = f > 1 ? f / 10_000 : f;
+  } catch { /* Key ohne Account-Recht → Fallback */ }
+
+  // Breiter Filter: 1 Subrequest für alle Paare
+  const tickers = await c.get('tickers');
+  const eur = (Array.isArray(tickers) ? tickers : [])
+    .filter((t) => String(t.pair || '').endsWith('-EUR') && num(t.price) > 0);
+  if (!eur.length) throw new Error('Keine EUR-Paare in /tickers');
+
+  // Ticker-"volume" ist je nach Paar Basis- oder Quote-Menge.
+  // Heuristik über BTC-EUR: rohe Menge in BTC ist klein → dann × Preis rechnen.
+  const btcT = eur.find((t) => t.pair === 'BTC-EUR');
+  const volIsBase = btcT ? num(btcT.volume) < 1e6 : true;
+  const notional = (t) => (volIsBase ? num(t.volume) * num(t.price) : num(t.volume));
+
+  // Vorauswahl: Umsatz × Tagesrange (= wo heute wirklich Bewegung ist)
+  const scored = eur.map((t) => {
+    const p = num(t.price), hi = num(t.high), lo = num(t.low);
+    const range = p > 0 && hi > lo ? (hi - lo) / p : 0;
+    return { pair: t.pair, price: p, notional: notional(t), pressure: notional(t) * (0.3 + range * 8) };
+  });
+  scored.sort((a, b) => b.pressure - a.pressure);
+
+  // Liquiditaetsschwelle RELATIV zum Median, nicht absolut: eine harte Euro-Grenze
+  // wuerde das Universum je nach Marktphase still auf eine Handvoll Paare schrumpfen.
+  const medNot = median(scored.map((x) => x.notional).filter((x) => x > 0)) || 0;
+  const floorNot = Math.max(10_000, medNot * 0.15);
+  const liquid = scored.filter((x) => x.notional >= floorNot);
+  const rest = scored.filter((x) => x.notional < floorNot);
+
+  const watch = (opts.watch || []).filter((p) => eur.some((t) => t.pair === p));
+  const chosen = [...new Set(['BTC-EUR', ...watch, ...liquid.map((x) => x.pair), ...rest.map((x) => x.pair)])]
+    .slice(0, deepMax);
+
+  // Kerzen: 1 Subrequest je Paar, daraus 5m + 15m + 1h
+  const candleMap = new Map();
+  await pool(chosen, CFG.POOL, async (p) => {
+    try { candleMap.set(p, toCandles(await c.get(`candles/${p}`, { interval: '5m', limit: CFG.CANDLE_LIMIT }))); }
+    catch { candleMap.set(p, []); }
+  });
+  const btc5 = candleMap.get('BTC-EUR') || [];
+  btcRef = btc5;
+
+  // Vorlauf ohne Orderbuch → nur die besten Kandidaten bekommen Tiefe
+  const mode = opts.mode || 'composite';
+  const minCrv = Math.max(1, Number(opts.minCrv || 2));
+  const comp = opts.comp instanceof Set ? opts.comp : new Set(ALL_ON);
+  const useBook = comp.has('book');
+
+  const pre = chosen.map((p) => {
+    const cs = candleMap.get(p);
+    if (!cs || cs.length < 60) return null;
+    return analyse({ pair: p, c5: cs, btc5: p === 'BTC-EUR' ? null : btc5, book: null, fee, mode, comp, minCrv });
+  }).filter(Boolean);
+
+  pre.sort((a, b) => (b.score + b.premove) - (a.score + a.premove));
+  // Orderbuch abgeschaltet → keine Orderbuch-Requests. Spart echte API-Calls.
+  const bookPairs = useBook ? pre.slice(0, CFG.BOOK_MAX).map((x) => x.pair) : [];
+
+  const bookMap = new Map();
+  await pool(bookPairs, CFG.POOL, async (p) => {
+    try { bookMap.set(p, bookMetrics(await c.get(`orderbook/${p}`, { depth: CFG.BOOK_DEPTH }))); }
+    catch { bookMap.set(p, null); }
+  });
+
+  // Finale Analyse mit Orderbuch, wo vorhanden
+  const preByPair = new Map(pre.map((r) => [r.pair, r]));
+  const rows = chosen.map((p) => {
+    const cs = candleMap.get(p);
+    if (!cs || cs.length < 60) return null;
+    if (!bookMap.has(p)) return preByPair.get(p) || null;
+    return analyse({ pair: p, c5: cs, btc5: p === 'BTC-EUR' ? null : btc5, book: bookMap.get(p) || null, fee, mode, comp, minCrv });
+  }).filter(Boolean);
+
+  // --- Marktregime: Breadth statt Bauchgefühl -----------------------------
+  const above = rows.filter((x) => x.aboveVwap).length;
+  const breadth = rows.length ? above / rows.length : 0;
+  const btcRow = rows.find((x) => x.pair === 'BTC-EUR');
+  const btcTrend = btcRow ? btcRow.mtf : 5;
+  let marketRegime = 'Neutral';
+  if (breadth >= 0.62 && btcTrend >= 5.5) marketRegime = 'Risk-On';
+  else if (breadth <= 0.32 || btcTrend <= 3.8) marketRegime = 'Risk-Off';
+
+  // Im Risk-Off keine grünen Longs außer echten Reversals
+  if (marketRegime === 'Risk-Off') {
+    for (const row of rows) {
+      if (row.light === 'green' && row.regime !== 'Reversal') {
+        row.light = 'yellow'; row.blockers.unshift('Marktregime Risk-Off');
+      }
+    }
+  }
+
+  const rank = { green: 3, yellow: 2, red: 1 };
+  rows.sort((a, b) => rank[b.light] - rank[a.light] || b.score - a.score || b.premove - a.premove);
+
+  return {
+    ts: Date.now(), version: APP_VERSION,
+    fee, feeBps: Math.round(fee * 10_000),
+    universe: eur.length, liquidCount: liquid.length, deepCount: rows.length, bookCount: bookPairs.length,
+    // scanned = tatsächlich tief analysiert. Die Anzeigemenge legt das Frontend fest.
+    scanned: rows.length, requested: chosen.length,
+    subrequests: c.used, requests: c.used,        // "requests" = Alias fürs Frontend
+    mode, components: [...comp],
+    marketRegime, breadth: r2(breadth), btcTrend: r1(btcTrend),
+    rows,
+  };
+}
+
+/* ============================================= Cache + Single-Flight-Schutz */
+let memo = { ts: 0, data: null };
+let inflight = null;
+let inflightSig = '';
+let btcRef = null;        // letzte BTC-Kerzen fuer die RS-Berechnung im Einzelabruf
+
+/* ------------------------------------------------------- Verbindungsstatus
+   Speist die Ampeln „Krypto ● | Aktien ●“ in der Kopfzeile. Es wird nur
+   berichtet, was aus echten Antworten ableitbar ist — nichts geschätzt. */
+const apiState = {
+  crypto: { state: 'unknown', ts: 0, message: null },
+  stocks: { state: 'unknown', ts: 0, message: null },
+  alpaca: { state: 'unknown', ts: 0, message: null },
+};
+function setApiState(which, state, message = null) {
+  apiState[which] = { state, ts: Date.now(), message: message ? String(message).slice(0, 220) : null };
+}
+function classifyError(e) {
+  const m = String(e?.message || e || '');
+  if (/api[_-]?key|unauthor|401|403/i.test(m)) return 'nokey';
+  if (/day|daily|täglich|out of api credits for the day/i.test(m)) return 'daylimit';
+  if (/429|rate|too many|run out of api credits/i.test(m)) return 'ratelimit';
+  if (/cpu|exceeded|resource|1102/i.test(m)) return 'cpu';
+  return 'error';
+}
+
+function cronLog(provider, state, message, extra = {}) {
+  console.error(JSON.stringify({
+    event: 'fusionpulse_cron_provider', provider, state,
+    message: message ? String(message).slice(0, 300) : null,
+    ts: Date.now(), ...extra,
+  }));
+}
+async function persistApiState(env, which, state, message = null, ts = Date.now()) {
+  if (!env?.DB) return;
+  try {
+    await ensureD1Schema(env);
+    const value = safeJson({ state, message: message ? String(message).slice(0, 220) : null, ts });
+    await env.DB.prepare(
+      `INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`
+    ).bind(`provider_health:${which}`, value, ts).run();
+  } catch (e) {
+    console.warn(JSON.stringify({ event:'fusionpulse_health_persist_failed', provider:which, message:String(e?.message||e), ts:Date.now() }));
+  }
+}
+async function persistentApiState(env, which, configured) {
+  if (!configured) return { state:'nokey', ts:0, message:'nicht konfiguriert', persistent:true };
+  const local = apiState[which] || { state:'unknown', ts:0, message:null };
+  if (!env?.DB) return { ...local, persistent:false };
+  try {
+    await ensureD1Schema(env);
+    const meta = await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1')
+      .bind(`provider_health:${which}`).first();
+    let saved = null;
+    if (meta?.value) { try { saved = JSON.parse(meta.value); } catch {} }
+    if (saved?.state) {
+      const age = Date.now() - Number(saved.ts || meta.updated_ts || 0);
+      const staleAfter = which === 'crypto' ? 20*60_000 : 45*60_000;
+      return { state: saved.state === 'ok' && age > staleAfter ? 'stale' : saved.state,
+        ts:Number(saved.ts || meta.updated_ts || 0), message:saved.message || null, persistent:true, ageMs:age };
+    }
+    const source = which === 'crypto' ? 'Bitpanda Fusion' : which === 'stocks' ? 'Twelve Data' : 'Alpaca IEX';
+    const snap = await env.DB.prepare('SELECT MAX(ts) ts FROM market_snapshots WHERE source=?').bind(source).first();
+    if (Number(snap?.ts) > 0) {
+      const age = Date.now() - Number(snap.ts);
+      const staleAfter = which === 'crypto' ? 20*60_000 : 45*60_000;
+      return { state:age > staleAfter ? 'stale' : 'ok', ts:Number(snap.ts), message:'aus letztem D1-Snapshot abgeleitet', persistent:true, ageMs:age };
+    }
+  } catch (e) {
+    console.warn(JSON.stringify({ event:'fusionpulse_health_read_failed', provider:which, message:String(e?.message||e), ts:Date.now() }));
+  }
+  return { ...local, persistent:false };
+}
+
+/** Der Cache muss die Analyse-Einstellung kennen, sonst liefert ein Moduswechsel
+ *  bis zu 18 s lang noch das Ergebnis der alten Einstellung. */
+function snapSig(opts) {
+  return [
+    opts.mode || 'composite',
+    [...(opts.comp || ALL_ON)].sort().join('.'),
+    opts.deep || '',
+    (opts.watch || []).join('.'),
+    opts.minCrv || '',
+  ].join('|');
+}
+
+// Persistenter Warm-Start für die PWA. Nach einem Worker-Deploy ist der
+// In-Memory-Cache leer, der Cloudflare-Cron läuft aber unabhängig von der PWA.
+// Der letzte vollständige Scan wird daher zusätzlich in D1/fp_meta abgelegt.
+let lastCryptoPersistTs = 0;
+async function persistCryptoScan(env, sig, data) {
+  if (!env?.DB || !data?.rows?.length) return;
+  if (Date.now() - lastCryptoPersistTs < 60_000) return;
+  lastCryptoPersistTs = Date.now();
+  try {
+    await ensureD1Schema(env);
+    const payload = safeJson({ ts: Date.now(), sig, data });
+    await env.DB.prepare(
+      `INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`
+    ).bind('crypto_scan:last', payload, Date.now()).run();
+  } catch (e) {
+    console.warn(JSON.stringify({ event:'fusionpulse_crypto_cache_write_failed', message:String(e?.message||e), ts:Date.now() }));
+  }
+}
+async function readPersistedCryptoScan(env, sig) {
+  if (!env?.DB) return null;
+  try {
+    await ensureD1Schema(env);
+    const row = await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind('crypto_scan:last').first();
+    if (!row?.value) return null;
+    const p = JSON.parse(row.value);
+    const data = p?.data;
+    const ts = Number(p?.ts || row.updated_ts || data?.ts || 0);
+    if (!data?.rows?.length || !ts || Date.now() - ts > 20*60_000) return null;
+    // Exakte Einstellungen bevorzugen. Ein abweichender letzter Cron-Scan ist
+    // trotzdem besser als minutenlang gar keine Coins; er wird als warmStart
+    // markiert und beim nächsten normalen Scan ersetzt.
+    return { ...data, ts: data.ts || ts, cached:true, persistent:true, warmStart:p?.sig !== sig };
+  } catch (e) {
+    console.warn(JSON.stringify({ event:'fusionpulse_crypto_cache_read_failed', message:String(e?.message||e), ts:Date.now() }));
+    return null;
+  }
+}
+
+async function getSnapshot(env, opts, force) {
+  const sig = snapSig(opts);
+  const fresh = memo.sig === sig && Date.now() - memo.ts < CFG.TTL_MS;
+  if (!force && fresh && memo.data) return { ...memo.data, cached: true };
+  if (!force && !memo.data) {
+    const persisted = await readPersistedCryptoScan(env, sig);
+    if (persisted) {
+      memo = { ts: Date.now(), sig, data: persisted };
+      setApiState('crypto', 'ok', 'Persistenter Cron-Scan geladen');
+      return persisted;
+    }
+  }
+  // v3.3.7: Ein langsamer/defekter Upstream darf den Browser niemals an ein
+  // bereits laufendes Promise ketten. Bevorzugt wird der letzte gute Snapshot;
+  // der laufende Refresh darf im Hintergrund zu Ende laufen oder fehlschlagen.
+  if (!force && inflight && inflightSig === sig) {
+    if (memo.data) return { ...memo.data, cached:true, staleWhileRefresh:true, cacheAgeMs:Date.now()-memo.ts };
+    const persisted = await readPersistedCryptoScan(env, sig);
+    if (persisted) return { ...persisted, staleWhileRefresh:true };
+  }
+  if (force && inflight) {
+    // Kein await auf den alten Request: Force muss einen unabhängigen Neuversuch erlauben.
+    inflight = null; inflightSig = '';
+  }
+
+  inflightSig = sig;
+  inflight = (async () => {
+    try {
+      const data = await runScan(env.FUSION_API_KEY, opts);
+      memo = { ts: Date.now(), sig, data };
+      setApiState('crypto', 'ok');
+      if (env.SNAP) await env.SNAP.put('snapshot', JSON.stringify(data), { expirationTtl: 60 });
+      await persistCryptoScan(env, sig, data);
+      return data;
+    } catch (e) {
+      setApiState('crypto', classifyError(e), e?.message);
+      // Fail-open nur für die ANZEIGE des letzten guten Datensatzes, niemals für
+      // BUY-Freigaben: alte Daten werden als stale/cached markiert und das Frontend
+      // kann damit keine frische grüne Freigabe erzeugen.
+      if (memo.data) return { ...memo.data, cached:true, stale:true, upstreamError:String(e?.message||e), cacheAgeMs:Date.now()-memo.ts };
+      const persisted = await readPersistedCryptoScan(env, sig);
+      if (persisted) return { ...persisted, stale:true, upstreamError:String(e?.message||e) };
+      throw e;
+    } finally { inflight = null; }
+  })();
+  return { ...(await inflight), cached: false };
+}
+
+/* ================================================================== Routing */
+const json = (o, status = 200, extra = {}) => new Response(JSON.stringify(o), {
+  status,
+  headers: {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'public, max-age=5, s-maxage=15, stale-while-revalidate=30',
+    ...extra,
+  },
+});
+
+
+/* ========================================================================
+   US-Aktienradar — Twelve Data (optional)                       v3.0.7
+   Free-freundlich: 21 liquide Titel, pro 5-Minuten-Slot nur 7 Titel. Damit
+   wird jeder Titel etwa alle 15 Minuten aktualisiert; FX wird 30 Min gecacht.
+   Firmennamen kommen aus einer LOKALEN Tabelle — kein zusätzlicher Request
+   pro Refresh. Liefert time_series ein meta.name mit, wird es bevorzugt.
+   US-Feed, nicht Tradegate. EUR-Werte sind gekennzeichnete Umrechnungen.
+   ======================================================================== */
+const STOCK_UNIVERSE = [
+  ['Technologie',  'NVDA',  'NVIDIA Corporation'],
+  ['Technologie',  'MSFT',  'Microsoft Corporation'],
+  ['Technologie',  'AAPL',  'Apple Inc.'],
+  ['Kommunikation','META',  'Meta Platforms, Inc.'],
+  ['Kommunikation','GOOGL', 'Alphabet Inc.'],
+  ['Kommunikation','NFLX',  'Netflix, Inc.'],
+  ['Konsum',       'AMZN',  'Amazon.com, Inc.'],
+  ['Konsum',       'TSLA',  'Tesla, Inc.'],
+  ['Konsum',       'COST',  'Costco Wholesale Corporation'],
+  ['Finanzen',     'JPM',   'JPMorgan Chase & Co.'],
+  ['Finanzen',     'BAC',   'Bank of America Corporation'],
+  ['Finanzen',     'GS',    'The Goldman Sachs Group, Inc.'],
+  ['Gesundheit',   'LLY',   'Eli Lilly and Company'],
+  ['Gesundheit',   'UNH',   'UnitedHealth Group Incorporated'],
+  ['Gesundheit',   'ABBV',  'AbbVie Inc.'],
+  ['Energie',      'XOM',   'Exxon Mobil Corporation'],
+  ['Energie',      'CVX',   'Chevron Corporation'],
+  ['Energie',      'COP',   'ConocoPhillips'],
+  ['Industrie',    'CAT',   'Caterpillar Inc.'],
+  ['Industrie',    'BA',    'The Boeing Company'],
+  ['Industrie',    'GE',    'GE Aerospace'],
+];
+const STOCK_NAMES = Object.fromEntries(STOCK_UNIVERSE.map(([, s, n]) => [s, n]));
+// v3.4.2: Automatic stock discovery is intentionally restricted to a curated
+// large-cap / highly liquid US universe. The goal is practical broker
+// tradability (Flatex/Tradegate) rather than maximum candidate count. This is
+// an inclusion-only gate: unknown/small/micro-cap symbols cannot enter Radar
+// or Opening Momentum automatically. Manual search/favorites remain separate.
+const LARGE_CAP_RADAR_SYMBOLS = new Set([
+  'AAPL','ABBV','AMD','AMAT','AMZN','ARM','AVGO','BA','BAC','CAT','CEG','COP','COST',
+  'CRM','CRWD','CVX','DIS','GE','GOOG','GOOGL','GS','HD','HOOD','IBM','INTC','JNJ',
+  'JPM','LLY','MA','META','MRK','MSFT','MSTR','MU','NFLX','NKE','NVDA','ORCL','PFE',
+  'PLTR','QCOM','TMO','TSLA','UBER','UNH','V','WMT','XOM'
+]);
+function largeCapRadarAllowed(symbol){
+  return LARGE_CAP_RADAR_SYMBOLS.has(String(symbol||'').trim().toUpperCase().replace(/\./g,'-'));
+}
+
+/* ==== v3.8.0 · MOMENTUM-MODUS: messbares Gitter statt Namensliste ===========
+   BEFUND: Bis 3.7.0 war `largeCapRadarAllowed` ein Einlass-Gate, das aus rund
+   12.000 von Tiingo gescannten Titeln genau 48 durchliess — alles Mega-Caps.
+   Ein Nachrichten-Mover wie MRNA konnte den Radar deshalb NIE von selbst
+   erreichen, obwohl die Daten dafuer laengst vorlagen. Der Nutzer sucht aber
+   genau solche Titel; die App suchte per Konstruktion daran vorbei.
+
+   Ersetzt durch ein Gitter aus MESSBAREN Groessen. Das ist ehrlicher als eine
+   gepflegte Namensliste, weil es Handelbarkeit prueft statt Bekanntheit — und
+   es veraltet nicht. Bewusst konservativ, weil Illiquiditaet beim schnellen
+   Ein- und Aussteigen teurer ist als eine verpasste Gelegenheit.
+
+   Der Large-Cap-Pfad bleibt unveraendert bestehen und ist weiterhin Default.
+   Der Momentum-Pfad ist ein ZWEITER Modus, keine Ersetzung.                 */
+const MOM_MIN_PRICE_USD   = 5;        // unter 5 $ beginnt das Penny-Stock-Gebiet
+/* ACHTUNG, Kalibrierungsrisiko (v3.8.1): Der Tiingo-IEX-Feed liefert das
+   Volumen der Boerse IEX — und IEX hat nur rund 2–3 % des US-Handelsvolumens.
+   Ein Titel mit 500 Mio. $ Gesamtumsatz zeigt hier vielleicht 10–15 Mio. $.
+   Eine Schwelle von 20 Mio. $ (erster Entwurf) haette deshalb fast alles
+   ausgeschlossen — die Liste waere leer geblieben und haette wie ein Defekt
+   ausgesehen. Der Wert ist bewusst als IEX-ANTEIL gesetzt, mit grosszuegiger
+   Reserve nach unten; die Handelbarkeit sichern zusaetzlich Kurs- und
+   Spread-Kriterium ab. Nach dem ersten Live-Lauf anhand der Zaehler in
+   `radarGateStats` nachkalibrieren statt weiter zu schaetzen.            */
+const MOM_MIN_DOLLARVOL   = 2_000_000; // IEX-Anteil, entspricht grob 60–100 Mio. $ gesamt
+/* v3.9.0 · Hoechstalter des juengsten Bars fuer eine Modus-A-Freigabe.
+   Begruendung: Bei 10–15 % Tagesbewegung laeuft ein Titel in 10 Minuten leicht
+   1–2 % weiter. Ein Plan auf Basis eines solchen Kurses hat einen Stop, der real
+   schon durchbrochen ist, oder ein Ziel, das bereits erreicht wurde. Der Feed
+   liefert 5-Minuten-Bars; 600 Sekunden lassen genau einen verspaeteten Bar zu,
+   danach ist der Plan nicht mehr belastbar. Fail-closed: unbekanntes Alter zaehlt
+   wie zu alt. */
+const MOM_MAX_QUOTE_AGE_SEC = 600;
+const MOM_MAX_SPREAD_PCT  = 0.60;     // darueber frisst die Spanne den Ertrag
+const MOM_MIN_MOVE_PCT    = 3.0;      // darunter ist es kein Mover
+
+/* Zaehlt, woran Kandidaten scheitern. Ohne diese Zahlen laesst sich eine leere
+   Liste nicht von einer zu strengen Schwelle unterscheiden — und genau das
+   waere hier der wahrscheinlichste Fehler. */
+let radarGateStats={ts:0,seen:0,largeCap:0,momentum:0,failPrice:0,failVolume:0,failSpread:0,failMove:0};
+function resetRadarGateStats(){ radarGateStats={ts:Date.now(),seen:0,largeCap:0,momentum:0,failPrice:0,failVolume:0,failSpread:0,failMove:0}; }
+function momentumRadarAllowed(r,count=false){
+  const price=Number(r?.last);
+  const vol=Number(r?.volume);
+  const spread=Number(r?.spreadPct);
+  const move=Math.abs(Number(r?.movePct));
+  if(!(price>=MOM_MIN_PRICE_USD)){ if(count)radarGateStats.failPrice++; return false; }   // fail-closed
+  if(!(vol>0) || !(price*vol>=MOM_MIN_DOLLARVOL)){ if(count)radarGateStats.failVolume++; return false; }
+  if(Number.isFinite(spread) && spread>MOM_MAX_SPREAD_PCT){ if(count)radarGateStats.failSpread++; return false; }
+  if(!(move>=MOM_MIN_MOVE_PCT)){ if(count)radarGateStats.failMove++; return false; }
+  return true;
+}
+/** Einlass in den Radar: Large-Cap-Liste ODER messbar handelbarer Mover. */
+function radarCandidateAllowed(r,count=false){
+  if(count) radarGateStats.seen++;
+  if(largeCapRadarAllowed(r?.symbol)){ if(count)radarGateStats.largeCap++; return true; }
+  const ok=momentumRadarAllowed(r,count);
+  if(ok&&count) radarGateStats.momentum++;
+  return ok;
+}
+const STOCK_SEARCH_CATALOG = [
+  ...STOCK_UNIVERSE,
+  ['Technologie','PLTR','Palantir Technologies Inc.'], ['Technologie','IONQ','IonQ, Inc.'],
+  ['Technologie','RGTI','Rigetti Computing, Inc.'], ['Technologie','MSTR','Strategy Inc.'],
+  ['Gesundheit','MRNA','Moderna, Inc.'], ['Technologie','AMD','Advanced Micro Devices, Inc.'],
+  ['Technologie','AVGO','Broadcom Inc.'], ['Technologie','ARM','Arm Holdings plc'],
+  ['Technologie','SMCI','Super Micro Computer, Inc.'], ['Finanzen','COIN','Coinbase Global, Inc.'],
+  ['Finanzen','HOOD','Robinhood Markets, Inc.'], ['Finanzen','SOFI','SoFi Technologies, Inc.'],
+  ['Technologie','CRWD','CrowdStrike Holdings, Inc.'], ['Technologie','SNOW','Snowflake Inc.'],
+  ['Konsum','UBER','Uber Technologies, Inc.'], ['Industrie','RKLB','Rocket Lab USA, Inc.'],
+  ['Rohstoffe','AEM','Agnico Eagle Mines Limited'], ['Rohstoffe','AG','First Majestic Silver Corp.'],
+  ['Gesundheit','ABSI','Absci Corporation'], ['Energie','CEG','Constellation Energy Corporation'],
+  ['Gesundheit','UTHR','United Therapeutics Corporation'], ['Technologie','VEEV','Veeva Systems Inc.'],
+  ['Gesundheit','SDGR','Schrödinger, Inc.'],
+  /* v3.18.0 · Nachtrag zu P-A4. Die Katalog-Reserve nuetzt nur so viel, wie im
+     Katalog steht — und fuer Edelmetalle standen dort GENAU ZWEI Titel. Der
+     rotierende Einstieg haette also immer dieselben zwei gezogen. Ergaenzt sind
+     liquide, US-gelistete Werte aus der Prioritaetsliste; alles darunter
+     scheitert ohnehin am Preis- oder Umsatz-Gitter.
+     Sie bekommen dadurch AUFMERKSAMKEIT, keinen Bonus: der Katalog ist ein
+     Ansehpfad, kein Score-Eingang. */
+  ['Rohstoffe','NEM','Newmont Corporation'], ['Rohstoffe','GOLD','Barrick Mining Corporation'],
+  ['Rohstoffe','FCX','Freeport-McMoRan Inc.'], ['Rohstoffe','WPM','Wheaton Precious Metals Corp.'],
+  ['Rohstoffe','KGC','Kinross Gold Corporation'], ['Rohstoffe','PAAS','Pan American Silver Corp.'],
+  ['Rohstoffe','SBSW','Sibanye Stillwater Limited'], ['Rohstoffe','HL','Hecla Mining Company'],
+  /* Pharma war mit 7 von 63 ebenfalls duenn vertreten. */
+  ['Gesundheit','VRTX','Vertex Pharmaceuticals Incorporated'], ['Gesundheit','REGN','Regeneron Pharmaceuticals, Inc.'],
+  ['Gesundheit','GILD','Gilead Sciences, Inc.'], ['Gesundheit','BMY','Bristol-Myers Squibb Company']
+];
+const STOCK_SEARCH_BY_SYMBOL = new Map(STOCK_SEARCH_CATALOG.map(([sector, symbol, name]) => [symbol, { sector, symbol, name }]));
+function resolveStockQuery(raw) {
+  const q = String(raw || '').trim().toUpperCase();
+  if (!q) return null;
+  if (STOCK_SEARCH_BY_SYMBOL.has(q)) return STOCK_SEARCH_BY_SYMBOL.get(q);
+  const hit = STOCK_SEARCH_CATALOG.find(([sector, symbol, name]) => name.toUpperCase() === q || (q.length >= 3 && name.toUpperCase().startsWith(q)));
+  if (hit) return { sector: hit[0], symbol: hit[1], name: hit[2] };
+  if (/^[A-Z][A-Z0-9.\-]{0,7}$/.test(q)) return { sector: 'Watchlist', symbol: q, name: q };
+  return null;
+}
+
+let stockMemo = { ts: 0, rows: [], cycle: -1, sig: '' };
+let fxMemo = { ts: 0, usdPerEur: null };
+const stockLookupMemo = new Map();
+
+async function persistStockScan(env, sig, cycle, rows, meta={}) {
+  if(!env?.DB || !rows?.length) return;
+  try {
+    await ensureD1Schema(env);
+    const ts=Date.now();
+    const payload=safeJson({ts,sig,cycle,rows,meta});
+    await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
+      .bind('stock_scan:last',payload,ts).run();
+  } catch(e){ console.warn(JSON.stringify({event:'fusionpulse_stock_cache_write_failed',message:String(e?.message||e),ts:Date.now()})); }
+}
+async function readPersistedStockScan(env, sig, cycle) {
+  if(!env?.DB) return null;
+  try {
+    await ensureD1Schema(env);
+    const row=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind('stock_scan:last').first();
+    if(!row?.value) return null;
+    const p=JSON.parse(row.value), ts=Number(p?.ts||row.updated_ts||0);
+    if(!p?.rows?.length || p.sig!==sig || Number(p.cycle)!==Number(cycle) || Date.now()-ts>55_000) return null;
+    return {rows:p.rows,ts,meta:p.meta||{}};
+  } catch(e){ console.warn(JSON.stringify({event:'fusionpulse_stock_cache_read_failed',message:String(e?.message||e),ts:Date.now()})); return null; }
+}
+// v3.2.4: UI-Requests lesen den letzten serverseitigen Aktienbatch unabhängig
+// von Favoriten-/UI-Signaturen. Dadurch startet jeder Browser/Worker-Isolate
+// NICHT erneut den teuren Whole-Market-/Deep-Scan. Der Cron bleibt die einzige
+// Instanz, die den autonomen Aktien-Hintergrundscan erzeugt.
+async function readLatestPersistedStockScan(env,maxAgeMs=4*60_000){
+  if(!env?.DB)return null;
+  try{
+    await ensureD1Schema(env);
+    const row=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind('stock_scan:last').first();
+    if(!row?.value)return null;
+    const x=JSON.parse(row.value),ts=Number(x?.ts||row.updated_ts||0);
+    if(!x?.rows?.length||Date.now()-ts>maxAgeMs)return null;
+    return {rows:x.rows,ts,cycle:Number(x.cycle)||-1,sig:String(x.sig||''),meta:x.meta||{}};
+  }catch(e){console.warn(JSON.stringify({event:'fusionpulse_stock_latest_cache_read_failed',message:String(e?.message||e),ts:Date.now()}));return null;}
+}
+
+/* ---- v3.5.1: konfigurierbare Deep-Scan-Tiefe -----------------------------
+   Die 20-Titel-Grenze war fest verdrahtet und ohne UI-Regler; die Warteschlange
+   wird vom serverseitigen Cron gebaut (laeuft auch bei geschlossener PWA),
+   daher ist die Tiefe eine geteilte Konto-Einstellung in D1, kein reiner
+   Client-Zustand. Persistierter Wert; Fallback 20, wenn D1 fehlt/leer ist. */
+const STOCK_DEEP_MIN=15, STOCK_DEEP_MAX=40, STOCK_DEEP_DEFAULT=20;
+let stockDeepMemo={value:STOCK_DEEP_DEFAULT,ts:0};
+function clampStockDeep(n){ const v=Math.round(Number(n)); return Number.isFinite(v)?Math.max(STOCK_DEEP_MIN,Math.min(STOCK_DEEP_MAX,v)):STOCK_DEEP_DEFAULT; }
+async function readStockDeepLimit(env){
+  if(stockDeepMemo.value && Date.now()-stockDeepMemo.ts<60_000) return stockDeepMemo.value;
+  if(!env?.DB){ stockDeepMemo={value:STOCK_DEEP_DEFAULT,ts:Date.now()}; return STOCK_DEEP_DEFAULT; }
+  try{
+    await ensureD1Schema(env);
+    const row=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind('stock_deep_limit').first();
+    const v=clampStockDeep(row?.value);
+    stockDeepMemo={value:v,ts:Date.now()};
+    return v;
+  }catch(e){ console.warn(JSON.stringify({event:'stock_deep_read_failed',message:String(e?.message||e),ts:Date.now()})); return STOCK_DEEP_DEFAULT; }
+}
+async function persistStockDeepLimit(env, n){
+  const v=clampStockDeep(n);
+  stockDeepMemo={value:v,ts:Date.now()};
+  if(!env?.DB) return v;
+  try{
+    await ensureD1Schema(env);
+    await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts')
+      .bind('stock_deep_limit',String(v),Date.now()).run();
+  }catch(e){ console.warn(JSON.stringify({event:'stock_deep_write_failed',message:String(e?.message||e),ts:Date.now()})); }
+  return v;
+}
+
+/* ---- v3.5.1: Tiingo-Kontingent — App-Eigenzaehlung -----------------------
+   Tiingo liefert (anders als Twelve Data) KEINE Nutzungs-Header in der
+   REST-Antwort und KEINEN oeffentlichen usage-Endpoint. Es gibt daher keinen
+   Weg, das reale Kontingent aus der API selbst auszulesen. Diese Zaehlung ist
+   ausdrueckliche eine App-Schaetzung: sie zaehlt nur Requests, die DIESER
+   Worker absetzt, nicht das gesamte Tiingo-Konto (z.B. Web-Dashboard-Zugriffe
+   zaehlen nicht mit). Ehrlich als "state:'app-estimate'" gekennzeichnet.
+   Plan-Obergrenzen laut oeffentlicher Tiingo-Preisseite (Power, Stand 2026):
+   10.000 Requests/Stunde, 100.000 Requests/Tag. BOATS ist ein Entitlement
+   ohne separates Limit, zaehlt gegen dasselbe Kontingent. */
+const TIINGO_PLAN_LIMITS = { hourly: 10_000, daily: 100_000 };
+const tiingoHourKey = (d=new Date()) => `${d.toISOString().slice(0,13)}`; // YYYY-MM-DDTHH
+const tiingoDayKeyUTC = (d=new Date()) => d.toISOString().slice(0,10);
+let tiingoQuota = { hourKey:'', hourCalls:0, dayKey:'', dayCalls:0, loadedFromD1:false };
+async function loadTiingoQuotaOnce(env){
+  if(tiingoQuota.loadedFromD1 || !env?.DB) return;
+  try{
+    await ensureD1Schema(env);
+    const row=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind('tiingo_quota').first();
+    if(row?.value){
+      const p=JSON.parse(row.value);
+      const hk=tiingoHourKey(), dk=tiingoDayKeyUTC();
+      tiingoQuota={
+        hourKey:p.hourKey===hk?hk:hk, hourCalls:p.hourKey===hk?(Number(p.hourCalls)||0):0,
+        dayKey:p.dayKey===dk?dk:dk, dayCalls:p.dayKey===dk?(Number(p.dayCalls)||0):0,
+        loadedFromD1:true,
+      };
+    } else tiingoQuota.loadedFromD1=true;
+  }catch(e){ console.warn(JSON.stringify({event:'tiingo_quota_load_failed',message:String(e?.message||e),ts:Date.now()})); tiingoQuota.loadedFromD1=true; }
+}
+let tiingoQuotaPersistTimer=0;
+function noteTiingoCall(env){
+  const hk=tiingoHourKey(), dk=tiingoDayKeyUTC();
+  if(tiingoQuota.hourKey!==hk){ tiingoQuota.hourKey=hk; tiingoQuota.hourCalls=0; }
+  if(tiingoQuota.dayKey!==dk){ tiingoQuota.dayKey=dk; tiingoQuota.dayCalls=0; }
+  tiingoQuota.hourCalls++; tiingoQuota.dayCalls++;
+  // Persistenz throttlen: nicht bei jedem Call synchron auf D1 schreiben.
+  if(env?.DB && Date.now()-tiingoQuotaPersistTimer>15_000){
+    tiingoQuotaPersistTimer=Date.now();
+    const payload=JSON.stringify(tiingoQuota);
+    ensureD1Schema(env).then(()=>env.DB.prepare(
+      'INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts'
+    ).bind('tiingo_quota',payload,Date.now()).run()).catch(e=>console.warn(JSON.stringify({event:'tiingo_quota_persist_failed',message:String(e?.message||e),ts:Date.now()})));
+  }
+}
+function tiingoQuotaView(){
+  const hk=tiingoHourKey(), dk=tiingoDayKeyUTC();
+  const hourCalls = tiingoQuota.hourKey===hk?tiingoQuota.hourCalls:0;
+  const dayCalls = tiingoQuota.dayKey===dk?tiingoQuota.dayCalls:0;
+  return {
+    state:'app-estimate', // ehrlich: keine echten Tiingo-Nutzungsdaten verfuegbar (kein Header, kein API-Endpoint)
+    hourCalls, hourLimit:TIINGO_PLAN_LIMITS.hourly, hourPct:+Math.min(100,(hourCalls/TIINGO_PLAN_LIMITS.hourly)*100).toFixed(1),
+    dayCalls, dayLimit:TIINGO_PLAN_LIMITS.daily, dayPct:+Math.min(100,(dayCalls/TIINGO_PLAN_LIMITS.daily)*100).toFixed(1),
+    note:'App-eigene Zaehlung dieses Workers; Tiingo liefert keine Nutzungs-Header/Endpoint. Kein Konto-weiter Wert.',
+  };
+}
+
+
+/* --- Kontingent-Überwachung ------------------------------------------------
+   Twelve Data liefert bei JEDER Antwort die Header api-credits-used und
+   api-credits-left. Beides wird 1:1 übernommen. Es wird NICHTS erfunden:
+   fehlen die Header, bleibt der Wert null und die UI schreibt „unbekannt“.
+   Das Minutenlimit ergibt sich aus used + left. Der Tagesverbrauch ist eine
+   ausdrücklich als solche gekennzeichnete Eigenzählung dieses Workers. */
+let tdQuota = {
+  creditsUsed: null, creditsLeft: null, minuteLimit: null,
+  dayKey: '', dayCredits: 0, dayLimit: null, dayLimitDerived: false,
+  lastHeaderTs: 0,
+};
+const utcDayKey = () => new Date().toISOString().slice(0, 10);
+async function noteQuota(env, res, creditsSpent) {
+  const day = utcDayKey();
+  if (tdQuota.dayKey !== day) { tdQuota.dayKey = day; tdQuota.dayCredits = 0; }
+  // Lokal sofort fortschreiben; D1 spiegelt den Tagesverbrauch anschließend atomar
+  // worker-/isolate-übergreifend. Dadurch ist die UI nicht mehr nur eine Instanzzählung.
+  tdQuota.dayCredits += creditsSpent;
+
+  const used = res?.headers?.get?.('api-credits-used');
+  const left = res?.headers?.get?.('api-credits-left');
+  if (used != null && left != null && used !== '' && left !== '') {
+    const u = Number(used), l = Number(left);
+    if (Number.isFinite(u) && Number.isFinite(l)) {
+      tdQuota.creditsUsed = u; tdQuota.creditsLeft = l;
+      tdQuota.minuteLimit = u + l;
+      tdQuota.lastHeaderTs = Date.now();
+      if (tdQuota.minuteLimit === 8) { tdQuota.dayLimit = 800; tdQuota.dayLimitDerived = true; }
+    }
+  }
+  if (env?.DB && creditsSpent > 0) {
+    try {
+      await ensureD1Schema(env);
+      const key=`twelve_quota:${day}`;
+      await env.DB.prepare(
+        `INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+         ON CONFLICT(key) DO UPDATE SET value=CAST(COALESCE(CAST(fp_meta.value AS INTEGER),0)+? AS TEXT),updated_ts=excluded.updated_ts`
+      ).bind(key,String(creditsSpent),Date.now(),creditsSpent).run();
+      const row=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind(key).first();
+      const global=Number(row?.value);
+      if(Number.isFinite(global)) tdQuota.dayCredits=global;
+    } catch (e) {
+      console.warn(JSON.stringify({event:'fusionpulse_quota_persist_failed',message:String(e?.message||e),ts:Date.now()}));
+    }
+  }
+}
+function quotaView() {
+  const fresh = tdQuota.lastHeaderTs && Date.now() - tdQuota.lastHeaderTs < 10 * 60_000;
+  return {
+    creditsUsed: fresh ? tdQuota.creditsUsed : null,
+    creditsLeft: fresh ? tdQuota.creditsLeft : null,
+    minuteLimit: tdQuota.minuteLimit,
+    dayCredits: tdQuota.dayCredits,          // Eigenzählung dieses Workers
+    dayKey: tdQuota.dayKey,
+    dayLimit: tdQuota.dayLimit,              // null = Anbieter liefert das nicht
+    dayLimitDerived: tdQuota.dayLimitDerived,
+    headerAgeMs: tdQuota.lastHeaderTs ? Date.now() - tdQuota.lastHeaderTs : null,
+  };
+}
+
+const emaN = (arr, n) => { if (!arr.length) return 0; const k = 2 / (n + 1); let e = arr[0]; for (const x of arr.slice(1)) e = x * k + e * (1 - k); return e; };
+const stockATR = (bars, n = 14) => { if (bars.length < 2) return 0; const tr = []; for (let i = 1; i < bars.length; i++) { const b = bars[i], p = bars[i - 1]; tr.push(Math.max(b.h - b.l, Math.abs(b.h - p.c), Math.abs(b.l - p.c))); } return tr.slice(-n).reduce((a, b) => a + b, 0) / Math.max(1, tr.slice(-n).length); };
+
+const NY_FMT = new Intl.DateTimeFormat('en-US', { timeZone:'America/New_York', weekday:'short', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hourCycle:'h23' });
+function nyParts(date = new Date()) {
+  const parts = NY_FMT.formatToParts(date);
+  return Object.fromEntries(parts.map(p=>[p.type,p.value]));
+}
+function easterSundayUTC(year){
+  const a=year%19,b=Math.floor(year/100),c=year%100,d=Math.floor(b/4),e=b%4,f=Math.floor((b+8)/25),g=Math.floor((b-f+1)/3),h=(19*a+b-d-g+15)%30,i=Math.floor(c/4),k=c%4,l=(32+2*e+2*i-h-k)%7,m=Math.floor((a+11*h+22*l)/451),month=Math.floor((h+l-7*m+114)/31),day=((h+l-7*m+114)%31)+1;
+  return new Date(Date.UTC(year,month-1,day));
+}
+function nthWeekdayUTC(year,month,weekday,n){const d=new Date(Date.UTC(year,month,1));const add=(weekday-d.getUTCDay()+7)%7+7*(n-1);d.setUTCDate(1+add);return d;}
+function lastWeekdayUTC(year,month,weekday){const d=new Date(Date.UTC(year,month+1,0));d.setUTCDate(d.getUTCDate()-((d.getUTCDay()-weekday+7)%7));return d;}
+function observedFixedUTC(year,month,day){const d=new Date(Date.UTC(year,month,day));if(d.getUTCDay()===6)d.setUTCDate(d.getUTCDate()-1);else if(d.getUTCDay()===0)d.setUTCDate(d.getUTCDate()+1);return d;}
+function nyseCalendar(year){
+  const easter=easterSundayUTC(year), goodFriday=new Date(easter);goodFriday.setUTCDate(easter.getUTCDate()-2);
+  const dates=[observedFixedUTC(year,0,1),nthWeekdayUTC(year,0,1,3),nthWeekdayUTC(year,1,1,3),goodFriday,lastWeekdayUTC(year,4,1),observedFixedUTC(year,5,19),observedFixedUTC(year,6,4),nthWeekdayUTC(year,8,1,1),nthWeekdayUTC(year,10,4,4),observedFixedUTC(year,11,25)];
+  return new Set(dates.map(d=>d.toISOString().slice(0,10)));
+}
+function usMarketPhase(date = new Date(), feed = null) {
+  const p=nyParts(date), weekend=['Sat','Sun'].includes(p.weekday), mins=Number(p.hour)*60+Number(p.minute), y=Number(p.year), ymd=`${p.year}-${p.month}-${p.day}`, holiday=nyseCalendar(y).has(ymd);
+  const iex = feed === 'iex';
+  let key='closed', label='US-Markt geschlossen', help='Aktienwerte dienen nur der Vorbereitung; keine Live-BUY-Freigabe.';
+  if(!weekend && !holiday){
+    if(mins>=240&&mins<480){key='premarket-early';label='Premarket 04:00–08:00 ET';help=iex?'Voller US-Premarket läuft; IEX Free bildet diesen frühen Abschnitt nur eingeschränkt ab.':'US-Premarket / Extended Hours.';}
+    else if(mins>=480&&mins<570){key='premarket';label=iex?'Premarket · IEX':'Premarket';help=iex?'IEX liefert Live-Daten, bildet aber nur einen Teil des US-Marktes ab.':'US-Premarket / Extended Hours.';}
+    else if(mins>=570&&mins<660){key='opening';label='US-Opening · erste 90 Min.';help='Prioritätsfenster für Opening Momentum, Premarket-High, VWAP und Volumenbeschleunigung.';}
+    else if(mins>=660&&mins<960){key='regular';label='US-Markt LIVE';help='Regulärer US-Handel.';}
+    else if(mins>=960&&mins<1020){key='after';label=iex?'After Hours · IEX':'After Hours';help=iex?'IEX hat nur begrenzte Extended-Hours-Abdeckung.':'US-After-Hours.';}
+    else if(mins>=1020&&mins<1200){key='after-limited';label=iex?'After Hours · IEX eingeschränkt':'After Hours';help=iex?'Voller US-Aftermarket läuft weiter, IEX Free ist hier eingeschränkt.':'US-After-Hours.';}
+  }
+  return { key,label,help, ny:`${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} ET`, weekday:p.weekday };
+}
+function isoAgo(minutes){ return new Date(Date.now()-minutes*60_000).toISOString(); }
+
+function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
+  const on = comp instanceof Set ? comp : new Set(ALL_ON);
+  const vals = src?.values;
+  const bars = (vals || []).map((v) => ({ c: +v.close, h: +v.high, l: +v.low, o: +v.open, v: +v.volume || 0, dt: v.datetime }))
+    .filter((b) => Number.isFinite(b.c)).reverse();
+  if (bars.length < 24) return null;
+
+  const cs = bars.map((b) => b.c), vs = bars.map((b) => b.v);
+  const last = bars.at(-1), prev = bars.at(-2);
+  const ema9 = emaN(cs.slice(-30), 9), ema21 = emaN(cs.slice(-40), 21), atr = stockATR(bars, 14);
+
+  // VWAP über die vorliegenden Bars (Typical Price × Volumen)
+  let pv = 0, vv = 0;
+  for (const b of bars.slice(-26)) { const tp = (b.h + b.l + b.c) / 3; pv += tp * b.v; vv += b.v; }
+  const volumeKnown = vv > 0;
+  const vwap = volumeKnown ? pv / vv : null;
+
+  const ret5 = (last.c / prev.c - 1) * 100;
+  const ret15 = (last.c / bars.at(-4).c - 1) * 100;
+  const ret60 = (last.c / bars.at(-13).c - 1) * 100;
+  const vbaseArr = vs.slice(-21, -1).filter((v) => v > 0);
+  const vbase = vbaseArr.length >= 8 ? mean(vbaseArr) : null;
+  const relVol = vbase > 0 ? last.v / vbase : null; // null = Volumenbasis nicht belastbar
+  const relVolScore = relVol == null ? null : relVol;
+
+  // Gewichteter Mittelwert über AKTIVE Komponenten — abgeschaltet ≠ negativ.
+  const trendScore = 5 + (last.c > ema21 ? 1.9 : -1.9) + (ema9 > ema21 ? 1.5 : -1.1);
+  const momoScore = 5 + Math.max(-3.5, Math.min(3.5, ret15 * 2.2)) + Math.max(-1.5, Math.min(1.5, ret60 * 0.7));
+  const volScore = relVolScore == null ? null : 5 + Math.max(-2.0, Math.min(3.5, (relVolScore - 1) * 3.0));
+  const vwapScore = volumeKnown ? (last.c >= vwap ? 7.6 : 3.4) : null;
+  const q = clamp(weighted([
+    ['ema21', trendScore, 0.30],
+    ['mtf',   momoScore,  0.30],
+    ['volume', volScore,  0.20],
+    ['vwap',  vwapScore,  0.20],
+  ], on));
+
+  const entry = Math.max(ema9, last.c - 0.20 * atr);
+  const stop = entry - 1.25 * atr;
+  const risk = Math.max(0.0001, entry - stop);
+  const tp1 = entry + 1.7 * risk, tp2 = entry + 3.35 * risk;
+  const tp2Pct = (tp2 / entry - 1) * 100;
+  // Größerer Struktur-Zielraum: Elliott/Fibonacci-Heuristik, bewusst separat vom kurzfristigen TP2.
+  // Grundlage ist der größere der aktuellen Impuls-/ATR-Spannen; 1,618 ist die klassische Fib-Extension.
+  const impulsePct = Math.max(Math.abs(ret60), atr > 0 ? (atr / last.c) * 100 * 3 : 0);
+  const structurePct = Math.max(0, Math.min(20, impulsePct * 1.618));
+  const swingTarget = entry * (1 + structurePct / 100);
+  // Liquidity-Vacuum-Heuristik: wie wenig frühere 5m-Aktivität direkt oberhalb
+  // des Einstiegs liegt. 0 = viel Overhead, 100 = relativ freie Preiszone.
+  const overhead = bars.slice(-36,-1).filter(b => b.c > entry && b.c <= entry + Math.max(atr*4, entry*.05));
+  const avgVol = mean(vs.slice(-36,-1)) || 1;
+  const overheadVol = overhead.reduce((a,b)=>a+b.v,0) / Math.max(1,overhead.length) / avgVol;
+  const liquidityVacuum = clamp(100 - overheadVol*45 - overhead.length*2.2, 0, 100);
+
+  // v3.4.3 Deep Situation Engine -------------------------------------------------
+  // Ziel: fruehe, klar benennbare Markt-Situationen erkennen, OHNE den BUY-Score
+  // anzuheben. Die Situation steuert nur Discovery-Reihenfolge/Erklaerung.
+  const priorBars=bars.slice(-13,-1);
+  const priorHigh=priorBars.length?Math.max(...priorBars.map(b=>b.h).filter(Number.isFinite)):null;
+  const priorLow=priorBars.length?Math.min(...priorBars.map(b=>b.l).filter(Number.isFinite)):null;
+  const triggerDistancePct=priorHigh>0?((priorHigh/last.c)-1)*100:null;
+  const brokePriorHigh=priorHigh>0&&last.c>=priorHigh*1.0005;
+  const nearBreakout=triggerDistancePct!=null&&triggerDistancePct>=-0.4&&triggerDistancePct<=0.7;
+  const prevEma9=emaN(cs.slice(-31,-1),9), prevEma21=emaN(cs.slice(-41,-1),21);
+  let ppv=0,pvv=0;
+  for(const b of bars.slice(-27,-1)){const tp=(b.h+b.l+b.c)/3;ppv+=tp*b.v;pvv+=b.v;}
+  const prevVwap=pvv>0?ppv/pvv:null;
+  const reclaimVwap=volumeKnown&&prevVwap>0&&prev.c<prevVwap&&last.c>=vwap;
+  const reclaimEma21=Number.isFinite(prevEma21)&&prev.c<=prevEma21&&last.c>ema21;
+  const pullbackHold=last.c>ema21&&Math.min(...bars.slice(-4).map(b=>b.l))<=ema21*1.004&&ret5>0;
+  const accel5v15=ret5-ret15/3;
+  const priorRanges=bars.slice(-9,-1).map(b=>Math.max(0,b.h-b.l)).filter(Number.isFinite);
+  const priorRangeMean=mean(priorRanges)||0;
+  const currentRange=Math.max(0,last.h-last.l);
+  const rangeExpansion=priorRangeMean>0?currentRange/priorRangeMean:null;
+  const preWindow=bars.slice(-8,-1);
+  const preRangePct=preWindow.length?((Math.max(...preWindow.map(b=>b.h))-Math.min(...preWindow.map(b=>b.l)))/last.c)*100:null;
+  const squeezeRelease=preRangePct!=null&&atr>0&&preRangePct<Math.max(0.8,(atr/last.c*100)*2.1)&&brokePriorHigh&&rangeExpansion!=null&&rangeExpansion>=1.25;
+  const extensionAtr=atr>0?(last.c-ema21)/atr:null;
+  const overextended=extensionAtr!=null&&extensionAtr>3.0;
+
+  let situationType='WATCH';
+  const situationReasons=[];
+  if(squeezeRelease){situationType='SQUEEZE RELEASE';situationReasons.push('Kompression loest sich am 60-Min-Hoch');}
+  else if(brokePriorHigh&&accel5v15>0.05){situationType='BREAKOUT START';situationReasons.push('frischer Ausbruch ueber 60-Min-Hoch');}
+  else if(reclaimVwap||reclaimEma21){situationType='RECLAIM';situationReasons.push(reclaimVwap?'VWAP zurueckerobert':'EMA21 zurueckerobert');}
+  else if(pullbackHold){situationType='PULLBACK HOLD';situationReasons.push('Pullback haelt EMA21 und dreht');}
+  else if(nearBreakout&&accel5v15>0.04){situationType='BREAKOUT PRESSURE';situationReasons.push('Triggerzone nahe und Momentum zieht an');}
+  else if(accel5v15>0.10&&ret5>0){situationType='ACCELERATION';situationReasons.push('5-Min-Momentum beschleunigt gegen 15-Min-Basis');}
+  if(relVolScore!=null&&relVolScore>=1.4)situationReasons.push(`RVOL ${relVolScore.toFixed(1)}x`);
+  if(volumeKnown&&last.c>=vwap)situationReasons.push('ueber VWAP');
+  if(liquidityVacuum>=70)situationReasons.push('wenig Overhead-Aktivitaet');
+  if(overextended)situationReasons.push('bereits >3 ATR ueber EMA21');
+
+  let situationScore=0;
+  situationScore += brokePriorHigh?24:nearBreakout?16:0;
+  situationScore += squeezeRelease?16:0;
+  situationScore += (reclaimVwap||reclaimEma21)?14:0;
+  situationScore += pullbackHold?12:0;
+  situationScore += Math.min(14,Math.max(0,accel5v15)*45);
+  situationScore += relVolScore==null?-8:Math.min(14,Math.max(0,relVolScore-0.8)*12);
+  situationScore += volumeKnown&&last.c>=vwap?8:-4;
+  situationScore += ema9>ema21?7:-3;
+  situationScore += Math.min(8,Math.max(0,liquidityVacuum-50)*0.16);
+  if(overextended)situationScore-=18;
+  if(!volumeKnown)situationScore=Math.min(situationScore,42);
+  situationScore=+clamp(situationScore,0,100).toFixed(0);
+
+  const grossCRV = (tp2 - entry) / risk;
+  const costPct = 0.18;                                   // Broker + Spread, konservativ
+  const netCRV = +Math.max(0, grossCRV - (costPct / 100 * entry / risk)).toFixed(1);
+
+  const eurPerUsd = usdPerEur ? 1 / usdPerEur : null;      // usdPerEur = EUR/USD-Kurs
+  const e = (x) => (eurPerUsd ? x * eurPerUsd : null);
+
+  // Datenqualitäts-Gate: fehlendes Volumen darf durch Renormierung niemals ein
+  // vermeintlich starkes Aktien-Setup erzeugen. Ohne belastbares Volumen bleibt
+  // die Qualitätsanzeige maximal im Beobachtungsbereich und BUY ist gesperrt.
+  const score = +(volumeKnown ? q : Math.min(q, 6.4)).toFixed(1);
+  const executability = relVolScore == null ? null : +clamp(4 + relVolScore * 1.2 + Math.min(2, Math.abs(ret15))).toFixed(1);
+  const light = volumeKnown && score >= 8 && netCRV >= minCrv ? 'green' : score >= 6.5 ? 'yellow' : 'red';
+  const verdict = light === 'green' ? 'Kauf-Setup' : light === 'yellow' ? 'Beobachten' : 'Kein Trade';
+  const setup = ema9 > ema21 && ret15 > 0 ? 'Trend / Momentum'
+    : last.c > ema21 ? 'Pullback über EMA21'
+    : volumeKnown && last.c >= vwap ? 'Über VWAP, aber ohne Trend' : volumeKnown ? 'Unter EMA21 – Schwäche' : 'VWAP n. v. – Volumenbasis fehlt';
+  const trend = ema9 > ema21 ? 'aufwärts' : ema9 < ema21 ? 'abwärts' : 'seitwärts';
+
+  // ---- v3.5.0 CLAUDE-MODUS (additiv, verändert Legacy-Werte NICHT) ----------
+  // Befund: Der Legacy-50/50-Plan hat brutto maximal 0,5*1,7R + 0,5*3,35R =
+  // 2,525R; das Client-Gate verlangt Plan-CRV >= 3:1 netto -> BUY war
+  // strukturell unerreichbar. Ebenso: score>=8 bei theoretischem Maximum 8,74.
+  // Der Claude-Modus bewertet stattdessen (a) Struktur-Ziele statt konstantem
+  // 3,35R-Vielfachen, (b) mathematisch erreichbare Netto-CRV-Gates und
+  // (c) einen expliziten Erwartungswert in R. Alle Fail-Closed-Datenregeln
+  // (volumeKnown, Freshness, keine Aufwertung durch fehlende Daten) gelten weiter.
+  const claude = (() => {
+    const cCost = (costPct / 100) * entry;                 // Reibung je Einheit
+    const structUp = swingTarget - entry;                  // Elliott/Fib-Strukturziel
+    const cTp2 = structUp >= 2.0 * risk
+      ? Math.min(swingTarget, entry + 6 * risk)            // Struktur, gedeckelt bei 6R
+      : entry + 2.5 * risk;                                // sonst konservatives R-Ziel
+    const cTp2Pct = (cTp2 / entry - 1) * 100;
+    const cNetCRV = +(((cTp2 - entry) - cCost) / (risk + cCost)).toFixed(2);
+    const cPlanR = 0.5 * ((tp1 - entry) / risk) + 0.5 * ((cTp2 - entry) / risk);
+    const situ10 = situationScore / 10;
+    const cScore = +clamp(weighted([
+      ['ema21', trendScore, 0.20],
+      ['mtf', momoScore, 0.20],
+      ['volume', volScore, 0.16],
+      ['vwap', vwapScore, 0.12],
+      [null, situ10, 0.20],                                // Situation Engine zaehlt hier
+      [null, liquidityVacuum / 10, 0.12],                  // Overhead-freie Preiszone
+    ], on) - (overextended ? 1.2 : 0)).toFixed(1);
+    // Erwartungswert als Drei-Ausgaenge-Modell (Management: nach TP1 Stop -> Breakeven):
+    //   (1) Stop vor TP1: -1R mit (1-p1)
+    //   (2) TP1 erreicht, Rest auf Breakeven ausgestoppt: +0.5*R1 mit p1*(1-p2)
+    //   (3) TP1 und TP2: +0.5*R1 + 0.5*R2 mit p1*p2
+    // Kosten einmal je Einheit Risiko, Aufschlag 1,2x fuer Teil-Exits.
+    // Heuristische Startwerte; ueber D1-Outcomes kalibrierbar.
+    const p1 = Math.max(0.38, Math.min(0.62, 0.40 + (cScore - 5) * 0.04 + situ10 * 0.012));
+    const p2 = Math.max(0.35, Math.min(0.55, 0.42 + (cScore - 6) * 0.02));
+    const R1 = (tp1 - entry) / risk, R2 = (cTp2 - entry) / risk;
+    const costR = (cCost / risk) * 1.2;
+    const cHit = p1; // ausgewiesene Trefferannahme = P(TP1)
+    const cExpectancyR = +((p1 * 0.5 * R1 + p1 * p2 * 0.5 * R2 - (1 - p1) * 1 - costR)).toFixed(2);
+    const frictionOk = cTp2Pct >= Math.max(0.6, costPct * 3); // Weg muss 3x Kosten decken
+    const cBlockers = [];
+    if (!volumeKnown) cBlockers.push('Volumenbasis fehlt (fail-closed)');
+    if (relVol == null) cBlockers.push('RVOL nicht messbar');
+    else if (relVol < 1.3) cBlockers.push(`RVOL ${relVol.toFixed(1)}x < 1,3x`);
+    if (cScore < 7) cBlockers.push(`Claude-Score ${cScore} < 7`);
+    if (cNetCRV < 1.8) cBlockers.push(`Netto-CRV ${cNetCRV}:1 < 1,8:1`);
+    if (!frictionOk) cBlockers.push(`Kursweg ${cTp2Pct.toFixed(2)} % deckt 3x Kosten nicht`);
+    if (situationType === 'WATCH') cBlockers.push('kein aktives Situationsmuster');
+    if (overextended) cBlockers.push('>3 ATR ueber EMA21 ueberdehnt');
+    if (cExpectancyR < 0.15) cBlockers.push(`Erwartungswert ${cExpectancyR}R < +0,15R`);
+    const cGreen = volumeKnown && relVol != null && relVol >= 1.3 && cScore >= 7
+      && cNetCRV >= 1.8 && frictionOk && situationType !== 'WATCH' && !overextended
+      && cExpectancyR >= 0.15;
+    const cYellow = !cGreen && volumeKnown && cScore >= 5.8 && cNetCRV >= 1.2;
+    return {
+      light: cGreen ? 'green' : cYellow ? 'yellow' : 'red',
+      score: cScore, netCRV: cNetCRV,
+      tp2Usd: cTp2, tp2Eur: e(cTp2), tp2Pct: +cTp2Pct.toFixed(2),
+      tp2Source: structUp >= 2.0 * risk ? 'Struktur (Elliott/Fib 1,618)' : '2,5 R',
+      planR: +cPlanR.toFixed(2), hitPct: Math.round(cHit * 100),
+      expectancyR: cExpectancyR,
+      verdict: cGreen ? 'Kauf-Setup · Claude' : cYellow ? 'Beobachten · Claude' : 'Kein Trade · Claude',
+      blockers: cBlockers.slice(0, 5),
+    };
+  })();
+
+  // ---- v3.5.3 FUSIONPULSE ADAPTIV (eigener Modus; Claude-Block oben LOCKED) --
+  // Lehre aus dem v3.5.0 Audit: Ein Gate muss gegen SEINE eigene Auszahlungslogik
+  // mathematisch erreichbar sein. Der FusionPulse-Modus trennt deshalb:
+  //   1) Struktur-CRV bis zu einem am Markt gemessenen Ziel (BUY-Haupt-CRV),
+  //   2) 50/50-Plan-Effizienz nach realen Fixkosten (Client),
+  //   3) wirtschaftliche Relevanz relativ zur tatsaechlichen Positionsgroesse.
+  // Es wird KEIN Ziel erfunden, nur damit das CRV passt. Fehlt Strukturraum, bleibt
+  // das Setup gelb/rot. Der Claude-Modus wird dadurch weder berechnet noch veraendert.
+  const fusion = (() => {
+    const rangeWidth = priorHigh>priorLow ? priorHigh-priorLow : 0;
+
+    // Explizite Elliott/Fibonacci-Struktur fuer Aktien. Bis v3.5.1 las
+    // deepRecheckRank() zwar r.elliott, analyseStock() lieferte dieses Feld aber
+    // ueberhaupt nicht -> der behauptete Elliott-Anteil in der Recheck-Prioritaet war 0.
+    const ellWindow=bars.slice(-36);
+    const ellEarly=ellWindow.slice(0,Math.max(6,Math.floor(ellWindow.length*0.45)));
+    const ellLate=ellWindow.slice(Math.max(0,ellWindow.length-12));
+    const ellLow=ellEarly.length?Math.min(...ellEarly.map(b=>b.l)):last.l;
+    const ellHigh=ellWindow.length?Math.max(...ellWindow.map(b=>b.h)):last.h;
+    const ellPullLow=ellLate.length?Math.min(...ellLate.map(b=>b.l)):last.l;
+    const ellImpulse=Math.max(0,ellHigh-ellLow);
+    const ellRetr=ellImpulse>0?(ellHigh-ellPullLow)/ellImpulse:null;
+    const ellFibDist=ellRetr==null?1:Math.min(Math.abs(ellRetr-.382),Math.abs(ellRetr-.5),Math.abs(ellRetr-.618));
+    const ellHigherLow=ellPullLow>=ellLow+ellImpulse*0.18;
+    const ellTrend=ema9>ema21&&last.c>ema21;
+    const ellImpulseAtr=atr>0?ellImpulse/atr:0;
+    const stockElliott=clamp(5 + (ellTrend?1.25:-0.9) + (ellHigherLow?1.1:-0.7)
+      + Math.min(1.25,ellImpulseAtr*.16) + Math.max(0,1.4-ellFibDist*5.5) - (overextended?1.25:0));
+
+    // v3.5.3: Zielreferenz bewusst vom kurzen 12-Bar-Situationstrigger entkoppelt.
+    // Ein echter Breakout liegt definitionsgemaess oft bereits UEBER priorHigh; priorHigh>entry
+    // war deshalb eine systematische UND-Falle. Fuer die Zielprojektion nutzen wir ein
+    // unabhaengiges 36-Bar-Swing-Fenster (wie Elliott) und blenden die letzten 4 Bars aus,
+    // damit der laufende Ausbruch seine eigene Referenz nicht nach oben verschiebt.
+    const targetRefWindow=bars.slice(-40,-4).slice(-36);
+    const targetHigh=targetRefWindow.length?Math.max(...targetRefWindow.map(b=>b.h).filter(Number.isFinite)):priorHigh;
+    const targetLow=targetRefWindow.length?Math.min(...targetRefWindow.map(b=>b.l).filter(Number.isFinite)):priorLow;
+    const targetBaseHigh=Math.max(Number.isFinite(targetHigh)?targetHigh:-Infinity,Number.isFinite(priorHigh)?priorHigh:-Infinity);
+    const targetRange=targetBaseHigh>targetLow?targetBaseHigh-targetLow:rangeWidth;
+    const broadLow=ellWindow.length?Math.min(...ellWindow.slice(0,Math.max(8,ellWindow.length-8)).map(b=>b.l)):targetLow;
+    const impulseRange=targetBaseHigh>broadLow?targetBaseHigh-broadLow:targetRange;
+    const projectionBase=Math.max(targetRange,impulseRange,risk);
+    let rawTarget=null;
+    if(squeezeRelease||brokePriorHigh){
+      const ext=stockElliott>=7.0?1.0:stockElliott>=6.2?0.786:0.618;
+      rawTarget=targetBaseHigh + ext*projectionBase;
+      // Falls der Breakout die erste Projektion bereits erreicht hat, auf die naechste
+      // Fibonacci-Erweiterung wechseln statt faelschlich 'kein Zielraum' zu melden.
+      if(!(rawTarget>entry)) rawTarget=targetBaseHigh + 1.618*projectionBase;
+    } else if(nearBreakout){
+      rawTarget=targetBaseHigh + 0.50*projectionBase;
+      if(!(rawTarget>entry)) rawTarget=targetBaseHigh + 1.0*projectionBase;
+    } else {
+      // Reclaim/Pullback: naechstes reales Swing-Hoch ist primaer; wenn es bereits
+      // ueberlaufen wurde, keine erfundene BUY-Freigabe, sondern nur konservative Projektion.
+      rawTarget=targetBaseHigh>entry?targetBaseHigh:null;
+    }
+    const fTp2 = rawTarget>entry ? Math.min(rawTarget, entry + 8 * risk) : entry;
+    const fTp2Pct = fTp2>entry ? (fTp2/entry-1)*100 : 0;
+    const fCost = (costPct/100)*entry;
+    const fNetCRV = fTp2>entry ? Math.max(0,((fTp2-entry)-fCost)/(risk+fCost)) : 0;
+
+    const sit10=situationScore/10;
+    const rv10=relVolScore==null?null:clamp(5+(relVolScore-1)*2.7);
+    const trigger10=squeezeRelease?9.2:brokePriorHigh?8.7:nearBreakout?7.4:(reclaimVwap||reclaimEma21)?7.1:pullbackHold?6.8:5.0;
+    const fScore=+clamp(weighted([
+      [null,trendScore,0.16],
+      [null,momoScore,0.16],
+      ['volume',volScore,0.13],
+      ['vwap',vwapScore,0.09],
+      [null,sit10,0.18],
+      [null,liquidityVacuum/10,0.08],
+      [null,trigger10,0.08],
+      ['elliott',stockElliott,0.12],
+    ],on) - (overextended?1.35:0)).toFixed(1);
+    const activeSituation=situationType!=='WATCH' && situationScore>=38;
+    const structureOk=fTp2>tp1 && fNetCRV>=minCrv;
+    const rvOk=relVolScore!=null&&relVolScore>=1.2;
+    const fBlockers=[];
+    if(!volumeKnown)fBlockers.push('Volumenbasis fehlt (fail-closed)');
+    if(relVolScore==null)fBlockers.push('RVOL nicht messbar');
+    else if(!rvOk)fBlockers.push(`RVOL ${relVolScore.toFixed(1)}x < 1,2x`);
+    if(!activeSituation)fBlockers.push('Situation noch nicht aktiv/reif');
+    if(stockElliott<5.8)fBlockers.push(`Elliott-Struktur ${stockElliott.toFixed(1)} < 5,8`);
+    if(fScore<7.2)fBlockers.push(`Fusion-Score ${fScore} < 7,2`);
+    if(!rawTarget)fBlockers.push('kein belastbarer Struktur-Zielraum');
+    else if(fNetCRV<minCrv)fBlockers.push(`Struktur-CRV ${fNetCRV.toFixed(2)}:1 < ${Number(minCrv).toFixed(1)}:1`);
+    if(overextended)fBlockers.push('>3 ATR ueber EMA21 - nicht hinterherlaufen');
+    const fGreen=volumeKnown&&rvOk&&activeSituation&&stockElliott>=5.8&&fScore>=7.2&&structureOk&&!overextended;
+    const fYellow=!fGreen&&volumeKnown&&fScore>=5.8&&(activeSituation||nearBreakout||reclaimVwap||reclaimEma21);
+    return {
+      light:fGreen?'green':fYellow?'yellow':'red', score:fScore, netCRV:+fNetCRV.toFixed(2),
+      tp2Usd:fTp2, tp2Eur:e(fTp2), tp2Pct:+fTp2Pct.toFixed(2),
+      tp2Source:rawTarget?'36-Bar-Swingstruktur / Range-Projektion':'kein Strukturziel',
+      verdict:fGreen?'Kauf-Setup · FusionPulse':fYellow?'Beobachten · FusionPulse':'Kein Trade · FusionPulse',
+      blockers:fBlockers.slice(0,6), elliott:+stockElliott.toFixed(1),
+      targetR:+((fTp2-entry)/risk).toFixed(2), activeSituation,
+    };
+  })();
+
+  // ---- v3.9.0 MODUS A · MOMENTUM (additiv; claude UND fusion bleiben unberuehrt) --
+  // Warum ein eigener Block statt Schalter in fusion/claude:
+  //   - Der Claude-Block ist SHA-verriegelt und darf sich nicht aendern.
+  //   - Der fusion-Block gehoert dem parallelen ChatGPT-Strang. Ein modusabhaengiger
+  //     Zweig darin haette dessen Verhalten aendern koennen (Invariante 9).
+  // Dieser Block wird IMMER berechnet, aber nur angezeigt/verwendet, wenn der Nutzer
+  // Modus A aktiv einschaltet. Er veraendert keinen anderen Score.
+  //
+  // Der inhaltliche Unterschied zu beiden bestehenden Modi:
+  //  1. KEIN overextended-Malus. Der Abstand zur EMA21 ist hier die Eintrittskarte,
+  //     kein Warnsignal. Der Malus bestrafte bisher genau die gesuchten Titel.
+  //  2. Elliott-Gewicht = 0. Bei einem Gap ohne Wellenhistorie misst die Kennzahl
+  //     Rauschen. Lieber weglassen als so tun, als sei sie aussagekraeftig.
+  //  3. Eigenes Zielprofil: Stop unter dem Konsolidierungstief NACH dem Impuls,
+  //     Ziel als Vielfaches der bisherigen Tagesspanne statt als R-Vielfaches.
+  //     Damit faellt auch der 8R-Deckel weg, der den VEEV-Fall unmoeglich machte.
+  //  4. Live-Quote-Pflicht: bei zweistelliger Tagesbewegung ist ein fuenf Minuten
+  //     alter Kurs kein Schoenheitsfehler. Fehlt der frische Kurs, gibt es keinen Plan.
+  const momentum = (() => {
+    // --- Konsolidierung nach dem Impuls: das Tief der letzten 6 Bars, sofern sie
+    //     tatsaechlich eine Beruhigung gegenueber dem Impuls davor darstellen.
+    const consWindow = bars.slice(-6);
+    const impulseWindow = bars.slice(-18, -6);
+    const consLow = consWindow.length ? Math.min(...consWindow.map(b => b.l).filter(Number.isFinite)) : null;
+    const consHigh = consWindow.length ? Math.max(...consWindow.map(b => b.h).filter(Number.isFinite)) : null;
+    const impulseLow = impulseWindow.length ? Math.min(...impulseWindow.map(b => b.l).filter(Number.isFinite)) : null;
+    const impulseHigh = impulseWindow.length ? Math.max(...impulseWindow.map(b => b.h).filter(Number.isFinite)) : null;
+    const impulseUp = (impulseHigh != null && impulseLow != null) ? impulseHigh - impulseLow : null;
+    const consRange = (consHigh != null && consLow != null) ? consHigh - consLow : null;
+    // Echte Konsolidierung: die juengste Spanne ist deutlich enger als der Impuls
+    // davor UND das Tief liegt nicht unter dem halben Impuls (sonst ist es ein Abverkauf).
+    const consolidating = impulseUp > 0 && consRange != null
+      && consRange <= impulseUp * 0.62
+      && consLow >= impulseLow + impulseUp * 0.38;
+
+    // --- Stop: unter das Konsolidierungstief, mit ATR-Puffer gegen Zufallsausloesung.
+    //     Fail-closed: ohne brauchbares Konsolidierungstief kein Stop und kein Plan.
+    const mStop = (consolidating && consLow > 0) ? consLow - 0.25 * atr : null;
+    const mEntry = last.c;
+    const mRisk = (mStop != null && mEntry > mStop) ? mEntry - mStop : null;
+    const mStopPct = mRisk != null ? (mRisk / mEntry) * 100 : null;
+
+    // --- Ziel als Vielfaches der Eroeffnungs-/Tagesspanne statt als R-Vielfaches.
+    //     Ein Titel, der heute 8 % gelaufen ist, laeuft erfahrungsgemaess eher
+    //     weitere Bruchteile DIESER Spanne als ein starres Vielfaches eines
+    //     zufaellig engen Stops. Kein Deckel bei 8R: der Deckel stammt aus dem
+    //     Risikomodell und hat hier keine Entsprechung.
+    const dayWindow = bars.slice(-78); // rund ein US-Handelstag in 5-Min-Bars
+    const dayLow = dayWindow.length ? Math.min(...dayWindow.map(b => b.l).filter(Number.isFinite)) : null;
+    const dayHigh = dayWindow.length ? Math.max(...dayWindow.map(b => b.h).filter(Number.isFinite)) : null;
+    const dayRange = (dayHigh != null && dayLow != null && dayHigh > dayLow) ? dayHigh - dayLow : null;
+    const mTp1 = (dayRange && consHigh != null) ? Math.max(consHigh, mEntry) + 0.5 * dayRange : null;
+    const mTp2 = (dayRange && consHigh != null) ? Math.max(consHigh, mEntry) + 1.0 * dayRange : null;
+    const mTp2Pct = (mTp2 != null && mEntry > 0) ? (mTp2 / mEntry - 1) * 100 : null;
+    const mRewardRisk = (mRisk > 0 && mTp2 != null) ? (mTp2 - mEntry) / mRisk : null;
+
+    // --- Score OHNE Elliott und OHNE overextended-Malus.
+    //     Die 12 % Elliott-Gewicht werden NICHT umverteilt: eine Umverteilung
+    //     wuerde den Score ohne neue Information anheben (Invariante 1/3).
+    //     weighted() normiert ueber die tatsaechlich gesetzten Gewichte; die
+    //     fehlende Komponente wird damit sauber ausgelassen statt geschaetzt.
+    const mSit10 = situationScore / 10;
+    const mTrigger10 = squeezeRelease ? 9.2 : brokePriorHigh ? 8.7 : nearBreakout ? 7.4 : (reclaimVwap || reclaimEma21) ? 7.1 : pullbackHold ? 6.8 : 5.0;
+    const mScore = +clamp(weighted([
+      [null, trendScore, 0.16],
+      [null, momoScore, 0.20],          // Momentum zaehlt hier mehr als im Positionsmodus
+      ['volume', volScore, 0.16],
+      ['vwap', vwapScore, 0.10],
+      [null, mSit10, 0.20],
+      [null, mTrigger10, 0.12],
+      [null, liquidityVacuum / 10, 0.06],
+    ], on)).toFixed(1);
+
+    // --- Live-Quote-Pflicht. `last.dt` ist der Zeitstempel des juengsten Bars.
+    //     Aelter als MOM_MAX_QUOTE_AGE_SEC -> kein Plan, ausgewiesen als nicht bewertbar.
+    const barMs = Date.parse(last?.dt || '');
+    const quoteAgeSec = Number.isFinite(barMs) ? Math.max(0, Math.round((Date.now() - barMs) / 1000)) : null;
+    const quoteFresh = quoteAgeSec != null && quoteAgeSec <= MOM_MAX_QUOTE_AGE_SEC;
+
+    const mBlockers = [];
+    if (!volumeKnown) mBlockers.push('Volumenbasis fehlt (fail-closed)');
+    if (relVolScore == null) mBlockers.push('RVOL nicht messbar');
+    else if (relVolScore < 1.5) mBlockers.push(`RVOL ${relVolScore.toFixed(1)}x < 1,5x`);
+    if (!consolidating) mBlockers.push('keine Konsolidierung nach dem Impuls - kein definierbarer Stop');
+    if (mRisk == null) mBlockers.push('Stop nicht bestimmbar (fail-closed)');
+    if (!dayRange) mBlockers.push('Tagesspanne nicht messbar');
+    if (quoteAgeSec == null) mBlockers.push('Kursalter unbekannt (fail-closed)');
+    else if (!quoteFresh) mBlockers.push(`Kurs ${Math.round(quoteAgeSec / 60)} Min alt - Modus A verlangt Live-Kurs`);
+    if (mRewardRisk != null && mRewardRisk < 2.0) mBlockers.push(`Ziel nur ${mRewardRisk.toFixed(1)}x Stopweite < 2,0x`);
+    if (mScore < 6.8) mBlockers.push(`Momentum-Score ${mScore} < 6,8`);
+    if (situationType === 'WATCH') mBlockers.push('kein aktives Situationsmuster');
+
+    const mGreen = volumeKnown && relVolScore != null && relVolScore >= 1.5
+      && consolidating && mRisk != null && !!dayRange && quoteFresh
+      && mRewardRisk != null && mRewardRisk >= 2.0
+      && mScore >= 6.8 && situationType !== 'WATCH';
+    const mYellow = !mGreen && volumeKnown && mScore >= 5.5 && (consolidating || brokePriorHigh || squeezeRelease);
+    return {
+      light: mGreen ? 'green' : mYellow ? 'yellow' : 'red',
+      score: mScore,
+      entryUsd: mEntry, stopUsd: mStop, tp1Usd: mTp1, tp2Usd: mTp2,
+      entryEur: e(mEntry), stopEur: mStop == null ? null : e(mStop),
+      tp1Eur: mTp1 == null ? null : e(mTp1), tp2Eur: mTp2 == null ? null : e(mTp2),
+      tp2Pct: mTp2Pct == null ? null : +mTp2Pct.toFixed(2),
+      stopPct: mStopPct == null ? null : +mStopPct.toFixed(2),
+      rewardRisk: mRewardRisk == null ? null : +mRewardRisk.toFixed(2),
+      tp2Source: dayRange ? 'Tagesspanne x 1,0 ueber Konsolidierungshoch' : 'kein Zielraum',
+      consolidating, dayRangePct: dayRange ? +((dayRange / mEntry) * 100).toFixed(2) : null,
+      quoteAgeSec, quoteFresh,
+      elliottUsed: false, overextendedApplied: false,
+      verdict: mGreen ? 'Kauf-Setup · Momentum' : mYellow ? 'Beobachten · Momentum' : 'Kein Trade · Momentum',
+      blockers: mBlockers.slice(0, 6),
+    };
+  })();
+
+  return {
+    claude, fusion, momentum,
+    // v3.5.3: Legacy bleibt fuer Audit/Vergleich erhalten; die normale FusionPulse-Ansicht
+    // nutzt ab jetzt die mathematisch konsistente adaptive Bewertung. Claude bleibt parallel.
+    legacy:{light,score,netCRV,tp2Usd:tp2,tp2Eur:e(tp2),tp2Pct:+tp2Pct.toFixed(2),verdict,blockers:[]},
+    symbol, sector, name: src?.meta?.name || STOCK_NAMES[symbol] || symbol,
+    exchange: src?.meta?.exchange || 'US', currency: src?.meta?.currency || 'USD',
+    score:fusion.score, executability, light:fusion.light, verdict:fusion.verdict, setup, trend,
+    priceUsd: last.c, priceEur: e(last.c),
+    entryUsd: entry, entryEur: e(entry),
+    stopUsd: stop, stopEur: e(stop),
+    tp1Usd: tp1, tp1Eur: e(tp1),
+    tp2Usd:fusion.tp2Usd, tp2Eur:fusion.tp2Eur, tp2Pct:fusion.tp2Pct, tp2Source:fusion.tp2Source,
+    swingTargetUsd: swingTarget, swingTargetEur: e(swingTarget), structurePct: +structurePct.toFixed(2),
+    zoneLowUsd: entry - 0.25 * atr, zoneHighUsd: entry + 0.25 * atr,
+    zoneLowEur: e(entry - 0.25 * atr), zoneHighEur: e(entry + 0.25 * atr),
+    netCRV:fusion.netCRV, elliott:fusion.elliott, atrPct: +((atr / last.c) * 100).toFixed(2),
+    ret5: +ret5.toFixed(2), ret15: +ret15.toFixed(2), ret60: +ret60.toFixed(2),
+    relVol: relVol == null ? null : +relVol.toFixed(2), volumeKnown, vwapUsd: vwap, aboveVwap: volumeKnown ? last.c >= vwap : null,
+    liquidityVacuum: +liquidityVacuum.toFixed(0),
+    // Situation-/Erklaerungsfelder: Discovery bleibt 0 % direktes BUY-Gewicht; FusionPulse Adaptiv nutzt nur die Deep-Situation als Analysekomponente.
+    situationType, situationScore, situationReasons:situationReasons.slice(0,4),
+    triggerUsd: priorHigh, triggerEur:e(priorHigh), triggerDistancePct:triggerDistancePct==null?null:+triggerDistancePct.toFixed(2),
+    breakout60m:brokePriorHigh, nearBreakout, reclaimVwap, reclaimEma21, pullbackHold, squeezeRelease,
+    accel5v15:+accel5v15.toFixed(2), rangeExpansion:rangeExpansion==null?null:+rangeExpansion.toFixed(2), overextended,
+    updated: last.dt, feed: 'Twelve Data US', tradegate: false, marketPhase: usMarketPhase().key,
+    fxUsdPerEur: usdPerEur || null, fxKnown: !!usdPerEur,
+    // v3.1.0: Intraday-Verlauf aus den ohnehin geladenen 5-Minuten-Bars; keine Zusatz-API-Kosten.
+    intraday: (() => {
+      const xs = bars.slice(-60).map(b => b.c).filter(Number.isFinite);
+      if (!xs.length) return [];
+      const lo=Math.min(...xs), hi=Math.max(...xs);
+      return xs.map(c => Math.round(hi>lo ? ((c-lo)/(hi-lo))*100 : 50));
+    })(),
+    components: [...on],
+  };
+}
+
+async function twelveJSON(path, params, key, creditsSpent = 1, env = null) {
+  const u = new URL('https://api.twelvedata.com/' + path);
+  for (const [k, v] of Object.entries(params)) if (v != null) u.searchParams.set(k, v);
+  u.searchParams.set('apikey', key);
+  const r = await fetch(u,{signal:AbortSignal.timeout(20_000)});
+  await noteQuota(env, r, creditsSpent);
+  const j = await r.json();
+  if (!r.ok || j?.status === 'error') {
+    const err = new Error(j?.message || `Twelve Data ${r.status}`);
+    err.code = j?.code || r.status;
+    throw err;
+  }
+  return j;
+}
+
+async function getFx(key, env = null) {
+  if (fxMemo.usdPerEur && Date.now() - fxMemo.ts < 30 * 60_000) return fxMemo.usdPerEur;
+  try {
+    const j = await twelveJSON('price', { symbol: 'EUR/USD' }, key, 1, env);
+    const x = +j.price;
+    if (x > 0) { fxMemo = { ts: Date.now(), usdPerEur: x }; return x; }
+  } catch { /* FX optional: ohne Kurs zeigt die UI nur USD */ }
+  return fxMemo.usdPerEur;
+}
+
+async function resolveStockQueryLive(env, raw) {
+  const local = resolveStockQuery(raw);
+  const q = String(raw || '').trim();
+  // Lokale Treffer sind kostenlos und eindeutig. Für unbekannte Namen/Symbole
+  // dient Twelve Data /symbol_search als vollständiger Discovery-Fallback.
+  if (local && STOCK_SEARCH_BY_SYMBOL.has(local.symbol)) return local;
+  if (!q || !env.TWELVE_API_KEY) return local;
+  try {
+    const j = await twelveJSON('symbol_search', { symbol: q, outputsize: '12', show_plan: 'true' }, env.TWELVE_API_KEY, 1, env);
+    const data = Array.isArray(j?.data) ? j.data : [];
+    const us = data.filter(x => {
+      const country = String(x.country || '').toUpperCase();
+      const currency = String(x.currency || '').toUpperCase();
+      const type = String(x.instrument_type || '').toUpperCase();
+      return (country === 'UNITED STATES' || country === 'US' || currency === 'USD') && (!type || /STOCK|COMMON|EQUITY|ADR/.test(type));
+    });
+    const hit = us[0] || data[0];
+    if (hit?.symbol) return {
+      sector: local?.sector || 'Watchlist',
+      symbol: String(hit.symbol).toUpperCase(),
+      name: hit.instrument_name || local?.name || String(hit.symbol).toUpperCase(),
+      exchange: hit.exchange || null,
+    };
+  } catch (e) {
+    // Bei einem Discovery-Fehler bleibt ein syntaktisch gültiger Ticker nutzbar.
+    if (local) return local;
+    throw e;
+  }
+  return local;
+}
+
+async function stockLookup(env, raw, comp, minCrv = 3) {
+  if (!env.TWELVE_API_KEY) return { configured: false, state: 'nokey', error: 'TWELVE_API_KEY fehlt', quota: quotaView(), version: APP_VERSION };
+  const info = await resolveStockQueryLive(env, raw);
+  if (!info) return { configured: true, state: 'ok', notFound: true, error: 'Kein eindeutiger US-Aktientreffer gefunden. Bitte Firmenname oder Ticker versuchen.', quota: quotaView(), version: APP_VERSION };
+  const cached = stockLookupMemo.get(info.symbol);
+  if (cached && Date.now() - cached.ts < 5 * 60_000) return { configured: true, state: 'ok', cached: true, lookup: true, row: cached.row, quota: quotaView(), version: APP_VERSION };
+  const fx = await getFx(env.TWELVE_API_KEY, env);
+  let j;
+  let extendedHours = true;
+  try {
+    j = await twelveJSON('time_series', { symbol: info.symbol, interval: '5min', outputsize: '40', prepost: 'true', format: 'JSON', timezone: 'UTC' }, env.TWELVE_API_KEY, 1, env);
+  } catch (e) {
+    // Twelve Data stellt aktuelle Extended-Hours je nach Tarif bereit. Ein
+    // Treffer darf deshalb nicht komplett scheitern, nur weil prepost=true im
+    // vorhandenen Plan nicht freigeschaltet ist.
+    const m = String(e?.message || e || '');
+    if (!/pre.?post|extended|plan|subscription|access|permission/i.test(m)) throw e;
+    extendedHours = false;
+    j = await twelveJSON('time_series', { symbol: info.symbol, interval: '5min', outputsize: '40', format: 'JSON', timezone: 'UTC' }, env.TWELVE_API_KEY, 1, env);
+  }
+  const row = analyseStock(info.symbol, info.sector, j, fx, comp, minCrv);
+  if (!row) return { configured: true, state: 'ok', notFound: true, error: 'Titel gefunden, aber noch nicht genügend 5-Minuten-Daten für die Analyse.', quota: quotaView(), version: APP_VERSION };
+  if ((!row.name || row.name === row.symbol) && info.name) row.name = info.name;
+  row.extendedHours = extendedHours;
+  row.sectorLeaderRet15 = null; row.sectorLag = null;
+  if (stockLookupMemo.size > 200) stockLookupMemo.clear();
+  stockLookupMemo.set(info.symbol, { ts: Date.now(), row });
+  const old = new Map(stockMemo.rows.map((r) => [r.symbol, r])); old.set(row.symbol, row); stockMemo.rows = [...old.values()].sort((a,b) => b.score-a.score);
+  setApiState('stocks', 'ok');
+  return { configured: true, state: 'ok', cached: false, lookup: true, row, quota: quotaView(), version: APP_VERSION };
+}
+
+async function stockSnapshot(env, force = false, comp, minCrv = 3, favoriteSymbols = []) {
+  if (!env.TWELVE_API_KEY) {
+    setApiState('stocks', 'nokey', 'TWELVE_API_KEY fehlt');
+    return { configured: false, state: 'nokey', rows: [], universe: STOCK_UNIVERSE.length,
+             note: 'TWELVE_API_KEY fehlt', quota: quotaView(), version: APP_VERSION };
+  }
+  // v3.0.8: vier Teilgruppen (6/5/5/5). Der automatische Radar-Scan lässt
+  // bewusst mindestens zwei Twelve-Data-Credits pro Minute als Reserve für
+  // FX/Health bzw. eine manuelle Suche. Während eines Cold Starts fordert die
+  // UI die Gruppen minutenweise nacheinander an; danach bleibt der konservative
+  // 5-Minuten-Poll bestehen.
+  const minuteSlot = Math.floor(Date.now() / 60_000);
+  const favs=[...new Set((favoriteSymbols||[]).map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,8}$/.test(x)))].slice(0,30);
+  const cycle = minuteSlot; // Cache-Slot: exakt ein automatischer Aktienbatch pro Minute
+  const sig = [...(comp instanceof Set ? comp : new Set(ALL_ON))].sort().join('.') + '|' + minCrv + '|fav:' + favs.join('.');
+  if (!force && stockMemo.rows.length && stockMemo.cycle === cycle && stockMemo.sig === sig && Date.now() - stockMemo.ts < 55_000) {
+    return { configured: true, state: 'ok', cached: true,
+             rows: stockMemo.rows, ts: stockMemo.ts, cycle, universe: STOCK_UNIVERSE.length,
+             scanned: stockMemo.rows.length, updatedThisCycle: 0, refreshedSymbols: [], favoritePriority: favs.length, quota: quotaView(), version: APP_VERSION,
+             market: usMarketPhase(new Date(), null), note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs' };
+  }
+
+  if (!force && !stockMemo.rows.length) {
+    const persisted=await readPersistedStockScan(env,sig,cycle);
+    if(persisted){
+      stockMemo={ts:persisted.ts,rows:persisted.rows,cycle,sig};
+      setApiState('stocks','ok','Persistenter Aktienbatch geladen');
+      return {configured:true,state:'ok',cached:true,persistent:true,rows:stockMemo.rows,ts:stockMemo.ts,cycle,
+        universe:STOCK_UNIVERSE.length,scanned:stockMemo.rows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,
+        quota:quotaView(),version:APP_VERSION,market:usMarketPhase(new Date(),null),note:'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs'};
+    }
+  }
+
+  // v3.0.10: Depot/Favoriten haben Scan-Priorität. Maximal fünf Twelve-Data-
+  // Credits pro Minute; dadurch bleiben Reserve-Credits für FX/Suche und 429
+  // wird vermieden. Favoriten außerhalb des Standarduniversums sind erlaubt.
+  const favPick=[];
+  if(favs.length){
+    const start=(minuteSlot*3)%favs.length;
+    for(let i=0;i<Math.min(3,favs.length);i++) favPick.push(favs[(start+i)%favs.length]);
+  }
+  const basePick=[];
+  const favSet=new Set(favPick);
+  const baseStart=(minuteSlot*2)%STOCK_UNIVERSE.length;
+  for(let i=0;i<STOCK_UNIVERSE.length && basePick.length<Math.max(0,5-favPick.length);i++){
+    const x=STOCK_UNIVERSE[(baseStart+i)%STOCK_UNIVERSE.length];
+    if(!favSet.has(x[1])) basePick.push(x);
+  }
+  const favRows=favPick.map(symbol=>{
+    const info=STOCK_SEARCH_BY_SYMBOL.get(symbol);
+    const core=STOCK_UNIVERSE.find(([,s])=>s===symbol);
+    return core || [info?.sector||null,symbol,info?.name||symbol];
+  });
+  const batch=[...favRows,...basePick].slice(0,5);
+  const syms = batch.map((x) => x[1]);
+  const fx = await getFx(env.TWELVE_API_KEY, env);
+  // v3.0.8 QUOTA-HOTFIX: Der automatische Teil-Batch verwendet bewusst keine
+  // prepost-Abfrage. Auf Tarifen ohne Extended Hours kostete v3.0.7 zuerst 7
+  // Credits fuer prepost=true und danach nochmals 7 Credits fuer den Fallback.
+  // Premarket/Opening wird bereits separat und passend ueber Alpaca geliefert.
+  // Einzel-Lookups duerfen weiterhin prepost testen (max. 1+1 Credit).
+  const j = await twelveJSON('time_series', {
+    symbol: syms.join(','), interval:'5min', outputsize:'40', format:'JSON', timezone:'UTC' }, env.TWELVE_API_KEY, syms.length, env);
+
+  const fresh = [];
+  for (const [sector, symbol] of batch) {
+    const src = j[symbol] || (syms.length === 1 ? j : null);
+    const r = analyseStock(symbol, sector, src, fx, comp, minCrv);
+    if (r) fresh.push(r);
+  }
+  const old = new Map(stockMemo.rows.map((r) => [r.symbol, r]));
+  for (const r of fresh) old.set(r.symbol, r);
+  const rows = [...old.values()];
+  // Sector-Leader/Lag: misst, ob der eigene Sektor bereits läuft, während der
+  // Titel selbst noch hinterherhinkt. Positiv = potenzieller Nachzügler.
+  applySectorLag(rows);   // v3.10.0: gemeinsame Berechnung, siehe applySectorLag
+  rows.sort((a, b) => b.score - a.score);
+  stockMemo = { ts: Date.now(), rows, cycle, sig };
+  setApiState('stocks', 'ok');
+  // Cross-Isolate-Warmcache: verhindert, dass Cron und mehrere PWA-Clients denselben
+  // Twelve-Data-Batch innerhalb derselben Minute erneut verbrauchen.
+  await persistStockScan(env,sig,cycle,rows,{fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol)});
+
+  return {
+    configured: true, state: 'ok', cached: false, rows, ts: stockMemo.ts, cycle,
+    universe: STOCK_UNIVERSE.length, scanned: rows.length, updatedThisCycle: fresh.length, refreshedSymbols: fresh.map(r=>r.symbol), favoritePriority: favs.length,
+    fxUsdPerEur: fx || null, fxApprox: !!fx, quota: quotaView(), version: APP_VERSION,
+    market: usMarketPhase(new Date(), null), note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs',
+  };
+}
+
+
+/* ========================================================================
+   Opening Momentum — Alpaca Market Data (v3.0.8)
+   Free/Test: feed=iex. IEX ist eine einzelne US-Börse und handelt nur ca.
+   08:00–17:00 ET; deshalb ist 04:00–08:00 ET im Free-Tarif NICHT vollständig
+   live abdeckbar. Die UI kennzeichnet das ausdrücklich. Keine Orders.
+   ======================================================================== */
+/* ============================================================================
+   v3.15.0 · SEKTOR-PRIORISIERUNG DER DEEP-SCAN-QUEUE (additiv, 0 % BUY-Gewicht)
+   Wunsch: den Aktienmarkt bevorzugt nach Pharma/Healthcare, Edelmetalle/Minen
+   und Technologie scannen.
+   WARUM ES EINE KURATIERTE LISTE IST UND KEINE ABFRAGE: der Sektor steht bisher
+   nur im statischen Katalog, und der hat 26 Eintraege. Alles, was aus dem
+   Whole-Market-Radar ueber die ~37.000 Tiingo-Titel kommt, traegt
+   `sector:'Discovery'`. Tiingo liefert Sektor/Industrie nur im
+   kostenpflichtigen Fundamentals-Paket. Eine Liste ist damit die einzige
+   ehrliche Option — und sie wird ausdruecklich als KURATIERT und
+   UNVOLLSTAENDIG gekennzeichnet, statt Vollstaendigkeit zu behaupten.
+   WAS SIE TUT: sie veraendert, WELCHE Titel tief analysiert werden.
+   WAS SIE NICHT TUT: sie veraendert keinen Score, kein Gate, keine Ampel und
+   keine Freigabe. Ein Titel aus einem Prioritaetssektor bekommt Aufmerksamkeit,
+   keinen Bonus. Damit gilt dieselbe Regel wie fuer Radar und BOATS.
+   KEINE VERDRAENGUNG: die Reserve ist gedeckelt, damit der allgemeine
+   Whole-Market-Radar nicht ausgehungert wird. Faende die Priorisierung nur noch
+   die eigenen drei Sektoren, waere der Radar wieder das, was er in v3.3.4
+   ausdruecklich nicht mehr sein sollte — ein Katalog-Pool. */
+const PRIORITY_SECTORS = [
+  ['Pharma/Healthcare', new Set(['LLY','JNJ','MRK','PFE','ABBV','AMGN','GILD','BMY','VRTX','REGN','MRNA','BIIB','ZTS','ISRG','UNH','CVS','TMO','DHR','ABT','MDT','SYK','BSX','HCA','ELV','CI','BAX','EW','IDXX','IQV','RMD','DXCM','ALNY','INCY','NBIX','UTHR','EXEL','HALO','SRPT','ABSI','RXRX','CRSP','NTLA','BEAM','VEEV','MOH','ZBH','HOLX','PODD','CTLT','JAZZ','NVAX','SGEN','ARWR','APLS','KRTX','MDGL','CYTK','ITCI','RARE','FOLD','PTCT','BPMC','DNLI'])],
+  /* v3.16.0 · Bereinigt. 'CS' war Credit Suisse — die ADS wurden am 12.6.2023
+     von der NYSE genommen, ein toter Ticker auf einem Listenplatz. 'NGT' ist
+     Newmonts Toronto-Listing und kommt im US-Feed nicht vor. Beide entfernt. */
+  ['Edelmetalle/Minen', new Set(['NEM','GOLD','AEM','KGC','AU','WPM','FNV','RGLD','PAAS','AGI','BTG','HMY','EGO','SSRM','CDE','HL','EXK','FSM','MAG','GFI','SBSW','IAG','NGD','OR','SAND','DRD','SILV','MUX','GATO','SKE','ORLA','PLG','FCX','SCCO','TECK','RIO','BHP','VALE','AA','MP','ALB','UEC','CCJ','DNN','NXE','ERO','HBM','TFPM','EQX','ASM'])],
+  ['Technologie',       new Set(['AAPL','MSFT','NVDA','AVGO','AMD','INTC','QCOM','TXN','MU','AMAT','LRCX','KLAC','ADI','MRVL','NXPI','ON','SWKS','MPWR','TER','ENTG','GOOGL','META','AMZN','CRM','ORCL','ADBE','NOW','INTU','PANW','CRWD','ZS','SNOW','DDOG','NET','MDB','TEAM','WDAY','SHOP','PLTR','SMCI','DELL','ANET','CSCO','IBM','ACN','UBER','ABNB','COIN','HOOD','PYPL','ARM','IONQ','RGTI','QBTS','AFRM','ZM','CEG','SDGR','MSTR','CRWV','APP','TSM','ASML','AMBA','ALAB','CRDO','LSCC','RMBS','SITM'])],
+];
+const PRIORITY_SECTOR_BY_SYMBOL = (() => {
+  const m = new Map();
+  for (const [name, set] of PRIORITY_SECTORS) for (const sym of set) if (!m.has(sym)) m.set(sym, name);
+  return m;
+})();
+const norm1 = (x) => String(x || '').trim().toUpperCase().replace(/\./g, '-');
+function prioritySectorOf(symbol){ return PRIORITY_SECTOR_BY_SYMBOL.get(norm1(symbol)) || null; }
+/* Wie viele Plaetze pro Zyklus je Prioritaetssektor reserviert werden. Bewusst
+   klein: drei Sektoren x 1 Platz gegen capRadar >= 8 laesst dem allgemeinen
+   Radar die Mehrheit. Der Wert ist GERATEN und nicht gemessen — er gehoert auf
+   dieselbe Liste offener Kalibrierungen wie MOM_MIN_DOLLARVOL. */
+const SECTOR_RESERVE_PER_SECTOR = 1;
+const OPENING_UNIVERSE = [...LARGE_CAP_RADAR_SYMBOLS];
+let openingMemo={ts:0,data:null};
+function alpacaFeed(env){
+  return String(env.ALPACA_FEED || 'iex').toLowerCase() === 'sip' ? 'sip' : 'iex';
+}
+function alpacaFeedLabel(env){ return alpacaFeed(env) === 'sip' ? 'SIP (All US Exchanges)' : 'IEX (Free)'; }
+async function alpacaJSON(path, params, env){
+  const u=new URL('https://data.alpaca.markets'+path); for(const [k,v] of Object.entries(params||{})) if(v!=null)u.searchParams.set(k,v);
+  const r=await fetch(u,{headers:{'APCA-API-KEY-ID':env.ALPACA_API_KEY_ID,'APCA-API-SECRET-KEY':env.ALPACA_API_SECRET_KEY,accept:'application/json'},signal:AbortSignal.timeout(20_000)});
+  if(r.status===429) throw new Error('Alpaca Rate-Limit (429)');
+  if(!r.ok) throw new Error(`Alpaca ${r.status}: ${(await r.text()).slice(0,180)}`);
+  return r.json();
+}
+function barTimeET(ts){
+  const p=nyParts(new Date(ts)); return Number(p.hour)*60+Number(p.minute);
+}
+function momentumFromAlpaca(symbol, snap, bars=[]){
+  if(!snap)return null;
+  // v3.4.1 P0: Die Preisquelle muss vor dem Return immer definiert sein.
+  // Reihenfolge bleibt bewusst minute -> trade -> daily; daily ist nur Discovery-Fallback
+  // und darf in der UI nicht wie ein frischer Extended-Hours-Quote aussehen.
+  const priceSource = Number(snap.minuteBar?.c||0)>0 ? 'minute' : Number(snap.latestTrade?.p||0)>0 ? 'trade' : Number(snap.dailyBar?.c||0)>0 ? 'daily' : 'none';
+  const prevClose=Number(snap.prevDailyBar?.c||0), latest=Number(snap.minuteBar?.c||snap.latestTrade?.p||snap.dailyBar?.c||0);
+  if(!(latest>0&&prevClose>0))return null;
+  const bs=(bars||[]).map(b=>({t:b.t,c:+b.c,h:+b.h,l:+b.l,v:+b.v||0})).filter(b=>b.c>0).sort((a,b)=>new Date(a.t)-new Date(b.t));
+  const closeAgoBars=(n)=>bs.length>n?bs.at(-1-n).c:bs[0]?.c||latest;
+  const ret5=(latest/closeAgoBars(1)-1)*100, ret15=(latest/closeAgoBars(3)-1)*100, ret60=(latest/closeAgoBars(Math.max(1,Math.min(12,bs.length-1)))-1)*100;
+  const vols=bs.slice(-25).map(b=>b.v); const baseArr=vols.slice(0,-3).filter(v=>v>0); const base=baseArr.length>=8?mean(baseArr):null; const recent=mean(vols.slice(-3).filter(v=>v>0)); const relVol=base>0?recent/base:null; // unbekannt bleibt unbekannt
+  const gapPct=(latest/prevClose-1)*100;
+  const pre=bs.filter(b=>{const m=barTimeET(b.t);return m>=240&&m<570;});
+  const preHigh=pre.length?maxOf(pre.map(b=>b.h)):null, preLow=pre.length?minOf(pre.map(b=>b.l)):null;
+  const open=bs.filter(b=>{const m=barTimeET(b.t);return m>=570&&m<585;}); const openingHigh=open.length?maxOf(open.map(b=>b.h)):null;
+  const priceScore=clamp(5+ret15*1.3+ret60*.35,0,10), volScore=relVol==null?null:clamp(4+(relVol-1)*2.3,0,10);
+  const gapScore=clamp(5+Math.max(-3,Math.min(4,gapPct*.6)),0,10);
+  const levelScore=preHigh?clamp(5+((latest/preHigh)-1)*250,0,10):5;
+  const measuredMomentum=weighted([[null,priceScore,.35],[null,volScore,.30],[null,gapScore,.20],[null,levelScore,.15]],ALL_ON);
+  // Unbekanntes Volumen darf den Momentumwert niemals durch Renormierung verbessern.
+  // Konservativer Unknown-Score 4 entspricht dem Modell-Basispunkt und blockiert künstlichen Bonus.
+  const momentumScore=r1(relVol==null?weighted([[null,priceScore,.35],[null,4,.30],[null,gapScore,.20],[null,levelScore,.15]],ALL_ON):measuredMomentum);
+  const phase=usMarketPhase();
+  const impulsePct=Math.max(Math.abs(gapPct),Math.abs(ret60),bs.length?((maxOf(bs.slice(-60).map(b=>b.h))/minOf(bs.slice(-60).map(b=>b.l))-1)*100):0);
+  const structurePct=r1(Math.min(20,Math.max(0,impulsePct*1.618)));
+  const light=momentumScore>=8?'green':momentumScore>=6.5?'yellow':'red';
+  const actionable=['opening','regular'].includes(phase.key)&&momentumScore>=8;
+  const phaseAction=['premarket-early','premarket'].includes(phase.key)?(momentumScore>=7.5?'VORBEREITEN':'beobachten'):actionable?'Opening-Bestätigung prüfen':phase.key==='closed'?'Vorbereitung':'beobachten';
+  return {symbol,priceUsd:latest,gapPct:r1(gapPct),ret5:r1(ret5),ret15:r1(ret15),ret60:r1(ret60),relVol:r1(relVol),momentumScore,preHigh,preLow,openingHigh,breakPremarketHigh:!!(preHigh&&latest>preHigh),structurePct,structureTargetUsd:r2(latest*(1+structurePct/100)),light,phaseAction,marketPhase:phase.key,updated:snap.minuteBar?.t||snap.latestTrade?.t||snap.dailyBar?.t||null,priceSource};
+}
+async function openingMomentum(env, force=false, favoriteSymbols=[]){
+  const phase=usMarketPhase();
+  const feed=alpacaFeed(env), feedLabel=alpacaFeedLabel(env);
+  const phaseLabel=feed==='sip' && phase.key==='premarket-early' ? 'Premarket 04:00–08:00 ET · SIP live' : phase.label;
+  const phaseHelp=feed==='sip' && phase.key==='premarket-early' ? 'Alpaca SIP liefert den konsolidierten US-Gesamtmarkt auch im frühen Premarket.' : phase.help;
+  if(!env.ALPACA_API_KEY_ID||!env.ALPACA_API_SECRET_KEY){setApiState('alpaca','nokey','Alpaca Secrets fehlen');return {configured:false,state:'nokey',rows:[],feed:feedLabel,phase:phase.key,phaseLabel,phaseHelp,version:APP_VERSION};}
+  if(!force&&openingMemo.data&&Date.now()-openingMemo.ts<45_000)return {...openingMemo.data,cached:true};
+  // v3.3.1: Opening Momentum ist nicht mehr auf den alten statischen 30er-Katalog
+  // beschränkt. Es übernimmt bevorzugt die vom autonomen Tiingo-Whole-Market-Radar
+  // bereits als Common Stocks verifizierten Kandidaten aus dem letzten Cron-Batch.
+  // Dadurch entsteht KEIN zusätzlicher schwerer Markt-Scan aus der PWA heraus.
+  const favs=[...new Set((favoriteSymbols||[]).map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,12);
+  let radarRows=[], radarSource='none';
+  try{
+    // Bevorzugt den bereits sicherheitsgeprüften Deep-Scan-Cache.
+    const persisted=await readLatestPersistedStockScan(env,30*60_000);
+    radarRows=verifiedCommonOnly(Array.isArray(persisted?.meta?.verifiedRadar)?persisted.meta.verifiedRadar:[]).slice(0,24);
+    if(radarRows.length) radarSource='verified-deep-cache';
+  }catch{}
+  if(!radarRows.length){
+    try{
+      // v3.3.2: Fallback direkt auf den persistenten Whole-Market-Radar.
+      // Nur die kleine Top-Menge wird durch den bestehenden 7-Tage-Metadaten-Cache
+      // als Common Stock verifiziert. Kein neuer /iex-Bulk-Scan aus der PWA.
+      const raw=(tiingoIexRadarMemo.rows.length&&Date.now()-tiingoIexRadarMemo.ts<10*60_000)?tiingoIexRadarMemo:await readPersistedIexRadar(env);
+      radarRows=await filterRadarToCommonStocks(env,raw?.rows||[],18);
+      if(radarRows.length) radarSource='persistent-whole-market-radar';
+    }catch(e){console.warn(JSON.stringify({event:'opening_radar_fallback_failed',message:String(e?.message||e),ts:Date.now()}));}
+  }
+  const radarSyms=radarRows.map(x=>x.symbol).slice(0,24);
+  const dynamicUniverse=[...new Set([...radarSyms,...favs,...OPENING_UNIVERSE])].slice(0,48);
+  // 1 Snapshot-Request + 1 Multi-Symbol-Bars-Request. 5-Minuten-Bars reichen
+  // für unser Momentum-Modell und decken mit 8h Historie den kompletten
+  // 04:00-ET-Premarket ab, ohne unnötig große Multi-Symbol-Antworten.
+  const symbols=dynamicUniverse.join(',');
+  const [snaps,hist]=await Promise.all([
+    alpacaJSON('/v2/stocks/snapshots',{symbols,feed},env),
+    alpacaJSON('/v2/stocks/bars',{symbols,timeframe:'5Min',start:isoAgo(480),limit:'10000',feed,sort:'asc'},env),
+  ]);
+  const rows=dynamicUniverse.map(sym=>momentumFromAlpaca(sym,snaps?.[sym],hist?.bars?.[sym]||[])).filter(Boolean).sort((a,b)=>b.momentumScore-a.momentumScore);
+  const limitations=(feed==='sip'?'SIP: konsolidierter Echtzeit-Feed aller US-Börsen einschließlich Extended Hours.':'IEX Free: nur eine US-Börse; frühe Premarket-Daten sind unvollständig.')+' Kandidaten: Whole-Market-Radar + Favoriten + Basiskatalog; Opening bleibt Discovery mit 0 % BUY-Gewicht.';
+  const data={configured:true,state:'ok',rows:rows.map(r=>({...r,origin:radarSyms.includes(r.symbol)?'radar':favs.includes(r.symbol)?'favorite':'base'})),scanned:rows.length,universe:dynamicUniverse.length,radarCandidates:radarSyms.length,radarSource,feed:feedLabel,phase:phase.key,phaseLabel,phaseHelp,limitations,ts:Date.now(),version:APP_VERSION};
+  openingMemo={ts:Date.now(),data};
+  setApiState('alpaca','ok',`${rows.length} Momentum-Titel · ${phase.label}`);
+  // Nur Kandidaten, die aus dem bereits Common-Stock-verifizierten Radar kamen,
+  // werden persistiert. Die Alpaca-Momentumwerte selbst sind kein Security-Gate.
+  const openingVerified=radarRows.filter(r=>radarSyms.includes(String(r.symbol||'').toUpperCase()));
+  await Promise.allSettled([
+    persistVerifiedOpeningRadar(env,openingVerified),
+    persistApiState(env,'alpaca','ok',`${rows.length} Momentum-Titel · ${phase.label}`)
+  ]);
+  return data;
+}
+
+
+/* ========================================================================
+   Experimental Lab + Crowd/Search (v3.0.7)
+   Diese Daten sind reine Forschungs-/Kontextvariablen und haben 0 % Gewicht
+   im BUY-Score. Keine kausale Aussage wird unterstellt.
+   ======================================================================== */
+let experimentalMemo={ts:0,data:null};
+let crowdMemo={ts:0,key:'',data:null};
+function star5(x){return Math.max(1,Math.min(5,Math.round(Number(x)||1)));}
+async function fetchJSONPublic(url){
+  const r=await fetch(url,{headers:{accept:'application/json','user-agent':`FusionPulse/${APP_VERSION}`},signal:AbortSignal.timeout(20_000)});
+  if(!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+/* ==== v3.8.2 · P6 (Teil 1): Termine der Quartalszahlen =====================
+   ANLASS, konkret: Am 26.8. hat die App VEEV analysiert, bewertet und dabei
+   mit keinem Wort erwaehnt, dass an diesem Abend Zahlen kommen. Der Nutzer
+   hat einen Intraday-Plan mit 1,2 % Zielweite gesehen; abends bewegte sich
+   die Aktie nach den Zahlen um ein Vielfaches davon. Das Urteil ueber den
+   Intraday-Plan war richtig — aber die App hat eine Information verschwiegen,
+   die sie haette haben koennen, und dadurch eine ANDERE Frage unsichtbar
+   gemacht, die der Nutzer haette stellen wollen.
+
+   Bewusste Designentscheidung: Daraus wird KEIN Signal. Der Weg von
+   „Zahlen heute Abend" zu „dieser Trade ist besser" ist nicht berechenbar.
+   Die Information ist eine WARNUNG, die ausschliesslich abwerten kann.
+
+   Zwei Quellen, weil eine allein nicht verlaesslich ist:
+   1. Twelve Data `earnings_calendar` — ob das im Basic-Tarif enthalten ist,
+      ist nicht dokumentiert. Statt zu raten, wird es versucht und der echte
+      Fehler durchgereicht, damit sichtbar ist WARUM nichts kommt.
+   2. Manuell gepflegte Termine. Funktioniert immer, ohne Tarif und ohne
+      Fremddienst — und der Nutzer schaut ohnehin bei Google Finance nach. */
+const EARN_TTL_MS = 12*60*60_000;   // Termine aendern sich selten
+let earnMemo={ts:0,data:null};
+
+function parseEarningsPayload(j){
+  /* Das Antwortformat ist nicht sicher dokumentiert. Tolerant parsen und im
+     Zweifel NICHTS zurueckgeben, statt etwas hineinzuinterpretieren. */
+  const out=new Map();
+  const push=(sym,date,time)=>{
+    const k=String(sym||'').trim().toUpperCase(); if(!k) return;
+    const d=String(date||'').trim(); if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+    const prev=out.get(k);
+    if(!prev||d<prev.date) out.set(k,{symbol:k,date:d,time:String(time||'').trim()||null});
+  };
+  const walk=(node,dateHint)=>{
+    if(!node) return;
+    if(Array.isArray(node)){ for(const x of node) walk(x,dateHint); return; }
+    if(typeof node!=='object') return;
+    if(node.symbol) push(node.symbol, node.date||node.report_date||dateHint, node.time||node.hour);
+    for(const [k,v] of Object.entries(node)){
+      if(/^\d{4}-\d{2}-\d{2}$/.test(k)) walk(v,k); else if(typeof v==='object') walk(v,dateHint);
+    }
+  };
+  walk(j?.earnings ?? j?.data ?? j, null);
+  return [...out.values()];
+}
+
+async function earningsCalendar(env, force=false){
+  const now=Date.now();
+  if(!force && earnMemo.data && now-earnMemo.ts<EARN_TTL_MS) return {...earnMemo.data, cached:true};
+  const manual=await readManualEarnings(env);
+  if(!env?.TWELVE_API_KEY){
+    const data={state:'nokey',auto:[],manual,source:null,
+      note:'Kein Twelve-Data-Schlüssel hinterlegt. Es werden nur manuell eingetragene Termine verwendet.',ts:now,version:APP_VERSION};
+    earnMemo={ts:now,data}; return data;
+  }
+  const d0=new Date(now), d1=new Date(now+14*86_400_000);
+  const iso=(d)=>d.toISOString().slice(0,10);
+  try{
+    const j=await twelveJSON('earnings_calendar',{start_date:iso(d0),end_date:iso(d1),format:'JSON'},env.TWELVE_API_KEY,1,env);
+    const auto=parseEarningsPayload(j);
+    const data={state:auto.length?'ok':'empty',auto,manual,source:'Twelve Data earnings_calendar',
+      note:auto.length?'Termine der Quartalszahlen. Reine Warnung — 0 % Gewicht in Score und Kauf-Freigabe.'
+        :'Der Kalender antwortete, lieferte aber keine verwertbaren Termine. Möglicherweise ist er im Basic-Tarif nicht enthalten. Manuell eingetragene Termine wirken weiterhin.',
+      ts:now,version:APP_VERSION};
+    earnMemo={ts:now,data};
+    if(env?.DB&&auto.length){ try{ await ensureD1Schema(env);
+      await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
+        .bind('earnings:last',safeJson({ts:now,auto}),now).run(); }catch{} }
+    return data;
+  }catch(e){
+    // Letzten bekannten Stand nutzen, aber als alt kennzeichnen.
+    let auto=[],staleTs=0;
+    if(env?.DB){ try{ await ensureD1Schema(env);
+      const r=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind('earnings:last').first();
+      if(r?.value){ const p=JSON.parse(r.value); auto=p?.auto||[]; staleTs=Number(p?.ts||r.updated_ts||0); } }catch{} }
+    const data={state:auto.length?'stale':'unavailable',auto,manual,staleTs,error:String(e.message||e),
+      source:'Twelve Data earnings_calendar',
+      note:`Der automatische Terminkalender ist nicht verfügbar: ${String(e.message||e)}. Sehr wahrscheinlich ist dieser Endpunkt im Basic-Tarif nicht enthalten. Manuell eingetragene Termine wirken unabhängig davon.`,
+      ts:now,version:APP_VERSION};
+    earnMemo={ts:now,data}; return data;
+  }
+}
+async function readManualEarnings(env){
+  if(!env?.DB) return [];
+  try{ await ensureD1Schema(env);
+    const r=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind('earnings:manual').first();
+    if(!r?.value) return [];
+    const p=JSON.parse(r.value);
+    return Array.isArray(p?.rows)?p.rows.filter(x=>x?.symbol&&/^\d{4}-\d{2}-\d{2}$/.test(String(x.date||''))):[];
+  }catch{ return []; }
+}
+async function writeManualEarnings(env,rows){
+  if(!env?.DB) throw new Error('Keine D1-Verbindung');
+  await ensureD1Schema(env);
+  const clean=(Array.isArray(rows)?rows:[]).filter(x=>x?.symbol&&/^\d{4}-\d{2}-\d{2}$/.test(String(x.date||'')))
+    .map(x=>({symbol:String(x.symbol).trim().toUpperCase().slice(0,8),date:String(x.date),time:String(x.time||'amc').slice(0,4)})).slice(0,200);
+  await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
+    .bind('earnings:manual',safeJson({rows:clean}),Date.now()).run();
+  earnMemo={ts:0,data:null};
+  return clean;
+}
+
+/* ==== v3.7.0 · P3: Krypto-Sentiment (Fear & Greed) ==========================
+   Quelle: alternative.me — kostenlos, kein Schluessel, keine Registrierung.
+   (Der frueher von mir behauptete Cloudflare-Egress-Blocker existiert nicht;
+   Workers duerfen per fetch jede Domain aufrufen. Das war ein Irrtum.)
+
+   Was der Index IST: ein zusammengesetzter Stimmungswert 0–100 aus
+   Volatilitaet, Marktmomentum, Social-Media-Aktivitaet, Bitcoin-Dominanz und
+   Suchtrends. Er misst die STIMMUNG, nicht die Qualitaet eines Trades.
+   Was er NICHT ist: eine Prognose, und er gilt ausschliesslich fuer Krypto —
+   nicht fuer Aktien. Additive Schicht: 0 % Gewicht in Score und Freigabe.
+
+   Der Index wird einmal taeglich aktualisiert; deshalb ein langer Cache und
+   ein D1-Rueckfall, damit ein Ausfall der Quelle nicht zu Luecken fuehrt.  */
+const FNG_TTL_MS = 30*60_000;
+let fngMemo = {ts:0, data:null};
+
+function fngPlain(v){
+  const n=Number(v);
+  if(!Number.isFinite(n)) return {tone:'unknown', de:'unbekannt', meaning:''};
+  if(n<=24) return {tone:'extreme-fear', de:'Extreme Angst',
+    meaning:'Die Marktteilnehmer sind stark verunsichert und verkaufen eher. Historisch waren solche Phasen oft eher Boden als Anfang vom Ende — belastbar vorhersagen laesst sich das aber nicht.'};
+  if(n<=44) return {tone:'fear', de:'Angst',
+    meaning:'Vorsichtige, eher pessimistische Stimmung. Kurse bewegen sich in solchen Phasen oft ruckartig nach oben, wenn positive Nachrichten kommen.'};
+  if(n<=55) return {tone:'neutral', de:'Neutral',
+    meaning:'Weder ausgepraegte Angst noch Euphorie. Aus der Stimmung allein laesst sich hier am wenigsten ableiten.'};
+  if(n<=74) return {tone:'greed', de:'Gier',
+    meaning:'Optimistische bis euphorische Stimmung. Es wird eher gekauft — was Rueckschlaege heftiger ausfallen laesst, weil viele bereits investiert sind.'};
+  return {tone:'extreme-greed', de:'Extreme Gier',
+    meaning:'Sehr euphorische Stimmung. Historisch waren solche Phasen oft nahe an lokalen Hochs. Das ist eine Beobachtung ueber die Vergangenheit, keine Vorhersage.'};
+}
+
+async function cryptoSentiment(env, force=false){
+  const now=Date.now();
+  if(!force && fngMemo.data && now-fngMemo.ts<FNG_TTL_MS) return {...fngMemo.data, cached:true};
+  try{
+    const j=await fetchJSONPublic('https://api.alternative.me/fng/?limit=14&format=json');
+    const arr=Array.isArray(j?.data)?j.data:[];
+    if(!arr.length) throw new Error('leere Antwort');
+    const cur=arr[0];
+    const value=Number(cur?.value);
+    if(!Number.isFinite(value)) throw new Error('kein Zahlenwert');
+    const hist=arr.map(x=>({v:Number(x?.value), ts:Number(x?.timestamp)*1000}))
+                  .filter(x=>Number.isFinite(x.v)&&Number.isFinite(x.ts));
+    const prev=hist[1]?.v, weekAgo=hist[7]?.v;
+    const p=fngPlain(value);
+    const data={ state:'ok', configured:true, value, ...p,
+      classificationRaw:String(cur?.value_classification||''),
+      ts:Number(cur?.timestamp)*1000 || now,
+      nextUpdateSec:Number(j?.data?.[0]?.time_until_update)||null,
+      change1d: Number.isFinite(prev)?value-prev:null,
+      change7d: Number.isFinite(weekAgo)?value-weekAgo:null,
+      history: hist,
+      source:'alternative.me Crypto Fear & Greed Index',
+      scope:'crypto',
+      note:'Stimmungsindex fuer den Kryptomarkt aus Volatilitaet, Momentum, Social Media, BTC-Dominanz und Suchtrends. Gilt NICHT fuer Aktien. 0 % Gewicht in Score und Kauf-Freigabe.',
+      version:APP_VERSION, ts_fetched:now };
+    fngMemo={ts:now, data};
+    if(env?.DB) { try{ await ensureD1Schema(env);
+      await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
+        .bind('crypto_fng:last', safeJson(data), now).run(); }catch{} }
+    return data;
+  }catch(e){
+    // Rueckfall auf den letzten gespeicherten Stand — aber ausdruecklich als alt gekennzeichnet.
+    if(env?.DB){ try{ await ensureD1Schema(env);
+      const row=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind('crypto_fng:last').first();
+      if(row?.value){ const old=JSON.parse(row.value);
+        return {...old, state:'stale', stale:true, error:String(e.message||e),
+          note:`${old.note} ACHTUNG: Die Quelle war zuletzt nicht erreichbar; dieser Wert stammt vom ${new Date(Number(row.updated_ts)||0).toISOString()} und ist nicht aktuell.`}; }
+    }catch{} }
+    return { state:'error', configured:true, value:null, error:String(e.message||e),
+      source:'alternative.me Crypto Fear & Greed Index', scope:'crypto',
+      note:'Der Stimmungsindex konnte nicht geladen werden. Es wird bewusst kein Ersatzwert erfunden.', version:APP_VERSION };
+  }
+}
+
+function moonPhase(){
+  const syn=29.53058867, known=Date.UTC(2000,0,6,18,14,0); // known new moon
+  let days=(Date.now()-known)/86400000; let age=((days%syn)+syn)%syn; let f=age/syn;
+  const names=['Neumond','zunehmende Sichel','erstes Viertel','zunehmender Mond','Vollmond','abnehmender Mond','letztes Viertel','abnehmende Sichel'];
+  const idx=Math.floor((f*8)+0.5)%8;
+  const dynamic=Math.abs(Math.sin(2*Math.PI*f)); // quarter phases more "dynamic" for the display only
+  return {phase:names[idx],ageDays:+age.toFixed(1),stars:star5(1+dynamic*4),label:`${names[idx]} · Alter ${age.toFixed(1)} Tage`};
+}
+function parseKp(raw){
+  try{
+    if(Array.isArray(raw)&&raw.length){
+      const rows=Array.isArray(raw[0])?raw.slice(1):raw;
+      const last=rows.at(-1); const kp=Array.isArray(last)?Number(last[1]??last[2]):Number(last?.kp_index??last?.kp??last?.Kp);
+      if(Number.isFinite(kp))return kp;
+    }
+  }catch{}
+  return null;
+}
+async function experimentalPulse(force=false){
+  if(!force&&experimentalMemo.data&&Date.now()-experimentalMemo.ts<10*60_000)return {...experimentalMemo.data,cached:true};
+  let kp=null,solarSpeed=null,seismic=null;
+  try{kp=parseKp(await fetchJSONPublic('https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json'));}catch{}
+  try{const x=await fetchJSONPublic('https://services.swpc.noaa.gov/products/summary/solar-wind-speed.json');solarSpeed=Number(x?.WindSpeed??x?.wind_speed??x?.speed??x?.value??(Array.isArray(x)?x.at(-1)?.[1]:null));if(!Number.isFinite(solarSpeed))solarSpeed=null;}catch{}
+  try{const q=await fetchJSONPublic('https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson');const fs=q?.features||[];const maxMag=Math.max(0,...fs.map(f=>Number(f?.properties?.mag)||0));seismic={count:fs.length,maxMag};}catch{}
+  const geomag=kp==null?null:{stars:star5(1+kp/2),label:`Kp ${kp.toFixed(1)} · ${kp>=5?'Sturmaktivität':'ruhig bis aktiv'}`,value:kp};
+  const solar=solarSpeed==null?null:{stars:star5((solarSpeed-250)/100),label:`Sonnenwind ${Math.round(solarSpeed)} km/s`,value:solarSpeed};
+  const seis=seismic?{stars:star5(1+Math.max(0,seismic.maxMag-4.5)*1.1+Math.min(1.5,seismic.count/15)),label:`${seismic.count}× M4,5+ · max M${seismic.maxMag.toFixed(1)}`,count:seismic.count,maxMag:seismic.maxMag}:null;
+  const data={configured:true,state:'ok',geomag,solar,seismic:seis,astro:moonPhase(),collective:{stars:null,label:'GCP klassisch beendet 03.04.2026 · GCI ohne öffentliche Live-API'},notes:'Nur Dynamik/Aktivität; 0 % BUY-Gewicht.',ts:Date.now(),version:APP_VERSION};
+  experimentalMemo={ts:Date.now(),data};return data;
+}
+function crowdQueryName(sym){
+  const n=STOCK_SEARCH_BY_SYMBOL.get(sym)?.name||STOCK_NAMES[sym]||sym;
+  return `${String(n).replace(/,/g,' ')} stock`;
+}
+function crowdCommunityQuery(sym){
+  const n=STOCK_SEARCH_BY_SYMBOL.get(sym)?.name||STOCK_NAMES[sym]||sym;
+  // v3.3.0: trader/community-first. SerpApi is used only as a search transport;
+  // Reddit/X/Stocktwits are the sources being discovered, not mainstream news.
+  return `(${sym} OR \"${String(n).replace(/[,]/g,' ')}\") (site:reddit.com OR site:x.com OR site:stocktwits.com)`;
+}
+function trendScore(values){
+  const a=(values||[]).map(Number).filter(Number.isFinite); if(a.length<3)return null;
+  const recent=mean(a.slice(-3)); const base=mean(a.slice(0,Math.max(1,a.length-3)))||recent||1;
+  const accel=(recent-base)/(Math.abs(base)+1)*100;
+  const score=clamp(50+accel*2.2,0,100); const stars=star5(1+Math.abs(accel)/8);
+  return {score:r1(score),stars,accel:r1(accel),recent:r1(recent)};
+}
+/* ==== v3.6.5 · SerpAPI-Budgetwaechter ======================================
+   BEFUND (kritisch): Bis 3.6.4 hat jeder Aufruf ohne warmen Isolate-Cache
+   ALLE bis zu 15 Symbole neu gesucht. `crowdMemo` liegt im Arbeitsspeicher
+   des Workers — Cloudflare-Isolates sind kurzlebig und es gibt viele davon,
+   der Cache greift also unzuverlaessig. Der Client ruft alle 20 Minuten ab
+   und beim manuellen Refresh mit force=1 (Cache komplett umgangen).
+   Rechnung: 100 Freiabfragen/Monat / 15 Symbole = 6,6 vollstaendige Laeufe.
+   IM GANZEN MONAT. Ein einziger Handelstag haette das Kontingent verbrannt.
+
+   Behoben durch drei Schichten, jede fuer sich fail-closed:
+   1. D1-Cache `crowd_cache` wird jetzt auch GELESEN (war bisher nur Schreib-
+      ziel). Ueberlebt Isolate-Neustarts.
+   2. Harte Monatsbudget-Zaehlung in fp_meta. Ist das Budget erschoepft,
+      werden KEINE Abfragen mehr gemacht — auch nicht mit force=1.
+   3. Pro Aufruf maximal wenige echte Abfragen; der Rest kommt aus dem Cache
+      oder bleibt null. Lieber ein leeres Feld als ein verbranntes Budget. */
+const CROWD_TTL_MS          = 6*60*60_000;  // ein Symbol wird hoechstens alle 6 h neu gesucht
+const CROWD_TTL_FORCED_MS   = 60*60_000;    // auch "force" respektiert eine Stunde Mindestabstand
+const CROWD_MAX_FETCH_CALL  = 3;            // hoechstens 3 echte SerpAPI-Abfragen je Aufruf
+const CROWD_DEFAULT_BUDGET  = 90;           // Freitarif = 100/Monat, 10 als Reserve
+
+const monthKey = (d=new Date()) => `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`;
+
+async function crowdBudgetRead(env){
+  const budget=Math.max(0, Number(env?.SERPAPI_MONTHLY_BUDGET ?? CROWD_DEFAULT_BUDGET) || 0);
+  const month=monthKey();
+  if(!env?.DB) return {month,used:0,budget,left:budget,persistent:false};
+  try{
+    await ensureD1Schema(env);
+    const row=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind('serpapi_quota').first();
+    let v=null; if(row?.value){ try{ v=JSON.parse(row.value); }catch{} }
+    const used=(v&&v.month===month)?Math.max(0,Number(v.used)||0):0;  // Monatswechsel setzt zurueck
+    return {month,used,budget,left:Math.max(0,budget-used),persistent:true};
+  }catch{ return {month,used:0,budget,left:budget,persistent:false}; }
+}
+async function crowdBudgetAdd(env,n){
+  if(!env?.DB||!(n>0)) return;
+  try{
+    await ensureD1Schema(env);
+    const q=await crowdBudgetRead(env);
+    await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
+      .bind('serpapi_quota', safeJson({month:q.month,used:q.used+n}), Date.now()).run();
+  }catch(e){ console.warn(JSON.stringify({event:'fusionpulse_crowd_budget_persist_failed',message:String(e?.message||e)})); }
+}
+async function d1ReadCrowd(env,syms){
+  const out=new Map();
+  if(!env?.DB||!syms.length) return out;
+  try{
+    await ensureD1Schema(env);
+    const ph=syms.map(()=>'?').join(',');
+    const rs=await env.DB.prepare(`SELECT symbol,ts,score,stars,accel,interest,source FROM crowd_cache WHERE symbol IN (${ph})`).bind(...syms).all();
+    for(const r of rs?.results||[]) out.set(String(r.symbol).toUpperCase(),r);
+  }catch{}
+  return out;
+}
+
+async function crowdPulse(env,symbols,force=false){
+  const syms=[...new Set(String(symbols||'').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,8}$/.test(x)))].slice(0,15);
+  const key=syms.join(',');
+  if(!env.SERPAPI_KEY)return {configured:false,state:'nokey',rows:syms.map(symbol=>({symbol,score:null,stars:null,source:'Reddit/X/Stocktwits Search'})),note:'SERPAPI_KEY fehlt; Crowd-Werte werden nicht erfunden.',version:APP_VERSION};
+
+  const quota=await crowdBudgetRead(env);
+  const cache=await d1ReadCrowd(env,syms);
+  const now=Date.now();
+  const ttl=force?CROWD_TTL_FORCED_MS:CROWD_TTL_MS;
+
+  // Wer ist wirklich veraltet? Aelteste zuerst, damit nichts dauerhaft haengenbleibt.
+  const stale=syms.filter(sym=>{ const c=cache.get(sym); return !c||!(now-Number(c.ts||0)<ttl); })
+    .sort((a,b)=>Number(cache.get(a)?.ts||0)-Number(cache.get(b)?.ts||0));
+  const allowed=Math.max(0,Math.min(CROWD_MAX_FETCH_CALL, quota.left, stale.length));
+  const toFetch=new Set(stale.slice(0,allowed));
+
+  const rows=[]; let spent=0;
+  for(const symbol of syms){
+    const c=cache.get(symbol);
+    if(!toFetch.has(symbol)){
+      rows.push(c
+        ? {symbol,score:dbNum(c.score),stars:c.stars==null?null:Number(c.stars),accel:dbNum(c.accel),
+           interest:dbNum(c.interest),source:c.source||'Community Search',ts:Number(c.ts)||null,cached:true,
+           note:'Aus dem Zwischenspeicher; zur Schonung des SerpAPI-Kontingents nicht neu abgefragt.'}
+        : {symbol,score:null,stars:null,accel:null,source:'Community Search',cached:false,
+           note:quota.left<=0?'SerpAPI-Monatsbudget erschöpft; es wird bewusst nichts geschätzt.'
+                             :'Noch nicht abgefragt; wird nach und nach nachgeholt, um das Kontingent zu schonen.'});
+      continue;
+    }
+    const u=new URL('https://serpapi.com/search.json');u.searchParams.set('engine','google');u.searchParams.set('q',crowdCommunityQuery(symbol));u.searchParams.set('location','United States');u.searchParams.set('hl','en');u.searchParams.set('num','20');u.searchParams.set('tbs','qdr:d');u.searchParams.set('api_key',env.SERPAPI_KEY);
+    try{
+      const j=await fetchJSONPublic(u.toString());spent++;
+      const org=(j?.organic_results||[]).slice(0,20);
+      const domains=new Set(),texts=[];
+      for(const x of org){const link=String(x?.link||'').toLowerCase();if(link.includes('reddit.com'))domains.add('Reddit');if(link.includes('x.com'))domains.add('X');if(link.includes('stocktwits.com'))domains.add('Stocktwits');texts.push(`${x?.title||''} ${x?.snippet||''}`.toLowerCase());}
+      const mentions=org.length, breadth=domains.size;
+      // Attention only: no fabricated sentiment. Breadth + fresh result count become a transparent 0..100 attention score.
+      const score=clamp(mentions*4+breadth*8,0,100);const stars=mentions?star5(1+score/25):null;
+      // Beschleunigung gegen den vorherigen gespeicherten Wert — echte Aenderung, keine Schaetzung.
+      const prev=c&&Number.isFinite(Number(c.score))?{v:Number(c.score),t:Number(c.ts)||0}:null;
+      const hrs=prev?Math.max(0.5,(now-prev.t)/3_600_000):0;
+      const accel=prev&&hrs>=0.5?r1((score-prev.v)/hrs):null;
+      rows.push({symbol,score:r1(score),stars,accel,interest:mentions,source:[...domains].join(' + ')||'Community Search',sources:[...domains],mentions24h:mentions,ts:now,cached:false,note:'Community-Aufmerksamkeit der letzten 24 h; keine Sentiment- oder BUY-Aussage.'});
+    }catch(e){spent++;rows.push({symbol,score:dbNum(c?.score),stars:c?.stars==null?null:Number(c.stars),source:'Reddit/X/Stocktwits Search',ts:c?Number(c.ts):null,cached:!!c,error:String(e.message||e)});}
+  }
+  if(spent>0) await crowdBudgetAdd(env,spent);
+
+  const after=Math.max(0,quota.left-spent);
+  const data={configured:true,state:after<=0&&stale.length>spent?'quota':'ok',rows,
+    cacheMinutes:Math.round(CROWD_TTL_MS/60_000),
+    quota:{month:quota.month,used:quota.used+spent,budget:quota.budget,left:after,spentThisCall:spent,
+           pending:Math.max(0,stale.length-spent),ttlHours:Math.round(CROWD_TTL_MS/3_600_000),persistent:quota.persistent},
+    note:'Crowd Pulse sucht vorrangig Reddit, X und Stocktwits. Er misst frische Aufmerksamkeit/Quellenbreite, nicht Wahrheit oder Kaufqualität; 0 % BUY-Gewicht. Jede echte Abfrage kostet SerpAPI-Kontingent, deshalb wird pro Aufruf nur eine Handvoll Symbole aufgefrischt.',
+    ts:now,version:APP_VERSION};
+  crowdMemo={ts:now,key,data};return data;
+}
+
+
+/* ========================================================================
+   FusionPulse 3.0 — serverseitiges D1-Learning
+   DB-Binding: env.DB (Cloudflare D1). Die PWA bleibt funktionsfähig, wenn D1
+   noch nicht verbunden ist; dann zeigt /api/learning state="nodb".
+   Gespeichert werden echte Markt-Snapshots und nachfolgend beobachtete
+   Outcomes. Browser-/PWA-Speicher ist damit nicht mehr die einzige Quelle.
+   ======================================================================== */
+const LEARN_HORIZON_MS = 180 * 60_000;
+const LEARN_HISTORY_MS = 120 * 60_000;
+const LEARN_SIGNAL_LABELS = ['attention','crowd','sector','rvol','vacuum','elliott','momentum','technical'];
+
+let d1SchemaReady=false;
+let learnMemo={ts:0,key:'',data:null};
+async function ensureD1Schema(env){
+  if(!env.DB||d1SchemaReady)return !!env.DB;
+  const ddl=[
+    `CREATE TABLE IF NOT EXISTS market_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT,ts INTEGER NOT NULL,bucket5 INTEGER NOT NULL,source TEXT NOT NULL,asset_type TEXT NOT NULL,symbol TEXT NOT NULL,sector TEXT,phase TEXT,price REAL NOT NULL,score REAL,crv REAL,rvol REAL,ret15 REAL,ret60 REAL,atr_pct REAL,liquidity_vacuum REAL,sector_lag REAL,crowd_score REAL,structure_pct REAL,executability REAL,light TEXT,max_pct REAL NOT NULL DEFAULT 0,min_pct REAL NOT NULL DEFAULT 0,success_ts INTEGER,resolved_ts INTEGER,payload TEXT,UNIQUE(source,asset_type,symbol,bucket5))`,
+    `CREATE INDEX IF NOT EXISTS idx_snap_symbol_ts ON market_snapshots(symbol, ts DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_snap_unresolved ON market_snapshots(resolved_ts, ts)`,
+    `CREATE INDEX IF NOT EXISTS idx_snap_sector_resolved ON market_snapshots(sector, resolved_ts, ts DESC)`,
+    `CREATE TABLE IF NOT EXISTS signal_events (id INTEGER PRIMARY KEY AUTOINCREMENT,symbol TEXT NOT NULL,ts INTEGER NOT NULL,bucket5 INTEGER NOT NULL,signal TEXT NOT NULL,price REAL NOT NULL,strength REAL,source TEXT,UNIQUE(symbol,bucket5,signal))`,
+    `CREATE INDEX IF NOT EXISTS idx_event_symbol_ts ON signal_events(symbol, ts DESC)`,
+    `CREATE TABLE IF NOT EXISTS crowd_cache (symbol TEXT PRIMARY KEY,ts INTEGER NOT NULL,score REAL,stars INTEGER,accel REAL,interest REAL,source TEXT)`,
+    `CREATE TABLE IF NOT EXISTS fp_meta (key TEXT PRIMARY KEY,value TEXT,updated_ts INTEGER NOT NULL)`
+  ];
+  for(const q of ddl)await env.DB.prepare(q).run();
+  // Bestehende Produktions-D1 aus älteren Versionen sicher nachziehen.
+  const cols=(await env.DB.prepare('PRAGMA table_info(market_snapshots)').all()).results||[];
+  if(!cols.some(c=>String(c.name)==='executability')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN executability REAL').run();
+  d1SchemaReady=true;return true;
+}
+const dbNum = (x) => Number.isFinite(Number(x)) ? Number(x) : null;
+function safeJson(x){ try { return JSON.stringify(x); } catch { return null; } }
+function learningFeatures(row){
+  return {
+    score: dbNum(row.score ?? row.momentumScore),
+    crv: dbNum(row.netCRV),
+    rv: dbNum(row.relVol),
+    r15: dbNum(row.ret15),
+    r60: dbNum(row.ret60),
+    atr: dbNum(row.atrPct),
+    vac: dbNum(row.liquidityVacuum),
+    lag: dbNum(row.sectorLag),
+    crowd: dbNum(row.crowdScore),
+    structure: dbNum(row.structurePct),
+  };
+}
+function serverLeadFlags(row){
+  const crowd = dbNum(row.crowdScore);
+  const ret15 = Math.abs(dbNum(row.ret15) ?? 0);
+  const attention = crowd == null ? false : (crowd >= 65 && ret15 <= 2.5);
+  return {
+    attention,
+    crowd: crowd != null && crowd >= 70,
+    sector: (dbNum(row.sectorLag) ?? 0) >= 1,
+    rvol: (dbNum(row.relVol) ?? 0) >= 1.8,
+    vacuum: (dbNum(row.liquidityVacuum) ?? 0) >= 70,
+    elliott: (dbNum(row.structurePct) ?? 0) >= 5,
+    momentum: (dbNum(row.momentumScore) ?? dbNum(row.momentum) ?? dbNum(row.score) ?? 0) >= 7.5,
+    technical: (dbNum(row.score) ?? 0) >= 7.5,
+  };
+}
+async function d1CrowdScore(env, symbol){
+  if(!env.DB) return null;
+  try{
+    const r=await env.DB.prepare('SELECT score FROM crowd_cache WHERE symbol=? AND ts>? LIMIT 1')
+      .bind(symbol, Date.now()-6*60*60_000).first();
+    return dbNum(r?.score);
+  }catch{return null;}
+}
+async function d1StoreCrowd(env, rows){
+  if(!env.DB || !rows?.length) return;
+  await ensureD1Schema(env);
+  const now=Date.now();
+  const stmts=rows.filter(x=>x?.symbol).map(x=>env.DB.prepare(
+    `INSERT INTO crowd_cache(symbol,ts,score,stars,accel,interest,source)
+     VALUES(?,?,?,?,?,?,?) ON CONFLICT(symbol) DO UPDATE SET
+     ts=excluded.ts,score=excluded.score,stars=excluded.stars,accel=excluded.accel,
+     interest=excluded.interest,source=excluded.source`
+  ).bind(String(x.symbol).toUpperCase(), now, dbNum(x.score), dbNum(x.stars), dbNum(x.accel), dbNum(x.interest), x.source||'Crowd'));
+  if(stmts.length) await env.DB.batch(stmts);
+}
+async function d1UpdateOutcomes(env, symbol, price, now=Date.now(), assetType='stock', source='server'){
+  if(!env.DB || !(price>0) || !symbol) return;
+  const rows=(await env.DB.prepare(
+    `SELECT id,ts,price,max_pct,min_pct,success_ts FROM market_snapshots
+     WHERE symbol=? AND asset_type=? AND source=? AND resolved_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 500`
+  ).bind(symbol, assetType, source, now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
+  if(!rows.length) return;
+  const stmts=[];
+  for(const x of rows){
+    const pct=(price/Number(x.price)-1)*100;
+    const mx=Math.max(Number(x.max_pct)||0,pct), mn=Math.min(Number(x.min_pct)||0,pct);
+    const successTs=x.success_ts || (mx>=5 ? now : null);
+    const resolved=(now-Number(x.ts)>=LEARN_HORIZON_MS) ? now : null;
+    stmts.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
+      .bind(mx,mn,successTs,resolved,x.id));
+  }
+  if(stmts.length) await env.DB.batch(stmts);
+}
+async function d1StoreSnapshotRow(env, row, {source='server',assetType='stock',now=Date.now()}={}){
+  if(!env.DB || !row) return;
+  await ensureD1Schema(env);
+  const symbol=String(row.symbol||row.pair||'').toUpperCase();
+  const price=dbNum(row.priceUsd ?? row.price ?? row.livePrice ?? row.priceEur);
+  if(!symbol || !(price>0)) return;
+  await d1UpdateOutcomes(env,symbol,price,now,assetType,source);
+  const crowdScore = dbNum(row.crowdScore) ?? await d1CrowdScore(env,symbol);
+  const enriched={...row,crowdScore};
+  const f=learningFeatures(enriched), bucket5=Math.floor(now/(5*60_000));
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO market_snapshots
+     (ts,bucket5,source,asset_type,symbol,sector,phase,price,score,crv,rvol,ret15,ret60,atr_pct,liquidity_vacuum,sector_lag,crowd_score,structure_pct,executability,light,payload)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(now,bucket5,source,assetType,symbol,row.sector||null,row.marketPhase||row.phase||null,price,
+    f.score,f.crv,f.rv,f.r15,f.r60,f.atr,f.vac,f.lag,crowdScore,f.structure,dbNum(row.executability),row.light||null,snapshotPayload(row)).run();
+  const flags=serverLeadFlags(enriched);
+  const ev=[];
+  for(const k of LEARN_SIGNAL_LABELS){
+    if(!flags[k]) continue;
+    const strength = k==='crowd'?crowdScore : k==='rvol'?f.rv : k==='vacuum'?f.vac : k==='sector'?f.lag : k==='elliott'?f.structure : k==='technical'?f.score : k==='momentum'?(dbNum(row.momentumScore)??dbNum(row.momentum)??f.score) : crowdScore;
+    ev.push(env.DB.prepare('INSERT OR IGNORE INTO signal_events(symbol,ts,bucket5,signal,price,strength,source) VALUES(?,?,?,?,?,?,?)')
+      .bind(symbol,now,bucket5,k,price,strength,source));
+  }
+  if(ev.length) await env.DB.batch(ev);
+}
+async function d1BatchChunks(env, stmts, size=50){
+  for(let i=0;i<stmts.length;i+=size) await env.DB.batch(stmts.slice(i,i+size));
+}
+/* v3.17.0 · BEFUND: Der Snapshot speicherte nur `setup` — den ALTEN, groben
+   Musternamen. Die neun Typen der Situation Engine (SQUEEZE RELEASE, BREAKOUT
+   PRESSURE, ...), die Lebenszyklus-Phase und die Reife, also genau das, was die
+   Oberflaeche seit v3.4.3 anzeigt und woran der Nutzer sich orientiert, wurden
+   NIE mitgeschrieben. Modul 0 gruppiert deshalb bis heute nach `setup` und
+   konnte ueber die Situationstypen gar nichts lernen.
+
+   Das laesst sich nicht rueckwirkend heilen: was nicht aufgezeichnet wurde, ist
+   weg. Ab hier wird es mitgeschrieben, damit die Auswertung in einigen Wochen
+   eine echte Grundlage hat. Bis dahin steht in der Oberflaeche ausdruecklich,
+   dass die Situationstypen noch keine Historie haben — geschaetzt wird nichts.
+
+   Eine Stelle, zwei Aufrufer: sonst laufen die beiden Schreibpfade auseinander,
+   und genau das war in v3.10.0 schon einmal der Fehler (`sectorLag` nur auf
+   EINEM Datenpfad berechnet). */
+function snapshotPayload(row){
+  return safeJson({
+    setup: row?.setup || null,
+    phaseAction: row?.phaseAction || null,
+    verdict: row?.verdict || null,
+    situation: row?.situationType || row?.situation || null,
+    lifecycle: row?.radarLifecycle || row?.lifecycle || null,
+    maturity: Number.isFinite(Number(row?.preSignalMaturity)) ? Math.round(Number(row.preSignalMaturity)) : null,
+    prioritySector: row?.prioritySector || null,
+    /* v3.18.0: Der IEX-Dollarumsatz wird ab hier MITGESCHRIEBEN. Er ist die
+       Groesse, gegen die MOM_MIN_DOLLARVOL prueft — und sie stand nirgends in
+       der Aufzeichnung. Deshalb liess sich die Schwelle seit v3.9.0 nur raten.
+       Dieselbe Lehre wie beim Situationstyp: was man nicht aufzeichnet, kann
+       man nie kalibrieren. Rueckwirkend ist auch das nicht zu heilen. */
+    dollarVol: Number.isFinite(Number(row?.dollarVol)) ? Math.round(Number(row.dollarVol))
+      : (Number.isFinite(Number(row?.volume)) && Number.isFinite(Number(row?.priceUsd))
+         ? Math.round(Number(row.volume)*Number(row.priceUsd)) : null),
+  });
+}
+async function d1StoreRows(env, rows, opts={}){
+  if(!env.DB || !rows?.length) return;
+  await ensureD1Schema(env);
+  const source=opts.source||'server', assetType=opts.assetType||'stock', now=opts.now||Date.now();
+  const clean=[];
+  for(const row of rows.slice(0,60)){
+    const symbol=String(row?.symbol||row?.pair||'').toUpperCase();
+    const price=dbNum(row?.priceUsd ?? row?.price ?? row?.livePrice ?? row?.priceEur);
+    if(symbol && price>0) clean.push({row,symbol,price});
+  }
+  if(!clean.length) return;
+  const symbols=[...new Set(clean.map(x=>x.symbol))];
+  const placeholders=symbols.map(()=>'?').join(',');
+
+  // Outcomes in EINER Abfrage laden und anschließend gebündelt aktualisieren.
+  const unresolved=(await env.DB.prepare(`SELECT id,symbol,ts,price,max_pct,min_pct,success_ts FROM market_snapshots
+    WHERE symbol IN (${placeholders}) AND asset_type=? AND source=? AND resolved_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 3000`)
+    .bind(...symbols,assetType,source,now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
+  const pxBySym=new Map(clean.map(x=>[x.symbol,x.price])), updates=[];
+  for(const x of unresolved){
+    const price=pxBySym.get(String(x.symbol).toUpperCase()); if(!(price>0)||!(Number(x.price)>0)) continue;
+    const pct=(price/Number(x.price)-1)*100, mx=Math.max(Number(x.max_pct)||0,pct), mn=Math.min(Number(x.min_pct)||0,pct);
+    const successTs=x.success_ts || (mx>=5?now:null), resolved=(now-Number(x.ts)>=LEARN_HORIZON_MS)?now:null;
+    updates.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
+      .bind(mx,mn,successTs,resolved,x.id));
+  }
+  if(updates.length) await d1BatchChunks(env,updates);
+
+  // Crowd-Scores ebenfalls in einer Abfrage statt pro Symbol.
+  const crowdRows=(await env.DB.prepare(`SELECT symbol,score FROM crowd_cache WHERE symbol IN (${placeholders}) AND ts > ?`).bind(...symbols,now-6*60*60_000).all()).results||[];
+  const crowdBySym=new Map(crowdRows.map(x=>[String(x.symbol).toUpperCase(),dbNum(x.score)]));
+  const bucket5=Math.floor(now/(5*60_000)), inserts=[], events=[];
+  for(const {row,symbol,price} of clean){
+    const crowdScore=dbNum(row.crowdScore) ?? crowdBySym.get(symbol) ?? null;
+    const enriched={...row,crowdScore}, f=learningFeatures(enriched);
+    inserts.push(env.DB.prepare(`INSERT OR IGNORE INTO market_snapshots
+      (ts,bucket5,source,asset_type,symbol,sector,phase,price,score,crv,rvol,ret15,ret60,atr_pct,liquidity_vacuum,sector_lag,crowd_score,structure_pct,executability,light,payload)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(now,bucket5,source,assetType,symbol,row.sector||null,row.marketPhase||row.phase||null,price,
+        f.score,f.crv,f.rv,f.r15,f.r60,f.atr,f.vac,f.lag,crowdScore,f.structure,dbNum(row.executability),row.light||null,
+        snapshotPayload(row)));
+    const flags=serverLeadFlags(enriched);
+    for(const k of LEARN_SIGNAL_LABELS){
+      if(!flags[k]) continue;
+      const strength=k==='crowd'?crowdScore:k==='rvol'?f.rv:k==='vacuum'?f.vac:k==='sector'?f.lag:k==='elliott'?f.structure:k==='technical'?f.score:k==='momentum'?(dbNum(row.momentumScore)??dbNum(row.momentum)??f.score):crowdScore;
+      events.push(env.DB.prepare('INSERT OR IGNORE INTO signal_events(symbol,ts,bucket5,signal,price,strength,source) VALUES(?,?,?,?,?,?,?)')
+        .bind(symbol,now,bucket5,k,price,strength,source));
+    }
+  }
+  if(inserts.length) await d1BatchChunks(env,inserts);
+  if(events.length) await d1BatchChunks(env,events);
+}
+function twinDistance(a,b){
+  const w={score:1.2,crv:.7,rv:.45,r15:.5,r60:.25,atr:.5,vac:.035,lag:.35,crowd:.025,structure:.08};
+  let z=0,n=0;
+  for(const k of Object.keys(w)){
+    const av=dbNum(a[k]),bv=dbNum(b[k]); if(av==null||bv==null)continue;
+    z+=Math.pow((av-bv)*w[k],2); n++;
+  }
+  return n>=3?Math.sqrt(z):9999;
+}
+// v3.2.9 — Historical Twin uses independent, genuinely similar episodes instead of
+// blindly filling a fixed Top-12 list with highly correlated snapshots.
+function independentTwinEpisodes(cur, rows){
+  const MAX_DIST=3.25; // fixed similarity gate; never loosened to manufacture a sample size
+  const bestByEpisode=new Map();
+  for(const raw of rows||[]){
+    const d=twinDistance(cur,raw);
+    if(!Number.isFinite(d)||d>=9999||d>MAX_DIST) continue;
+    const ts=Number(raw.ts)||0;
+    // One observation per symbol and UTC trading date. This collapses the many overlapping
+    // 5-minute snapshots of the same move into one independent historical episode.
+    const day=ts?new Date(ts).toISOString().slice(0,10):String(raw.bucket5||'unknown');
+    const key=`${String(raw.symbol||'').toUpperCase()}:${day}`;
+    const x={...raw,d};
+    const prev=bestByEpisode.get(key);
+    if(!prev||d<prev.d) bestByEpisode.set(key,x);
+  }
+  return [...bestByEpisode.values()].sort((a,b)=>a.d-b.d).slice(0,40);
+}
+async function d1TwinFor(env, symbol){
+  if(!env.DB) return {n:0,source:'none'};
+  const cur=await env.DB.prepare(`SELECT sector,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure
+    FROM market_snapshots WHERE symbol=? AND asset_type='stock' AND source IN ('Twelve Data','Tiingo IEX') ORDER BY ts DESC LIMIT 1`).bind(symbol).first();
+  if(!cur) return {n:0,source:'d1'};
+  if(!cur.sector) return {n:0,source:'d1',reason:'kein Sektor'};
+  const curBucket=Math.floor(Date.now()/(5*60_000));
+  const q=env.DB.prepare(`SELECT symbol,ts,bucket5,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure,max_pct,min_pct
+       FROM market_snapshots WHERE resolved_ts IS NOT NULL AND asset_type='stock' AND source IN ('Twelve Data','Tiingo IEX') AND sector=? AND bucket5<=? ORDER BY ts DESC LIMIT 500`).bind(cur.sector,curBucket-36);
+  const rows=(await q.all()).results||[];
+  const twins=independentTwinEpisodes(cur,rows);
+  const available=twins.length;
+  const distinctSymbols=new Set(twins.map(x=>String(x.symbol||'').toUpperCase())).size;
+  if(twins.length<5)return {n:twins.length,available,distinctSymbols,source:'d1',reason:'zu wenige unabhängige ähnliche Episoden'};
+  const vals=twins.map(x=>Number(x.max_pct)||0).sort((a,b)=>a-b);
+  // Distance-weighted outcome: close historical analogues count more than marginal ones.
+  let winW=0,totalW=0;
+  for(const x of twins){const w=1/Math.pow(1+Math.max(0,Number(x.d)||0),2);totalW+=w;if(Number(x.max_pct)>=5)winW+=w;}
+  return {n:twins.length,available,distinctSymbols,edge:totalW?Math.round(winW/totalW*100):0,stops:twins.filter(x=>Number(x.min_pct)<=-1.5).length,median:r1(vals[Math.floor(vals.length/2)]||0),source:'d1',independent:true};
+}
+async function d1LeadModel(env, symbol){
+  if(!env.DB)return {n:0};
+  const successes=(await env.DB.prepare(`SELECT ts,success_ts FROM market_snapshots WHERE symbol=? AND asset_type='stock' AND source IN ('Twelve Data','Tiingo IEX') AND success_ts IS NOT NULL ORDER BY success_ts DESC LIMIT 40`).bind(symbol).all()).results||[];
+  if(!successes.length)return {n:0};
+  const minTs=Math.min(...successes.map(s=>Number(s.ts)))-60*60_000;
+  const maxTs=Math.max(...successes.map(s=>Number(s.success_ts)));
+  const allEvents=(await env.DB.prepare(`SELECT signal,ts FROM signal_events WHERE symbol=? AND source IN ('Twelve Data','Tiingo IEX') AND ts BETWEEN ? AND ? ORDER BY ts ASC`).bind(symbol,minTs,maxTs).all()).results||[];
+  const leads={}, first={}; let used=0;
+  for(const s of successes){
+    const start=Number(s.ts)-60*60_000,end=Number(s.success_ts);
+    const bySignal=new Map();
+    for(const e of allEvents){const t=Number(e.ts);if(t<start||t>end||bySignal.has(e.signal))continue;bySignal.set(e.signal,t);}
+    const events=[...bySignal].map(([signal,ts])=>({signal,ts})).sort((a,b)=>a.ts-b.ts);
+    if(!events.length)continue; used++;
+    first[events[0].signal]=(first[events[0].signal]||0)+1;
+    for(const e of events){(leads[e.signal]??=[]).push(Math.max(0,(end-Number(e.ts))/60000));}
+  }
+  const med=a=>{const x=[...(a||[])].sort((a,b)=>a-b);return x.length?x[Math.floor(x.length/2)]:null};
+  const firstKey=Object.entries(first).sort((a,b)=>b[1]-a[1])[0]?.[0]||null;
+  const best=Object.entries(leads).map(([k,a])=>({k,m:med(a),n:a.length})).filter(x=>x.n>=3).sort((a,b)=>b.m-a.m).slice(0,3);
+  return {n:used,firstKey,best};
+}
+async function d1History(env, symbol, assetType){
+  if(!env.DB)return [];
+  const sourceClause = assetType === 'stock' ? " AND source IN ('Twelve Data','Tiingo IEX')" : '';
+  const rows=(await env.DB.prepare(`SELECT ts,score,crv,executability,light,price FROM market_snapshots
+    WHERE symbol=? AND asset_type=?${sourceClause} AND ts>=? ORDER BY ts ASC`).bind(symbol,assetType,Date.now()-LEARN_HISTORY_MS).all()).results||[];
+  // ein Punkt je 15-Minuten-Segment, serverseitig und geräteunabhängig
+  const bins=new Map();
+  for(const x of rows) bins.set(Math.floor(Number(x.ts)/(15*60_000)),{ts:Number(x.ts),quality:Number(x.score)||0,executability:Number(x.executability)||0,light:x.light||'red',crv:Number(x.crv)||0,price:Number(x.price)||0});
+  return [...bins.values()].slice(-8);
+}
+
+/* ============================================================================
+   MODUL 0 · CLAUDE ATTRIBUTION & OVERFITTING GUARD (v3.5.4, additiv)
+   ----------------------------------------------------------------------------
+   Zweck: ehrlich messen, welche Setups/Lifecycle-Zustaende tatsaechlich einen
+   Vorteil hatten, statt es zu behaupten. Der Guard verhindert dabei drei
+   klassische Selbstbetrugsfehler, die genau bei "die App verbessert sich
+   taeglich selbst" auftreten:
+
+   (1) Zu wenig Daten: Unter MIN_SAMPLE Trades gibt es KEIN Urteil, nur
+       "sammelt noch". Kein Algorithmus kann aus 5 Trades Edge von Zufall
+       unterscheiden. Ohne dieses Tor wuerde die App auf Rauschen optimieren.
+   (2) In-Sample-Illusion: Der Edge wird an aelteren Trades geschaetzt und an
+       den juengsten, NICHT zum Schaetzen benutzten Trades geprueft
+       (Out-of-Sample). Bricht OOS gegenueber In-Sample ein -> Overfitting-Flag.
+   (3) Mehrfachtest-Problem: Wer 8 Setups testet, findet zufaellig eines, das
+       gut aussieht. Der Guard rechnet die Anzahl paralleler Tests heraus
+       (Bonferroni-artige Schwellenanhebung) statt naiv das beste zu feiern.
+
+   Wichtig: Der Guard gibt ABSCHALT-EMPFEHLUNGEN, keine automatische Abschaltung.
+   Der Mensch bestaetigt. Er veraendert NICHTS am Claude- oder FusionPulse-Score;
+   er ist eine reine Auswertungs-/Empfehlungsschicht ueber bereits vorhandenen,
+   in market_snapshots aufgeloesten Outcomes (max_pct/min_pct/success_ts).
+   Datenquelle sind ausschliesslich resolved Snapshots -> kein Repainting.
+   ============================================================================ */
+const ATTR = {
+  MIN_SAMPLE: 20,        // unter dieser Trade-Zahl je Bucket: kein Urteil
+  OOS_FRACTION: 0.30,    // juengste 30 % der Episoden sind Out-of-Sample
+  OOS_MIN: 6,            // aber mindestens so viele OOS-Episoden noetig
+  OOS_CONFIDENT: 15,     // erst ab so vielen OOS-Episoden ist "disable" erlaubt;
+                         //   darunter nur "beobachten", weil die Wilson-Untergrenze
+                         //   bei kleinem n selbst echte Gewinner erschlagen wuerde.
+  WIN_PCT: 5,            // max_pct >= 5 % zaehlt als Treffer (wie bestehende Logik)
+  STOP_PCT: -1.5,        // min_pct <= -1,5 % zaehlt als ausgestoppt
+  DISABLE_POINT: 40,     // OOS-Punktschaetzung < 40 % UND
+  DISABLE_WILSON: 33,    //   Wilson-Untergrenze < 33 % -> erst dann Abschalt-Empfehlung.
+                         //   Zwei Kriterien verhindern, dass Stichprobenrauschen allein
+                         //   (breites Konfidenzintervall) einen echten Edge abschaltet.
+  OVERFIT_DROP: 20,      // In-Sample - OOS >= 20 Prozentpunkte -> Overfit-Flag
+  HISTORY_MS: 21*24*60*60_000, // Bewertungsfenster: 3 Wochen
+};
+// Wilson-Score-Untergrenze (95 %): ehrliche Trefferquote bei kleiner Stichprobe.
+// Verhindert, dass "3 von 4" (75 %) als starker Edge missverstanden wird.
+function wilsonLower(wins, n){
+  if(n<=0) return 0;
+  const z=1.96, p=wins/n;
+  const denom=1+z*z/n;
+  const centre=p+z*z/(2*n);
+  const margin=z*Math.sqrt((p*(1-p)+z*z/(4*n))/n);
+  return Math.max(0,(centre-margin)/denom);
+}
+/** Eine Episode je Symbol+Tag+Bucket-Gruppe: verhindert, dass 5-Minuten-
+ *  Snapshots derselben Bewegung als unabhaengige Trades mehrfach zaehlen. */
+function collapseEpisodes(rows){
+  const byEp=new Map();
+  for(const r of rows){
+    const day=r.ts?new Date(Number(r.ts)).toISOString().slice(0,10):'?';
+    const key=`${r.symbol}:${day}`;
+    const prev=byEp.get(key);
+    // beste (frueheste) Momentaufnahme der Episode behalten
+    if(!prev||Number(r.ts)<Number(prev.ts)) byEp.set(key,r);
+  }
+  return [...byEp.values()].sort((a,b)=>Number(a.ts)-Number(b.ts));
+}
+function bucketStats(episodes){
+  const n=episodes.length;
+  if(!n) return {n:0};
+  const splitAt=Math.max(1,Math.floor(n*(1-ATTR.OOS_FRACTION)));
+  const inSample=episodes.slice(0,splitAt);
+  const oos=episodes.slice(splitAt);
+  const winRate=(arr)=>{ if(!arr.length) return null; const w=arr.filter(x=>Number(x.max_pct)>=ATTR.WIN_PCT).length; return {w,n:arr.length,pct:Math.round(w/arr.length*100),wilson:Math.round(wilsonLower(w,arr.length)*100)}; };
+  const stopRate=(arr)=>arr.length?Math.round(arr.filter(x=>Number(x.min_pct)<=ATTR.STOP_PCT).length/arr.length*100):null;
+  const medianMax=(arr)=>{ if(!arr.length) return 0; const s=arr.map(x=>Number(x.max_pct)||0).sort((a,b)=>a-b); return r1(s[Math.floor(s.length/2)]); };
+  return {
+    n, inSampleN:inSample.length, oosN:oos.length,
+    all:winRate(episodes), inSample:winRate(inSample), oos:winRate(oos),
+    stopRateAll:stopRate(episodes), medianMaxAll:medianMax(episodes),
+  };
+}
+/* ============================================================================
+   v3.17.0 · MUSTERLABOR — was ging einem Anstieg voraus, was einem Abfall?
+   ----------------------------------------------------------------------------
+   DIE UR-IDEE: Der Cron zeichnet seit v3.0 jede Minute Snapshots in D1 auf.
+   Jeder Snapshot traegt neun gemessene Kennzahlen UND — nach Ablauf des
+   Lernhorizonts — sein tatsaechliches Ergebnis (`max_pct`/`min_pct`). Damit
+   laesst sich die Frage beantworten, die noch nie gestellt wurde:
+   *Sahen die Titel, die danach stiegen, VORHER anders aus als die, die fielen?*
+
+   Das ist eine Ereignisstudie, kein Modell. Sie sagt nicht voraus. Sie zeigt,
+   ob in den aufgezeichneten Daten ueberhaupt ein Unterschied steckt — und
+   zeigt genauso deutlich, wenn KEINER drin ist. Der zweite Fall ist der
+   wahrscheinlichere und der wertvollere: dann weiss der Nutzer, dass diese
+   Kennzahlen die Bewegung nicht ankuendigen, statt es weiter zu vermuten.
+
+   VIER EHRLICHKEITSREGELN, die hier haerter greifen als sonst irgendwo:
+   1. Nur AUFGELOESTE Snapshots (`resolved_ts`). Kein Repainting.
+   2. Episoden statt Snapshots: 5-Minuten-Aufnahmen derselben Bewegung sind
+      keine unabhaengigen Faelle. `collapseEpisodes()` wie in Modul 0.
+   3. Unter ATTR.MIN_SAMPLE je Gruppe gibt es KEIN Urteil — die Kennzahl wird
+      als "zu wenige Faelle" ausgewiesen, nicht als schwacher Effekt.
+   4. Die Trennschaerfe wird gegen eine ZUFALLSGRENZE gestellt. Bei kleinem n
+      erreicht auch reines Rauschen scheinbar hohe Werte; die Grenze waechst
+      deshalb mit sinkendem n. Wer sie nicht reisst, gilt als "kein Signal".
+
+   0 % Gewicht in Score, Gate, Ampel und Freigabe. Reine Beobachtung.
+   ============================================================================ */
+const PATTERN_FEATURES = [
+  ['rvol',      'RVOL',              'rv'],
+  ['ret15',     'Bewegung 15 Min',   'r15'],
+  ['ret60',     'Bewegung 60 Min',   'r60'],
+  ['atr_pct',   'Schwankungsbreite', 'atr'],
+  ['score',     'Score',             'score'],
+  ['crv',       'CRV',               'crv'],
+  ['liquidity_vacuum','Liquiditaetsvakuum','vac'],
+  ['sector_lag','Sektor-Rueckstand', 'lag'],
+  ['crowd_score','Crowd/Search',     'crowd'],
+  ['structure_pct','Strukturpotenzial','structure'],
+];
+const PATTERN = {
+  WINDOW_MS: 14*24*60*60_000,  // zwei Wochen: genug Faelle, ohne die CPU zu sprengen
+  ROW_LIMIT: 6000,
+  PRE_MIN: 60, POST_MIN: 120, STEP_MIN: 5,   // Verlaufsfenster um das Ereignis
+};
+/** Flaeche unter der ROC-Kurve ohne Sortierbibliothek: Wahrscheinlichkeit, dass
+ *  ein zufaelliger Fall aus A einen hoeheren Wert hat als einer aus B.
+ *  0,5 = kein Unterschied. Bindungen zaehlen als halber Treffer. */
+function aucSeparation(a, b){
+  const A=a.filter(Number.isFinite), B=b.filter(Number.isFinite);
+  if(!A.length || !B.length) return null;
+  let wins=0;
+  for(const x of A) for(const y of B) wins += x>y ? 1 : x===y ? 0.5 : 0;
+  return wins/(A.length*B.length);
+}
+/** Inverse Standardnormalverteilung (Acklam-Naeherung, Fehler < 1e-9 im
+ *  benoetigten Bereich). Gebraucht fuer die Mehrfachtestkorrektur unten. */
+function zQuantile(p){
+  if(!(p>0&&p<1)) return NaN;
+  const a=[-3.969683028665376e+01,2.209460984245205e+02,-2.759285104469687e+02,1.383577518672690e+02,-3.066479806614716e+01,2.506628277459239e+00];
+  const b=[-5.447609879822406e+01,1.615858368580409e+02,-1.556989798598866e+02,6.680131188771972e+01,-1.328068155288572e+01];
+  const c=[-7.784894002430293e-03,-3.223964580411365e-01,-2.400758277161838e+00,-2.549732539343734e+00,4.374664141464968e+00,2.938163982698783e+00];
+  const d=[7.784695709041462e-03,3.224671290700398e-01,2.445134137142996e+00,3.754408661907416e+00];
+  const pl=0.02425;
+  if(p<pl){const q=Math.sqrt(-2*Math.log(p));
+    return (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5])/((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1);}
+  if(p>1-pl){const q=Math.sqrt(-2*Math.log(1-p));
+    return -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5])/((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1);}
+  const q=p-0.5,r=q*q;
+  return (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q/(((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1);
+}
+/** Ab welcher Trennschaerfe ist der Wert bei DIESER Stichprobe mehr als Zufall?
+ *  Naeherung ueber die Standardabweichung der AUC unter der Nullhypothese
+ *  (Hanley/McNeil-Vereinfachung).
+ *
+ *  MEHRFACHTESTKORREKTUR, und zwar aus einem konkreten Anlass: Der erste Entwurf
+ *  pruefte alle zehn Kennzahlen gegen 95 %. Bei zehn gleichzeitigen Tests findet
+ *  man dann rein rechnerisch in jedem zweiten Durchlauf eine "Entdeckung", die
+ *  keine ist — der Regressionstest hat genau das sofort aufgedeckt. Modul 0
+ *  korrigiert seit v3.5.4 aus demselben Grund (siehe ATTR/Bonferroni).
+ *  Die Schwelle wird deshalb auf die ZAHL DER GEPRUEFTEN KENNZAHLEN bezogen:
+ *  alpha = 0,05 / k. Bei k=10 entspricht das z = 2,81 statt 1,96 — die Huerde
+ *  steigt sichtbar, und das ist beabsichtigt. Lieber ein echter Fund weniger
+ *  als eine erfundene Regelmaessigkeit, die wie Wissen aussieht. */
+function aucNoiseFloor(nA, nB, tests=1){
+  if(!(nA>0 && nB>0)) return null;
+  const k=Math.max(1,Number(tests)||1);
+  const z=zQuantile(1-0.05/(2*k));
+  const sd=Math.sqrt((nA+nB+1)/(12*nA*nB));
+  return Math.min(0.98, 0.5 + z*sd);
+}
+function medianOf(arr){
+  const v=arr.filter(Number.isFinite).sort((x,y)=>x-y);
+  if(!v.length) return null;
+  const m=Math.floor(v.length/2);
+  return v.length%2 ? v[m] : (v[m-1]+v[m])/2;
+}
+async function patternLab(env){
+  if(!env?.DB) return {configured:false,state:'nodb',
+    note:'Ohne D1-Verbindung gibt es keine Aufzeichnung und damit nichts auszuwerten.',version:APP_VERSION};
+  await ensureD1Schema(env);
+  const since=Date.now()-PATTERN.WINDOW_MS;
+  const rows=(await env.DB.prepare(
+    `SELECT symbol,ts,bucket5,price,score,crv,rvol,ret15,ret60,atr_pct,liquidity_vacuum,
+            sector_lag,crowd_score,structure_pct,max_pct,min_pct,resolved_ts,payload
+     FROM market_snapshots
+     WHERE asset_type='stock' AND source IN ('Twelve Data','Tiingo IEX') AND ts>=?
+     ORDER BY ts ASC LIMIT ${PATTERN.ROW_LIMIT}`).bind(since).all()).results||[];
+
+  // --- Ereignisse: nur aufgeloeste Faelle, danach zu Episoden zusammengefasst.
+  const resolved=rows.filter(r=>r.resolved_ts!=null);
+  const episodes=collapseEpisodes(resolved);
+  const groupOf=(r)=>Number(r.max_pct)>=ATTR.WIN_PCT ? 'up'
+    : Number(r.min_pct)<=ATTR.STOP_PCT ? 'down' : 'flat';
+  const groups={up:[],down:[],flat:[]};
+  for(const e of episodes) groups[groupOf(e)].push(e);
+
+  // --- Fingerabdruck: Median je Kennzahl und Gruppe + Trennschaerfe up/down.
+  const features=PATTERN_FEATURES.map(([col,label])=>{
+    const val=(g)=>groups[g].map(x=>Number(x[col]));
+    const up=val('up'), down=val('down');
+    const nUp=up.filter(Number.isFinite).length, nDown=down.filter(Number.isFinite).length;
+    const auc=aucSeparation(up,down), floor=aucNoiseFloor(nUp,nDown,PATTERN_FEATURES.length);
+    const enough=nUp>=ATTR.MIN_SAMPLE && nDown>=ATTR.MIN_SAMPLE;
+    // Fail-closed: zu wenige Faelle ergeben KEIN schwaches Urteil, sondern gar keines.
+    const verdict = !enough ? 'zu wenige Fälle'
+      : auc==null ? 'nicht messbar'
+      : (auc>=floor ? 'trennt' : auc<=1-floor ? 'trennt invers' : 'kein Signal');
+    return {key:col,label,
+      medianUp:medianOf(up), medianDown:medianOf(down), medianFlat:medianOf(val('flat')),
+      nUp,nDown, auc:auc==null?null:+auc.toFixed(3),
+      noiseFloor:floor==null?null:+floor.toFixed(3), enough, verdict};
+  });
+
+  /* --- Kursverlauf um das Ereignis. Der Snapshot-Raster ist bewusst LUECKIG:
+     der Deep-Scan sieht pro Zyklus nur rund 20 von bis zu 80 Titeln. Es wird
+     deshalb je Zeitfenster gemittelt, was DA ist, und die Zahl der Beitraege
+     mitgeliefert — statt Luecken zu interpolieren und Dichte vorzutaeuschen. */
+  const bySymbol=new Map();
+  for(const r of rows){ const k=String(r.symbol);
+    (bySymbol.get(k) ?? bySymbol.set(k,[]).get(k)).push(r); }
+  const offsets=[]; for(let m=-PATTERN.PRE_MIN;m<=PATTERN.POST_MIN;m+=PATTERN.STEP_MIN) offsets.push(m);
+  const acc={up:new Map(),down:new Map(),flat:new Map()};
+  for(const g of ['up','down','flat']) for(const m of offsets) acc[g].set(m,[]);
+  for(const g of ['up','down','flat']){
+    for(const anchor of groups[g].slice(0,400)){
+      const base=Number(anchor.price); if(!(base>0)) continue;
+      const list=bySymbol.get(String(anchor.symbol))||[];
+      for(const r of list){
+        const dm=Math.round((Number(r.ts)-Number(anchor.ts))/60_000);
+        if(dm<-PATTERN.PRE_MIN||dm>PATTERN.POST_MIN) continue;
+        const slot=Math.round(dm/PATTERN.STEP_MIN)*PATTERN.STEP_MIN;
+        const px=Number(r.price); if(!(px>0)) continue;
+        acc[g].get(slot)?.push((px/base-1)*100);
+      }
+    }
+  }
+  const path=Object.fromEntries(['up','down','flat'].map(g=>[g,
+    offsets.map(m=>{ const v=acc[g].get(m)||[];
+      return {m, pct:v.length?+(medianOf(v)).toFixed(3):null, n:v.length}; })]));
+
+  /* --- v3.18.0 · KALIBRIERUNG AUS VORHANDENEN DATEN -------------------------
+     Seit v3.9.0 steht dreimal "geraten, nicht gemessen" auf der offenen Liste,
+     mit der Begruendung, es brauche Zaehler aus einem laufenden Handelstag.
+     DAS STIMMT NICHT: `max_pct` und `atr_pct` liegen laengst je Snapshot in D1.
+
+     Gerechnet wird die Verteilung von `max_pct / atr_pct` — wie viele
+     Schwankungsbreiten eine Bewegung NACH der Aufzeichnung noch laeuft. Genau
+     diese Zahl braucht die Zielformel, die heute `1,0 x Tagesspanne` raet.
+
+     Ausgewiesen werden Perzentile UND die Erreichungsquote je Vielfachem. Die
+     Quote ist die ehrlichere Zahl: "Ziel bei 1,0 ATR wurde in 38 % der Faelle
+     erreicht" sagt mehr als jedes Perzentil. Unter ATR.MIN_SAMPLE gibt es
+     wieder KEIN Ergebnis, nur den Fuellstand. */
+  const ratios=episodes.map(e=>{
+    const atr=Number(e.atr_pct), mx=Number(e.max_pct);
+    return (atr>0 && Number.isFinite(mx)) ? mx/atr : null;
+  }).filter(Number.isFinite).sort((a,b)=>a-b);
+  const pct=(q)=>ratios.length?+(ratios[Math.min(ratios.length-1,Math.floor(q*ratios.length))]).toFixed(2):null;
+  const hitRate=(k)=>ratios.length?Math.round(ratios.filter(x=>x>=k).length/ratios.length*100):null;
+  let withDollarVol=0;
+  for(const e of episodes){ try{ if(JSON.parse(e.payload||'{}').dollarVol!=null) withDollarVol++; }catch{} }
+  const calibration={
+    n:ratios.length, enough:ratios.length>=ATTR.MIN_SAMPLE,
+    p50:pct(0.50), p60:pct(0.60), p75:pct(0.75), p90:pct(0.90),
+    reach:[0.5,1,1.5,2,3].map(k=>({k, pct:hitRate(k)})),
+    currentTargetMultiple:1.0,
+    dollarVolCoverage:{withDollarVol,total:episodes.length},
+    note: ratios.length>=ATTR.MIN_SAMPLE
+      ? 'Gemessen an aufgeloesten Aufzeichnungen: so viele Schwankungsbreiten lief eine Bewegung nach der Aufzeichnung noch. Beschreibt die Vergangenheit, setzt nichts automatisch.'
+      : `Noch ${ATTR.MIN_SAMPLE-ratios.length} Episoden bis zur ersten belastbaren Messung.`,
+  };
+
+  // --- Situationstypen: erst ab v3.17.0 aufgezeichnet. Ehrlich ausweisen.
+  let withSituation=0;
+  for(const e of episodes){ try{ if(JSON.parse(e.payload||'{}').situation) withSituation++; }catch{} }
+
+  const nTotal=episodes.length;
+  const enoughOverall=groups.up.length>=ATTR.MIN_SAMPLE && groups.down.length>=ATTR.MIN_SAMPLE;
+  return {
+    configured:true, state:nTotal?'ok':'empty',
+    windowDays:Math.round(PATTERN.WINDOW_MS/86_400_000),
+    rowsScanned:rows.length, rowsCapped:rows.length>=PATTERN.ROW_LIMIT,
+    resolvedRows:resolved.length, episodes:nTotal,
+    counts:{up:groups.up.length,down:groups.down.length,flat:groups.flat.length},
+    minSample:ATTR.MIN_SAMPLE, winPct:ATTR.WIN_PCT, stopPct:ATTR.STOP_PCT,
+    enoughOverall, features, offsets, path, calibration,
+    situationCoverage:{withSituation,total:nTotal,
+      note:'Die Situationstypen werden erst seit v3.17.0 mitgeschrieben. Aeltere Aufzeichnungen kennen sie nicht — das laesst sich nicht rueckwirkend ergaenzen.'},
+    note: !nTotal ? 'Noch keine aufgeloesten Aufzeichnungen im Fenster.'
+      : enoughOverall ? 'Ereignisstudie ueber aufgeloeste Aufzeichnungen. Beschreibt, was VOR der Bewegung messbar war — keine Vorhersage, 0 % Gewicht in Score und Freigabe.'
+      : `Zu wenige Faelle fuer ein Urteil: mindestens ${ATTR.MIN_SAMPLE} je Gruppe noetig. Angezeigt wird der Zwischenstand, bewertet wird nichts.`,
+    version:APP_VERSION,
+  };
+}
+
+/* ============================================================================
+   PAKET A · MODUL 0 SCHARF: Stummschalten + Rehabilitation (v3.5.7, additiv)
+   ----------------------------------------------------------------------------
+   "Abschalten" bedeutet NICHT loeschen, sondern STUMMSCHALTEN: das Setup wird
+   nicht mehr als BUY vorgeschlagen, aber die Auswertung laeuft im Hintergrund
+   weiter (der Cron sammelt jede Minute Snapshots, unabhaengig vom PC). Dadurch
+   kann ein gestummtes Setup, das sich out-of-sample wieder erholt, eine
+   Wiedereinschalt-Empfehlung ausloesen.
+
+   HYSTERESE gegen Flackern: Die Wiedereinschalt-Huerde liegt bewusst HOEHER als
+   die Abschalt-Huerde. Sonst wuerde Stichprobenrauschen das System nervoes
+   zwischen an/aus springen lassen. Ausserdem gilt eine Mindest-Stummdauer,
+   bevor ueberhaupt ueber Rehabilitation nachgedacht wird.
+
+   Die Stummliste liegt in D1 (fp_meta key 'muted_setups'), damit sie
+   serverseitig gilt - der Cron/Scan respektiert sie auch bei geschlossener PWA.
+   Sie veraendert KEINEN Score; sie unterdrueckt nur die BUY-Freigabe fuer
+   betroffene Setups (reine Anzeige-/Freigabeschicht).
+   ============================================================================ */
+const REHAB = {
+  MIN_MUTE_MS: 5*24*60*60_000,   // erst nach 5 Tagen Stummschaltung ueber Rehab nachdenken
+  REENABLE_POINT: 52,            // OOS-Punktschaetzung >= 52 % (Abschaltung war < 40 %)
+  REENABLE_WILSON: 45,           // UND Wilson-Untergrenze >= 45 % (Abschaltung war < 33 %)
+  REENABLE_OOS_MIN: 15,          // UND mindestens so viele neue OOS-Episoden
+};
+let mutedMemo={map:null,ts:0};
+async function readMutedSetups(env){
+  if(mutedMemo.map && Date.now()-mutedMemo.ts<30_000) return mutedMemo.map;
+  const map={};
+  if(env?.DB){
+    try{
+      await ensureD1Schema(env);
+      const row=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind('muted_setups').first();
+      if(row?.value){ const p=JSON.parse(row.value); if(p&&typeof p==='object') Object.assign(map,p); }
+    }catch(e){ console.warn(JSON.stringify({event:'muted_read_failed',message:String(e?.message||e),ts:Date.now()})); }
+  }
+  mutedMemo={map,ts:Date.now()};
+  return map;
+}
+async function writeMutedSetups(env, map){
+  mutedMemo={map,ts:Date.now()};
+  if(!env?.DB) return map;
+  try{
+    await ensureD1Schema(env);
+    await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts')
+      .bind('muted_setups',JSON.stringify(map),Date.now()).run();
+  }catch(e){ console.warn(JSON.stringify({event:'muted_write_failed',message:String(e?.message||e),ts:Date.now()})); }
+  return map;
+}
+/** Setup stummschalten (Grund + Zeitstempel festhalten). */
+async function muteSetup(env, setup, reason){
+  const key=String(setup||'').trim(); if(!key) return {ok:false,error:'kein Setup angegeben'};
+  const map=await readMutedSetups(env);
+  map[key]={mutedTs:Date.now(),reason:String(reason||'manuell')};
+  await writeMutedSetups(env,map);
+  return {ok:true,muted:key,map};
+}
+/** Stummschaltung aufheben (Rehabilitation bestaetigt oder manuell). */
+async function unmuteSetup(env, setup){
+  const key=String(setup||'').trim(); if(!key) return {ok:false,error:'kein Setup angegeben'};
+  const map=await readMutedSetups(env);
+  if(map[key]) delete map[key];
+  await writeMutedSetups(env,map);
+  return {ok:true,unmuted:key,map};
+}
+/** Ist ein Setup aktuell stummgeschaltet? (fuer die BUY-Freigabe im Scan) */
+function isSetupMuted(mutedMap, setup){
+  const key=String(setup||'').trim();
+  return !!(mutedMap && mutedMap[key]);
+}
+
+/** Kernauswertung: gruppiert resolved Snapshots nach Setup und Lifecycle,
+ *  liefert je Bucket eine ehrliche Bewertung inkl. Guard-Verdikt. */
+async function claudeAttribution(env){
+  if(!env?.DB) return {configured:false,state:'nodb',version:APP_VERSION};
+  await ensureD1Schema(env);
+  const since=Date.now()-ATTR.HISTORY_MS;
+  // Nur aufgeloeste Aktien-Snapshots mit bekanntem Ergebnis. payload traegt das Setup.
+  const rows=(await env.DB.prepare(
+    `SELECT symbol,ts,max_pct,min_pct,success_ts,light,score,crv,payload
+     FROM market_snapshots
+     WHERE asset_type='stock' AND source IN ('Twelve Data','Tiingo IEX')
+       AND resolved_ts IS NOT NULL AND ts>=? ORDER BY ts ASC LIMIT 8000`
+  ).bind(since).all()).results||[];
+  // Nach Setup gruppieren (aus payload). Fallback 'unklassifiziert'.
+  const bySetup=new Map();
+  for(const r of rows){
+    let setup='unklassifiziert';
+    try{ const p=JSON.parse(r.payload||'{}'); if(p.setup) setup=String(p.setup); }catch{}
+    (bySetup.get(setup)??bySetup.set(setup,[]).get(setup)).push(r);
+  }
+  const buckets=[];
+  for(const [setup,rs] of bySetup){
+    const episodes=collapseEpisodes(rs);
+    const st=bucketStats(episodes);
+    buckets.push({ key:setup, ...st });
+  }
+  // Mehrfachtestkorrektur: je mehr Buckets mit ausreichender Stichprobe parallel
+  // geprueft werden, desto strenger die Edge-Schwelle (Bonferroni-artig auf die
+  // Wilson-Untergrenze). So wird nicht zufaellig das beste von vielen gefeiert.
+  const testable=buckets.filter(b=>b.n>=ATTR.MIN_SAMPLE);
+  const m=Math.max(1,testable.length);
+  const bonferroniBump=Math.min(8,Math.round((1-1/Math.sqrt(m))*12)); // 0..~8 Punkte strenger auf die Punktschaetzung
+  const verdictFor=(b)=>{
+    if(b.n<ATTR.MIN_SAMPLE) return {status:'sammelt',reason:`${b.n}/${ATTR.MIN_SAMPLE} Episoden – zu wenig fuer ein Urteil`};
+    if(!b.oos||b.oosN<ATTR.OOS_MIN) return {status:'sammelt',reason:`Out-of-Sample zu klein (${b.oosN}/${ATTR.OOS_MIN})`};
+    const inP=b.inSample?.pct??0, oosP=b.oos?.pct??0, oosWilson=b.oos?.wilson??0;
+    const drop=inP-oosP;
+    // Overfitting bleibt der schaerfste Befund: gute Vergangenheit, die out-of-sample bricht.
+    if(drop>=ATTR.OVERFIT_DROP && oosP < inP) return {status:'overfit',reason:`In-Sample ${inP}% bricht auf ${oosP}% ein (Δ${drop}pp) – Overfitting-Verdacht`};
+    const pointWeak = oosP < (ATTR.DISABLE_POINT + bonferroniBump);
+    const wilsonWeak = oosWilson < ATTR.DISABLE_WILSON;
+    // Abschaltung nur, wenn BEIDE Kriterien schwach sind UND genug OOS-Evidenz vorliegt.
+    // Sonst wuerde ein breites Konfidenzintervall (kleines n) echte Gewinner faelschlich toeten.
+    if(pointWeak && wilsonWeak && b.oosN>=ATTR.OOS_CONFIDENT)
+      return {status:'disable',reason:`OOS ${oosP}% (Wilson ${oosWilson}%) unter Schwelle ${ATTR.DISABLE_POINT+bonferroniBump}%/${ATTR.DISABLE_WILSON}% bei n=${b.oosN} – Abschaltung empfohlen`};
+    if(pointWeak && wilsonWeak)
+      return {status:'weak-watch',reason:`OOS schwach (${oosP}%, Wilson ${oosWilson}%), aber nur ${b.oosN} OOS-Episoden – erst mehr Daten, dann Entscheidung`};
+    if(pointWeak)
+      return {status:'weak-watch',reason:`OOS-Punktschaetzung ${oosP}% grenzwertig, Wilson ${oosWilson}% aber tragfaehig – beobachten`};
+    return {status:'keep',reason:`OOS ${oosP}% (Wilson ${oosWilson}%) haelt In-Sample ${inP}% stand`};
+  };
+  const evaluated=buckets.map(b=>({...b,verdict:verdictFor(b)}))
+    .sort((a,b)=>(b.oos?.wilson??-1)-(a.oos?.wilson??-1)||b.n-a.n);
+  // Stummliste einlesen und je Bucket den Mute-Status + Rehabilitations-Pruefung anhaengen.
+  const muted=await readMutedSetups(env);
+  const now=Date.now();
+  for(const b of evaluated){
+    const m=muted[b.key];
+    b.muted = !!m;
+    b.mutedSince = m?.mutedTs || null;
+    b.mutedDays = m?.mutedTs ? Math.floor((now-m.mutedTs)/86400000) : null;
+    // Rehabilitation: nur fuer gestummte Setups, nach Mindest-Stummdauer, mit
+    // HOEHEREN Schwellen als die Abschaltung (Hysterese) und genug neuer OOS-Evidenz.
+    b.rehabEligible=false;
+    if(m && (now-m.mutedTs)>=REHAB.MIN_MUTE_MS && b.oos){
+      const oosP=b.oos.pct??0, oosW=b.oos.wilson??0, oosN=b.oosN||0;
+      if(oosP>=REHAB.REENABLE_POINT && oosW>=REHAB.REENABLE_WILSON && oosN>=REHAB.REENABLE_OOS_MIN){
+        b.rehabEligible=true;
+        b.rehabReason=`gestummt seit ${b.mutedDays} T · OOS wieder ${oosP}% (Wilson ${oosW}%, n=${oosN}) ueber Reaktivierungs-Schwelle ${REHAB.REENABLE_POINT}%/${REHAB.REENABLE_WILSON}% – Wiedereinschaltung empfohlen`;
+      }
+    }
+  }
+  // Abschalt-Empfehlungen: nur fuer NICHT bereits gestummte Setups (sonst doppelt).
+  const disableRecs=evaluated.filter(b=>!b.muted && (b.verdict.status==='disable'||b.verdict.status==='overfit'))
+    .map(b=>({setup:b.key,status:b.verdict.status,reason:b.verdict.reason,n:b.n,oosWilson:b.oos?.wilson??null}));
+  // Wiedereinschalt-Empfehlungen fuer erholte gestummte Setups.
+  const reenableRecs=evaluated.filter(b=>b.rehabEligible)
+    .map(b=>({setup:b.key,reason:b.rehabReason,mutedDays:b.mutedDays,oosWilson:b.oos?.wilson??null}));
+  const mutedList=Object.entries(muted).map(([setup,m])=>({setup,mutedSince:m.mutedTs,mutedDays:Math.floor((now-m.mutedTs)/86400000),reason:m.reason}));
+  return {
+    configured:true, state:'ok', version:APP_VERSION,
+    horizonDays:Math.round(ATTR.HISTORY_MS/86400000),
+    totalEpisodes:rows.length, testableSetups:testable.length,
+    multiTestPenalty:bonferroniBump, guard:ATTR, rehab:REHAB,
+    buckets:evaluated, disableRecommendations:disableRecs,
+    reenableRecommendations:reenableRecs, mutedSetups:mutedList,
+    note:'Reine Auswertung aufgeloester Outcomes. Stummschalten unterdrueckt BUY-Freigabe, veraendert keinen Score. Auswertung laeuft im Hintergrund weiter (Cron).',
+  };
+}
+
+/* ============================================================================
+   MODUL 1 · ALADDIN-STYLE MARKET INTELLIGENCE (v3.5.5, additiv)
+   ----------------------------------------------------------------------------
+   Nicht "noch ein Indikator", sondern eine hierarchische Marktmeinung aus den
+   bereits vorhandenen Zeilen-Signalen. Der Layer speist die Empfehlung OBERHALB
+   des Radars; er veraendert WEDER den Claude- noch den FusionPulse-Score. Die
+   Kombination (Setup x Marktpassung) passiert in einer eigenen, ungelockten
+   Schicht (marketRecommendation), damit Modul 0 Setup-Edge und Markt-Edge
+   getrennt tracken kann.
+
+   EHRLICHKEITS-PRINZIP (wie Modul 0): Unsere Marktabdeckung ist eine Stichprobe
+   (20-40 rotierende Titel), kein Vollmarkt. Jede Ebene weist ihre Datenbasis und
+   eine Konfidenz aus. Eine Breadth-Aussage aus 22 Titeln ist eine Stichprobe,
+   kein Marktbreite-Index - und wird genau so etikettiert. Lieber ehrlich
+   unsicher als selbstsicher falsch.
+   ============================================================================ */
+const ALADDIN = {
+  MIN_SAMPLE_REGIME: 12,   // darunter: Regime = 'Unklar' mit niedriger Konfidenz
+  MIN_SECTOR_MEMBERS: 3,   // Sektor-Aussage erst ab so vielen Titeln im Sektor
+  RISK_ON_THRESH: 0.60,    // Anteil positiver/starker Titel fuer Risk-On-Neigung
+  RISK_OFF_THRESH: 0.35,
+};
+const clampNum=(x,lo,hi)=>Math.max(lo,Math.min(hi,Number.isFinite(Number(x))?Number(x):lo));
+/** Konfidenz aus Stichprobengroesse: klein -> niedrig, wird nie 100 %. */
+function sampleConfidence(n, floor=12, full=40){
+  if(n<=0) return 0;
+  return Math.round(clampNum((n-floor)/(full-floor),0,1)*70 + Math.min(30, n/full*30));
+}
+/** Regime aus Zeilen-Signalen: Anteil Titel ueber VWAP, positive ret60,
+ *  RVOL-Schub, Situationsdruck. Alles bereits pro Zeile vorhanden. */
+function aladdinRegime(rows){
+  const usable=rows.filter(r=>r && Number.isFinite(Number(r.ret60)));
+  const n=usable.length;
+  if(n<ALADDIN.MIN_SAMPLE_REGIME){
+    return {label:'Unklar',prob:50,confidence:sampleConfidence(n),sample:n,
+      reasons:[`nur ${n} analysierbare Titel – zu duenn fuer eine belastbare Regime-Aussage`],
+      breadth:null,thin:true};
+  }
+  const above=usable.filter(r=>r.aboveVwap===true).length;
+  const posRet60=usable.filter(r=>Number(r.ret60)>0).length;
+  const strongRvol=usable.filter(r=>Number(r.relVol)>=1.5).length;
+  const breadth=posRet60/n;                       // Anteil Titel mit positivem 1h-Return
+  const vwapBreadth=above/n;
+  const rvolShare=strongRvol/n;
+  // gewichteter Risk-On-Score 0..1
+  const riskOnScore=clampNum(breadth*0.5 + vwapBreadth*0.3 + rvolShare*0.2,0,1);
+  let label='Neutral';
+  if(riskOnScore>=ALADDIN.RISK_ON_THRESH) label='Risk-On';
+  else if(riskOnScore<=ALADDIN.RISK_OFF_THRESH) label='Risk-Off';
+  const prob=Math.round(riskOnScore*100);
+  const reasons=[];
+  reasons.push(`${Math.round(breadth*100)} % der Titel mit positivem 1h-Return (Breadth)`);
+  reasons.push(`${Math.round(vwapBreadth*100)} % ueber VWAP`);
+  if(rvolShare>=0.3) reasons.push(`${Math.round(rvolShare*100)} % mit RVOL ≥ 1,5x – Volumen bestaetigt Bewegung`);
+  else reasons.push(`nur ${Math.round(rvolShare*100)} % mit erhoehtem Volumen – Bewegung schwach getragen`);
+  return {label,prob,confidence:sampleConfidence(n),sample:n,breadth:+breadth.toFixed(2),
+    vwapBreadth:+vwapBreadth.toFixed(2),rvolShare:+rvolShare.toFixed(2),riskOnScore:+riskOnScore.toFixed(2),
+    reasons,thin:n<20};
+}
+/** Sektor-Rotation: relative Staerke je Sektor (ret15/ret60), Volumen, Beschleunigung.
+ *  Nur Sektoren mit genug Mitgliedern werden bewertet; Rest = 'zu wenig Daten'. */
+function aladdinSectors(rows){
+  const bySector=new Map();
+  for(const r of rows){
+    const s=r?.sector; if(!s||s==='Discovery') continue;
+    (bySector.get(s)??bySector.set(s,[]).get(s)).push(r);
+  }
+  const sectors=[];
+  for(const [sector,rs] of bySector){
+    const n=rs.length;
+    const avg=(f)=>{const v=rs.map(x=>Number(x[f])).filter(Number.isFinite);return v.length?v.reduce((a,b)=>a+b,0)/v.length:null;};
+    const ret15=avg('ret15'), ret60=avg('ret60'), rvol=avg('relVol');
+    const accel=(ret15!=null&&ret60!=null)?(ret15 - ret60/4):null; // 15m-Tempo vs. 1h-Grundtrend
+    if(n<ALADDIN.MIN_SECTOR_MEMBERS){
+      sectors.push({sector,members:n,status:'zu wenig Daten',ret15:r1(ret15),ret60:r1(ret60),rvol:r1(rvol),thin:true});
+      continue;
+    }
+    // Trend: kombiniert 1h-Grundrichtung, 15m-Beschleunigung, Volumenbestaetigung
+    const trendScore=(ret60||0)*0.5 + (accel||0)*0.8 + ((rvol||1)-1)*1.5;
+    const arrow=trendScore>=1.2?'↑':trendScore<=-1.2?'↓':'→';
+    sectors.push({sector,members:n,status:'ok',arrow,
+      ret15:r1(ret15),ret60:r1(ret60),rvol:r1(rvol),accel:r1(accel),trendScore:+trendScore.toFixed(2),thin:false});
+  }
+  const rated=sectors.filter(s=>s.status==='ok').sort((a,b)=>b.trendScore-a.trendScore);
+  return {
+    leaders:rated.filter(s=>s.arrow==='↑').slice(0,3),
+    laggards:rated.filter(s=>s.arrow==='↓').slice(0,3),
+    all:sectors.sort((a,b)=>(b.trendScore??-99)-(a.trendScore??-99)),
+    ratedCount:rated.length,
+  };
+}
+/** Stress-Layer: atypische Zustaende in der Stichprobe (Spread/ATR/Korrelation/
+ *  Liquiditaet). Ehrlich als Stichproben-Signal, nicht als VIX-Ersatz. */
+function aladdinStress(rows, regime){
+  const usable=rows.filter(r=>r&&Number.isFinite(Number(r.atrPct)));
+  const n=usable.length;
+  const flags=[];
+  if(n>=8){
+    const atrs=usable.map(r=>Number(r.atrPct)).sort((a,b)=>a-b);
+    const medATR=atrs[Math.floor(atrs.length/2)];
+    if(medATR>=4) flags.push(`erhoehte Volatilitaet (Median-ATR ${medATR.toFixed(1)} %)`);
+    // Korrelations-Proxy: laufen fast alle Titel gleichgerichtet? (Konzentrationsrisiko)
+    const up=usable.filter(r=>Number(r.ret60)>0).length/n;
+    if(up>=0.85||up<=0.15) flags.push(`hohe Gleichrichtung (${Math.round(up*100)} % gleiche Richtung) – wenig Diversifikation`);
+    const wideSpread=usable.filter(r=>r.spreadPct!=null&&Number(r.spreadPct)>=0.15).length;
+    if(wideSpread/n>=0.3) flags.push(`${Math.round(wideSpread/n*100)} % mit weiten Spreads – Liquiditaet angespannt`);
+  }
+  const level=flags.length>=2?'erhoeht':flags.length===1?'leicht':'normal';
+  return {level,flags,sample:n,thin:n<12};
+}
+/** Szenario-/Stress-What-if: verschiebt Kandidaten-Kennzahlen unter Annahmen
+ *  (Nasdaq -1 %, Renditen +10bp -> Tech-Beta-Druck, BTC -3 % -> Krypto-nahe Titel).
+ *  Bewusst als lineare Sensitivitaet gekennzeichnet, kein echtes Faktormodell. */
+function aladdinScenario(candidates, shock){
+  // shock: {nasdaqPct, yieldBp, btcPct}. Grobe, transparente Beta-Annahmen.
+  const nas=Number(shock?.nasdaqPct)||0, yld=Number(shock?.yieldBp)||0, btc=Number(shock?.btcPct)||0;
+  return candidates.map(c=>{
+    const cryptoProxy=/MSTR|COIN|MARA|RIOT|CLSK|HOOD|HUT/i.test(c.symbol)?1:0;
+    const techBeta=/Semiconduct|Software|Technolog|Info/i.test(c.sector||'')?1.2:0.8;
+    // lineare Naeherung: Marktschock * Beta + Zins-Gegenwind fuer Tech + BTC-Kopplung
+    const est=nas*techBeta + (yld/10)*-0.4*techBeta + (cryptoProxy?btc*0.9:0);
+    return {symbol:c.symbol, estMovePct:+est.toFixed(2),
+      note:cryptoProxy?'krypto-gekoppelt':techBeta>1?'zinssensitiv (Tech-Beta)':'defensiver'};
+  });
+}
+
+/** KOMBINATIONSSCHICHT (ungelockt, von Modul 0 trackbar):
+ *  finaleEmpfehlung = Setup-Qualitaet x Marktpassung x Liquiditaet.
+ *  Aendert NICHTS am Claude-/FusionPulse-Score, sondern re-rankt die vorhandenen
+ *  Kandidaten nach Passung zum aktuellen Marktregime. Late-Chases werden
+ *  abgewertet, Titel im fuehrenden Sektor bevorzugt. */
+function marketRecommendation(rows, regime, sectors){
+  const leaderSet=new Set(regime.label==='Risk-On'?sectors.leaders.map(s=>s.sector):[]);
+  const laggardSet=new Set(sectors.laggards.map(s=>s.sector));
+  const scored=rows.filter(r=>r&&r.light&&r.volumeKnown!==false).map(r=>{
+    const setupQ=clampNum(Number(r.score)||0,0,10)/10;
+    // Marktpassung: fuehrt der Sektor? passt Richtung zum Regime? nicht ueberdehnt?
+    let fit=0.5;
+    if(leaderSet.has(r.sector)) fit+=0.25;
+    if(laggardSet.has(r.sector)) fit-=0.25;
+    if(regime.label==='Risk-On' && r.aboveVwap===true) fit+=0.1;
+    if(regime.label==='Risk-Off' && r.aboveVwap===true) fit-=0.15; // Long im Risk-Off skeptisch
+    // Late-Chase-Malus: viel gelaufen (ret60 hoch) aber Tempo raus (ret15 schwach)
+    const lateChase=Number(r.ret60)>4 && Number(r.ret15)<Number(r.ret60)*0.15;
+    if(lateChase) fit-=0.35; // stark genug, damit die "keine Late-Chases"-Empfehlung die Rangliste nicht konterkariert
+    fit=clampNum(fit,0,1);
+    const liq=r.relVol==null?0.5:clampNum(Number(r.relVol)/2.5,0.2,1);
+    const combined=+(setupQ*0.5 + fit*0.35 + liq*0.15).toFixed(3);
+    const why=[];
+    if(leaderSet.has(r.sector)) why.push(`Sektor ${r.sector} fuehrt`);
+    if(Number(r.relVol)>=1.5) why.push(`RVOL ${Number(r.relVol).toFixed(1)}x`);
+    if(r.breakout60m) why.push('60m-Ausbruch');
+    if(Number(r.structurePct)>0) why.push(`Strukturraum ${Number(r.structurePct).toFixed(1)} %`);
+    if(Number(r.ret60)>4 && Number(r.ret15)<Number(r.ret60)*0.15) why.push('⚠ spaet – Tempo laesst nach');
+    return {symbol:r.symbol, sector:r.sector, light:r.light, score:r1(r.score),
+      setupQ:+setupQ.toFixed(2), marketFit:+fit.toFixed(2), liquidity:+liq.toFixed(2),
+      combined, relVol:r.relVol, aboveVwap:r.aboveVwap, ret60:r.ret60, ret15:r.ret15,
+      structurePct:r.structurePct, why:why.slice(0,5)};
+  }).sort((a,b)=>b.combined-a.combined);
+  return scored;
+}
+/** Top-Level-Assembler: fuehrt alle Ebenen zur "FusionPulse Market Recommendation"
+ *  zusammen. Reine Meinung ueber vorhandenen Daten; kein Score-Eingriff. */
+function aladdinIntelligence(rows, opts={}){
+  const clean=(rows||[]).filter(r=>r&&r.symbol);
+  const regime=aladdinRegime(clean);
+  const sectors=aladdinSectors(clean);
+  const stress=aladdinStress(clean,regime);
+  const ranked=marketRecommendation(clean,regime,sectors);
+  const best=ranked[0]||null;
+  const alt=ranked[1]||null;
+  // Empfehlungssatz aus dem Regime ableiten – konservativ, mit Invalidation.
+  let stance='Neutral agieren – kein klarer Vorteil einer Seite.';
+  if(regime.label==='Risk-On') stance='Long-Seite bevorzugen, aber keine Late-Chases.';
+  else if(regime.label==='Risk-Off') stance='Defensiv – Long nur bei klarem Sektor-Leader und starkem Setup.';
+  const invalidation=[];
+  if(regime.breadth!=null) invalidation.push(`Regime kippt, wenn Breadth unter ${Math.round((ALADDIN.RISK_OFF_THRESH)*100)} % faellt`);
+  if(sectors.leaders[0]) invalidation.push(`${sectors.leaders[0].sector} verliert Fuehrung (Trend dreht auf →/↓)`);
+  if(best) invalidation.push(`${best.symbol}: Setup ungueltig unter Stop/VWAP-Verlust`);
+  const marketRisk=[];
+  if(regime.thin) marketRisk.push(`duenne Datenbasis (${regime.sample} Titel) – Aussage ist Stichprobe, kein Vollmarkt`);
+  if(stress.level!=='normal') marketRisk.push(...stress.flags);
+  if(regime.rvolShare!=null && regime.rvolShare<0.3) marketRisk.push('Bewegung schwach durch Volumen bestaetigt');
+  return {
+    generatedTs:Date.now(),
+    regime, sectors, stress,
+    recommendation:{
+      headline:`${regime.label==='Unklar'?'MARKTLAGE UNKLAR':'MARKTLAGE: '+regime.label.toUpperCase()} ${regime.prob} %`,
+      confidence:regime.confidence,
+      leadership:sectors.leaders.map(s=>s.sector),
+      avoid:sectors.laggards.map(s=>s.sector),
+      best, alt, stance,
+      marketRisk, invalidation:invalidation.slice(0,3),
+    },
+    ranked:ranked.slice(0,8),
+    dataBasis:{sampledTitles:clean.length,ratedSectors:sectors.ratedCount,
+      honesty:'Stichprobe aus rotierendem Deep-Scan; Breadth/Rotation sind Naeherungen, kein Vollmarkt-Index.'},
+    note:'Aladdin-Style Marktmeinung. Speist die Empfehlung, veraendert KEINEN Claude-/FusionPulse-Score. Kombination (Setup x Marktpassung) ist separat trackbar.',
+    version:APP_VERSION,
+  };
+}
+
+async function learningPayload(env, stocks=[], coins=[]){
+  if(!env.DB)return {configured:false,state:'nodb',message:'D1-Binding DB fehlt',version:APP_VERSION};
+  await ensureD1Schema(env);
+  const now=Date.now();
+  const key=[...stocks.slice(0,16).sort(), '|', ...coins.slice(0,30).sort()].join(',');
+  if(learnMemo.data && learnMemo.key===key && now-learnMemo.ts<60_000) return learnMemo.data;
+  const counts=await env.DB.prepare(`SELECT
+    COUNT(*) snapshots,
+    SUM(CASE WHEN resolved_ts IS NOT NULL THEN 1 ELSE 0 END) resolved,
+    SUM(CASE WHEN success_ts IS NOT NULL THEN 1 ELSE 0 END) expansions,
+    MAX(ts) last_ts,
+    SUM(CASE WHEN ts>=${now-24*60*60_000} THEN 1 ELSE 0 END) snapshots24h,
+    SUM(CASE WHEN ts>=${now-24*60*60_000} AND resolved_ts IS NOT NULL THEN 1 ELSE 0 END) resolved24h,
+    SUM(CASE WHEN ts>=${now-24*60*60_000} AND success_ts IS NOT NULL THEN 1 ELSE 0 END) expansions24h FROM market_snapshots`).first();
+  const stockOut={};
+  for(const sym of stocks.slice(0,16)) stockOut[sym]={twin:await d1TwinFor(env,sym),lead:await d1LeadModel(env,sym),history:await d1History(env,sym,'stock')};
+  const coinOut={};
+  for(const sym of coins.slice(0,30)) coinOut[sym]={history:await d1History(env,sym,'coin')};
+  const data={configured:true,state:'ok',ts:now,stats:{snapshots:Number(counts?.snapshots)||0,resolved:Number(counts?.resolved)||0,expansions:Number(counts?.expansions)||0,snapshots24h:Number(counts?.snapshots24h)||0,resolved24h:Number(counts?.resolved24h)||0,expansions24h:Number(counts?.expansions24h)||0,lastTs:Number(counts?.last_ts)||null},stocks:stockOut,coins:coinOut,version:APP_VERSION};
+  learnMemo={ts:now,key,data}; return data;
+}
+async function serverLearningCycle(env, scheduledTime=Date.now()){
+  if(!env.DB) return;
+  await ensureD1Schema(env);
+  const now=Number(scheduledTime)||Date.now(), phase=usMarketPhase(new Date(now));
+  const cronMinute=Math.floor(now/60_000);
+  const cryptoMinute=cronMinute%5===0;
+  // v3.2.5: pro Cron-Aufruf maximal EIN schwerer Marktjob. Alle 5 Minuten
+  // besitzt Krypto den Worker exklusiv; dadurch kollidiert Bitpanda nicht mehr
+  // mit Whole-Market-Radar oder Aktien-Deep-Scan im selben CPU-Budget.
+  if(env.FUSION_API_KEY && cryptoMinute){
+    try{
+      const snap=await getSnapshot(env,{},true);
+      await d1StoreRows(env,snap.rows||[],{source:'Bitpanda Fusion',assetType:'coin',now});
+      setApiState('crypto','ok'); await persistApiState(env,'crypto','ok',`${snap.rows?.length||0} Rows`,now);
+    }catch(e){
+      const state=classifyError(e); setApiState('crypto',state,e?.message);
+      await persistApiState(env,'crypto',state,e?.message,now); cronLog('crypto',state,e?.message);
+    }
+  }
+  const np=nyParts(new Date(now)),minsET=Number(np.hour)*60+Number(np.minute);
+  if(!cryptoMinute && env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY&&minsET>=480&&minsET<=1020&&phase.key!=='closed'){
+    try{
+      const op=await openingMomentum(env,true);
+      if(Math.floor(now/60_000)%5===0) await d1StoreRows(env,op.rows||[],{source:alpacaFeed(env)==='sip'?'Alpaca SIP':'Alpaca IEX',assetType:'opening',now});
+      setApiState('alpaca','ok',`${op.rows?.length||0} Rows`);
+      await persistApiState(env,'alpaca','ok',`${op.rows?.length||0} Rows`,now);
+    }catch(e){
+      const state=classifyError(e); setApiState('alpaca',state,e?.message);
+      await persistApiState(env,'alpaca',state,e?.message,now); cronLog('alpaca',state,e?.message);
+    }
+  }
+  const stockMinute=cronMinute, primaryStocks=tiingoStocksMode(env)==='primary';
+  if(!cryptoMinute && primaryStocks && env.TIINGO_API_TOKEN){
+    // v3.2.4 CPU-Hotfix: schwere Jobs werden auf getrennte Cron-Minuten verteilt.
+    // Ungerade Minute = Whole-Market-Bulk-Radar. Gerade Minute = Deep Scan aus
+    // dem persistierten Radar. So laufen JSON-Bulk-Ranking und 20 Historien-
+    // Analysen nie mehr im selben Worker-Aufruf.
+    if(stockMinute%2===1){
+      try{
+        const rd=await tiingoIexMarketRadar(env,80,true);
+        setApiState('stocks','ok',`Whole-Market Radar aktualisiert · ${rd?.rows?.length||0} Kandidaten`);
+        await persistApiState(env,'stocks','ok',`Whole-Market Radar aktualisiert · ${rd?.rows?.length||0} Kandidaten`,now);
+      }
+      catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('iex-radar',state,e?.message);}
+    }else{
+      try{
+        const st=await tiingoStockSnapshot(env,false,new Set(ALL_ON),3,[],'server');
+        await d1StoreRows(env,st.rows||[],{source:'Tiingo IEX',assetType:'stock',now});
+        setApiState('stocks','ok',`${st.rows?.length||0} Rows · Radar ${st.discovery?.radar?.universe||0}`);
+        await persistApiState(env,'stocks','ok',`${st.rows?.length||0} Rows · Radar ${st.discovery?.radar?.universe||0}`,now);
+      }catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('stocks',state,e?.message);}
+    }
+  } else if(!cryptoMinute && !primaryStocks && env.TWELVE_API_KEY && stockMinute%10===1){
+    try{
+      const st=await stockSnapshot(env,false,new Set(ALL_ON),3);
+      await d1StoreRows(env,st.rows||[],{source:'Twelve Data',assetType:'stock',now});
+      setApiState('stocks','ok',`${st.rows?.length||0} Rows`);
+      await persistApiState(env,'stocks','ok',`${st.rows?.length||0} Rows`,now);
+    }catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('stocks',state,e?.message);}
+  }
+}
+
+function authed(req, url, env) {
+  if (!env.APP_TOKEN) return true;                      // kein Token gesetzt → offen
+  const t = req.headers.get('x-fp-token') || url.searchParams.get('t');
+  return t === env.APP_TOKEN;
+}
+
+
+/* ------------------------------------------------ Tiingo v3.1.0 isolated layer */
+async function tiingoFetch(env, path) {
+  if (!env.TIINGO_API_TOKEN) throw new Error('TIINGO_API_TOKEN fehlt');
+  await loadTiingoQuotaOnce(env);
+  noteTiingoCall(env);
+  const res = await fetch(`https://api.tiingo.com${path}`, {
+    headers: { accept: 'application/json', authorization: `Token ${env.TIINGO_API_TOKEN}` },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (res.status === 429) throw new Error('Tiingo Rate-Limit (429)');
+  if (!res.ok) throw new Error(`Tiingo ${res.status}: ${(await res.text()).slice(0,180)}`);
+  return res.json();
+}
+async function tiingoStockChart(env,symbol,range='120'){
+  const sym=safeRadarSymbol(symbol);if(!sym)throw new Error('Ungültiger Ticker');
+  const now=new Date(), end=now.toISOString().slice(0,10);let start=new Date(now),path='';
+  const long={ '1T':1,'5T':5,'1Wo':7,'3Mo':92,'6Mo':183,'12Mo':366 };
+  if(long[range]){
+    start.setUTCDate(start.getUTCDate()-long[range]);const sd=start.toISOString().slice(0,10);
+    if(long[range]<=7){const freq=long[range]<=1?'15min':'1hour';path=`/iex/${encodeURIComponent(sym)}/prices?startDate=${sd}&resampleFreq=${freq}&columns=open,high,low,close,volume`;}
+    else path=`/tiingo/daily/${encodeURIComponent(sym)}/prices?startDate=${sd}&endDate=${end}&columns=open,high,low,close,volume`;
+  }else{
+    const mins=Math.max(5,Math.min(300,Number(range)||120));start=new Date(Date.now()-(mins+180)*60_000);const sd=start.toISOString();path=`/iex/${encodeURIComponent(sym)}/prices?startDate=${encodeURIComponent(sd)}&resampleFreq=5min&columns=open,high,low,close,volume`;
+  }
+  const d=await tiingoFetch(env,path),rows=(Array.isArray(d)?d:[]).map(x=>({t:x.date||x.timestamp||null,c:Number(x.close),v:Number(x.volume)})).filter(x=>Number.isFinite(x.c));
+  return {symbol:sym,range,rows,source:long[range]&&long[range]>7?'Tiingo EOD':'Tiingo IEX',ts:Date.now(),version:APP_VERSION};
+}
+async function tiingoBoatsSnapshot(env, rawSymbols) {
+  const symbols=[...new Set(String(rawSymbols||'').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,25);
+  if(!symbols.length) return {configured:!!env.TIINGO_API_TOKEN,state:'idle',rows:[],source:'Tiingo BOATS',version:APP_VERSION};
+  let rows=[];
+  if(symbols.length>5){
+    const d=await tiingoFetch(env,'/boats');
+    const wanted=new Set(symbols); rows=(Array.isArray(d)?d:[]).filter(x=>wanted.has(String(x.ticker||x.symbol||'').toUpperCase())).map(x=>({symbol:String(x.ticker||x.symbol||'').toUpperCase(),...x}));
+  }else{
+    rows=await pool(symbols,Math.min(5,symbols.length),async symbol=>{try{const d=await tiingoFetch(env,`/boats/${encodeURIComponent(symbol)}`);const r=Array.isArray(d)?d[0]:d;return r?{symbol,...r}:null;}catch(e){return {symbol,error:e.message||String(e)};}});
+  }
+  return {configured:true,state:'ok',rows:rows.filter(Boolean),source:'Tiingo BOATS',session:'20:00–03:59 ET',ts:Date.now(),version:APP_VERSION};
+}
+
+
+
+let tiingoDiscoveryMemo={ts:0,rows:[],session:null};
+function boatsDiscoveryScore(r){
+  const last=Number(r?.tngoLast ?? r?.last ?? r?.mid);
+  const prev=Number(r?.prevClose), bid=Number(r?.bidPrice), ask=Number(r?.askPrice), vol=Number(r?.volume);
+  if(!(last>0) || !(prev>0) || last<2) return null;
+  const movePct=(last/prev-1)*100;
+  const mid=bid>0&&ask>0?(bid+ask)/2:last;
+  const spreadPct=bid>0&&ask>0&&mid>0?((ask-bid)/mid)*100:null;
+  // Discovery only: unusual overnight move + real activity + acceptable quote.
+  // This score NEVER enters analyseStock/BUY and is only used to choose Deep-Scan candidates.
+  if(spreadPct!=null && spreadPct>3.0) return null;
+  if(Number.isFinite(vol) && vol<100) return null;
+  const activity=Number.isFinite(vol)&&vol>0?Math.log10(vol+1):0;
+  const score=Math.abs(movePct)*2.4 + Math.min(8,activity) - (spreadPct==null?1.5:Math.min(6,spreadPct*2));
+  return {score,movePct,spreadPct,volume:Number.isFinite(vol)?vol:null,last,prev};
+}
+async function tiingoBoatsDiscovery(env,limit=15,force=false){
+  const now=Date.now();
+  if(!force && tiingoDiscoveryMemo.rows.length && now-tiingoDiscoveryMemo.ts<5*60_000) return tiingoDiscoveryMemo;
+  try{
+    const d=await tiingoFetch(env,'/boats');
+    const rows=(Array.isArray(d)?d:[]).map(x=>{
+      const symbol=String(x.ticker||x.symbol||'').toUpperCase();
+      if(!/^[A-Z0-9\-]{1,12}$/.test(symbol)) return null;
+      const m=boatsDiscoveryScore(x); if(!m) return null;
+      return {symbol,...m,timestamp:x.timestamp||x.quoteTimestamp||x.lastSaleTimestamp||null,source:'Tiingo BOATS'};
+    }).filter(Boolean).sort((a,b)=>b.score-a.score).slice(0,Math.max(1,Math.min(30,limit)));
+    tiingoDiscoveryMemo={ts:now,rows,session:'BOATS 20:00–04:00 ET'};
+    return tiingoDiscoveryMemo;
+  }catch(e){
+    console.warn(JSON.stringify({event:'tiingo_boats_discovery_failed',message:String(e?.message||e),ts:now}));
+    return tiingoDiscoveryMemo.rows.length?tiingoDiscoveryMemo:{ts:now,rows:[],session:'BOATS unavailable',error:String(e?.message||e)};
+  }
+}
+
+function tiingoStocksMode(env){
+  const m=String(env.TIINGO_STOCKS_MODE||'shadow').toLowerCase();
+  return m==='primary'?'primary':'shadow';
+}
+let tiingoFxMemo={ts:0,usdPerEur:null};
+async function getTiingoFx(env){
+  if(tiingoFxMemo.usdPerEur && Date.now()-tiingoFxMemo.ts<30*60_000) return tiingoFxMemo.usdPerEur;
+  try{
+    const d=await tiingoFetch(env,'/tiingo/fx/eurusd/top');
+    const r=Array.isArray(d)?d[0]:d;
+    const x=Number(r?.midPrice ?? ((Number(r?.bidPrice)+Number(r?.askPrice))/2));
+    if(Number.isFinite(x)&&x>0){tiingoFxMemo={ts:Date.now(),usdPerEur:x};return x;}
+  }catch(e){ console.warn(JSON.stringify({event:'tiingo_fx_failed',message:String(e?.message||e),ts:Date.now()})); }
+  return tiingoFxMemo.usdPerEur;
+}
+async function tiingoIexSnapshot(env, rawSymbols){
+  const symbols=[...new Set(String(rawSymbols||'').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,50);
+  if(!symbols.length) return [];
+  const d=await tiingoFetch(env,'/iex');
+  const wanted=new Set(symbols);
+  return (Array.isArray(d)?d:[]).filter(x=>wanted.has(String(x.ticker||x.symbol||'').toUpperCase()));
+}
+
+/* v3.2.1 Whole-Market Radar -------------------------------------------------
+   Ein einzelner Tiingo-/iex-Bulk-Call beobachtet den gesamten verfuegbaren
+   IEX-Snapshot. Der Radar nominiert nur Kandidaten. Er veraendert weder
+   analyseStock() noch Score/Ampel/BUY und hat damit explizit 0 % BUY-Gewicht.
+   Die Top-Kandidaten werden kompakt in D1 gespeichert, damit auch bei
+   geschlossenem Browser ein serverseitiges Bewegungs-Gedaechtnis entsteht. */
+let tiingoIexRadarMemo={ts:0,rows:[],universe:0};
+function radarTs(x){
+  const raw=x?.timestamp||x?.quoteTimestamp||x?.lastSaleTimestamp||x?.lastUpdated||null;
+  const ms=raw?Date.parse(raw):NaN; return Number.isFinite(ms)?ms:null;
+}
+function iexRadarQuote(x,prev=null){
+  const symbol=String(x?.ticker||x?.symbol||'').toUpperCase();
+  if(!/^[A-Z0-9.\-]{1,12}$/.test(symbol)) return null;
+  const last=Number(x?.tngoLast ?? x?.last ?? x?.lastPrice ?? x?.mid);
+  const prevClose=Number(x?.prevClose ?? x?.previousClose);
+  const open=Number(x?.open ?? x?.openPrice);
+  const high=Number(x?.high ?? x?.highPrice), low=Number(x?.low ?? x?.lowPrice);
+  const bid=Number(x?.bidPrice ?? x?.bid), ask=Number(x?.askPrice ?? x?.ask);
+  const volume=Number(x?.volume ?? x?.tngoVolume);
+  if(!(last>=2) || !(prevClose>0)) return null;
+  const mid=bid>0&&ask>0?(bid+ask)/2:last;
+  const spreadPct=bid>0&&ask>0&&mid>0?(ask-bid)/mid*100:null;
+  if(spreadPct!=null && spreadPct>2.5) return null;
+  const movePct=(last/prevClose-1)*100;
+  const openPct=open>0?(last/open-1)*100:null;
+  const rangePct=high>0&&low>0&&last>0?(high-low)/last*100:null;
+  const prevLast=Number(prev?.last), prevVol=Number(prev?.volume);
+  const speedPct=prevLast>0?(last/prevLast-1)*100:0;
+  const volDelta=volume>=0&&prevVol>=0?Math.max(0,volume-prevVol):0;
+  const spreadImprove=prev?.spreadPct!=null&&spreadPct!=null?Math.max(0,Number(prev.spreadPct)-spreadPct):0;
+  // v3.4.3 Situation Engine: Discovery sucht nicht mehr primaer nach bereits grossen
+  // Tagesgewinnern, sondern nach FRISCHEN Zustandswechseln. Alle Werte bleiben reine
+  // Nominierung (0 % BUY-Gewicht); fehlende Quote-/Volumendaten koennen den Rang nur senken.
+  const activity=Number.isFinite(volume)&&volume>0?Math.min(7,Math.log10(volume+1)):0;
+  const gapPct=open>0?(open/prevClose-1)*100:null;
+  const rangePosition=high>low?(last-low)/(high-low):null;
+  const prevSpeed=Number(prev?.speedPct);
+  const accelPct=Number.isFinite(prevSpeed)?speedPct-prevSpeed:speedPct;
+  const volPulsePct=prevVol>0&&volume>=prevVol?(volume/prevVol-1)*100:null;
+  const nearHigh=rangePosition!=null&&rangePosition>=0.82;
+  const cleanSpread=spreadPct!=null&&spreadPct<=0.8;
+  const volumePulse=volPulsePct!=null&&volPulsePct>=2;
+  const freshAccel=speedPct>=0.10&&accelPct>=0.03;
+  const breakoutPressure=nearHigh&&speedPct>=0.06&&movePct>=0.4;
+  const openingDrive=gapPct!=null&&gapPct>=0.8&&openPct!=null&&openPct>=0.15&&speedPct>=0.04;
+  const reversalReclaim=movePct<0&&openPct!=null&&openPct>0&&speedPct>=0.10;
+  const quietToActive=Math.abs(movePct)<2.5&&speedPct>=0.16&&(volumePulse||activity>=5.5);
+
+  let situation='WATCH';
+  if(openingDrive) situation='OPENING DRIVE';
+  else if(breakoutPressure&&freshAccel) situation='BREAKOUT PRESSURE';
+  else if(reversalReclaim) situation='REVERSAL RECLAIM';
+  else if(quietToActive) situation='EARLY ACCELERATION';
+  else if(freshAccel) situation='ACCELERATION';
+  else if(breakoutPressure) situation='NEAR HIGH';
+
+  // v3.5.2 Opportunity Lifecycle: nicht nur Zustand, sondern die AENDERUNG des
+  // Zustands zaehlt. Ein frischer Uebergang WATCH/NEAR HIGH -> IGNITION bekommt
+  // Vorrang vor einem Titel, der schon minutenlang einfach nur oben steht.
+  const prevSituation=String(prev?.situation||'WATCH');
+  const transitioned=situation!=='WATCH'&&situation!==prevSituation;
+  const ignition=transitioned&&['OPENING DRIVE','BREAKOUT PRESSURE','REVERSAL RECLAIM','EARLY ACCELERATION','ACCELERATION'].includes(situation)
+    && ['WATCH','NEAR HIGH'].includes(prevSituation);
+  const prep=situation==='NEAR HIGH'&&cleanSpread&&(volumePulse||speedPct>=0.03);
+  const decelerating=movePct>4&&rangePosition!=null&&rangePosition>=0.85&&Number.isFinite(prevSpeed)&&speedPct<Math.max(0.02,prevSpeed*0.55);
+  const lifecycle=decelerating?'LATE':ignition?'IGNITION':prep?'PREP':(['BREAKOUT PRESSURE','OPENING DRIVE','ACCELERATION'].includes(situation)?'CONFIRM':'WATCH');
+
+  let situationScore=0;
+  situationScore += Math.min(28,Math.max(0,speedPct)*55);
+  situationScore += Math.min(14,Math.max(0,accelPct)*45);
+  situationScore += nearHigh?12:0;
+  situationScore += openingDrive?12:0;
+  situationScore += reversalReclaim?10:0;
+  situationScore += volumePulse?Math.min(12,4+Math.max(0,volPulsePct||0)*0.20):0;
+  situationScore += cleanSpread?8:(spreadPct==null?-6:Math.max(-8,6-spreadPct*5));
+  situationScore += Math.min(8,activity*1.1);
+  situationScore += Math.min(6,Math.max(0,spreadImprove)*8);
+  situationScore += Math.min(8,Math.max(0,movePct)*0.7);
+  situationScore += ignition?18:transitioned?7:prep?8:0;
+  if(lifecycle==='LATE') situationScore-=22;
+  if(movePct>7&&speedPct<0.05) situationScore-=Math.min(18,(movePct-7)*1.2);
+  if(rangePosition!=null&&rangePosition<0.35&&speedPct<=0) situationScore-=10;
+  if(spreadPct==null) situationScore-=6;
+
+  const reasons=[];
+  if(ignition) reasons.push(`NEU: ${prevSituation} -> ${situation}`);
+  else if(prep) reasons.push('Vorbereitung direkt unter Trigger');
+  if(lifecycle==='LATE') reasons.push('spaete Bewegung / Tempo faellt');
+  if(openingDrive) reasons.push('Gap mit Follow-through');
+  if(breakoutPressure) reasons.push('nahe Tageshoch mit Druck');
+  if(freshAccel) reasons.push(`Beschleunigung +${speedPct.toFixed(2)} %`);
+  if(reversalReclaim) reasons.push('Reversal/Reclaim startet');
+  if(volumePulse) reasons.push('Volumenpuls');
+  if(spreadImprove>=0.05) reasons.push('Spread wird enger');
+  if(!reasons.length&&movePct>=2) reasons.push(`Tagesstaerke +${movePct.toFixed(1)} %`);
+  const ts=radarTs(x), ageMin=ts?Math.max(0,(Date.now()-ts)/60000):null;
+  if(ageMin!=null && ageMin>30) return null;
+  if(ageMin!=null) situationScore-=Math.min(18,ageMin*0.7);
+  const score=Math.max(0,situationScore);
+  return {symbol,last,prevClose,open:Number.isFinite(open)?open:null,high:Number.isFinite(high)?high:null,low:Number.isFinite(low)?low:null,volume:Number.isFinite(volume)?volume:null,movePct,openPct,gapPct,rangePct,rangePosition,spreadPct,speedPct,accelPct,volDelta,volPulsePct,score,situationScore:score,situation,prevSituation,lifecycle,transitioned,ignition,reasons,ts,ageMin,source:'Tiingo IEX Situation Radar',buyWeight:0};
+}
+async function readPersistedIexRadar(env){
+  if(!env?.DB) return null;
+  try{await ensureD1Schema(env);const r=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind('iex_radar:last').first();if(!r?.value)return null;const p=JSON.parse(r.value);return p?.rows?.length?{ts:Number(p.ts||r.updated_ts||0),rows:p.rows,universe:Number(p.universe||0)}:null;}catch{return null;}
+}
+async function persistIexRadar(env,data){
+  if(!env?.DB||!data?.rows?.length)return;
+  try{await ensureD1Schema(env);const ts=Date.now(),payload=safeJson({ts,universe:data.universe,rows:data.rows.slice(0,120).map(r=>({symbol:r.symbol,last:r.last,prevClose:r.prevClose,open:r.open,high:r.high,low:r.low,volume:r.volume,spreadPct:r.spreadPct,movePct:r.movePct,openPct:r.openPct,gapPct:r.gapPct,rangePct:r.rangePct,rangePosition:r.rangePosition,speedPct:r.speedPct,accelPct:r.accelPct,volDelta:r.volDelta,volPulsePct:r.volPulsePct,score:r.score,situationScore:r.situationScore,situation:r.situation,prevSituation:r.prevSituation,lifecycle:r.lifecycle,transitioned:r.transitioned,ignition:r.ignition,reasons:r.reasons,ts:r.ts}))});await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`).bind('iex_radar:last',payload,ts).run();}catch(e){console.warn(JSON.stringify({event:'iex_radar_cache_write_failed',message:String(e?.message||e),ts:Date.now()}));}
+}
+
+// v3.3.3: Opening Momentum kann im Premarket bereits verifizierte marktweite
+// Kandidaten liefern, bevor der normale Deep-Scan sie übernommen hat. Diese
+// kleine, bereits durch filterRadarToCommonStocks() geprüfte Menge wird separat
+// persistiert. Sie bleibt reine Discovery (0 % BUY-Gewicht), darf aber den
+// nächsten serverseitigen Deep-Scan nominieren und den Radar in der UI füllen.
+async function persistVerifiedOpeningRadar(env, rows){
+  if(!env?.DB||!Array.isArray(rows)||!rows.length)return;
+  try{
+    await ensureD1Schema(env);
+    const ts=Date.now(), clean=rows.slice(0,24).map(r=>({
+      symbol:String(r.symbol||'').toUpperCase(), last:r.last??r.priceUsd??null,
+      movePct:r.movePct??r.gapPct??null, speedPct:r.speedPct??r.ret5??null,
+      spreadPct:r.spreadPct??null, volume:r.volume??null, score:r.score??r.momentumScore??0,
+      situationScore:r.situationScore??r.momentumScore??0, situation:r.situation||r.situationType||'OPENING MOMENTUM',
+      reasons:Array.isArray(r.reasons)?r.reasons.slice(0,3):['Opening Momentum'],
+      securityVerified:true, securityName:r.securityName||r.name||r.symbol,
+      companyDescription:r.companyDescription||'', exchange:r.exchange||'', ts:r.ts||ts,
+      buyWeight:0, source:'Opening Momentum · verified'
+    })).filter(r=>r.symbol);
+    if(!clean.length)return;
+    const payload=safeJson({ts,rows:clean});
+    await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`).bind('opening_radar_verified:last',payload,ts).run();
+  }catch(e){console.warn(JSON.stringify({event:'opening_radar_cache_write_failed',message:String(e?.message||e),ts:Date.now()}));}
+}
+async function readVerifiedOpeningRadar(env,maxAgeMs=30*60_000){
+  if(!env?.DB)return [];
+  try{
+    await ensureD1Schema(env);
+    const r=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind('opening_radar_verified:last').first();
+    if(!r?.value)return [];
+    const p=JSON.parse(r.value), ts=Number(p?.ts||r.updated_ts||0);
+    if(!ts||Date.now()-ts>maxAgeMs)return [];
+    return verifiedCommonOnly(Array.isArray(p?.rows)?p.rows:[]).slice(0,24);
+  }catch{return [];}
+}
+// v3.2.3 Security-master gate: keep the broad IEX radar, but validate
+// candidates with Tiingo's stable EOD metadata endpoint instead of the beta
+// Search endpoint. This avoids a production dependency on Search and keeps
+// ETFs/ETPs/funds/warrants/units/preferreds out of the stock Deep Scan.
+const NON_COMMON_EQUITY_RE=/(?:\bETF\b|\bETN\b|\bETP\b|EXCHANGE[- ]TRADED|DAILY TARGET|\b2X\b|\b3X\b|ULTRA(?:PRO)?\b|BEAR\b|BULL\b|INVERSE\b|LEVERAGED\b|DIREXION|PROSHARES|T-?REX|GRANITESHARES|DEFIANCE|ROUNDHILL|YIELDMAX|REX SHARES|TRADR|\bFUND\b|MUTUAL FUND|CLOSED[- ]END|\bWARRANTS?\b|\bUNITS?\b|\bRIGHTS?\b|PREFERRED|DEPOSITARY SHARES?)/i;
+// Known single-stock leveraged/inverse product symbols that have already polluted Discovery.
+// Metadata/name remains the primary gate; this deny-set is a defensive last line and can only EXCLUDE.
+const NON_COMMON_SYMBOL_DENY=new Set(['CRWU','AXTU']);
+const nonEquityMemo=new Map();
+function safeRadarSymbol(raw){
+  const sym=String(raw||'').trim().toUpperCase().replace(/\./g,'-');
+  return /^[A-Z][A-Z0-9-]{0,11}$/.test(sym)?sym:'';
+}
+async function radarEquityMeta(env,symbol){
+  const sym=safeRadarSymbol(symbol);
+  if(!sym)return {ts:Date.now(),tradableStock:false,name:String(symbol||''),assetType:'invalid',reason:'Ungueltiges Symbolformat'};
+  const mem=nonEquityMemo.get(sym);
+  if(mem&&Date.now()-mem.ts<7*86400_000)return mem;
+  const key=`security_meta:v327:${sym}`;
+  if(env?.DB){
+    try{await ensureD1Schema(env);const r=await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind(key).first();if(r?.value&&Date.now()-Number(r.updated_ts||0)<7*86400_000){const v=JSON.parse(r.value);const out={ts:Number(r.updated_ts||Date.now()),...v};nonEquityMemo.set(sym,out);return out;}}catch{}
+  }
+  let out={ts:Date.now(),tradableStock:false,name:sym,assetType:'unknown',reason:'Metadaten nicht verifiziert'};
+  try{
+    // Stable Tiingo EOD metadata endpoint; no query string / beta Search API.
+    const hit=await tiingoFetch(env,`/tiingo/daily/${encodeURIComponent(sym)}`);
+    const name=String(hit?.name||sym),desc=String(hit?.description||''),exchange=String(hit?.exchangeCode||'');
+    const text=`${name} ${desc}`;
+    const nonCommon=NON_COMMON_SYMBOL_DENY.has(sym) || NON_COMMON_EQUITY_RE.test(text) || /-P(?:-|$)/.test(sym);
+    const active=hit?.endDate==null || Date.parse(hit.endDate)>=Date.now()-7*86400_000;
+    out={ts:Date.now(),tradableStock:Boolean(active&&!nonCommon),name,description:desc.slice(0,500),assetType:nonCommon?'non-common':'stock',exchange,reason:!active?'inaktiv':nonCommon?'ETF/ETP/Fonds/Derivat erkannt':'Common-Stock verifiziert'};
+  }catch(e){out.reason=`Metadatenpruefung fehlgeschlagen: ${String(e?.message||e).slice(0,90)}`;}
+  nonEquityMemo.set(sym,out);
+  if(env?.DB){try{await ensureD1Schema(env);await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`).bind(key,safeJson({tradableStock:out.tradableStock,name:out.name,description:out.description||'',assetType:out.assetType,exchange:out.exchange||'',reason:out.reason}),out.ts).run();}catch{}}
+  return out;
+}
+async function filterRadarToCommonStocks(env,rows,limit){
+  // Work through a larger ranked buffer so rejected ETFs are replaced by the
+  // next common stocks. Metadata checks are cached for seven days.
+  const source=(rows||[]).map(r=>({...r,symbol:safeRadarSymbol(r?.symbol)})).filter(r=>r.symbol).slice(0,24);
+  const checked=await pool(source,4,async r=>{try{return {r,m:await radarEquityMeta(env,r.symbol)};}catch(e){return {r,m:{tradableStock:false,reason:String(e?.message||e)}};}});
+  return checked.filter(x=>x?.m?.tradableStock && radarCandidateAllowed(x?.r)).map(x=>({...x.r,securityName:x.m.name,companyDescription:x.m.description||'',exchange:x.m.exchange||'',assetType:'stock',securityVerified:true,largeCapRadar:largeCapRadarAllowed(x?.r?.symbol),momentumRadar:!largeCapRadarAllowed(x?.r?.symbol)&&momentumRadarAllowed(x?.r)})).slice(0,limit);
+}
+
+function verifiedCommonOnly(rows){
+  return (rows||[]).filter(r=>r?.securityVerified===true && (largeCapRadarAllowed(r?.symbol)||r?.momentumRadar===true) && !NON_COMMON_SYMBOL_DENY.has(String(r?.symbol||'').toUpperCase()) && !NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''}`));
+}
+// v3.2.7 P0: Never let a previously cached/persisted non-common instrument leak
+// back into the visible stock scanner. This is deliberately exclusion-only.
+function stripKnownNonCommon(rows){
+  return (rows||[]).filter(r=>{
+    const sym=String(r?.symbol||'').trim().toUpperCase();
+    if(!sym || NON_COMMON_SYMBOL_DENY.has(sym)) return false;
+    return !NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''} ${r?.description||''}`);
+  });
+}
+function openingGainers(rows,limit=12){
+  return verifiedCommonOnly(rows).filter(r=>Number(r.movePct)>=2).sort((a,b)=>(Number(b.movePct)||0)-(Number(a.movePct)||0)).slice(0,limit);
+}
+
+async function tiingoIexMarketRadar(env,limit=80,force=false){
+  const now=Date.now();
+  if(!force&&tiingoIexRadarMemo.rows.length&&now-tiingoIexRadarMemo.ts<50_000)return tiingoIexRadarMemo;
+  const persisted=tiingoIexRadarMemo.rows.length?tiingoIexRadarMemo:await readPersistedIexRadar(env);
+  const prevMap=new Map((persisted?.rows||[]).map(r=>[r.symbol,r]));
+  const d=await tiingoFetch(env,'/iex'), all=Array.isArray(d)?d:[];
+  const phase=usMarketPhase(new Date(now),'iex');
+  const maxAge=['opening','regular'].includes(phase.key)?12:['premarket','after'].includes(phase.key)?30:90;
+  resetRadarGateStats();
+  const ranked=all.map(x=>iexRadarQuote(x,prevMap.get(String(x?.ticker||x?.symbol||'').toUpperCase()))).filter(Boolean)
+    .filter(r=>radarCandidateAllowed(r,true))
+    .filter(r=>r.ageMin==null||r.ageMin<=maxAge)
+    .sort((a,b)=>b.score-a.score);
+  // Instrument-Metadaten bewusst NICHT hier prüfen: Der Bulk-Radar soll CPU-arm
+  // bleiben. ETF/ETP/Common-Stock-Verifikation erfolgt erst im getrennten Deep-
+  // Scan-Cron auf den wenigen Top-Kandidaten.
+  const rows=ranked.slice(0,Math.max(24,Math.min(120,limit)));
+  tiingoIexRadarMemo={ts:now,rows,universe:all.length,phase:phase.key,source:'Tiingo IEX Large-Cap Radar · prefiltered',buyWeight:0};
+  await persistIexRadar(env,tiingoIexRadarMemo);
+  return tiingoIexRadarMemo;
+}
+function deepRecheckRank(r){
+  const score=Number(r?.score)||0,crv=Number(r?.netCRV)||0,rv=Number(r?.relVol)||0,ret15=Number(r?.ret15)||0,structure=Number(r?.structurePct)||0,sit=Number(r?.situationScore)||0;
+  const ell=Number(r?.elliott)||0;
+  // v3.4.3: SituationScore priorisiert, WANN erneut hingesehen wird; Elliott/Qualitaet/CRV entscheiden weiterhin, OB ein Trade freigegeben werden kann.
+  return ell*18 + score*6 + Math.min(18,sit*0.18) + Math.min(26,Math.max(0,crv-1)*7) + Math.min(14,Math.max(0,rv-1)*5) + Math.min(10,Math.max(0,ret15)*1.5) + Math.min(12,Math.max(0,structure));
+}
+async function tiingoIexSeries(env,symbol){
+  const start=new Date(Date.now()-36*60*60_000).toISOString().slice(0,10);
+  const path=`/iex/${encodeURIComponent(symbol)}/prices?startDate=${start}&resampleFreq=5min&columns=open,high,low,close,volume`;
+  const d=await tiingoFetch(env,path);
+  const arr=Array.isArray(d)?d:[];
+  return {meta:{symbol,name:STOCK_NAMES[symbol]||STOCK_SEARCH_BY_SYMBOL.get(symbol)?.name||symbol,exchange:'US',currency:'USD'},values:arr.map(x=>({datetime:x.date,open:x.open,high:x.high,low:x.low,close:x.close,volume:x.volume})).reverse()};
+}
+async function tiingoAnalyseOne(env,symbol,sector,comp,minCrv,fx){
+  const src=await tiingoIexSeries(env,symbol);
+  const r=analyseStock(symbol,sector,src,fx,comp,minCrv);
+  if(r){r.feed='Tiingo IEX';r.dataSource='tiingo-iex';}
+  return r;
+}
+
+// v3.3.7 P0: A Deep-Scan close is an analysis price, not automatically the
+// current executable/reference quote. For a user-selected stock we fetch the
+// freshest available independent quote and expose source + timestamp. Missing
+// freshness never improves a setup; the UI can therefore label/block stale data.
+//
+/* ==== v3.13.0 · BEFUND UND UMBAU ============================================
+   `freshestStockQuote` wurde an genau ZWEI Stellen aufgerufen — beide im
+   manuellen Suchpfad (`tiingoStockLookup`). Der automatische Deep-Scan hat sie
+   NIE aufgerufen. Jede Zeile aus dem Scanner hatte deshalb `liveQuoteOk`
+   undefiniert, und die Oberflaeche zeigte folgerichtig „KEIN LIVE-QUOTE" —
+   selbst waehrend der US-Handelszeit, selbst fuer den Titel im Fokusfenster.
+
+   Der naive Fix waere gewesen, die Funktion je Symbol im Scan aufzurufen: bei
+   20 Titeln also 20 Alpaca- plus 20 Tiingo-Abfragen pro Zyklus. Das haette das
+   API-Budget gesprengt.
+
+   Entscheidend ist eine Eigenschaft, die im Bestand schon vorhanden war:
+   `tiingoIexSnapshot` holt `/iex` fuer den GESAMTEN Markt in einem Aufruf und
+   filtert erst danach lokal. Und Alpacas `/v2/stocks/snapshots` nimmt eine
+   Symbolliste entgegen. Beide Quellen sind also von Natur aus Stapelabfragen.
+
+   Deshalb: eine Stapelfunktion, die pro Durchlauf GENAU ZWEI Aufrufe macht —
+   unabhaengig davon, ob 1 oder 100 Titel abgefragt werden. Der Einzelabruf ist
+   nur noch ein Aufruf des Stapels mit einem Symbol, damit es weiterhin genau
+   EINE Frischelogik gibt und nicht zwei, die auseinanderlaufen koennen.
+   (Genau dieser Fehler war `sectorLag` in v3.10.0: eine Kennzahl, die nur auf
+   einem von zwei Pfaden gerechnet wurde.)
+
+   Unveraendert: Frische verbessert NIE ein Setup. Die Werte sind reine Anzeige,
+   sie fliessen in keinen Score und in keine Kauf-Freigabe.                    */
+function classifyQuoteFreshness(q){
+  const ageSec=q.ts?Math.max(0,Math.round((Date.now()-q.ts)/1000)):null;
+  const phase=usMarketPhase();
+  const active=['premarket-early','premarket','opening','regular','after'].includes(phase.key);
+  const live=active ? (ageSec!=null && ageSec<=120) : (ageSec!=null && ageSec<=900);
+  return {...q,ageSec,live,marketPhase:phase.key};
+}
+
+async function freshestStockQuotesBatch(env,rawSymbols){
+  const syms=[...new Set((Array.isArray(rawSymbols)?rawSymbols:String(rawSymbols||'').split(','))
+    .map(x=>safeRadarSymbol(x)).filter(Boolean))].slice(0,100);
+  const out=new Map();
+  if(!syms.length) return out;
+  const bucket=new Map();   // symbol -> Kandidatenliste
+  const add=(sym,price,ts,source,scope)=>{
+    const p=Number(price),ms=ts?Date.parse(ts):NaN;
+    if(!Number.isFinite(p)||p<=0) return;
+    const a=bucket.get(sym)||[]; a.push({priceUsd:p,ts:Number.isFinite(ms)?ms:null,updated:ts||null,source,scope});
+    bucket.set(sym,a);
+  };
+
+  // --- Alpaca: EIN Aufruf fuer alle Symbole ---------------------------------
+  if(env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY){
+    try{
+      const feed=alpacaFeed(env);
+      const d=await alpacaJSON('/v2/stocks/snapshots',{symbols:syms.join(','),feed},env);
+      const scope=feed==='sip'?'konsolidierter US-Feed':'IEX-Teilmarkt';
+      for(const sym of syms){
+        const snap=d?.[sym]; if(!snap) continue;
+        add(sym,snap.latestTrade?.p,snap.latestTrade?.t,`Alpaca ${alpacaFeedLabel(env)}`,scope);
+        add(sym,snap.minuteBar?.c,snap.minuteBar?.t,`Alpaca ${alpacaFeedLabel(env)}`,scope);
+      }
+    }catch(e){console.warn(JSON.stringify({event:'stock_fresh_quote_alpaca_failed',count:syms.length,message:String(e?.message||e),ts:Date.now()}));}
+  }
+
+  // --- Tiingo: EIN Aufruf, /iex liefert ohnehin den ganzen Markt -------------
+  if(env.TIINGO_API_TOKEN){
+    try{
+      const arr=await tiingoIexSnapshot(env,syms.join(','));
+      for(const x of (arr||[])){
+        const sym=String(x?.ticker||x?.symbol||'').toUpperCase();
+        if(!sym) continue;
+        add(sym,x.tngoLast??x.last??x.lastPrice,x.timestamp||x.lastSaleTimestamp||x.quoteTimestamp||x.lastUpdated,'Tiingo IEX','IEX-Teilmarkt');
+      }
+    }catch(e){console.warn(JSON.stringify({event:'stock_fresh_quote_tiingo_failed',count:syms.length,message:String(e?.message||e),ts:Date.now()}));}
+  }
+
+  for(const [sym,cands] of bucket){
+    if(!cands.length) continue;
+    cands.sort((a,b)=>(b.ts||0)-(a.ts||0));
+    out.set(sym,classifyQuoteFreshness(cands[0]));
+  }
+  return out;
+}
+
+/* Einzelabruf = Stapel mit einem Symbol. Bewusst KEINE zweite Implementierung. */
+async function freshestStockQuote(env,symbol){
+  const sym=safeRadarSymbol(symbol); if(!sym) return null;
+  const m=await freshestStockQuotesBatch(env,[sym]);
+  return m.get(sym)||null;
+}
+
+/* Haengt die Stapel-Quotes an Zeilen. Rein additiv: eine Zeile ohne Quote
+   behaelt ihre Felder unveraendert und wird von der Oberflaeche korrekt als
+   „kein Live-Quote" beschriftet — kein erfundener Wert. */
+function attachLiveQuotes(rows,quotes,fx){
+  let hit=0;
+  for(const r of rows||[]){
+    const q=quotes?.get(String(r?.symbol||'').toUpperCase());
+    if(!q) continue;
+    r.livePriceUsd=q.priceUsd; r.livePriceEur=fx?q.priceUsd/fx:null;
+    r.liveUpdated=q.updated; r.liveQuoteTs=q.ts; r.liveQuoteAgeSec=q.ageSec;
+    r.liveQuoteSource=q.source; r.liveQuoteScope=q.scope; r.liveQuoteOk=!!q.live;
+    hit++;
+  }
+  return hit;
+}
+
+async function tiingoValidation(env,rawSymbols){
+  const symbols=[...new Set(String(rawSymbols||'AAPL,NVDA,TSLA').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,3);
+  const out={configured:!!env.TIINGO_API_TOKEN,mode:tiingoStocksMode(env),symbols,version:APP_VERSION,tests:{},safe:true};
+  if(!env.TIINGO_API_TOKEN){out.state='nokey';return out;}
+  try{const d=await tiingoFetch(env,'/api/test/');out.tests.auth={ok:true,message:d?.message||'authenticated'};}catch(e){out.tests.auth={ok:false,error:String(e.message||e)};out.state='error';return out;}
+  try{const snaps=await tiingoIexSnapshot(env,symbols.join(','));out.tests.iexSnapshot={ok:snaps.length>0,count:snaps.length,rows:snaps.map(x=>({ticker:x.ticker,timestamp:x.timestamp,last:x.last,tngoLast:x.tngoLast,volume:x.volume}))};}catch(e){out.tests.iexSnapshot={ok:false,error:String(e.message||e)};}
+  try{const fx=await getTiingoFx(env);out.tests.fx={ok:Number.isFinite(fx)&&fx>0,usdPerEur:fx||null};}catch(e){out.tests.fx={ok:false,error:String(e.message||e)};}
+  out.tests.history=[];
+  for(const sym of symbols.slice(0,2)){
+    try{
+      const d=await tiingoIexSeries(env,sym), vals=d.values||[], latest=vals[0]?.datetime||null, latestMs=latest?Date.parse(latest):NaN;
+      const ohlcKnown=vals.length>0 && vals.slice(0,Math.min(3,vals.length)).every(x=>[x.open,x.high,x.low,x.close].every(v=>Number.isFinite(Number(v))));
+      const ageMinutes=Number.isFinite(latestMs)?Math.max(0,Math.round((Date.now()-latestMs)/60000)):null;
+      // Verwendbarkeit statt willkuerlicher Mindestzahl: wenige aktuelle Bars sind fuer einen Live-Test ausreichend.
+      // Die Analyse selbst entscheidet spaeter anhand ihrer benoetigten Historie, ob ein Titel tief genug analysierbar ist.
+      const usable=vals.length>=2 && ohlcKnown && Number.isFinite(latestMs);
+      out.tests.history.push({symbol:sym,ok:usable,usable,bars:vals.length,latest,ageMinutes,ohlcKnown,volumeKnown:vals.some(x=>Number(x.volume)>0)});
+    }catch(e){out.tests.history.push({symbol:sym,ok:false,usable:false,error:String(e.message||e)});}
+  }
+  try{const b=await tiingoBoatsSnapshot(env,symbols.slice(0,2).join(','));const valid=(b.rows||[]).filter(r=>!r.error);out.tests.boats={ok:valid.length>0,count:valid.length,rows:valid.map(r=>({symbol:r.symbol||r.ticker,last:r.last??r.lastPrice??null,bid:r.bidPrice??r.bid??null,ask:r.askPrice??r.ask??null,timestamp:r.timestamp??r.quoteTimestamp??null}))};if(!valid.length&&b.rows?.some(r=>r.error))out.tests.boats.error=b.rows.map(r=>r.error).filter(Boolean).join(' | ');}catch(e){out.tests.boats={ok:false,error:String(e.message||e)};}
+  out.readyForPrimary=!!(out.tests.auth?.ok && out.tests.iexSnapshot?.ok && out.tests.history.length>0 && out.tests.history.every(x=>x.usable&&x.volumeKnown) && out.tests.boats?.ok);
+  out.state=out.readyForPrimary?'ok':'partial';
+  out.safe=true;out.note='Read-only-Test mit 0 % Einfluss auf BUY/Score. 5-MIN wird nach echter Verwendbarkeit (Bars, OHLC, Zeitstempel) statt nach einer starren Anzahl von 24 Bars bewertet. Primary bleibt bis zur ausdruecklichen Umschaltung im Shadow-Modus.';
+  return out;
+}
+async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols=[],execution='client'){
+  if(!env.TIINGO_API_TOKEN) return {configured:false,state:'nokey',rows:stockMemo.rows||[],source:'Tiingo IEX',version:APP_VERSION,note:'TIINGO_API_TOKEN fehlt'};
+  const minuteSlot=Math.floor(Date.now()/60_000), favs=[...new Set((favoriteSymbols||[]).map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,30);
+  const cycle=Math.floor(minuteSlot/2); // Deep Scan alle 2 Minuten - Browser und Cron verwenden denselben Zyklus.
+  const sig=[...(comp instanceof Set?comp:new Set(ALL_ON))].sort().join('.')+'|'+minCrv+'|tiingo-primary-radar|fav:'+favs.join('.');
+  if(!force&&stockMemo.rows.length&&stockMemo.cycle===cycle&&stockMemo.sig===sig&&Date.now()-stockMemo.ts<110_000){
+    const cleanMemo=stripKnownNonCommon(stockMemo.rows);
+    if(cleanMemo.length!==stockMemo.rows.length) stockMemo={...stockMemo,rows:cleanMemo};
+    const memoRadar=verifiedCommonOnly(tiingoIexRadarMemo.rows||[]).slice(0,20);
+    const memoBoats=verifiedCommonOnly(tiingoDiscoveryMemo.rows||[]).slice(0,15);
+    return {configured:true,state:'ok',cached:true,rows:cleanMemo,ts:stockMemo.ts,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:cleanMemo.length,updatedThisCycle:0,refreshedSymbols:Array.isArray(stockMemo.refreshedSymbols)?stockMemo.refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified cache only',ts:tiingoIexRadarMemo.ts,candidates:memoRadar,gainers:openingGainers(memoRadar),buyWeight:0,gate:{...radarGateStats}},boats:{...tiingoDiscoveryMemo,rows:memoBoats,candidates:memoBoats,buyWeight:0}},version:APP_VERSION};
+  }
+
+  // Browser/PWA darf den autonomen Markt-Scan nicht mehr selbst starten.
+  // Sie liest den letzten Cron-Batch. Das verhindert parallele CPU-Spitzen bei
+  // mehreren Tabs/Geraeten und auf frisch gestarteten Worker-Isolates.
+  if(execution!=='server'&&!force){
+    const persisted=await readLatestPersistedStockScan(env,4*60_000);
+    if(persisted){
+      let verifiedRadar=verifiedCommonOnly(Array.isArray(persisted.meta?.verifiedRadar)?persisted.meta.verifiedRadar:[]);
+      const openingVerified=await readVerifiedOpeningRadar(env,30*60_000);
+      if(openingVerified.length){
+        const bySym=new Map([...verifiedRadar,...openingVerified].map(x=>[String(x.symbol||'').toUpperCase(),x]));
+        verifiedRadar=[...bySym.values()].slice(0,24);
+      }
+      const verifiedBoats=verifiedCommonOnly(Array.isArray(persisted.meta?.verifiedBoats)?persisted.meta.verifiedBoats:[]);
+      const allowed=new Set([...verifiedRadar,...verifiedBoats].map(x=>String(x.symbol||'').toUpperCase()));
+      const catalogSet=new Set(STOCK_SEARCH_CATALOG.map(x=>x[1]));
+      const cleanRows=(persisted.rows||[]).filter(r=>{const sym=String(r?.symbol||'').toUpperCase();return !NON_COMMON_SYMBOL_DENY.has(sym) && !NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''}`) && (catalogSet.has(sym)||favs.includes(sym)||allowed.has(sym));});
+      stockMemo={ts:persisted.ts,rows:cleanRows,cycle:persisted.cycle,sig:persisted.sig,refreshedSymbols:Array.isArray(persisted.meta?.refreshedSymbols)?persisted.meta.refreshedSymbols:[]};
+      const radar=await readPersistedIexRadar(env);
+      return {configured:true,state:'ok',cached:true,persistent:true,rows:cleanRows,ts:persisted.ts,cycle:persisted.cycle,universe:radar?.universe||12000,universeLabel:`${radar?.universe||'12.000+'} Tiingo/IEX`,scanned:cleanRows.length,updatedThisCycle:0,refreshedSymbols:Array.isArray(persisted.meta?.refreshedSymbols)?persisted.meta.refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified',ts:persisted.ts||0,candidates:verifiedRadar,gainers:openingGainers(verifiedRadar),buyWeight:0,gate:{...radarGateStats}},boats:{source:'Tiingo BOATS · verified',ts:persisted.ts||0,candidates:verifiedBoats,buyWeight:0}},version:APP_VERSION,note:'Server-Cache: autonomer Cron-Radar/Deep-Scan; PWA startet keinen Doppel-Scan. Nur verifizierte Common Stocks werden an die UI gereicht.'};
+    }
+    const staleRows=stripKnownNonCommon(stockMemo.rows||[]);
+    return {configured:true,state:'stale',cached:true,rows:staleRows,ts:stockMemo.ts||0,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:staleRows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:tiingoIexRadarMemo.ts,candidates:(tiingoIexRadarMemo.rows||[]).slice(0,20),buyWeight:0,gate:{...radarGateStats}},boats:tiingoDiscoveryMemo},version:APP_VERSION,note:'Warte auf ersten serverseitigen Cron-Batch.'};
+  }
+
+  const phase=usMarketPhase(new Date(),'iex');
+  // v3.2.1: waehrend der US-Session ist /iex der marktweite Primaer-Radar.
+  // BOATS bleibt Overnight-/Uebergangs-Discovery. Beide Layer nominieren nur und haben 0 % BUY-Gewicht.
+  let radar={ts:0,rows:[],universe:12000,source:'Tiingo IEX Whole-Market Radar',buyWeight:0};
+  try{
+    radar=(tiingoIexRadarMemo.rows.length&&Date.now()-tiingoIexRadarMemo.ts<4*60_000)?tiingoIexRadarMemo:(await readPersistedIexRadar(env)||radar);
+    // ETF/ETP-Gate jetzt auf der kleinen Kandidatenmenge und getrennt vom Bulk-Radar.
+    radar={...radar,rows:await filterRadarToCommonStocks(env,radar.rows||[],20),source:'Tiingo IEX Whole-Market Radar · Common Stocks verified'};
+    const openingVerified=await readVerifiedOpeningRadar(env,30*60_000);
+    if(openingVerified.length){
+      const merged=new Map([...(radar.rows||[]),...openingVerified].map(x=>[String(x.symbol||'').toUpperCase(),x]));
+      radar={...radar,rows:[...merged.values()].slice(0,24),source:'Tiingo IEX Whole-Market Radar + Opening verified'};
+    }
+  }catch(e){console.warn(JSON.stringify({event:'iex_market_radar_cache_failed',message:String(e?.message||e),ts:Date.now()}));}
+  let boats=await tiingoBoatsDiscovery(env,20,false);
+  try{
+    boats={...boats,rows:await filterRadarToCommonStocks(env,boats.rows||[],12),source:'Tiingo BOATS · Common Stocks verified'};
+  }catch(e){
+    console.warn(JSON.stringify({event:'boats_security_gate_failed',message:String(e?.message||e),ts:Date.now()}));
+    boats={...boats,rows:[]}; // fail-closed: keine unbestätigten BOATS-Instrumente in den Aktien-Deep-Scan
+  }
+
+  const deepLimit=await readStockDeepLimit(env);
+  const scale=deepLimit/STOCK_DEEP_DEFAULT; // proportional zur bisherigen 20er-Baseline
+  const capFav=2, capGainer=Math.max(4,Math.round(4*scale)), capRadar=Math.max(8,Math.round(8*scale)),
+        capRecheck=Math.max(2,Math.round(2*scale)), capBoats=Math.max(2,Math.round(2*scale));
+  const picked=new Set(), favPick=[], recheckPick=[], radarPick=[], boatsPick=[], explore=[];
+  // Favoriten bleiben vertreten, blockieren aber nicht mehr die gesamte Queue.
+  // Favoriten rotieren pro Deep-Scan-Zyklus. v3.3.2 nahm immer nur die ersten
+  // zwei Favoriten und ließ spätere Favoriten dadurch unnötig lange stale.
+  if(favs.length){
+    const startFav=(cycle*2)%favs.length;
+    for(let i=0;i<favs.length&&favPick.length<capFav;i++){
+      const sym=favs[(startFav+i)%favs.length];
+      if(!picked.has(sym)){picked.add(sym);favPick.push(sym);}
+    }
+  }
+  // v3.3.4: Whole-Market-Kandidaten werden VOR alten Rechecks priorisiert.
+  // So kann der Deep Scan nicht wieder faktisch zu einem Favoriten-/Cache-Pool werden.
+  const gainerPick=[];
+  for(const x of openingGainers(radar.rows||[],capGainer)){if(!picked.has(x.symbol)){picked.add(x.symbol);gainerPick.push(x.symbol);}if(gainerPick.length>=capGainer)break;}
+  /* v3.15.0: Sektor-Reserve VOR dem allgemeinen Radar. Sie zieht nur Titel, die
+     der Radar ohnehin nominiert hat — es wird also nichts erfunden, nur die
+     Reihenfolge geaendert. Reicht ein Sektor nicht, verfaellt sein Platz an den
+     allgemeinen Radar statt leer zu bleiben. */
+  /* v3.18.0 · P-A4: ZWEITE Quelle fuer die Reserve — der statische Katalog.
+     ANLASS, ausgezaehlt: von 52 Edelmetall-Tickern steht KEINER in
+     LARGE_CAP_RADAR_SYMBOLS und genau einer im Katalog. 98 % sind damit nur
+     ueber das Momentum-Gitter erreichbar (>=3 % Bewegung UND >=2 Mio. $
+     IEX-Umsatz ~ 80 Mio. $ Gesamtumsatz). Der reservierte Platz verfiel
+     deshalb an den meisten Tagen still — die Sektor-Priorisierung aus v3.15.0
+     war fuer Edelmetalle praktisch wirkungslos.
+
+     Die Radarquelle behaelt VORRANG. Der Katalog springt nur ein, wenn der
+     Radar fuer diesen Sektor nichts hergibt. Ein Katalogtitel ist ausdruecklich
+     KEINE Radar-Nominierung: der Radar hat ihn nicht auffaellig gefunden, er
+     wird nur angesehen. Deshalb traegt er `sectorFillFromCatalog` und wird in
+     der Oberflaeche anders beschriftet.
+
+     Was das NICHT tut: keinen Score, kein Gate, keine Ampel, keine Freigabe.
+     Ein Titel aus einem Prioritaetssektor bekommt Aufmerksamkeit, keinen
+     Bonus — dieselbe Regel wie fuer Radar und BOATS seit v3.3.4. */
+  const sectorPick=[], sectorFromCatalog=new Set();
+  for(const [name] of PRIORITY_SECTORS){
+    let took=0;
+    for(const x of radar.rows||[]){
+      if(took>=SECTOR_RESERVE_PER_SECTOR)break;
+      if(picked.has(x.symbol))continue;
+      if(prioritySectorOf(x.symbol)!==name)continue;
+      picked.add(x.symbol);sectorPick.push(x.symbol);took++;
+    }
+    if(took>=SECTOR_RESERVE_PER_SECTOR) continue;
+    // Rotierender Einstieg, damit nicht jeden Zyklus derselbe Titel kommt.
+    const pool=STOCK_SEARCH_CATALOG.filter(e=>prioritySectorOf(e[1])===name);
+    for(let i=0;i<pool.length && took<SECTOR_RESERVE_PER_SECTOR;i++){
+      const sym=String(pool[(i+cycle)%pool.length][1]||'').toUpperCase();
+      if(!sym||picked.has(sym))continue;
+      picked.add(sym);sectorPick.push(sym);sectorFromCatalog.add(sym);took++;
+    }
+  }
+  for(const x of radar.rows||[]){if(!picked.has(x.symbol)){picked.add(x.symbol);radarPick.push(x.symbol);}if(radarPick.length>=capRadar)break;}
+  // Nur zwei starke Altanalysen pro Zyklus nachziehen; Discovery hat Vorrang.
+  for(const r of [...(stockMemo.rows||[])].sort((a,b)=>deepRecheckRank(b)-deepRecheckRank(a))){const sym=String(r?.symbol||'').toUpperCase();if(sym&&!picked.has(sym)){picked.add(sym);recheckPick.push(sym);}if(recheckPick.length>=capRecheck)break;}
+  // Overnight/Extended-Hours-Kandidaten duerfen die Queue ergaenzen, aber nie BUY setzen.
+  for(const x of boats.rows||[]){if(!picked.has(x.symbol)){picked.add(x.symbol);boatsPick.push(x.symbol);}if(boatsPick.length>=capBoats)break;}
+  // Exploration verhindert Tunnelblick und sorgt fuer fortlaufende Rotation des stabilen Basiskatalogs.
+  const start=(cycle*7)%STOCK_SEARCH_CATALOG.length;
+  for(let i=0;i<STOCK_SEARCH_CATALOG.length&&picked.size<deepLimit;i++){const sym=STOCK_SEARCH_CATALOG[(start+i)%STOCK_SEARCH_CATALOG.length][1];if(!picked.has(sym)){picked.add(sym);explore.push(sym);}}
+  const syms=[...favPick,...recheckPick,...gainerPick,...sectorPick,...radarPick,...boatsPick,...explore].slice(0,deepLimit), fx=await getTiingoFx(env);
+  const radarMap=new Map((radar.rows||[]).map(x=>[x.symbol,x])), boatsMap=new Map((boats.rows||[]).map(x=>[x.symbol,x]));
+  const fresh=(await pool(syms,6,async sym=>{
+    const inf=STOCK_SEARCH_BY_SYMBOL.get(sym)||{sector:'Discovery',name:sym};
+    try{
+      const row=await tiingoAnalyseOne(env,sym,inf.sector,comp,minCrv,fx);
+      if(!row)return null;
+      if(NON_COMMON_SYMBOL_DENY.has(sym)||NON_COMMON_EQUITY_RE.test(`${row?.name||''} ${row?.securityName||''}`))return null;
+      const rm=radarMap.get(sym),bm=boatsMap.get(sym);
+      if(rm){ row.discovery={type:'iex-radar',...rm,buyWeight:0}; row.securityVerified=rm.securityVerified===true; row.securityName=rm.securityName||row.name; row.companyDescription=rm.companyDescription||''; row.exchange=rm.exchange||''; }
+      else if(bm){ row.discovery={type:'boats',...bm,buyWeight:0}; row.securityVerified=bm.securityVerified===true; row.securityName=bm.securityName||row.name; row.companyDescription=bm.companyDescription||''; row.exchange=bm.exchange||''; }
+      const q=Math.max(0,Math.min(10,Number(row.score)||0)),crv=Math.max(0,Number(row.netCRV)||0),rv=Math.max(0,Number(row.relVol)||0),sit=Math.max(0,Math.min(100,Number(row.situationScore)||0));
+      // Reife bleibt reine Vorwarnung: Situation kann frueh Aufmerksamkeit erzeugen,
+      // aber weder Score noch CRV noch BUY-Gates verbessern.
+      const life=String(rm?.lifecycle||'WATCH');
+      const lifeBonus=life==='IGNITION'?16:life==='PREP'?10:life==='CONFIRM'?6:life==='LATE'?-14:0;
+      const triggerProx=row.triggerDistancePct==null?0:Math.max(0,10-Math.min(10,Math.abs(Number(row.triggerDistancePct))*12));
+      row.preSignalMaturity=Math.round(Math.max(0,Math.min(100,q/8*38 + Math.min(1,crv/3)*20 + Math.min(1,rv/1.8)*10 + sit*0.18 + lifeBonus + triggerProx)));
+      row.whyNow=[...(rm?.reasons||[]),...(row.situationReasons||[])].filter(Boolean).slice(0,5);
+      row.radarRank=Number(rm?.situationScore??rm?.score)||0;
+      row.radarSituation=rm?.situation||null;
+      row.radarLifecycle=life;
+      // v3.15.0: nur Kennzeichnung. Kein Score, kein Gate, keine Ampel haengt daran.
+      row.prioritySector=prioritySectorOf(sym);
+      // v3.18.0: Aufmerksamkeit aus dem Katalog ist KEINE Radar-Nominierung.
+      if(sectorFromCatalog.has(sym)) row.sectorFillFromCatalog=true;
+      return row;
+    }catch(e){console.warn(JSON.stringify({event:'tiingo_stock_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));return null;}
+  })).filter(Boolean);
+  // v3.3.4: Bereits erfolgreich tief analysierte Radar-Titel bleiben sichtbar, solange
+  // sie im AKTUELL verifizierten Discovery-Pool stehen. Das ist fail-closed, weil
+  // unbestätigte/alte Discovery-Titel weiterhin herausfallen, verhindert aber, dass
+  // die UI zwischen Zyklen wieder fast nur Favoriten zeigt.
+  const safeCarry=new Map();
+  const catalogSet=new Set(STOCK_SEARCH_CATALOG.map(x=>x[1]));
+  const verifiedDiscoveryNow=new Set([...(radar.rows||[]),...(boats.rows||[])].map(x=>String(x?.symbol||'').toUpperCase()).filter(Boolean));
+  for(const r of stockMemo.rows||[]){
+    const sym=String(r?.symbol||'').toUpperCase();
+    if(catalogSet.has(sym)||favs.includes(sym)||verifiedDiscoveryNow.has(sym)) safeCarry.set(sym,r);
+  }
+  for(const r of fresh)safeCarry.set(r.symbol,r);
+  // Hohe Radar-/Setup-Relevanz oben halten; Freshness-Gates bleiben unveraendert.
+  const rows=[...safeCarry.values()].sort((a,b)=>(Number(b.preSignalMaturity)||0)-(Number(a.preSignalMaturity)||0)||(Number(b.situationScore)||0)-(Number(a.situationScore)||0)||(Number(b.radarRank)||0)-(Number(a.radarRank)||0)||(Number(b.score)||0)-(Number(a.score)||0)).slice(0,100);
+  applySectorLag(rows);   // v3.10.0 FIX: fehlte auf dem primaeren Pfad komplett
+  /* v3.13.0 FIX: Der Deep-Scan hat NIE einen Live-Quote geholt — jede Zeile aus
+     dem Scanner hatte `liveQuoteOk` undefiniert, die Oberflaeche zeigte deshalb
+     dauerhaft „KEIN LIVE-QUOTE". Der Stapelabruf kostet GENAU ZWEI Aufrufe pro
+     Zyklus (Alpaca-Snapshots mit Symbolliste, Tiingo /iex fuer den ganzen Markt),
+     unabhaengig von der Zeilenzahl. Rein additiv, kein Score-Eingriff:
+     scheitert der Abruf, bleiben die Zeilen unveraendert und werden von der
+     Oberflaeche weiterhin korrekt als „kein Live-Quote" beschriftet. */
+  let liveQuoteHits=0;
+  try{
+    const q=await freshestStockQuotesBatch(env,rows.map(r=>r.symbol));
+    liveQuoteHits=attachLiveQuotes(rows,q,fx);
+  }catch(e){ console.warn(JSON.stringify({event:'deep_scan_live_quotes_failed',message:String(e?.message||e),ts:Date.now()})); }
+  stockMemo={ts:Date.now(),rows,cycle,sig}; setApiState('stocks',fresh.length?'ok':'stale',fresh.length?null:'Tiingo lieferte keine analysierbaren Bars');
+  stockMemo.liveQuoteHits=liveQuoteHits;   // v3.13.0: stiller Ausfall soll sichtbar sein
+  await persistStockScan(env,sig,cycle,rows,{provider:'Tiingo IEX',fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol),queue:{favorites:favPick,recheck:recheckPick,gainers:gainerPick,radar:radarPick,boats:boatsPick,explore},verifiedRadar:(radar.rows||[]).slice(0,20),verifiedBoats:(boats.rows||[]).slice(0,12)});
+  return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:radar.universe||12000,universeLabel:`${radar.universe||'12.000+'} Tiingo/IEX`,scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:phase,queue:{favorites:favPick.length,recheck:recheckPick.length,gainers:gainerPick.length,radar:radarPick.length,boats:boatsPick.length,explore:explore.length},discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar.ts,universe:radar.universe,candidates:(radar.rows||[]).slice(0,20),gainers:openingGainers(radar.rows||[]),buyWeight:0,gate:{...radarGateStats}},boats:{source:'Tiingo BOATS',ts:boats.ts,session:boats.session,candidates:(boats.rows||[]).slice(0,15),buyWeight:0}},version:APP_VERSION,note:'Tiingo Primary: Large-Cap Opportunity Lifecycle Radar + BOATS Discovery (beide 0 % direktes BUY-Gewicht) -> adaptive Deep-Scan-Queue -> IEX 5-Min Analyse.'};
+}
+async function tiingoStockSuggest(env,raw){
+  const query=String(raw||'').trim();
+  if(query.length<1) return {configured:!!env.TIINGO_API_TOKEN,state:'idle',rows:[],version:APP_VERSION};
+  const local=resolveStockQuery(query);
+  const out=[];
+  if(local) out.push({symbol:local.symbol,name:local.name||local.symbol,sector:local.sector||null,source:'catalog'});
+  if(env.TIINGO_API_TOKEN && query.length>=2){
+    try{
+      const q=encodeURIComponent(query);
+      const d=await tiingoFetch(env,`/tiingo/utilities/search?query=${q}`);
+      for(const hit of (Array.isArray(d)?d:[])){
+        if(hit?.isActive===false) continue;
+        const asset=String(hit?.assetType||'').toLowerCase();
+        if(asset && asset!=='stock') continue;
+        const symbol=String(hit?.ticker||'').toUpperCase().replace(/\./g,'-');
+        if(!/^[A-Z][A-Z0-9-]{0,11}$/.test(symbol) || NON_COMMON_SYMBOL_DENY.has(symbol)) continue;
+        const name=String(hit?.name||symbol);
+        if(NON_COMMON_EQUITY_RE.test(name)) continue;
+        if(!out.some(x=>x.symbol===symbol)) out.push({symbol,name,exchange:hit?.exchangeCode||hit?.exchange||null,source:'tiingo-search'});
+        if(out.length>=5) break;
+      }
+    }catch(e){
+      if(!out.length) return {configured:true,state:'partial',rows:[],error:String(e?.message||e),version:APP_VERSION};
+    }
+  }
+  return {configured:!!env.TIINGO_API_TOKEN,state:'ok',rows:out.slice(0,5),version:APP_VERSION};
+}
+
+async function tiingoStockLookup(env,raw,comp,minCrv=3,force=false){
+  let info=resolveStockQuery(raw);
+  if(!info){
+    try{
+      const q=encodeURIComponent(String(raw||'').trim());
+      const d=await tiingoFetch(env,`/tiingo/utilities/search?query=${q}`);
+      const hit=(Array.isArray(d)?d:[]).find(x=>x?.isActive!==false && String(x?.assetType||'').toLowerCase()==='stock') || (Array.isArray(d)?d:[])[0];
+      if(hit?.ticker) info={symbol:String(hit.ticker).toUpperCase().replace(/\./g,'-'),name:hit.name||hit.ticker,sector:null,exchange:null};
+    }catch(e){ console.warn(JSON.stringify({event:'tiingo_search_failed',query:String(raw||''),message:String(e?.message||e),ts:Date.now()})); }
+  }
+  if(!info) return {configured:true,state:'ok',notFound:true,error:'Ticker/Firmenname bei Tiingo nicht gefunden.',source:'Tiingo IEX',version:APP_VERSION};
+  const cached=stockLookupMemo.get(info.symbol);if(!force&&cached&&Date.now()-cached.ts<5*60_000){
+    const row={...cached.row};
+    const fq=await freshestStockQuote(env,info.symbol);
+    if(fq){const fx=await getTiingoFx(env);row.livePriceUsd=fq.priceUsd;row.livePriceEur=fx?fq.priceUsd/fx:null;row.liveUpdated=fq.updated;row.liveQuoteTs=fq.ts;row.liveQuoteAgeSec=fq.ageSec;row.liveQuoteSource=fq.source;row.liveQuoteScope=fq.scope;row.liveQuoteOk=!!fq.live;}
+    return {configured:true,state:'ok',cached:true,lookup:true,row,source:'Tiingo IEX',version:APP_VERSION};
+  }
+  const fx=await getTiingoFx(env),row=await tiingoAnalyseOne(env,info.symbol,info.sector,comp,minCrv,fx);
+  if(!row)return {configured:true,state:'ok',notFound:true,error:'Noch nicht genügend Tiingo-5-Minuten-Daten.',source:'Tiingo IEX',version:APP_VERSION};
+  if(info.name&&row.name===row.symbol)row.name=info.name;
+  const fq=await freshestStockQuote(env,info.symbol);
+  if(fq){
+    row.livePriceUsd=fq.priceUsd; row.livePriceEur=fx?fq.priceUsd/fx:null;
+    row.liveUpdated=fq.updated; row.liveQuoteTs=fq.ts; row.liveQuoteAgeSec=fq.ageSec;
+    row.liveQuoteSource=fq.source; row.liveQuoteScope=fq.scope; row.liveQuoteOk=!!fq.live;
+    row.analysisPriceUsd=row.priceUsd; row.analysisUpdated=row.updated;
+  }else{row.liveQuoteOk=false;row.liveQuoteSource='kein separater Live-Quote verfügbar';}
+  stockLookupMemo.set(info.symbol,{ts:Date.now(),row});const old=new Map(stockMemo.rows.map(r=>[r.symbol,r]));old.set(row.symbol,row);stockMemo.rows=[...old.values()].sort((a,b)=>b.score-a.score).slice(0,80);
+  return {configured:true,state:'ok',cached:false,lookup:true,row,source:'Tiingo IEX',provider:'Tiingo',version:APP_VERSION};
+}
+export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation };
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    if (url.pathname === '/api/health') {
+      if (env.APP_TOKEN && !authed(request, url, env)) return json({ok:true,version:APP_VERSION,protected:true},200,{ 'cache-control':'no-store' });
+      // Version kommt aus dem DEPLOYTEN Code, nicht aus einer CF-Variable.
+      // Weicht env.APP_VERSION ab, ist die Variable veraltet – das wird gemeldet.
+      const [cryptoHealth,stocksHealth,alpacaHealth] = await Promise.all([
+        persistentApiState(env,'crypto',!!env.FUSION_API_KEY),
+        persistentApiState(env,'stocks',tiingoStocksMode(env)==='primary'?!!env.TIINGO_API_TOKEN:!!env.TWELVE_API_KEY),
+        persistentApiState(env,'alpaca',!!(env.ALPACA_API_KEY_ID && env.ALPACA_API_SECRET_KEY)),
+      ]);
+      return json({
+        ok: true,
+        version: APP_VERSION,
+        varVersion: env.APP_VERSION || null,
+        versionVarInSync: !env.APP_VERSION || env.APP_VERSION === APP_VERSION,
+        configured: !!env.FUSION_API_KEY,
+        protected: !!env.APP_TOKEN,
+        stocksConfigured: tiingoStocksMode(env)==='primary' ? !!env.TIINGO_API_TOKEN : !!env.TWELVE_API_KEY,
+        stocksProvider: tiingoStocksMode(env)==='primary' ? 'Tiingo IEX' : 'Twelve Data',
+        tiingoStocksMode: tiingoStocksMode(env),
+        alpacaConfigured: !!(env.ALPACA_API_KEY_ID && env.ALPACA_API_SECRET_KEY),
+        crowdConfigured: !!env.SERPAPI_KEY,
+        tiingoConfigured: !!env.TIINGO_API_TOKEN,
+        kv: !!env.SNAP,
+        d1: !!env.DB,
+        cacheAgeMs: memo.ts ? Date.now() - memo.ts : null,
+        components: COMPONENTS,
+        status: {
+          crypto: cryptoHealth,
+          stocks: stocksHealth,
+          alpaca: alpacaHealth,
+        },
+        quota: { twelveData: quotaView() },
+      }, 200, { 'cache-control': 'no-store' });
+    }
+
+    if (url.pathname.startsWith('/api/')) {
+      if (!authed(request, url, env)) return json({ error: 'Nicht autorisiert.' }, 401);
+      // Der Fusion-Key wird nur für die Krypto-Routen gebraucht. Der Aktienradar
+      // soll auch dann laufen, wenn nur TWELVE_API_KEY gesetzt ist.
+      const needsFusion = url.pathname === '/api/scan' || url.pathname.startsWith('/api/pair/');
+      if (needsFusion && !env.FUSION_API_KEY) {
+        setApiState('crypto', 'nokey', 'FUSION_API_KEY fehlt');
+        return json({ error: 'FUSION_API_KEY fehlt (Secret in Cloudflare setzen).', state: 'nokey' }, 500);
+      }
+    }
+
+
+
+    if (url.pathname === '/api/tiingo/validate') {
+      try { return json(await tiingoValidation(env,url.searchParams.get('symbols')),200,{ 'cache-control':'no-store' }); }
+      catch(e){ return json({configured:!!env.TIINGO_API_TOKEN,state:'error',error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/tiingo/status') {
+      const wantDeep=url.searchParams.get('stockDeep');
+      if(wantDeep!=null) await persistStockDeepLimit(env,wantDeep);
+      const deepLimit=await readStockDeepLimit(env);
+      await loadTiingoQuotaOnce(env);
+      if(!env.TIINGO_API_TOKEN) return json({configured:false,authenticated:false,state:'nokey',version:APP_VERSION,quota:tiingoQuotaView(),stockDeep:deepLimit,stockDeepRange:{min:STOCK_DEEP_MIN,max:STOCK_DEEP_MAX}},200,{ 'cache-control':'no-store' });
+      try { const d=await tiingoFetch(env,'/api/test/'); return json({configured:true,authenticated:true,state:'ok',message:d?.message||'Tiingo authentication successful',boatsEntitlement:'not-tested',version:APP_VERSION,quota:tiingoQuotaView(),stockDeep:deepLimit,stockDeepRange:{min:STOCK_DEEP_MIN,max:STOCK_DEEP_MAX}},200,{ 'cache-control':'no-store' }); }
+      catch(e){ return json({configured:true,authenticated:false,state:'error',error:String(e.message||e),version:APP_VERSION,quota:tiingoQuotaView(),stockDeep:deepLimit,stockDeepRange:{min:STOCK_DEEP_MIN,max:STOCK_DEEP_MAX}},502,{ 'cache-control':'no-store' }); }
+    }
+    if (url.pathname === '/api/tiingo/boats') {
+      try { return json(await tiingoBoatsSnapshot(env,url.searchParams.get('symbols')),200,{ 'cache-control':'no-store' }); }
+      catch(e) { return json({configured:!!env.TIINGO_API_TOKEN,state:'error',error:e.message||String(e),rows:[],source:'Tiingo BOATS',version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/learning') {
+      try {
+        const stocks=(url.searchParams.get('stocks')||'').split(',').map(x=>x.trim().toUpperCase()).filter(Boolean);
+        const coins=(url.searchParams.get('coins')||'').split(',').map(x=>x.trim().toUpperCase()).filter(Boolean);
+        return json(await learningPayload(env,stocks,coins),200,{ 'cache-control':'no-store' });
+      } catch(e) { return json({configured:!!env.DB,state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    // Modul 0: Attribution & Overfitting-Guard. Reine Auswertung, veraendert keinen Score.
+    if (url.pathname === '/api/attribution') {
+      try { return json(await claudeAttribution(env),200,{ 'cache-control':'no-store' }); }
+      catch(e) { return json({configured:!!env.DB,state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    // Paket A: Setup stummschalten / reaktivieren. Unterdrueckt nur die BUY-Freigabe,
+    // veraendert keinen Score. Auswertung laeuft im Hintergrund weiter.
+    if (url.pathname === '/api/attribution/mute') {
+      try {
+        const setup=url.searchParams.get('setup'); const reason=url.searchParams.get('reason')||'manuell';
+        const action=url.searchParams.get('action')||'mute';
+        const res = action==='unmute' ? await unmuteSetup(env,setup) : await muteSetup(env,setup,reason);
+        return json({...res,version:APP_VERSION},res.ok?200:400,{ 'cache-control':'no-store' });
+      } catch(e) { return json({ok:false,error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    // Modul 1: Aladdin-Style Market Intelligence. Marktmeinung ueber vorhandenem
+    // Aktien-Cache; veraendert keinen Claude-/FusionPulse-Score.
+    if (url.pathname === '/api/aladdin') {
+      try {
+        const src=(stockMemo.rows&&stockMemo.rows.length)?stockMemo.rows:(await readLatestPersistedStockScan(env))?.rows||[];
+        return json(aladdinIntelligence(src),200,{ 'cache-control':'no-store' });
+      } catch(e) { return json({state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/experimental') {
+      try { return json(await experimentalPulse(url.searchParams.get('force') === '1'), 200, { 'cache-control':'no-store' }); }
+      catch (e) { return json({state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/patterns') {
+      try { return json(await patternLab(env),200,{ 'cache-control':'no-store' }); }
+      catch(e){ return json({configured:true,state:'error',error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/earnings') {
+      if(request.method==='POST'){
+        try{ const body=await request.json(); const rows=await writeManualEarnings(env, body?.rows);
+          return json({state:'ok',rows,version:APP_VERSION},200,{ 'cache-control':'no-store' }); }
+        catch(e){ return json({state:'error',error:String(e.message||e),version:APP_VERSION},500,{ 'cache-control':'no-store' }); }
+      }
+      const d=await earningsCalendar(env, url.searchParams.get('force')==='1');
+      return json(d,200,{ 'cache-control':'no-store' });
+    }
+
+    if (url.pathname === '/api/sentiment') {
+      const d=await cryptoSentiment(env, url.searchParams.get('force')==='1');
+      return json(d, d.state==='error'?502:200, { 'cache-control':'no-store' });
+    }
+
+    if (url.pathname === '/api/crowd') {
+      try { const d=await crowdPulse(env,url.searchParams.get('symbols'),url.searchParams.get('force') === '1'); const fresh=(d.rows||[]).filter(x=>x&&x.cached===false&&Number.isFinite(Number(x.score)));
+             if(env.DB&&fresh.length) ctx.waitUntil(d1StoreCrowd(env,fresh).catch(()=>{})); return json(d,200,{ 'cache-control':'no-store' }); }
+      catch (e) { return json({state:'error',configured:!!env.SERPAPI_KEY,error:e.message||String(e),rows:[],version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/opening') {
+      try { return json(await openingMomentum(env, url.searchParams.get('force') === '1', (url.searchParams.get('favorites')||'').split(',').filter(Boolean)), 200, { 'cache-control':'no-store' }); }
+      catch (e) { const state=classifyError(e); setApiState('alpaca',state,e?.message); return json({configured:!!(env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY),state,error:e.message||String(e),rows:openingMemo.data?.rows||[],feed:alpacaFeedLabel(env),phaseLabel:usMarketPhase().label,phaseHelp:usMarketPhase().help,version:APP_VERSION},state==='ratelimit'?429:502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/stock-chart') {
+      try { return json(await tiingoStockChart(env,url.searchParams.get('symbol'),url.searchParams.get('range')||'120'),200,{ 'cache-control':'public, max-age=60' }); }
+      catch(e){ return json({state:'error',error:String(e.message||e),rows:[],version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/stock-suggest') {
+      try { return json(await tiingoStockSuggest(env,url.searchParams.get('q')),200,{ 'cache-control':'no-store' }); }
+      catch(e){ return json({configured:!!env.TIINGO_API_TOKEN,state:'error',rows:[],error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/stocks') {
+      try {
+        const comp = parseComponents(url.searchParams.get('comp'));
+        const minCrv = Math.max(1, +url.searchParams.get('minCrv') || 3);
+        const lookup = url.searchParams.get('lookup');
+        if (lookup) {
+          if(tiingoStocksMode(env)==='primary') return json(await tiingoStockLookup(env,lookup,comp,minCrv,url.searchParams.get('force')==='1'),200,{ 'cache-control':'no-store' });
+          const qv=quotaView();
+          if(Number.isFinite(qv.creditsLeft) && qv.creditsLeft<=2) return json({state:'ratelimit',error:'Twelve-Data-Reserve geschützt: Suche kurz warten.',quota:qv,version:APP_VERSION},429,{ 'cache-control':'no-store' });
+          return json(await stockLookup(env, lookup, comp, minCrv), 200, { 'cache-control':'no-store' });
+        }
+        const favorites=(url.searchParams.get('favorites')||'').split(',').filter(Boolean);
+        return json(tiingoStocksMode(env)==='primary' ? await tiingoStockSnapshot(env,url.searchParams.get('force')==='1',comp,minCrv,favorites,'client') : await stockSnapshot(env,url.searchParams.get('force')==='1',comp,minCrv,favorites),200,{ 'cache-control':'no-store' });
+      } catch (e) {
+        const state = classifyError(e);
+        setApiState('stocks', state, e?.message);
+        return json({
+          error: e.message || String(e), state, configured: tiingoStocksMode(env)==='primary' ? !!env.TIINGO_API_TOKEN : !!env.TWELVE_API_KEY,
+          rows: stockMemo.rows, cached: true, universe: STOCK_UNIVERSE.length,
+          quota: quotaView(), version: APP_VERSION,
+        }, state === 'ratelimit' || state === 'daylimit' ? 429 : 502, { 'cache-control':'no-store' });
+      }
+    }
+
+    if (url.pathname === '/api/scan') {
+      try {
+        const opts = {
+          deep: +url.searchParams.get('deep') || CFG.DEEP_MAX,
+          watch: (url.searchParams.get('watch') || '').split(',').filter(Boolean),
+          mode: ['composite','elliott','momentum','trend','micro'].includes(url.searchParams.get('mode')) ? url.searchParams.get('mode') : 'composite',
+          comp: parseComponents(url.searchParams.get('comp')),
+          minCrv: Math.max(1, +url.searchParams.get('minCrv') || 2),
+        };
+        const force = url.searchParams.get('force') === '1';
+        const snap=await getSnapshot(env, opts, force);
+        if(snap?.rows?.length) ctx.waitUntil(persistApiState(env,'crypto','ok',`${snap.rows.length} Rows · PWA bestätigt`).catch(()=>{}));
+        return json(snap, 200, { 'cache-control':'no-store' });
+      } catch (e) {
+        const state = classifyError(e);
+        return json({ error: e.message || String(e), state, version: APP_VERSION },
+                    state === 'ratelimit' || state === 'daylimit' ? 429 : 502, { 'cache-control':'no-store' });
+      }
+    }
+
+    // Einzelpaar auf Anfrage — frisch, 2 Subrequests, für den Detail-Dialog
+    if (url.pathname.startsWith('/api/pair/')) {
+      const pair = decodeURIComponent(url.pathname.slice('/api/pair/'.length)).toUpperCase();
+      if (!/^[A-Z0-9]{2,12}-EUR$/.test(pair)) return json({ error: 'Ungültiges Paar.' }, 400);
+      try {
+        const c = makeClient(env.FUSION_API_KEY);
+        const [c5, bk] = await Promise.all([
+          c.get(`candles/${pair}`, { interval: '5m', limit: CFG.CANDLE_LIMIT }).then(toCandles),
+          c.get(`orderbook/${pair}`, { depth: CFG.BOOK_DEPTH }).then(bookMetrics).catch(() => null),
+        ]);
+        // BTC-Referenz aus dem letzten Scan wiederverwenden -> kein Extra-Subrequest
+        const row = analyse({
+          pair, c5, btc5: pair === 'BTC-EUR' ? null : btcRef,
+          book: bk, fee: memo.data?.fee ?? CFG.DEFAULT_FEE,
+          mode: ['composite','elliott','momentum','trend','micro'].includes(url.searchParams.get('mode')) ? url.searchParams.get('mode') : (memo.data?.mode || 'composite'),
+          comp: parseComponents(url.searchParams.get('comp')), minCrv: Math.max(1, +url.searchParams.get('minCrv') || 2),
+        });
+        return row ? json({ ts: Date.now(), row }) : json({ error: 'Zu wenig Daten.' }, 404);
+      } catch (e) {
+        return json({ error: e.message || String(e) }, 502);
+      }
+    }
+
+    return env.ASSETS.fetch(request);
+  },
+
+  // v3.0: Cron sammelt unabhängig von einer geöffneten PWA Markt- und Learning-Daten.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(serverLearningCycle(env,event.scheduledTime).catch((e) => {
+      cronLog('scheduler','error',e?.message,{scheduledTime:event.scheduledTime});
+      return persistApiState(env,'scheduler','error',e?.message,Number(event.scheduledTime)||Date.now());
+    }));
+  },
+};

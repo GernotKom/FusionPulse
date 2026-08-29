@@ -1,0 +1,20 @@
+{
+  "name": "fusionpulse",
+  "version": "3.18.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync-version": "node scripts/sync-version.mjs",
+    "predev": "npm run sync-version",
+    "dev": "wrangler dev",
+    "predeploy": "npm run sync-version",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "check": "node --check public/app.js && node --check src/worker.js && node --check public/sw.js && npm run test:safety",
+    "test:safety": "node tests/safety-regression.mjs",
+    "audit:reach": "node tests/reachability-audit.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.68.0"
+  }
+}
