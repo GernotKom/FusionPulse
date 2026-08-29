@@ -693,7 +693,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"3.21.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"3.22.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1312,3 +1312,60 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .toppicks .pick-plan{font-variant-numeric:tabular-nums;opacity:.85;
   border-top:1px solid rgba(255,255,255,.08);margin-top:3px;padding-top:3px}
 .toppicks .pick-card .pick-plan{border:0;margin:0;padding:0;font-size:11px}
+
+/* ═══════════════════════════════ v3.22.0 · Trennung Krypto / Aktien ════════
+   Die beiden Maerkte standen optisch ineinander. Ein Farbrand je Bereich ist
+   dabei mehr als Kosmetik: Bewegungsgroessen, Sessionphasen und Kostenrechnung
+   unterscheiden sich, und wer beim Scrollen den Bereich verwechselt, vergleicht
+   Zahlen, die nicht vergleichbar sind.
+   Die beiden Farben sind einstellbar (--domain-coin / --domain-stock), die
+   Ampelfarben bleiben davon unberuehrt und sind als Auswahl gesperrt. */
+:root{
+  --domain-coin:#8b7cff;
+  --domain-stock:#3fb0c9;
+}
+[data-domain="coin"]{ --domain:var(--domain-coin); }
+[data-domain="stock"]{ --domain:var(--domain-stock); }
+
+.domain-band{margin:16px 0 8px;padding:0}
+.domain-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  padding:7px 12px;border-radius:9px;
+  border:1px solid color-mix(in srgb, var(--domain) 45%, transparent);
+  background:linear-gradient(90deg,
+    color-mix(in srgb, var(--domain) 16%, transparent) 0%,
+    color-mix(in srgb, var(--domain) 4%, transparent) 60%,
+    transparent 100%);
+  border-left:4px solid var(--domain)}
+.domain-head b{font-size:12px;letter-spacing:.14em;color:var(--domain)}
+.domain-head small{font-size:10px;color:var(--dim)}
+
+/* Der Rand laeuft an allen Kacheln des Bereichs mit — so bleibt beim Scrollen
+   sichtbar, wo man ist, auch ohne die Ueberschrift im Blick. */
+[data-domain] .openingpanel,
+[data-domain].openingpanel,
+[data-domain].sentiment-card,
+[data-domain].stocks{border-left:3px solid color-mix(in srgb, var(--domain) 55%, transparent)}
+[data-domain].coinbar{border-left:3px solid color-mix(in srgb, var(--domain) 55%, transparent);padding-left:9px}
+[data-domain].thead{border-left:3px solid color-mix(in srgb, var(--domain) 40%, transparent);padding-left:9px}
+
+/* v3.22.0 · Faerbbare Discovery-Kacheln. Der Bereichsrand links bleibt sichtbar;
+   der Kachelton faerbt Rahmen und Flaeche. Ampelfarben sind als Auswahl
+   gesperrt (RESERVED_TINTS) — eine schwache Ampel war der Fehler aus v3.14.6. */
+[data-tile="topPicks"]{border-color:var(--tint-topPicks,var(--line));background:var(--tint-topPicks-bg,var(--panel2))}
+[data-tile="gainers"]{border-color:var(--tint-gainers,var(--line));background:var(--tint-gainers-bg,var(--panel2))}
+[data-tile="opening"]{border-color:var(--tint-opening,var(--line));background:var(--tint-opening-bg,var(--panel2))}
+[data-tile="extended"]{border-color:var(--tint-extended,var(--line));background:var(--tint-extended-bg,var(--panel2))}
+[data-tile="laggards"]{border-color:var(--tint-laggards,var(--line));background:var(--tint-laggards-bg,var(--panel2))}
+[data-tile="earnings"]{border-color:var(--tint-earnings,var(--line));background:var(--tint-earnings-bg,var(--panel2))}
+[data-tile="cryptoMovers"]{border-color:var(--tint-cryptoMovers,var(--line));background:var(--tint-cryptoMovers-bg,var(--panel2))}
+[data-tile="sentiment"]{border-color:var(--tint-sentiment,var(--line));background:var(--tint-sentiment-bg,var(--panel2))}
+[data-tile="gate"]{border-color:var(--tint-gate,var(--line));background:var(--tint-gate-bg,var(--panel2))}
+[data-tile="portfolio"]{border-color:var(--tint-portfolio,var(--line));background:var(--tint-portfolio-bg,var(--panel2))}
+.tint-group{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);
+  margin-top:8px;padding-top:6px;border-top:1px solid var(--line)}
+.tint-group:first-child{margin-top:0;padding-top:0;border-top:0}
+/* v3.22.0 · Ertrag je Handelstag — die Zahl, um die es eigentlich geht */
+.toppicks .pick-tempo{font-variant-numeric:tabular-nums;font-weight:600;opacity:.92}
+.toppicks .pick-sit .pick-tempo{font-size:12px}
+.toppicks .pick-card .pick-tempo{font-size:11px;opacity:.85}
+.toppicks .pick-tempo-note{display:block;margin-top:4px;opacity:.8}

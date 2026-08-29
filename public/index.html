@@ -8,16 +8,16 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/style.css?v=3.21.0">
+<link rel="stylesheet" href="/style.css?v=3.22.0">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
-<script src="/version.js?v=3.21.0"></script>
-<title>FusionPulse 3.21.0</title>
+<script src="/version.js?v=3.22.0"></script>
+<title>FusionPulse 3.22.0</title>
 <!-- v3.14.1: Versionsstempel der SHELL (index.html). Wird von sync-version.mjs
      gesetzt und beim Start gegen FP_VERSION aus version.js verglichen. Weichen
      die beiden ab, ist eine halb aktualisierte Auslieferung im Umlauf: neues
      app.js/style.css auf altem index.html. Das erzeugt Fehler, die wie
      Layout-Probleme aussehen, aber keine sind — und kostet beim Suchen Stunden. -->
-<meta name="fp-shell-version" content="3.21.0">
+<meta name="fp-shell-version" content="3.22.0">
 </head>
 <body>
 
@@ -100,16 +100,29 @@
   </aside>
 </div>
 
+<!-- ══════════════════════════════════════════════════════ KRYPTO ═══
+     v3.22.0: Die beiden Maerkte standen bisher optisch ineinander. Sie
+     verhalten sich aber grundverschieden — Krypto handelt durchgehend, Aktien
+     haben Eroeffnung, Sessionphasen und Quartalstermine. Wer beim Scrollen
+     nicht weiss, in welchem Markt er gerade liest, vergleicht Zahlen, die
+     nicht vergleichbar sind. Deshalb ein durchgehender Farbrand je Bereich,
+     nicht nur eine Ueberschrift. -->
+<div class="domain-band" data-domain="coin">
+  <div class="domain-head" title="Krypto: durchgehender Handel, keine Eröffnung, kein Premarket. Kennzahlen dieses Bereichs sind nicht mit denen des Aktienbereichs vergleichbar.">
+    <b>🪙 KRYPTO</b><small>durchgehender Handel · keine Eröffnung · Bitpanda Fusion</small>
+  </div>
+</div>
+
 <!-- v3.9.2: Gegenstueck zur Aktien-Discovery auf der Krypto-Seite. Ein echtes
      "Premarket" gibt es bei Krypto nicht — der Markt laeuft durchgehend. Die
      Kachel zeigt deshalb die tatsaechlich gemessene Kurzfristbewegung und sagt
      das im Titel auch, statt ein Aktien-Konzept nachzuahmen. -->
-<div id="cryptoMovers" class="openingpanel" title="Coins mit der staerksten gemessenen Kurzfristbewegung aus dem laufenden Scan. Discovery — 0 % BUY-Gewicht."></div>
+<div id="cryptoMovers" data-tile="cryptoMovers" class="openingpanel" data-domain="coin" title="Coins mit der staerksten gemessenen Kurzfristbewegung aus dem laufenden Scan. Discovery — 0 % BUY-Gewicht."></div>
 
-<section id="sentimentCard" class="sentiment-card" title="Krypto-Stimmungsindex (Fear &amp; Greed) von alternative.me. Misst die Marktstimmung, nicht die Qualität eines Trades — und gilt ausschließlich für Krypto, nicht für Aktien. 0 % Gewicht in Score und Kauf-Freigabe."></section>
+<section id="sentimentCard" data-tile="sentiment" class="sentiment-card" data-domain="coin" title="Krypto-Stimmungsindex (Fear &amp; Greed) von alternative.me. Misst die Marktstimmung, nicht die Qualität eines Trades — und gilt ausschließlich für Krypto, nicht für Aktien. 0 % Gewicht in Score und Kauf-Freigabe."></section>
 
 <!-- ═══════════════════════════════════════════ Coin-Trefferliste ═══ -->
-<nav class="coinbar">
+<nav class="coinbar" data-domain="coin">
   <input id="q" placeholder="Coin suchen…" autocomplete="off" spellcheck="false" title="Sucht ausschließlich im Coin-Radar, z. B. BTC, ETH oder SOL.">
   <select id="f" title="Coin-Filter">
     <option value="">Alle Coins</option>
@@ -128,17 +141,23 @@
 </nav>
 
 <main>
-  <div class="thead">
+  <div class="thead" data-domain="coin">
     <span title="Coin und Signalstatus. Grün pulsierend = Kauf-Freigabe; Lautsprecher schaltet nur diesen Coin stumm.">Coin</span><span title="Kurzfristiger Verlauf">Verlauf</span><span title="Erkannte Setup-Art; Mouseover erklärt das Muster.">Setup</span>
     <span class="ta" title="Reife = Anzahl aufeinanderfolgender Scans, die denselben Signalzustand bestätigt haben, und die Dauer dieses Zustands.">Reife</span><span title="Zonenlage: UNTER ZONE = noch unter dem geplanten Einstieg; IN ZONE = im interessanten Einstiegsbereich, aber noch kein automatisches BUY; ÜBER ZONE = Einstieg davongelaufen, nicht hinterherlaufen.">Zonenlage</span>
     <span class="ta" title="Netto-CRV: erwarteter Ertrag im Verhältnis zum Risiko nach geschätzten Kosten">CRV</span><span class="ta" title="Kaufsumme in Euro: risikobasiert berechnet und zusätzlich durch deinen Maximalbetrag sowie ggf. Marktliquidität begrenzt">Kaufsumme</span><span class="ta" title="Q = Setup-Qualität, H = Handelbarkeit/Ausführbarkeit">Q·H</span>
   </div>
-  <section id="list"></section>
+  <section id="list" data-domain="coin"></section>
   <button id="more" class="more hidden"></button>
-  <section id="rest" class="hidden"></section>
+  <section id="rest" class="hidden" data-domain="coin"></section>
 
-  <!-- ═══════════════════════════════════════════════ Aktienradar ═══ -->
-  <section id="stocks" class="stocks">
+  <!-- ══════════════════════════════════════════════════════ AKTIEN ═══ -->
+  <div class="domain-band" data-domain="stock">
+    <div class="domain-head" title="Aktien: Handelszeiten, Eröffnungsphasen, Quartalstermine. Kennzahlen dieses Bereichs sind nicht mit denen des Kryptobereichs vergleichbar.">
+      <b>📈 AKTIEN</b><small>US-Handelszeiten · Premarket &amp; Nachbörse · Tiingo / Alpaca</small>
+    </div>
+  </div>
+
+  <section id="stocks" class="stocks" data-domain="stock">
     <div class="stocks-head">
       <div>
         <h2>Aktienradar</h2>
@@ -192,12 +211,12 @@
     <!-- v3.11.0: Anstehende Quartalszahlen, nach Sektor gruppiert. Bewusst auf
          Titel begrenzt, die FusionPulse kennt — nur fuer die gibt es einen
          verifizierten Sektor. Ein Termin ohne Sektor waere hier wertlos. -->
-    <div id="earningsBoard" class="openingpanel" title="Anstehende Quartalszahlen der beobachteten Titel, nach Sektor geordnet. Reine Terminliste — 0 % Gewicht in Score und Kauf-Freigabe."></div>
+    <div id="earningsBoard" data-tile="earnings" class="openingpanel" title="Anstehende Quartalszahlen der beobachteten Titel, nach Sektor geordnet. Reine Terminliste — 0 % Gewicht in Score und Kauf-Freigabe."></div>
     <!-- v3.16.0 P6 Teil 1b: Die Route POST /api/earnings gibt es seit v3.8.2,
          die Oberflaeche dazu nie. Die Maske steht bewusst DIREKT unter der
          Tafel — dort faellt auf, dass ein Termin fehlt, und dort wird er
          eingetragen. Reine Datenpflege: kein Score, kein Gate, keine Ampel. -->
-    <div id="gateFunnel" class="openingpanel gate-funnel" title="Zählt, woran die Kauf-Freigaben im aktuellen Durchlauf hängen. Reine Zählung — verändert nichts."></div>
+    <div id="gateFunnel" data-tile="gate" class="openingpanel gate-funnel" title="Zählt, woran die Kauf-Freigaben im aktuellen Durchlauf hängen. Reine Zählung — verändert nichts."></div>
     <section id="earningsEditor" class="openingpanel earn-edit" title="Eigene Quartalstermine eintragen. Manuelle Termine gelten vor dem automatischen Kalender und funktionieren auch dann, wenn dieser nichts liefert. Reine Terminliste — 0 % Gewicht in Score und Kauf-Freigabe.">
       <div class="ophead">
         <b>✎ Eigener Quartalstermin</b>
@@ -223,14 +242,14 @@
       <div id="earnManualList" class="earn-manual-list"></div>
       <small class="hint">Warum überhaupt von Hand? Der automatische Terminkalender ist im gebuchten Tarif möglicherweise nicht enthalten. Ein selbst eingetragener Termin funktioniert unabhängig davon — und du siehst die Termine bei Google Finance ohnehin. Ein Termin ist <b>keine Richtungsaussage</b>: Er sagt nur, dass der Kurs danach in beide Richtungen weit laufen kann.</small>
     </section>
-    <div id="topPicks" class="openingpanel toppicks" title="Top Picks: Rangfolge nach erwartetem Netto-Euro aus aufgezeichneten, aufgeloesten Episoden — nicht nach Score. 0 % Gewicht in Score, Ampel und Freigabe."></div>
-    <div id="sectorLaggards" class="openingpanel" title="Titel, die hinter ihrem eigenen Sektor zurueckliegen, waehrend der Sektor bereits laeuft. Discovery — 0 % BUY-Gewicht."></div>
-    <div id="marketGainers" class="openingpanel" title="Verifizierte Common-Stock-Kandidaten aus dem Tiingo-IEX-Whole-Market-Radar. Unabhängig von Favoriten; Discovery בלבד; Elliott-Deep-Scan entscheidet über Qualität."></div>
-    <div id="openingPanel" class="openingpanel" title="Premarket-/Opening-Momentum über Alpaca. Im kostenlosen IEX-Feed ist die Live-Abdeckung auf IEX beschränkt; vor 08:00 ET gibt es dort keine Live-Daten."></div>
-    <div id="extendedWatch" class="openingpanel" title="Pre-/After-Hours-Beobachtung. Warum sinnvoll? Auffällige Bewegungen außerhalb der Hauptsession können Kandidaten fürs Opening liefern, sind wegen dünnerer Liquidität aber noch kein BUY."></div>
+    <div id="topPicks" data-tile="topPicks" class="openingpanel toppicks" title="Top Picks: Rangfolge nach erwartetem Netto-Euro aus aufgezeichneten, aufgeloesten Episoden — nicht nach Score. 0 % Gewicht in Score, Ampel und Freigabe."></div>
+    <div id="sectorLaggards" data-tile="laggards" class="openingpanel" title="Titel, die hinter ihrem eigenen Sektor zurueckliegen, waehrend der Sektor bereits laeuft. Discovery — 0 % BUY-Gewicht."></div>
+    <div id="marketGainers" data-tile="gainers" class="openingpanel" title="Verifizierte Common-Stock-Kandidaten aus dem Tiingo-IEX-Whole-Market-Radar. Unabhängig von Favoriten; Discovery בלבד; Elliott-Deep-Scan entscheidet über Qualität."></div>
+    <div id="openingPanel" data-tile="opening" class="openingpanel" title="Premarket-/Opening-Momentum über Alpaca. Im kostenlosen IEX-Feed ist die Live-Abdeckung auf IEX beschränkt; vor 08:00 ET gibt es dort keine Live-Daten."></div>
+    <div id="extendedWatch" data-tile="extended" class="openingpanel" title="Pre-/After-Hours-Beobachtung. Warum sinnvoll? Auffällige Bewegungen außerhalb der Hauptsession können Kandidaten fürs Opening liefern, sind wegen dünnerer Liquidität aber noch kein BUY."></div>
     <div id="depotStrip" class="depotstrip" title="Deine mit ★ markierten Aktien. Damit kannst du dein bestehendes Depot bzw. eine persönliche Watchlist abbilden."></div>
     <div id="crowdStatus" class="crowd-status" title="Zustand des Crowd/Search-Sensors. Der Tacho bleibt bewusst leer, statt Werte zu erfinden, wenn keine Daten abrufbar sind."></div>
-    <section id="portfolioRisk" class="portfolio-card" title="Modul 2: Gesamt-Risiko ueber alle offenen Positionen und Klumpungswarnung. Rechnet zusammen, was das Einzeltrade-Risiko fuer sich nicht zeigt. Veraendert keinen Score."></section>
+    <section id="portfolioRisk" data-tile="portfolio" class="portfolio-card" title="Modul 2: Gesamt-Risiko ueber alle offenen Positionen und Klumpungswarnung. Rechnet zusammen, was das Einzeltrade-Risiko fuer sich nicht zeigt. Veraendert keinen Score."></section>
     <div class="experimental-grid">
       <section id="learningReport" class="learning-report" title="Was hat FusionPulse im Hintergrund gelernt? Zeigt gespeicherte Beobachtungen und Systemzustände; verändert keine BUY-Regel automatisch."></section>
       <section id="patternLab" class="learning-report pattern-lab" title="Musterlabor: Was war VOR einer Bewegung messbar? Ereignisstudie über die serverseitig aufgezeichneten Snapshots. Reine Beobachtung — 0 % Gewicht in Score, Ampel und Freigabe."></section>
@@ -391,6 +410,6 @@
      Muss das LETZTE Element im Fluss bleiben. Hoehe kommt aus derselben
      Messung wie alles andere (--fp-foot-h). -->
 <div class="foot-spacer" aria-hidden="true"></div>
-<script src="/app.js?v=3.21.0"></script>
+<script src="/app.js?v=3.22.0"></script>
 </body>
 </html>

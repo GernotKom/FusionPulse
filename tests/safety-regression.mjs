@@ -3745,10 +3745,139 @@ console.log('✓ FusionPulse v3.20.0 top-picks/expectancy regressions: OK');
   /* -- 9. Ein ueberangepasstes Paar darf nicht ranken ---------------------- */
   const mod = worker.slice(worker.indexOf('async function topPicks('),
     worker.indexOf('/* ============================================================================\n   v3.17.0 · MUSTERLABOR'));
-  assert.match(mod, /evBest: grid\.available && !grid\.overfit \? grid\.evOos : null/,
+  assert.match(mod, /evBest: grid\.available && !grid\.overfit \? grid\.evFull : null/,
     'Nur ein im Nachweisteil bestaetigtes Paar darf in die Rangfolge eingehen');
+  /* v3.22.0: geschaetzt wird nach bestandener Pruefung auf ALLEN Episoden.
+     Die Reihenfolge Suchen -> Bestaetigen -> Schaetzen muss erhalten bleiben;
+     ein `evFull` ohne vorherige `overfit`-Pruefung waere Selbstbetrug. */
+  assert.match(worker, /const oFull = pickOutcome\(eps, best\.targetPct, best\.stopPct\);/,
+    'Nach der Bestaetigung muss auf allen Episoden nachgerechnet werden');
+  const overfitIdx = worker.indexOf('const overfitLimit = Math.max(GRID.OVERFIT_DROP_EUR');
+  const fullIdx = worker.indexOf('const oFull = pickOutcome(eps, best.targetPct');
+  assert.ok(overfitIdx > 0 && fullIdx > overfitIdx,
+    'Die Ueberanpassungspruefung muss VOR der Nachrechnung stehen');
   assert.match(mod, /const useGrid = evGrid != null && \(evFix == null \|\| evGrid > evFix\)/,
     'Genommen werden muss der bessere der beiden Plaene, nicht blind der gesuchte');
 }
 
 console.log('✓ FusionPulse v3.21.0 heat/verdict/grid regressions: OK');
+
+/* ═════════════════ v3.22.0 · Tempo, Kostenlast, Bereichstrennung ════════════
+   ANLASS (Nutzerfrage): "Ist die Arithmetik so, wie du sie gestalten wuerdest,
+   um SCHNELL Geld zu verdienen?" Nein — bis v3.21.0 wurde der Erwartungswert
+   JE TRADE optimiert. Ertrag je ZEIT ist eine andere Groesse, und nach der war
+   gefragt. Ein Setup mit +40 EUR dreimal taeglich schlaegt eines mit +80 EUR
+   pro Woche um den Faktor zehn. */
+{
+  const worker = workerText;
+  const idx = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  const econSrc = worker.slice(worker.indexOf('const PICK_COST = {'),
+                               worker.indexOf('const LEGACY_WIN_PCT = 5;') + 26);
+  const core = worker.slice(worker.indexOf('const PICK = {'),
+    worker.indexOf('/* ---------------------------------------------------------------------------\n   v3.21.0 · DIE ZWEI FRAGEN'));
+  const diag = worker.slice(worker.indexOf('/* ---------------------------------------------------------------------------\n   v3.21.0 · DIE ZWEI FRAGEN'),
+    worker.indexOf('/* ---------------------------------------------------------------------------\n   Auswertung: Situationstypen'));
+  const wl = (w, n) => { if (n <= 0) return 0; const z = 1.96, p = w / n;
+    const d = 1 + z * z / n, c = p + z * z / (2 * n);
+    const m = z * Math.sqrt((p * (1 - p) + z * z / (4 * n)) / n);
+    return Math.max(0, (c - m) / d); };
+  const r1 = (x) => Math.round(x * 10) / 10, r2 = (x) => Math.round(x * 100) / 100;
+  const T = new Function('wilsonLower', 'LEARN_HORIZON_MS', 'r1', 'r2',
+    econSrc + core + diag +
+    ';return {TEMPO,PICK,pickCfg,tempoOf,costLoadPct,rankPicks,pickTier,netEurAtMove,lossEurAtStop,ECON_WIN_PCT};'
+  )(wl, 180 * 60_000, r1, r2);
+  const cfg = T.pickCfg();
+
+  /* -- 1. Kostenlast: warum kleine Ziele die schlechtesten sind ------------ */
+  // 38 EUR Fixkosten fressen bei 2 % Zielweite fast ein Fuenftel des Brutto,
+  // bei 6 % nur noch ein Sechzehntel. Die Mindestzielweite ist ein BODEN.
+  const l2 = T.costLoadPct(2.04, cfg), l6 = T.costLoadPct(6, cfg);
+  assert.ok(l2 > 18 && l2 < 19, `Kostenlast bei 2,04 % muss ~18,6 % sein, war ${l2}`);
+  assert.ok(l6 < 7, `Kostenlast bei 6 % muss unter 7 % liegen, war ${l6}`);
+  assert.ok(l2 > l6 * 2, 'Die Kostenlast muss mit kleinerem Ziel deutlich steigen');
+  // Und die Folge davon: die noetige Trefferquote SINKT mit groesserem Ziel.
+  const be = (t) => { const s = t / 2, w = T.netEurAtMove(t, cfg), lo = T.lossEurAtStop(-s, cfg);
+    return lo / (w + lo); };
+  let prev = 1;
+  for (const t of [1.5, 2.04, 3, 4, 6]) {
+    const q = be(t);
+    assert.ok(q < prev, `Ein groesseres Ziel muss die noetige Trefferquote senken (${t} %)`);
+    prev = q;
+  }
+  assert.ok(be(1.5) > 0.57 && be(6) < 0.46,
+    'Der Unterschied muss gross sein: ~58 % bei 1,5 % Ziel gegen ~45 % bei 6 %');
+
+  /* -- 2. Ertrag je Handelstag --------------------------------------------- */
+  const eps = (n) => Array.from({ length: n }, (_, i) => ({ symbol: `X${i}`, ts: i }));
+  const haeufig = T.tempoOf(eps(63), 21, 40, 30);   // 3x taeglich, 40 EUR, 30 Min
+  const selten  = T.tempoOf(eps(4),  21, 80, 30);   // 0,19x taeglich, 80 EUR
+  assert.equal(haeufig.evPerDay, 120, 'Drei Gelegenheiten zu 40 EUR sind 120 EUR je Handelstag');
+  assert.ok(selten.evPerDay < 20, 'Ein seltenes Setup darf trotz hoeherem Einzelwert nicht vorn liegen');
+  assert.ok(haeufig.evPerDay > selten.evPerDay * 5,
+    'Genau das ist der Punkt: haeufig und klein schlaegt selten und gross');
+  assert.equal(haeufig.evPerHour, 80, '40 EUR in 30 Minuten sind 80 EUR je Stunde Kapitalbindung');
+
+  /* -- 3. Der Deckel ist keine Kosmetik ------------------------------------ */
+  // Ohne ihn wuerde ein sehr haeufiges, schwaches Setup rechnerisch gewinnen,
+  // obwohl sich so viele Positionen mit einem Fixeinsatz nicht halten lassen.
+  const sehrHaeufig = T.tempoOf(eps(210), 21, 10, 30);  // 10x taeglich
+  assert.equal(sehrHaeufig.perDay, 10, 'Die gemessene Haeufigkeit muss ehrlich ausgewiesen werden');
+  assert.equal(sehrHaeufig.perDayUsed, T.TEMPO.MAX_TRADES_PER_DAY,
+    'Gerechnet werden darf nur mit der ausfuehrbaren Zahl');
+  assert.ok(sehrHaeufig.capped, 'Die Deckelung muss als solche gekennzeichnet sein');
+  assert.equal(sehrHaeufig.evPerDay, 10 * T.TEMPO.MAX_TRADES_PER_DAY,
+    'Der Deckel muss wirklich greifen');
+
+  /* -- 4. Keine Frequenzaussage bei zu kurzem Fenster ---------------------- */
+  const kurz = T.tempoOf(eps(20), 3, 50, 30);
+  assert.equal(kurz.evPerDay, null, 'Unter fuenf Handelstagen darf keine Haeufigkeit behauptet werden');
+  assert.match(kurz.tempoNote, /geraten/, 'Und es muss dabeistehen, warum nicht');
+
+  /* -- 5. Rangfolge: Euro je Tag schlaegt Euro je Trade -------------------- */
+  const ranked = T.rankPicks([
+    { symbol: 'GROSS', tier: 'belegt', evEur: 90, evPerDay: 30, rank: T.pickTier('belegt', 90) },
+    { symbol: 'HAEUFIG', tier: 'belegt', evEur: 35, evPerDay: 105, rank: T.pickTier('belegt', 35) },
+  ]).map((x) => x.symbol);
+  assert.deepEqual(ranked, ['HAEUFIG', 'GROSS'],
+    'Sortiert werden muss nach Ertrag je Handelstag, nicht je Trade');
+  // Fail-closed bleibt: fehlende Frequenz darf nicht nach oben helfen.
+  const mitLuecke = T.rankPicks([
+    { symbol: 'OHNE', tier: 'belegt', evEur: 200, evPerDay: null, rank: T.pickTier('belegt', 200) },
+    { symbol: 'MIT', tier: 'belegt', evEur: 20, evPerDay: 60, rank: T.pickTier('belegt', 20) },
+  ]).map((x) => x.symbol);
+  assert.deepEqual(mitLuecke, ['MIT', 'OHNE'],
+    'Ein Kandidat OHNE Frequenzangabe darf einen MIT nie ueberholen — sonst hilft Nichtwissen wieder nach oben');
+  // Und die Stufenordnung aus v3.20.0 muss ueber allem stehen.
+  const stufen = T.rankPicks([
+    { symbol: 'UNBELEGT', tier: 'unbelegt', evEur: null, evPerDay: null, liveScore: 99, rank: T.pickTier('unbelegt', null) },
+    { symbol: 'BELEGT', tier: 'belegt', evEur: 5, evPerDay: 5, rank: T.pickTier('belegt', 5) },
+  ]).map((x) => x.symbol);
+  assert.deepEqual(stufen, ['BELEGT', 'UNBELEGT'],
+    'Die Beleg-Stufe muss weiterhin VOR jeder Tempo-Sortierung greifen');
+
+  /* -- 6. Bereichstrennung und Kachelfarben -------------------------------- */
+  assert.match(idx, /<div class="domain-band" data-domain="coin">/, 'Der Kryptobereich muss ausgewiesen sein');
+  assert.match(idx, /<div class="domain-band" data-domain="stock">/, 'Der Aktienbereich muss ausgewiesen sein');
+  assert.match(css, /\[data-domain="coin"\]\{ --domain:var\(--domain-coin\); \}/,
+    'Die Bereichsfarbe muss ueber eine CSS-Variable laufen, damit sie einstellbar ist');
+  // Jede faerbbare Kachel braucht BEIDES: den Schluessel im Code und den Haken
+  // im HTML. Fehlt eines, ist die Einstellung wirkungslos — genau der Zustand,
+  // den der Nutzer als "wurde nie umgesetzt" erlebt hat.
+  const tintKeys = [...app.matchAll(/^\s*\['([a-zA-Z]+)','[^']*'\],?$/gm)].map((m) => m[1]);
+  for (const key of ['topPicks', 'gainers', 'opening', 'extended', 'laggards',
+                     'earnings', 'cryptoMovers', 'sentiment', 'gate', 'portfolio']) {
+    assert.ok(app.includes(`['${key}',`), `Kachelton "${key}" muss in TINTABLE_TILES stehen`);
+    assert.ok(idx.includes(`data-tile="${key}"`), `Kachel "${key}" muss im HTML markiert sein`);
+    assert.ok(css.includes(`[data-tile="${key}"]`), `Kachel "${key}" braucht eine CSS-Regel`);
+  }
+  // Ampelfarben bleiben gesperrt (der Fehler aus v3.14.6 darf nicht per
+  // Einstellung wiederherstellbar sein).
+  assert.match(app, /const RESERVED_TINTS=new Set\(\['#13cf8b','#f2c015','#ef4f57','#ff8a3d'\]\)/,
+    'Die Ampelfarben muessen als Kachelton gesperrt bleiben');
+  for (const [, choice] of [...app.matchAll(/\['(#[0-9a-f]{6})','[A-ZÄÖÜ][a-zäöüß]+'\]/g)].map((m) => [0, m[1]]))
+    assert.ok(!['#13cf8b', '#f2c015', '#ef4f57', '#ff8a3d'].includes(choice),
+      `Ampelfarbe ${choice} darf nicht zur Auswahl stehen`);
+}
+
+console.log('✓ FusionPulse v3.22.0 tempo/cost-load/domain regressions: OK');

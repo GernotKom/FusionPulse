@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.21.0 — Frontend
+   FusionPulse v3.22.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1028,6 +1028,25 @@ const TINTABLE_TILES=[
   ['chart','Chartbereich'],
   ['learning','Lern-/Nacht-Bericht'],
   ['modelCompare','Modellvergleich (nur Rahmen, Ampelspalten bleiben)'],
+  /* v3.22.0: Die faerbbaren Elemente lagen bisher ALLE in der Aktien-Fokuskarte.
+     Die grossen Discovery-Kacheln, die den meisten Platz einnehmen, waren gar
+     nicht dabei — deshalb wirkte die Einstellung, als gaebe es sie nicht. */
+  ['topPicks','Top Picks'],
+  ['gainers','Momentum-Mover'],
+  ['opening','Premarket / Opening'],
+  ['extended','Nachbörse / Extended Hours'],
+  ['laggards','Sektor-Nachzügler'],
+  ['earnings','Quartalszahlen'],
+  ['cryptoMovers','Krypto-Mover'],
+  ['sentiment','Krypto-Stimmung'],
+  ['gate','Freigabe-Trichter'],
+  ['portfolio','Portfolio-Risiko'],
+];
+/* Bereichsfarben. Sie faerben NICHT eine einzelne Kachel, sondern den Rand
+   aller Kacheln eines Marktes — deshalb stehen sie getrennt. */
+const DOMAIN_TINTS=[
+  ['coin','Bereichsfarbe Krypto','#8b7cff'],
+  ['stock','Bereichsfarbe Aktien','#3fb0c9'],
 ];
 const TINT_CHOICES=[
   ['','Standard'],['#5b8cff','Blau'],['#8b7cff','Violett'],['#3fb0c9','Türkis'],
@@ -1050,13 +1069,22 @@ function applyTileTints(){
     if(v){ root.setProperty(`--tint-${key}`,v); root.setProperty(`--tint-${key}-bg`,`color-mix(in srgb, ${v} 8%, var(--panel))`); }
     else { root.removeProperty(`--tint-${key}`); root.removeProperty(`--tint-${key}-bg`); }
   }
+  for(const [key,,fallback] of DOMAIN_TINTS){
+    const v=tintFor('domain_'+key) || fallback;
+    root.setProperty(`--domain-${key}`, v);
+  }
 }
 function renderTileTintSettings(){
   const box=$('#tileTintBox'); if(!box) return;
-  box.innerHTML=TINTABLE_TILES.map(([key,label])=>
+  const row=(key,label)=>
     `<label class="tint-row"><span>${esc(label)}</span><select data-tint="${esc(key)}">`
     +TINT_CHOICES.map(([v,n])=>`<option value="${v}"${tintFor(key)===v?' selected':''}>${esc(n)}</option>`).join('')
-    +`</select></label>`).join('');
+    +`</select></label>`;
+  box.innerHTML='<div class="tint-group">Bereiche</div>'
+    +DOMAIN_TINTS.map(([k,label])=>row('domain_'+k,label)).join('')
+    +'<div class="tint-group">Einzelne Kacheln</div>'
+    +TINTABLE_TILES.map(([key,label])=>
+    row(key,label)).join('');
   box.querySelectorAll('select[data-tint]').forEach(sel=>{
     sel.onchange=()=>{
       const k=sel.getAttribute('data-tint');
@@ -3982,6 +4010,10 @@ function renderTopPicks(){
     +`<div title="Weiter darf dein Stop nicht entfernt sein. Grund: Gewinne werden versteuert, Verluste tragen die vollen Gebühren mit. Bei einem 2-%-Stop und 2-%-Ziel bräuchtest du über 66 % Trefferquote — die gibt es im Intraday-Momentum nicht."><span>Stop höchstens</span><b>${num(d.maxStopPct,2)} %</b></div>`
     +`<div title="Ab dieser Trefferquote trägt sich das Setup nach allen Kosten. Darunter verlierst du selbst mit lauter 'richtigen' Einschätzungen Geld."><span>nötige Trefferquote</span><b>${d.breakEvenHitPct} %</b></div>`
     +`<div title="Gewinn am Ziel gegen Verlust am Stop, beides netto. Die Asymmetrie ist der Grund für die Regel darüber."><span>Gewinn / Verlust</span><b class="good">${eur(d.winEur,0)}</b> <b class="bad">−${eur(d.lossEur,0)}</b></div>`
+    /* v3.22.0: Warum kleine Ziele die schlechtesten sind — als Zahl, nicht als
+       Behauptung. Bei 2 % Zielweite fressen 38 € Fixkosten 18,6 % des
+       Bruttogewinns, bei 6 % nur 6,3 %. Die Mindestzielweite ist ein BODEN. */
+    +`<div title="Anteil der Fixkosten (2 Orders + Ausführungsreibung) am Bruttogewinn bei der Mindestzielweite. Je kleiner das Ziel, desto größer dieser Anteil — deshalb ist die Mindestzielweite ein Boden und kein Wunschwert. Bei 6 % Zielweite wären es nur noch rund 6 %."><span>Kostenlast am Mindestziel</span><b>${num(d.costLoadAtMin,1)} %</b></div>`
     +`</div>`;
 
   /* Der Befund selbst, sichtbar statt behauptet. */
@@ -4001,7 +4033,10 @@ function renderTopPicks(){
       +`<span title="Wie viel Gegenbewegung mussten die Gewinner aushalten, BEVOR das Ziel kam? Der zweite Wert ist der Stopabstand, der 80 % von ihnen im Trade gehalten hätte. Liegt er über deinem erlaubten Stop, ist die Bewegung zwar da, mit ${eur(d.cost?.notionalEur??10000,0)} fix aber nicht greifbar.">${s.heatMedian==null?'Gegenbewegung n.v.':'Luft nötig '+num(s.stopFor80,2)+' % (median '+num(s.heatMedian,2)+' %)'}${s.heatSource==='Obergrenze'?' ·  Obergrenze':''}</span>`
       +`<span>${s.n} Episoden · ${esc(PICK_TIER_LABEL[s.tier]||s.tier)}</span>`
       +(s.grid?.available?`<span class="pick-plan" title="${esc(s.grid.note||'')} ${esc(s.grid.heatNote||'')}">Bestes Paar: Ziel ${num(s.grid.targetPct,2)} % / Stop ${num(s.grid.stopPct,2)} %${s.grid.overfit?' — nur im Suchteil gut, nicht verwendet':' · bestätigt'}</span>`:'')
-      +`<em>${s.medianMinutes!=null?'typisch '+s.medianMinutes+' Min bis Ziel':'Haltedauer noch nicht messbar'}</em>`
+      /* Der Ertrag je HANDELSTAG ist die Zahl, nach der gefragt war. Ein Setup
+         mit +40 €, das dreimal täglich kommt, schlägt eines mit +80 € pro Woche. */
+      +`<span class="pick-tempo" title="${esc(`${s.tempoNote||''} Gerechnet mit höchstens ${d.maxTradesPerDay} Trades je Tag — mehr lassen sich mit einer Position je Trade nicht halten. Der Wert je Stunde misst die Kapitalbindung: derselbe Gewinn in halber Zeit ist doppelt so viel wert, weil danach noch ein Trade passt.`)}">${s.evPerDay==null?'Häufigkeit noch nicht messbar':(s.evPerDay>0?'+':'')+eur(s.evPerDay,0)+' / Handelstag · '+num(s.perDay,2)+'×'+(s.evPerHour!=null?' · '+eur(s.evPerHour,0)+'/Std':'')}</span>`
+      +`<em>${s.medianMinutes!=null?'typisch '+s.medianMinutes+' Min bis Ziel':'Haltedauer noch nicht messbar'}${s.costLoadPct!=null?' · Kostenlast '+num(s.costLoadPct,1)+' %':''}</em>`
       +`</div>`;
   }).join('');
 
@@ -4014,12 +4049,14 @@ function renderTopPicks(){
     +`<span>${p.movePct!=null?(Number(p.movePct)>=0?'+':'')+num(p.movePct,1)+' % Tag':'Bewegung n.v.'}</span>`
     /* Der konkrete Plan ist der Punkt: eine Zahl ohne Ziel und Stop ist nicht handelbar. */
     +(p.plan&&p.evEur!=null?`<span class="pick-plan">Ziel ${num(p.plan.targetPct,2)} % · Stop ${num(p.plan.stopPct,2)} %${p.medianMinutes!=null?' · ~'+p.medianMinutes+' Min':''}</span>`:'')
+    +(p.evPerDay!=null?`<span class="pick-tempo">${p.evPerDay>0?'+':''}${eur(p.evPerDay,0)} / Handelstag${p.perDay!=null?' · '+num(p.perDay,2)+'×':''}</span>`:'')
     +`<em>${esc(p.verdict&&p.verdict!=='handelbar'?p.verdict:(PICK_RANK_LABEL[p.rank]||''))}</em></button>`).join('');
 
   const body=(sit?`<div class="pick-sitgrid">${sit}</div>`:'')
     +(picks?`<div class="opgrid">${picks}</div>`
            :'<span class="hint">Keine lebenden Radar-Kandidaten im Zwischenspeicher.</span>')
-    +`<small class="hint">${esc(d.note||'')}</small>`;
+    +`<small class="hint">${esc(d.note||'')}</small>`
+    +(d.tempoNote?`<small class="hint pick-tempo-note">${esc(d.tempoNote)}</small>`:'');
 
   const wrote=paintPanel(el, head(categoryFreshness(d.radarTs))+math+legacy+body);
   if(wrote) el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>{

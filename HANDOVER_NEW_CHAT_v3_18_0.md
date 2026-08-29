@@ -1248,3 +1248,74 @@ Ergebnis erzeugen, werden von einem Test nur als Vereinigung geprüft.
   Bewertung, nicht in die Auswertung.
 - Keine feinere Gruppierung (Typ × Sektor, Typ × Tageszeit): bei der aktuellen
   Datenmenge erzeugt das Rauschen statt Erkenntnis.
+
+---
+
+## 8s. WAS v3.22.0 GEÄNDERT HAT — Ertrag je Zeit statt je Trade
+
+Anlass war die Nutzerfrage: „Ist die Arithmetik so, wie du sie gestalten
+würdest, um SCHNELL Geld zu verdienen?" Die ehrliche Antwort war nein.
+
+### Der Befund
+
+Bis v3.21.0 wurde der Erwartungswert **je Trade** optimiert. Gefragt war nach
+Ertrag je **Zeit**. Ein Setup mit +40 € dreimal täglich schlägt eines mit +80 €
+pro Woche um den Faktor zehn. Die Daten lagen seit v3.0 in D1 und wurden nie
+zusammengerechnet.
+
+`tempoOf()` liefert jetzt Gelegenheiten je Handelstag, Euro je Handelstag und
+Euro je Stunde Kapitalbindung. `rankPicks` sortiert nach Euro je Handelstag.
+
+**Der Deckel (`TEMPO.MAX_TRADES_PER_DAY = 3`) ist keine Kosmetik.** Ohne ihn
+überholt ein häufiger schwacher Typ eine seltene starke Gelegenheit —
+rechnerisch richtig, mit einer Position je Trade nicht ausführbar. Ein Test
+besteht darauf. Ebenso darauf, dass ein Kandidat ohne Frequenzangabe einen mit
+nie überholt: sonst hilft Nichtwissen wieder nach oben.
+
+### Kostenlast — warum kleine Ziele die schlechtesten sind
+
+38 € Fixkosten sind unabhängig von der Zielweite. Bei 1,5 % Ziel braucht es
+58,2 % Trefferquote, bei 6 % nur 45,3 %. Die abgeleitete Mindestzielweite von
+2,04 % ist damit ein **Boden, kein Wunschwert**. `costLoadPct()` zeigt den
+Anteil der Fixkosten am Bruttogewinn.
+
+**Regel:** Wer künftig über die Zielweite nachdenkt, prüft zuerst diese Tabelle.
+Kleiner ist nie besser.
+
+### Der dritte Fehler in der Rastersuche (nach Rundung und Schätzart)
+
+Die Suche hat sich in Testläufen NIE durchgesetzt, obwohl sie klar bessere Paare
+fand. Ursache: ihr Ergebnis wurde auf dem 30 % großen Nachweisteil geschätzt und
+gegen eine Vollstichproben-Schätzung des Kostenmodell-Paars gestellt. Die
+schmalere Stichprobe hat eine breitere Wilson-Untergrenze — systematische
+Benachteiligung, kein Datenbefund.
+
+Jetzt: **suchen** (ältere 70 %) → **bestätigen** (jüngere 30 %) → **schätzen**
+(alle Episoden, `evFull`). Auswählen und Schätzen sind zwei Schritte. Ein
+überangepasstes Paar erreicht `evBest` gar nicht. Ein Test hält die Reihenfolge
+fest (`overfitLimit` muss VOR `oFull` stehen).
+
+**Verallgemeinerung, jetzt dreimal bestätigt:** Wenn ein Vergleich immer in
+dieselbe Richtung ausfällt, liegt es fast nie an den Daten, sondern daran, dass
+die beiden Seiten unterschiedlich behandelt werden.
+
+### Oberfläche
+
+- `data-domain="coin"` / `"stock"` + `.domain-band` trennen die Märkte optisch;
+  der Farbrand läuft an allen Kacheln des Bereichs mit.
+- `TINTABLE_TILES` deckte bis v3.21.0 NUR fünf Elemente der Aktien-Fokuskarte
+  ab. Die großen Discovery-Kacheln fehlten — deshalb wirkte die Einstellung, als
+  gäbe es sie nicht. Jetzt zehn weitere plus zwei Bereichsfarben.
+- **Ein Test prüft für jede färbbare Kachel alle DREI Teile**: Schlüssel in
+  `TINTABLE_TILES`, `data-tile` im HTML, Regel im CSS. Fehlt einer, ist die
+  Einstellung wirkungslos. Genau das war der Zustand.
+- `RESERVED_TINTS` (Ampelfarben) bleibt gesperrt — der Fehler aus v3.14.6 darf
+  nicht per Einstellung wiederherstellbar sein.
+
+### Bewusst NICHT gemacht
+
+- **Keine Krypto-Top-Picks.** Die Struktur trüge es, aber die Kostenrechnung ist
+  bei Bitpanda Fusion eine andere (Spread statt Fixgebühr). Eine Kopie der
+  Aktien-Herleitung wäre falsch; das braucht eine eigene.
+- Keine Gruppierung nach Tageszeit — die Datenmenge trägt es noch nicht.
+- Der Live-`situationScore` bleibt unangetastet.

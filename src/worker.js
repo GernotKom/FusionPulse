@@ -3061,6 +3061,58 @@ function breakEvenHitRate(targetPct, stopPct, cfg) {
   return win + loss > 0 ? loss / (win + loss) : 1;
 }
 
+/* ============================================================================
+   v3.22.0 · "SCHNELL GELD VERDIENEN" IST EINE ANDERE FRAGE ALS "GUTER TRADE"
+   ----------------------------------------------------------------------------
+   Bis v3.21.0 hat die App den Erwartungswert JE TRADE optimiert. Das ist nicht
+   dieselbe Groesse wie Ertrag je Zeit — und nach der zweiten war gefragt.
+
+   Ein Setup mit +40 EUR, das dreimal taeglich auftritt, schlaegt eines mit
+   +80 EUR, das einmal pro Woche kommt, um den Faktor zehn. Genauso zaehlt, wie
+   lange das Kapital gebunden ist: 40 EUR in 30 Minuten sind etwas anderes als
+   40 EUR in sechs Stunden, weil im ersten Fall danach noch ein Trade passt.
+
+   Drei Groessen, alle aus vorhandenen Daten:
+     - Gelegenheiten je Handelstag  (Episoden / Handelstage im Fenster)
+     - Erwarteter Euro je Handelstag (EV x Gelegenheiten, gedeckelt)
+     - Euro je Stunde Kapitalbindung (EV / Haltedauer)
+
+   Der Deckel ist wichtig und keine Kosmetik: bei 10.000 EUR Fixeinsatz lassen
+   sich nicht beliebig viele Trades gleichzeitig halten. Ohne ihn wuerde ein
+   haeufiger, schwacher Typ eine seltene, starke Gelegenheit ueberholen —
+   rechnerisch richtig, praktisch nicht ausfuehrbar.
+   ========================================================================== */
+const TEMPO = {
+  MAX_TRADES_PER_DAY: 3,   // realistische Obergrenze bei einer Position je Trade
+  MIN_DAYS: 5,             // unter so vielen Handelstagen keine Frequenzaussage
+};
+function tempoOf(episodes, tradingDays, evEur, medianMinutes) {
+  const n = (episodes || []).length;
+  if (!n || !(tradingDays >= TEMPO.MIN_DAYS))
+    return { perDay: null, evPerDay: null, evPerHour: null,
+      tempoNote: `Weniger als ${TEMPO.MIN_DAYS} Handelstage im Fenster — eine Aussage zur Haeufigkeit waere geraten.` };
+  const perDayRaw = n / tradingDays;
+  const perDay = Math.min(TEMPO.MAX_TRADES_PER_DAY, perDayRaw);
+  const capped = perDayRaw > TEMPO.MAX_TRADES_PER_DAY;
+  return {
+    perDay: r2(perDayRaw), perDayUsed: r2(perDay), capped,
+    evPerDay: evEur == null ? null : Math.round(evEur * perDay),
+    evPerHour: (evEur == null || !(medianMinutes > 0)) ? null
+      : Math.round(evEur / (medianMinutes / 60)),
+    tempoNote: capped
+      ? `${r2(perDayRaw)} Gelegenheiten je Handelstag gemessen, gerechnet wird mit ${TEMPO.MAX_TRADES_PER_DAY} — mehr laesst sich mit einer Position je Trade nicht halten.`
+      : `${r2(perDayRaw)} Gelegenheiten je Handelstag ueber ${tradingDays} Tage.`,
+  };
+}
+/** Wie viel vom Bruttogewinn fressen die Fixkosten? Die Zahl erklaert, warum
+ *  kleine Ziele strukturell die schlechtesten sind: bei 2 % Zielweite gehen
+ *  18,6 % des Bruttogewinns fuer Gebuehren und Reibung drauf, bei 6 % nur 6,3 %.
+ *  Deshalb ist die abgeleitete Mindestzielweite ein BODEN, kein Wunschwert. */
+function costLoadPct(targetPct, cfg) {
+  const c = pickCfg(cfg), gross = c.notionalEur * (targetPct / 100);
+  return gross > 0 ? Math.round(pickCosts(c) / gross * 1000) / 10 : null;
+}
+
 const evidenceTier = (n) =>
   n >= PICK.MIN_EVIDENCE ? 'belegt' : n >= PICK.THIN_EVIDENCE ? 'duenn' : 'unbelegt';
 
@@ -3077,6 +3129,15 @@ function rankPicks(picks) {
     const ra = PICK_RANK[a.rank] ?? 9, rb = PICK_RANK[b.rank] ?? 9;
     if (ra !== rb) return ra - rb;
     if (a.rank === 'unbelegt') return (b.liveScore || 0) - (a.liveScore || 0);
+    /* v3.22.0: sortiert wird nach Euro JE HANDELSTAG, nicht je Trade — das war
+       die Frage. Fehlt die Frequenzaussage (zu wenige Handelstage), faellt der
+       Vergleich auf den Wert je Trade zurueck; ein Kandidat OHNE Frequenzangabe
+       darf dadurch aber nie einen MIT ueberholen, sonst wuerde fehlendes Wissen
+       wieder nach oben helfen. */
+    const av = a.evPerDay ?? null, bv = b.evPerDay ?? null;
+    if (av != null && bv != null && av !== bv) return bv - av;
+    if (av != null && bv == null) return -1;
+    if (av == null && bv != null) return 1;
     return (b.evEur ?? -1e9) - (a.evEur ?? -1e9);
   });
 }
@@ -3204,9 +3265,23 @@ function optimizeGrid(episodes, minTargetPct, cfg) {
   const spread = netEurAtMove(best.targetPct, cfg) + lossEurAtStop(best.stopPct, cfg);
   const seEur = Math.sqrt(Math.max(0.01, pOos * (1 - pOos)) / Math.max(1, oOut.n)) * spread;
   const overfitLimit = Math.max(GRID.OVERFIT_DROP_EUR, 1.5 * seEur);
+  /* Nach bestandener Pruefung wird auf ALLEN Episoden nachgerechnet.
+     Warum das kein Schummeln ist: GESUCHT wurde nur auf dem aelteren Teil,
+     BESTAETIGT auf dem juengeren. Auswaehlen und Schaetzen sind zwei Schritte;
+     erst nach dem zweiten darf die volle Stichprobe fuer die Schaetzung dienen.
+     Warum es noetig ist: der Nachweisteil ist nur 30 % gross, seine
+     Wilson-Untergrenze entsprechend breit. Ihn gegen die Vollstichproben-
+     Schaetzung des Kostenmodell-Paars zu stellen hiess, das gesuchte Paar
+     systematisch zu bestrafen — in meinen Testlaeufen hat es NIE gewonnen,
+     auch wenn es klar besser war. Ein ueberangepasstes Paar kommt hier nicht
+     durch: `evBest` uebernimmt nur, wenn `overfit` falsch ist. */
+  const oFull = pickOutcome(eps, best.targetPct, best.stopPct);
+  const eFull = pickExpectancy(oFull, best.targetPct, best.stopPct, cfg);
   return {
     available: true, gridPoints: points,
     ...best, oosN: oos.length, oosHit: oOut.hit, evOos: eOut.evEur, evOosPoint,
+    evFull: eFull.evEur, fullN: oFull.n, fullHit: oFull.hit,
+    medianMinutesFull: oFull.medianMinutes,
     pHitOos: eOut.pHit, medianMinutes: oOut.medianMinutes,
     overfit: drop >= overfitLimit,
     overfitLimit: Math.round(overfitLimit), seEur: Math.round(seEur),
@@ -3214,7 +3289,7 @@ function optimizeGrid(episodes, minTargetPct, cfg) {
     drop: Math.round(drop),
     note: drop >= overfitLimit
       ? `Suchteil ${best.evIn} EUR, Nachweisteil ${evOosPoint} EUR bei gleicher Rechenart — der Abstand von ${Math.round(drop)} EUR liegt ueber der Rauschgrenze von ${Math.round(overfitLimit)} EUR und spricht fuer Ueberanpassung. Das Paar wird angezeigt, aber nicht zum Ranken benutzt.`
-      : `Suchteil ${best.evIn} EUR, Nachweisteil ${evOosPoint} EUR bei gleicher Rechenart (${oOut.n} unabhaengige Episoden). Der Abstand von ${Math.round(drop)} EUR liegt unter der Rauschgrenze von ${Math.round(overfitLimit)} EUR. Vorsichtig gerechnet bleiben ${eOut.evEur} EUR.`,
+      : `Suchteil ${best.evIn} EUR, Nachweisteil ${evOosPoint} EUR bei gleicher Rechenart (${oOut.n} unabhaengige Episoden). Der Abstand von ${Math.round(drop)} EUR liegt unter der Rauschgrenze von ${Math.round(overfitLimit)} EUR. Auf allen ${oFull.n} Episoden vorsichtig nachgerechnet: ${eFull.evEur} EUR.`,
   };
 }
 
@@ -3244,6 +3319,8 @@ async function topPicks(env, opts = {}) {
     maxStopPct: r2(maxStopPct), minRewardRisk: PICK.MIN_REWARD_RISK,
     breakEvenHitPct: Math.round(breakEvenHitRate(targetPct, stopPct, cfg) * 100),
     minEvidence: PICK.MIN_EVIDENCE, thinEvidence: PICK.THIN_EVIDENCE,
+    maxTradesPerDay: TEMPO.MAX_TRADES_PER_DAY,
+    costLoadAtMin: costLoadPct(targetPct, cfg),
   };
   if (!env?.DB) return { ...base, state: 'nodb', situations: [], picks: [], note: 'Ohne D1 gibt es keine aufgezeichneten Ergebnisse. Es wird bewusst nichts geschaetzt.' };
   await ensureD1Schema(env);
@@ -3258,6 +3335,10 @@ async function topPicks(env, opts = {}) {
 
   // Episoden statt Snapshots — dieselbe Regel wie in Modul 0 und im Musterlabor.
   const episodes = collapseEpisodes(rows);
+  /* Handelstage im Fenster: die Zahl, gegen die Haeufigkeit gerechnet wird.
+     Kalendertage waeren falsch — an Wochenenden zeichnet die App nichts auf. */
+  const tradingDays = new Set(episodes.map((e) =>
+    new Date(Number(e.ts)).toISOString().slice(0, 10))).size;
   const bySituation = new Map();
   let withSituation = 0;
   for (const e of episodes) {
@@ -3277,19 +3358,28 @@ async function topPicks(env, opts = {}) {
       maxStopPct, minSample: PICK.MIN_EVIDENCE });
     const grid = outcome.n >= PICK.MIN_EVIDENCE ? optimizeGrid(eps, targetPct, cfg)
       : { available: false, reason: 'zu wenige Episoden fuer eine Rastersuche' };
+    /* Der Tempowert haengt am PLAN, der auch gehandelt wuerde — also am
+       bestaetigten Rasterpaar, wenn es eines gibt, sonst am Kostenmodell. */
+    const usable = grid.available && !grid.overfit && (grid.evFull ?? -1e9) > (exp.evEur ?? -1e9);
+    const planTarget = usable ? grid.targetPct : r2(targetPct);
+    const planEv = usable ? grid.evFull : exp.evEur;
+    const planMin = usable ? (grid.medianMinutesFull ?? grid.medianMinutes) : outcome.medianMinutes;
+    const tempo = tempoOf(eps, tradingDays, planEv, planMin);
     // Gegenprobe an der alten 5-%-Schwelle. Sie steht bewusst DANEBEN, damit
     // der Unterschied sichtbar ist, statt behauptet werden zu muessen.
     const legacy = pickOutcome(eps, LEGACY_WIN_PCT, stopPct);
     const tier = evidenceTier(outcome.n);
     return {
-      situation, tier, ...outcome, ...exp, ...heat, ...diag, grid,
+      situation, tier, ...outcome, ...exp, ...heat, ...diag, grid, ...tempo,
+      costLoadPct: costLoadPct(planTarget, cfg),
       /* Die Rangzahl ist der NACHWEIS-Wert, nicht der Suchwert. Ein Paar, das
          nur im Suchteil gut aussah, darf die Liste nicht anfuehren. */
-      evBest: grid.available && !grid.overfit ? grid.evOos : null,
+      evBest: grid.available && !grid.overfit ? grid.evFull : null,
       legacyHit: legacy.hit, legacyPct: outcome.n ? Math.round(legacy.hit / outcome.n * 100) : null,
       symbols: new Set(eps.map((x) => String(x.symbol || '').toUpperCase())).size,
     };
-  }).sort((a, b) => (Math.max(b.evEur ?? -1e9, b.evBest ?? -1e9)) - (Math.max(a.evEur ?? -1e9, a.evBest ?? -1e9)));
+  }).sort((a, b) => (b.evPerDay ?? -1e9) - (a.evPerDay ?? -1e9)
+                 || (Math.max(b.evEur ?? -1e9, b.evBest ?? -1e9)) - (Math.max(a.evEur ?? -1e9, a.evBest ?? -1e9)));
 
   const evidence = new Map(situations.map((s) => [s.situation, s]));
 
@@ -3326,6 +3416,9 @@ async function topPicks(env, opts = {}) {
       n: ev?.n ?? 0, pHit: ev?.pHit ?? null, pStop: ev?.pStop ?? null,
       medianMinutes: ev?.grid?.medianMinutes ?? ev?.medianMinutes ?? null, ambiguous: ev?.ambiguous ?? 0,
       verdict: ev?.verdict ?? 'zu wenige Faelle', why: ev?.why ?? '', plan,
+      evPerDay: tier === 'unbelegt' ? null : (ev?.evPerDay ?? null),
+      evPerHour: tier === 'unbelegt' ? null : (ev?.evPerHour ?? null),
+      perDay: ev?.perDay ?? null, costLoadPct: ev?.costLoadPct ?? null,
       heatMedian: ev?.heatMedian ?? null, stopFor80: ev?.stopFor80 ?? null,
       rank: pickTier(tier, evEur),
       buyWeight: 0,
@@ -3343,12 +3436,16 @@ async function topPicks(env, opts = {}) {
     : positiv.length
     ? `${positiv.length} von ${belegt.length} belegten Situationstypen tragen bei ${r1(targetPct)} % Zielweite einen positiven Erwartungswert.`
     : `KEIN belegter Situationstyp traegt bei ${r1(targetPct)} % Zielweite einen positiven Erwartungswert. Das ist ein Ergebnis, kein Fehler: die aufgezeichneten Setups haben die Kosten bisher nicht verdient.`;
+  const best = situations.find((x) => (x.evPerDay ?? -1e9) > 0);
+  const tempoNote = best
+    ? `Schnellster belegter Weg derzeit: ${best.situation} mit rund ${best.evPerDay} EUR je Handelstag (${best.perDayUsed ?? best.perDay} Gelegenheiten, ~${best.medianMinutes ?? '?'} Min. Kapitalbindung).`
+    : 'Kein Situationstyp traegt derzeit einen positiven Ertrag je Handelstag.';
 
   return {
     ...base, state: episodes.length ? 'ok' : 'empty',
     rowsScanned: rows.length, rowsCapped: rows.length >= PICK.ROW_LIMIT,
-    episodes: episodes.length, withSituation,
-    situations, picks, radarTs: radar?.ts || null, note,
+    episodes: episodes.length, withSituation, tradingDays,
+    situations, picks, radarTs: radar?.ts || null, note, tempoNote,
   };
 }
 
