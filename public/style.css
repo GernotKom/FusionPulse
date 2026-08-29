@@ -693,7 +693,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"3.20.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"3.21.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1307,3 +1307,8 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .toppicks .pick-card.rank-duennPositiv{border-left:3px dashed rgba(70,190,120,.55)}
 .toppicks .pick-card.rank-unbelegt{border-left:3px dotted rgba(150,160,180,.55);opacity:.78}
 .toppicks .pick-card.rank-belegtNegativ{border-left:3px solid rgba(220,90,90,.7);opacity:.62}
+/* v3.21.0 · Urteil und Plan sichtbar, nicht nur im Tooltip */
+.toppicks .pick-verdict{font-weight:600;opacity:.9}
+.toppicks .pick-plan{font-variant-numeric:tabular-nums;opacity:.85;
+  border-top:1px solid rgba(255,255,255,.08);margin-top:3px;padding-top:3px}
+.toppicks .pick-card .pick-plan{border:0;margin:0;padding:0;font-size:11px}

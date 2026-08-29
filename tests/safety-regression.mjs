@@ -3068,9 +3068,9 @@ console.log('✓ FusionPulse v3.16.1 manual-earnings-editor regressions: OK');
   const deps = cut('function collapseEpisodes(rows){', 'function bucketStats(');
   assert.ok(src.includes('aucNoiseFloor(nUp,nDown,PATTERN_FEATURES.length)'),
     'Die Zufallsgrenze muss auf die ZAHL der geprueften Kennzahlen bezogen sein');
-  const api = new Function('ATTR', 'APP_VERSION', 'ensureD1Schema', 'safeJson',
+  const api = new Function('ATTR', 'LEGACY_WIN_PCT', 'APP_VERSION', 'ensureD1Schema', 'safeJson',
     deps + src + '; return {patternLab, aucSeparation, aucNoiseFloor, medianOf, zQuantile};')(
-    { MIN_SAMPLE: 20, WIN_PCT: 5, STOP_PCT: -1.5 }, 'test', async () => {}, JSON.stringify);
+    { MIN_SAMPLE: 20, WIN_PCT: 5, STOP_PCT: -1.5 }, 5, 'test', async () => {}, JSON.stringify);
 
   // Eigene Fixture (Checkliste 4). Jeder Fall bekommt ein eigenes Symbol UND
   // einen eigenen Tag, damit collapseEpisodes ihn als eigene Episode zaehlt.
@@ -3420,9 +3420,22 @@ console.log('✓ FusionPulse v3.19.0 render-budget/sw-cache regressions: OK');
     const d = 1 + z * z / n, c = p + z * z / (2 * n);
     const m = z * Math.sqrt((p * (1 - p) + z * z / (4 * n)) / n);
     return Math.max(0, (c - m) / d); };
-  const M = new Function('wilsonLower', 'LEARN_HORIZON_MS', src +
+  // v3.21.0: Die Schwellen kommen jetzt aus dem Kostenmodell. Der Test bindet
+  // sie GENAU SO wie der Worker sie bildet — sonst prueft er eine andere App.
+  const econSrc = worker.slice(worker.indexOf('const PICK_COST = {'),
+                               worker.indexOf('const LEGACY_WIN_PCT = 5;') + 26);
+  const ECON = new Function(econSrc + '\nreturn {PICK_COST,ECON_NET_EUR,ECON_FIX_EUR,ECON_WIN_PCT,ECON_MIN_REWARD_RISK,ECON_STOP_PCT,PICK_REACH_PCT,LEGACY_WIN_PCT};')();
+  assert.equal(ECON.ECON_FIX_EUR, 38, 'Fixkosten muessen 38 EUR sein');
+  assert.equal(ECON.ECON_WIN_PCT, 2.04, 'Die gerechnete Erfolgsschwelle muss 2,04 % sein');
+  assert.equal(ECON.ECON_STOP_PCT, -1.02, 'Die abgeleitete Stopweite muss -1,02 % sein');
+  assert.equal(ECON.PICK_REACH_PCT, ECON.ECON_WIN_PCT,
+    'Zeitmessung und Erfolgsschwelle MUESSEN dieselbe Zahl sein — zwei Schwellen waeren genau der behobene Fehler');
+  const M = new Function('wilsonLower', 'LEARN_HORIZON_MS', 'ECON_NET_EUR', 'ECON_MIN_REWARD_RISK', 'PICK_COST', src +
     '; return {PICK,PICK_COST,pickCfg,pickCosts,netEurAtMove,lossEurAtStop,requiredMovePct,' +
-    'wilsonUpper,pickOutcome,pickExpectancy,breakEvenHitRate,evidenceTier,pickTier,rankPicks,PICK_RANK};')(wl, 180 * 60_000);
+    'wilsonUpper,pickOutcome,pickExpectancy,breakEvenHitRate,evidenceTier,pickTier,rankPicks,PICK_RANK};')(wl, 180 * 60_000, ECON.ECON_NET_EUR, ECON.ECON_MIN_REWARD_RISK, ECON.PICK_COST);
+  // Beide Wege zur selben Zahl: die ausgeschriebene Konstante und die Funktion.
+  assert.ok(Math.abs(M.requiredMovePct(ECON.ECON_NET_EUR) - ECON.ECON_WIN_PCT) < 0.005,
+    'Die ausgeschriebene Konstante und requiredMovePct muessen uebereinstimmen');
 
   /* -- 1. Die Kostenrechnung selbst ---------------------------------------- */
   // 10.000 EUR, 2 x 11,50 EUR, 0,15 % Reibung = 23 + 15 = 38 EUR Fixkosten.
@@ -3579,8 +3592,10 @@ console.log('✓ FusionPulse v3.19.0 render-budget/sw-cache regressions: OK');
       `Top Picks duerfen keine Bewertungsgroesse setzen: "${verboten}"`);
 
   /* -- 9. reach_ts: die Zeitmessung darf nicht an der 5-%-Schwelle haengen -- */
-  assert.match(worker, /const PICK_REACH_PCT = 2\.0;/,
-    'Die Referenzschwelle fuer die Haltedauer muss fest und dokumentiert sein');
+  assert.match(worker, /const PICK_REACH_PCT = ECON_WIN_PCT;/,
+    'Die Haltedauer muss an DERSELBEN Schwelle gemessen werden wie der Erfolg');
+  assert.doesNotMatch(worker, /WIN_PCT: 5,/,
+    'Die hart gesetzte 5-%-Schwelle darf nirgends mehr steuern');
   assert.match(worker, /reach_ts=COALESCE\(reach_ts,\?\)/,
     'Der Aufloeser muss reach_ts mitschreiben');
   assert.match(worker, /ADD COLUMN reach_ts INTEGER/,
@@ -3588,3 +3603,152 @@ console.log('✓ FusionPulse v3.19.0 render-budget/sw-cache regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.20.0 top-picks/expectancy regressions: OK');
+
+/* ══════════════════════ v3.21.0 · Hitze, Urteil, Rastersuche ════════════════
+   Was diese Version hinzufuegt, ist nicht "noch eine Kennzahl", sondern eine
+   URSACHENTRENNUNG. Ein Situationstyp kann aus zwei gegensaetzlichen Gruenden
+   nichts einbringen:
+     A) er bewegt sich nicht weit genug -> anderer Kandidatenkreis noetig
+     B) er bewegt sich, schuettelt aber vorher heraus -> anderer Stop/Einstieg
+   Vorher waren beide als "Erwartungswert negativ" ununterscheidbar. Die Tests
+   unten pruefen, dass die Trennung wirklich traegt — mit Fixtures, die sich
+   NUR in diesem einen Punkt unterscheiden. */
+{
+  const worker = workerText;
+  const econSrc = worker.slice(worker.indexOf('const PICK_COST = {'),
+                               worker.indexOf('const LEGACY_WIN_PCT = 5;') + 26);
+  const core = worker.slice(worker.indexOf('const PICK = {'),
+    worker.indexOf('/* ---------------------------------------------------------------------------\n   v3.21.0 · DIE ZWEI FRAGEN'));
+  const diag = worker.slice(worker.indexOf('/* ---------------------------------------------------------------------------\n   v3.21.0 · DIE ZWEI FRAGEN'),
+    worker.indexOf('/* ---------------------------------------------------------------------------\n   Auswertung: Situationstypen'));
+  assert.ok(diag.length > 2000, 'Der Diagnoseblock muss auffindbar sein');
+  const wl = (w, n) => { if (n <= 0) return 0; const z = 1.96, p = w / n;
+    const d = 1 + z * z / n, c = p + z * z / (2 * n);
+    const m = z * Math.sqrt((p * (1 - p) + z * z / (4 * n)) / n);
+    return Math.max(0, (c - m) / d); };
+  const r1 = (x) => Math.round(x * 10) / 10, r2 = (x) => Math.round(x * 100) / 100;
+  const D = new Function('wilsonLower', 'LEARN_HORIZON_MS', 'r1', 'r2',
+    econSrc + core + diag +
+    ';return {PICK,GRID,pickCfg,pickOutcome,pickExpectancy,heatProfile,pickVerdict,optimizeGrid,quantile,netEurAtMove,lossEurAtStop,ECON_WIN_PCT};'
+  )(wl, 180 * 60_000, r1, r2);
+
+  const cfg = D.pickCfg(), TARGET = D.ECON_WIN_PCT, MAXSTOP = TARGET / 2;
+  const t0 = 1_700_000_000_000, H = 3_600_000;
+
+  /* -- 1. mae_pre MUSS die Entscheidung erreichen -------------------------- */
+  // Derselbe Gewinner, einmal mit gemessener Vor-Hitze, einmal ohne.
+  // min_pct enthaelt auch den Absturz NACH dem Ziel — er darf nicht zaehlen.
+  const gewinnerMitRuecklauf = [{ symbol: 'X', ts: t0, max_pct: 3.0, min_pct: -5.0, mae_pre: -0.4 }];
+  assert.equal(D.pickOutcome(gewinnerMitRuecklauf, TARGET, -MAXSTOP).hit, 1,
+    'Ein Gewinner darf nicht am Rueckgang NACH dem Ziel scheitern — dafuer gibt es mae_pre');
+  assert.equal(D.pickOutcome(gewinnerMitRuecklauf, TARGET, -MAXSTOP, { strictHeat: true }).hit, 0,
+    'Mit strictHeat muss dieselbe Episode am Fensterminimum scheitern — sonst wirkt mae_pre gar nicht');
+  const ohneMessung = [{ symbol: 'X', ts: t0, max_pct: 3.0, min_pct: -5.0 }];
+  assert.equal(D.pickOutcome(ohneMessung, TARGET, -MAXSTOP).hit, 0,
+    'Fehlt mae_pre, muss auf die pessimistische Variante zurueckgefallen werden — fail-closed');
+  assert.equal(D.pickOutcome(gewinnerMitRuecklauf, TARGET, -MAXSTOP).heatMeasuredN, 1,
+    'Der Anteil gemessener Gegenbewegung muss ausgewiesen werden');
+
+  /* -- 2. Die Ursachentrennung ---------------------------------------------- */
+  // Zwei Fixtures, die sich AUSSCHLIESSLICH in der Vor-Hitze unterscheiden.
+  const mk = (n, winEvery, mfe, heat, tag) => Array.from({ length: n }, (_, i) => {
+    const win = i % winEvery !== 0;
+    return { symbol: `${tag}${i}`, ts: t0 + i * H,
+      max_pct: win ? mfe : 0.5, min_pct: -(heat + 1), mae_pre: win ? -heat : -(heat + 1),
+      reach_ts: win ? t0 + i * H + 40 * 60_000 : null };
+  });
+  const traege  = mk(60, 1, 0.9, 0.4, 'T');          // bewegt sich nie weit genug
+  const laut    = mk(60, 3, 4.2, 1.9, 'L');          // bewegt sich, aber 1,9 % Hitze
+  const sauber  = mk(60, 3, 4.2, 0.5, 'S');          // gleiche Bewegung, 0,5 % Hitze
+
+  const urteil = (eps) => { const o = D.pickOutcome(eps, TARGET, -MAXSTOP);
+    const h = D.heatProfile(eps, TARGET);
+    return D.pickVerdict({ n: o.n, hit: o.hit, heat: h, targetPct: TARGET, maxStopPct: MAXSTOP, minSample: 20 }).verdict; };
+
+  assert.equal(urteil(traege), 'bewegt sich nicht weit genug',
+    'Ein Typ ohne ausreichende Bewegung muss als solcher benannt werden');
+  assert.equal(urteil(laut), 'zu verrauscht fuer diese Positionsgroesse',
+    'Ein Typ, der sich bewegt und herausschuettelt, ist ein ANDERES Problem — und muss anders heissen');
+  assert.equal(urteil(sauber), 'handelbar',
+    'Dieselbe Bewegung mit wenig Gegenbewegung muss handelbar sein');
+  // Der entscheidende Beweis: laut und sauber unterscheiden sich NUR in der Hitze.
+  assert.equal(D.pickOutcome(laut, TARGET, -MAXSTOP).n, D.pickOutcome(sauber, TARGET, -MAXSTOP).n);
+  assert.equal(D.heatProfile(laut, TARGET).winners, D.heatProfile(sauber, TARGET).winners,
+    'Beide Fixtures muessen gleich viele Zielberuehrungen haben — sonst misst der Vergleich etwas anderes');
+
+  /* -- 3. Der Stopabstand fuer 80 % der Gewinner --------------------------- */
+  const hLaut = D.heatProfile(laut, TARGET);
+  assert.equal(hLaut.heatSource, 'gemessen', 'Bei genug mae_pre-Werten muss "gemessen" ausgewiesen werden');
+  assert.ok(hLaut.stopFor80 > MAXSTOP,
+    `Die noetige Luft (${hLaut.stopFor80} %) muss ueber dem erlaubten Stop (${r2(MAXSTOP)} %) liegen — das IST die Aussage`);
+  assert.equal(D.heatProfile(ohneMessung.concat(ohneMessung), 2.0).heatSource, 'Obergrenze',
+    'Ohne gemessene Werte muss die Herkunft als Obergrenze gekennzeichnet sein');
+
+  /* -- 4. Rastersuche: findet sie das bessere Paar? ------------------------ */
+  // Bewegung bis 3,4 % bei 0,6 % Hitze. Das Kostenmodell-Paar (2,04/1,02) ist
+  // zulaessig, aber nicht optimal — ein weiteres Ziel bringt mehr.
+  const gut = Array.from({ length: 240 }, (_, i) => {
+    const win = i % 5 < 3;
+    return { symbol: `G${i}`, ts: t0 + i * H, max_pct: win ? 3.4 : 0.4,
+      min_pct: -1.6, mae_pre: win ? -0.6 : -1.6, reach_ts: win ? t0 + i * H + 35 * 60_000 : null };
+  });
+  const g = D.optimizeGrid(gut, TARGET, cfg);
+  assert.ok(g.available, `Die Rastersuche muss bei 240 Episoden anlaufen: ${g.reason || ''}`);
+  assert.ok(g.gridPoints > 100, 'Der Suchraum muss mehr als hundert Paare umfassen');
+  assert.ok(g.targetPct > TARGET,
+    `Bei 3,4 % Bewegung muss ein weiteres Ziel als ${r2(TARGET)} % gefunden werden, war ${g.targetPct} %`);
+  assert.ok(Math.abs(g.stopPct) <= g.targetPct / 2 + 1e-9,
+    'Das gefundene Paar muss das Ziel-Stop-Verhaeltnis einhalten');
+  const fix = D.pickExpectancy(D.pickOutcome(gut, TARGET, -MAXSTOP), TARGET, -MAXSTOP, cfg);
+  assert.ok(g.evOos > fix.evEur,
+    `Das gesuchte Paar muss besser sein als das Kostenmodell-Paar (${g.evOos} vs ${fix.evEur})`);
+  assert.ok(!g.overfit, `Ein sauberer, gleichverteilter Datensatz darf nicht als ueberangepasst gelten: ${g.note}`);
+
+  /* -- 5. Die Ueberanpassungs-Bremse muss WIRKLICH bremsen ----------------- */
+  // Datensatz mit Bruch: die erste Haelfte laeuft, die zweite nicht.
+  const bruch = Array.from({ length: 240 }, (_, i) => {
+    const win = i < 168 ? i % 5 < 4 : i % 20 === 0;
+    return { symbol: `B${i}`, ts: t0 + i * H, max_pct: win ? 3.6 : 0.3,
+      min_pct: -1.6, mae_pre: win ? -0.5 : -1.6, reach_ts: win ? t0 + i * H + 30 * 60_000 : null };
+  });
+  const gb = D.optimizeGrid(bruch, TARGET, cfg);
+  assert.ok(gb.available, 'Auch der Bruch-Datensatz muss ausgewertet werden');
+  assert.ok(gb.overfit,
+    `Ein Datensatz, dessen zweite Haelfte nicht mehr laeuft, MUSS als ueberangepasst auffallen (Abstand ${gb.drop} EUR, Grenze ${gb.overfitLimit} EUR)`);
+
+  /* -- 6. Vergleich nur bei GLEICHER Rechenart ----------------------------- */
+  // Der Fehler meines ersten Entwurfs: Punktschaetzung im Suchteil gegen
+  // Wilson-Untergrenze im Nachweisteil. Dann sieht alles ueberangepasst aus.
+  assert.ok(typeof g.evOosPoint === 'number',
+    'Fuer den Ueberanpassungsvergleich muss ein Punktwert des Nachweisteils vorliegen');
+  assert.equal(g.drop, Math.round(g.evIn - g.evOosPoint),
+    'Der Abstand MUSS aus zwei Punktschaetzungen gebildet werden, nicht aus verschiedenen Schaetzarten');
+  assert.ok(g.evOos <= g.evOosPoint,
+    'Die vorsichtige Schaetzung darf nie ueber der Punktschaetzung liegen');
+
+  /* -- 7. Die Rauschgrenze muss mit der Stichprobe atmen ------------------- */
+  assert.ok(g.overfitLimit >= D.GRID.OVERFIT_DROP_EUR,
+    'Die feste Untergrenze muss erhalten bleiben');
+  assert.ok(g.seEur > 0, 'Der Standardfehler des Nachweisteils muss beziffert werden');
+  assert.match(worker, /1\.5 \* seEur/,
+    'Die Ueberanpassungsgrenze muss am Stichprobenrauschen haengen, nicht an einer festen Zahl');
+
+  /* -- 8. Rundung vor der Auswertung --------------------------------------- */
+  // Sonst sucht das Raster mit 1,7999999 und prueft mit 1,80 — genau an der
+  // Grenze kippt das Ergebnis. Der Fehler war real und hat einen tragfaehigen
+  // Fall faelschlich als ueberangepasst ausgewiesen.
+  assert.match(worker, /const tR = r2\(t\), stR = r2\(st\);/,
+    'Ziel und Stop muessen VOR der Auswertung gerundet werden');
+  assert.equal(g.targetPct, r2(g.targetPct), 'Das Ziel muss auf zwei Stellen gerundet sein');
+  assert.equal(g.stopPct, r2(g.stopPct), 'Der Stop muss auf zwei Stellen gerundet sein');
+
+  /* -- 9. Ein ueberangepasstes Paar darf nicht ranken ---------------------- */
+  const mod = worker.slice(worker.indexOf('async function topPicks('),
+    worker.indexOf('/* ============================================================================\n   v3.17.0 · MUSTERLABOR'));
+  assert.match(mod, /evBest: grid\.available && !grid\.overfit \? grid\.evOos : null/,
+    'Nur ein im Nachweisteil bestaetigtes Paar darf in die Rangfolge eingehen');
+  assert.match(mod, /const useGrid = evGrid != null && \(evFix == null \|\| evGrid > evFix\)/,
+    'Genommen werden muss der bessere der beiden Plaene, nicht blind der gesuchte');
+}
+
+console.log('✓ FusionPulse v3.21.0 heat/verdict/grid regressions: OK');

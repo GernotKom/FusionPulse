@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.20.0 — Frontend
+   FusionPulse v3.21.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -3987,25 +3987,34 @@ function renderTopPicks(){
   /* Der Befund selbst, sichtbar statt behauptet. */
   const legacy=`<small class="pick-note" title="Jede Lernstatistik dieser App hat Erfolg bisher bei +${d.legacyWinPct} % gemessen — im 180-Minuten-Horizont. Deine wirtschaftliche Schwelle liegt bei ${num(d.targetPct,2)} %. Ein Setup, das zuverlässig ${num(d.targetPct,2)} % liefert, galt damit überall als Misserfolg. Diese Kachel misst an deiner Schwelle.">Alte Lernschwelle +${d.legacyWinPct} % · deine wirtschaftliche Schwelle ${num(d.targetPct,2)} %</small>`;
 
+  const VERDICT_ICON={'handelbar':'✅','zu verrauscht fuer diese Positionsgroesse':'🌊',
+    'bewegt sich nicht weit genug':'💤','keine sauberen Treffer':'⚠️','zu wenige Faelle':'…'};
   const sit=(d.situations||[]).slice(0,8).map(s=>{
     const cls=s.tier==='unbelegt'?'pick-thin':(s.evEur>0?'pick-pos':'pick-neg');
     return `<div class="pick-sit ${cls}" title="${esc(`${s.situation}: ${s.n} unabhängige Episoden über ${s.symbols} verschiedene Titel. ${s.hit} erreichten ${num(d.targetPct,2)} %, ohne vorher den Stop zu reißen. ${s.stopped} wurden ausgestoppt, davon ${s.ambiguous} mehrdeutig (Reihenfolge ist nicht aufgezeichnet — diese zählen vorsichtshalber als Stop). An der alten +${d.legacyWinPct}-%-Schwelle wären es nur ${s.legacyHit} Treffer gewesen.`)}">`
       +`<b>${esc(s.situation)}</b>`
       +`<span class="pick-ev ${s.evEur>0?'good':'bad'}">${s.evEur==null?'–':(s.evEur>0?'+':'')+eur(s.evEur,0)}</span>`
+      +`<span class="pick-verdict">${VERDICT_ICON[s.verdict]||''} ${esc(s.verdict||'')}</span>`
       +`<span>${s.pHit==null?'n.v.':s.pHit+' % vorsichtig · '+s.pointHit+' % roh'}</span>`
+      /* Die Hitze ist die eigentliche Neuigkeit: sie trennt "bewegt sich nicht"
+         von "bewegt sich, schuettelt aber heraus". */
+      +`<span title="Wie viel Gegenbewegung mussten die Gewinner aushalten, BEVOR das Ziel kam? Der zweite Wert ist der Stopabstand, der 80 % von ihnen im Trade gehalten hätte. Liegt er über deinem erlaubten Stop, ist die Bewegung zwar da, mit ${eur(d.cost?.notionalEur??10000,0)} fix aber nicht greifbar.">${s.heatMedian==null?'Gegenbewegung n.v.':'Luft nötig '+num(s.stopFor80,2)+' % (median '+num(s.heatMedian,2)+' %)'}${s.heatSource==='Obergrenze'?' ·  Obergrenze':''}</span>`
       +`<span>${s.n} Episoden · ${esc(PICK_TIER_LABEL[s.tier]||s.tier)}</span>`
+      +(s.grid?.available?`<span class="pick-plan" title="${esc(s.grid.note||'')} ${esc(s.grid.heatNote||'')}">Bestes Paar: Ziel ${num(s.grid.targetPct,2)} % / Stop ${num(s.grid.stopPct,2)} %${s.grid.overfit?' — nur im Suchteil gut, nicht verwendet':' · bestätigt'}</span>`:'')
       +`<em>${s.medianMinutes!=null?'typisch '+s.medianMinutes+' Min bis Ziel':'Haltedauer noch nicht messbar'}</em>`
       +`</div>`;
   }).join('');
 
   const picks=(d.picks||[]).slice(0,10).map(p=>
     `<button type="button" class="opcard pick-card rank-${esc(p.rank)}" data-openstock="${esc(p.symbol)}" `
-    +`title="${esc(`${p.symbol} · ${p.situation}. ${PICK_RANK_LABEL[p.rank]||''}. ${p.n?`${p.n} vergleichbare Episoden aufgezeichnet.`:'Für diesen Situationstyp liegen noch zu wenige abgeschlossene Fälle vor — der Kandidat wird deshalb NICHT nach oben gereiht.'} Klick öffnet ihn im Fokusfenster. Kein Kaufsignal.`)}">`
+    +`title="${esc(`${p.symbol} · ${p.situation}. ${PICK_RANK_LABEL[p.rank]||''}. ${p.why||''} ${p.plan?`Plan aus der Auswertung: Ziel ${p.plan.targetPct} %, Stop ${p.plan.stopPct} % (${p.plan.source}).`:''} ${p.n?`${p.n} vergleichbare Episoden aufgezeichnet.`:'Für diesen Situationstyp liegen noch zu wenige abgeschlossene Fälle vor — der Kandidat wird deshalb NICHT nach oben gereiht.'} Klick öffnet ihn im Fokusfenster. Kein Kaufsignal.`)}">`
     +`<b>${esc(p.symbol)}${isFavStock(p.symbol)?' ★':''}</b>`
     +`<span class="situation-tag">${esc(p.situation)}</span>`
     +`<span class="pick-ev ${p.evEur==null?'':(p.evEur>0?'good':'bad')}">${p.evEur==null?'kein Beleg':(p.evEur>0?'+':'')+eur(p.evEur,0)+' erwartet'}</span>`
     +`<span>${p.movePct!=null?(Number(p.movePct)>=0?'+':'')+num(p.movePct,1)+' % Tag':'Bewegung n.v.'}</span>`
-    +`<em>${esc(PICK_RANK_LABEL[p.rank]||'')}</em></button>`).join('');
+    /* Der konkrete Plan ist der Punkt: eine Zahl ohne Ziel und Stop ist nicht handelbar. */
+    +(p.plan&&p.evEur!=null?`<span class="pick-plan">Ziel ${num(p.plan.targetPct,2)} % · Stop ${num(p.plan.stopPct,2)} %${p.medianMinutes!=null?' · ~'+p.medianMinutes+' Min':''}</span>`:'')
+    +`<em>${esc(p.verdict&&p.verdict!=='handelbar'?p.verdict:(PICK_RANK_LABEL[p.rank]||''))}</em></button>`).join('');
 
   const body=(sit?`<div class="pick-sitgrid">${sit}</div>`:'')
     +(picks?`<div class="opgrid">${picks}</div>`

@@ -2459,12 +2459,35 @@ async function crowdPulse(env,symbols,force=false){
    Gespeichert werden echte Markt-Snapshots und nachfolgend beobachtete
    Outcomes. Browser-/PWA-Speicher ist damit nicht mehr die einzige Quelle.
    ======================================================================== */
-/* v3.20.0 · FESTE Referenzschwelle fuer reach_ts. Bewusst NICHT an die
-   Nutzereinstellung gekoppelt: sie muss ueber Monate vergleichbar bleiben.
-   2,0 % ist die aus den Kostenkonstanten abgeleitete Naehe zur 120-EUR-Marke
-   (siehe requiredMovePct). Die Auswertung kann jede andere Zielweite rechnen,
-   nur die Zeitmessung haengt an dieser einen Zahl. */
-const PICK_REACH_PCT = 2.0;
+/* ============================================================================
+   v3.21.0 · DIE WIRTSCHAFTLICHE SCHWELLE IST JETZT DIE EINZIGE WAHRHEIT
+   ----------------------------------------------------------------------------
+   Bis v3.20.0 stand an vier Stellen die Zahl 5: ATTR.WIN_PCT, d1TwinFor,
+   patternLab und der Aufloeser. Sie war nie hergeleitet. Die Schwelle, die
+   zaehlt, folgt aus den Handelskosten des Nutzers und wird deshalb ab hier
+   GERECHNET, nicht gesetzt. Aendert sich eine Kostenkonstante, wandert die
+   Schwelle mit — und mit ihr jede Statistik der App.
+
+   Absichtlich ohne Funktionsaufruf ausgeschrieben: diese Konstanten werden beim
+   Laden des Moduls ausgewertet, `pickCfg` und `requiredMovePct` stehen erst
+   weiter unten. Ein Test prueft, dass beide Wege dieselbe Zahl ergeben.
+   ========================================================================== */
+const PICK_COST = { notionalEur: 10000, orderFeeEur: 11.5, frictionPct: 0.15, taxPct: 27.5 };
+const ECON_NET_EUR = 120;                       // Zielgroesse aus Handover Abschnitt 4
+const ECON_FIX_EUR = PICK_COST.orderFeeEur * 2 + PICK_COST.notionalEur * (PICK_COST.frictionPct / 100);
+/** Zielweite, ab der ein Trade ECON_NET_EUR netto uebrig laesst: 2,04 %. */
+const ECON_WIN_PCT = Math.round(((ECON_NET_EUR / (1 - PICK_COST.taxPct / 100) + ECON_FIX_EUR)
+  / PICK_COST.notionalEur * 100) * 100) / 100;
+/** Weiter darf der Stop nicht weg sein. Gewinne werden versteuert, Verluste
+ *  tragen die vollen Gebuehren — bei 1:1 braeuchte es ueber 66 % Trefferquote. */
+const ECON_MIN_REWARD_RISK = 2.0;
+const ECON_STOP_PCT = -Math.round(ECON_WIN_PCT / ECON_MIN_REWARD_RISK * 100) / 100;
+/** Zeitstempel-Referenz. Identisch mit der wirtschaftlichen Schwelle: eine
+ *  zweite, abweichende Zahl waere genau der Fehler, der hier behoben wird. */
+const PICK_REACH_PCT = ECON_WIN_PCT;
+/** Die alte Zahl bleibt NUR als Vergleichsgroesse in der Anzeige erhalten,
+ *  damit der Unterschied sichtbar ist statt behauptet. Sie steuert nichts. */
+const LEGACY_WIN_PCT = 5;
 const LEARN_HORIZON_MS = 180 * 60_000;
 const LEARN_HISTORY_MS = 120 * 60_000;
 const LEARN_SIGNAL_LABELS = ['attention','crowd','sector','rvol','vacuum','elliott','momentum','technical'];
@@ -2474,7 +2497,7 @@ let learnMemo={ts:0,key:'',data:null};
 async function ensureD1Schema(env){
   if(!env.DB||d1SchemaReady)return !!env.DB;
   const ddl=[
-    `CREATE TABLE IF NOT EXISTS market_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT,ts INTEGER NOT NULL,bucket5 INTEGER NOT NULL,source TEXT NOT NULL,asset_type TEXT NOT NULL,symbol TEXT NOT NULL,sector TEXT,phase TEXT,price REAL NOT NULL,score REAL,crv REAL,rvol REAL,ret15 REAL,ret60 REAL,atr_pct REAL,liquidity_vacuum REAL,sector_lag REAL,crowd_score REAL,structure_pct REAL,executability REAL,light TEXT,max_pct REAL NOT NULL DEFAULT 0,min_pct REAL NOT NULL DEFAULT 0,success_ts INTEGER,reach_ts INTEGER,resolved_ts INTEGER,payload TEXT,UNIQUE(source,asset_type,symbol,bucket5))`,
+    `CREATE TABLE IF NOT EXISTS market_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT,ts INTEGER NOT NULL,bucket5 INTEGER NOT NULL,source TEXT NOT NULL,asset_type TEXT NOT NULL,symbol TEXT NOT NULL,sector TEXT,phase TEXT,price REAL NOT NULL,score REAL,crv REAL,rvol REAL,ret15 REAL,ret60 REAL,atr_pct REAL,liquidity_vacuum REAL,sector_lag REAL,crowd_score REAL,structure_pct REAL,executability REAL,light TEXT,max_pct REAL NOT NULL DEFAULT 0,min_pct REAL NOT NULL DEFAULT 0,success_ts INTEGER,reach_ts INTEGER,mae_pre REAL,resolved_ts INTEGER,payload TEXT,UNIQUE(source,asset_type,symbol,bucket5))`,
     `CREATE INDEX IF NOT EXISTS idx_snap_symbol_ts ON market_snapshots(symbol, ts DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_snap_unresolved ON market_snapshots(resolved_ts, ts)`,
     `CREATE INDEX IF NOT EXISTS idx_snap_sector_resolved ON market_snapshots(sector, resolved_ts, ts DESC)`,
@@ -2493,6 +2516,16 @@ async function ensureD1Schema(env){
      180-Minuten-Horizont erreichen das die wenigsten. Rueckwirkend laesst sich
      das NICHT ergaenzen; die Spalte fuellt sich ab jetzt. */
   if(!cols.some(c=>String(c.name)==='reach_ts')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN reach_ts INTEGER').run();
+  /* v3.21.0 · DIE MESSUNG, DIE GEFEHLT HAT.
+     `min_pct` ist das Minimum ueber das GANZE Fenster — auch nach dem Ziel.
+     Fuer die entscheidende Frage "welchen Stop haette ich gebraucht, um diesen
+     Gewinner zu BEHALTEN" ist das unbrauchbar: ein Titel, der +3 % lief und
+     danach -5 % fiel, sieht dort aus wie ein Katastrophentrade.
+     `mae_pre` friert die schlimmste Gegenbewegung VOR dem Erreichen der
+     wirtschaftlichen Schwelle ein. Erst damit laesst sich trennen, ob ein Setup
+     sich nicht weit genug bewegt oder ob es sich bewegt und einen nur vorher
+     herausschuettelt. Das sind zwei voellig verschiedene Probleme. */
+  if(!cols.some(c=>String(c.name)==='mae_pre')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN mae_pre REAL').run();
   d1SchemaReady=true;return true;
 }
 const dbNum = (x) => Number.isFinite(Number(x)) ? Number(x) : null;
@@ -2549,7 +2582,7 @@ async function d1StoreCrowd(env, rows){
 async function d1UpdateOutcomes(env, symbol, price, now=Date.now(), assetType='stock', source='server'){
   if(!env.DB || !(price>0) || !symbol) return;
   const rows=(await env.DB.prepare(
-    `SELECT id,ts,price,max_pct,min_pct,success_ts,reach_ts FROM market_snapshots
+    `SELECT id,ts,price,max_pct,min_pct,success_ts,reach_ts,mae_pre FROM market_snapshots
      WHERE symbol=? AND asset_type=? AND source=? AND resolved_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 500`
   ).bind(symbol, assetType, source, now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
   if(!rows.length) return;
@@ -2559,9 +2592,23 @@ async function d1UpdateOutcomes(env, symbol, price, now=Date.now(), assetType='s
     const mx=Math.max(Number(x.max_pct)||0,pct), mn=Math.min(Number(x.min_pct)||0,pct);
     const successTs=x.success_ts || (mx>=5 ? now : null);
     const reachTs=x.reach_ts || (mx>=PICK_REACH_PCT ? now : null);
+    /* MAE-vor-MFE: die schlimmste Gegenbewegung, die man aushalten musste, BEVOR
+       der bisherige Hoechststand erreicht war. Wird immer dann neu festgehalten,
+       wenn ein neuer Hoechststand entsteht.
+       Warum nicht "bis zur 2-%-Marke einfrieren" (so stand es im ersten Entwurf):
+       dann waere die Zahl nur fuer Ziele bis 2 % gueltig gewesen und jedes
+       groessere Ziel haette auf `min_pct` zurueckfallen muessen — also auf einen
+       Wert, der auch den Rueckgang NACH dem Ausstieg enthaelt. Ein Setup, das
+       1,8 % Luft braucht und dafuer 4,2 % liefert, waere so faelschlich als
+       unhandelbar ausgewiesen worden.
+       So gemessen gilt: um `max_pct` zu erreichen, musste man `mae_pre`
+       aushalten. Fuer jedes KLEINERE Ziel ist das eine Obergrenze — also die
+       vorsichtige Richtung. */
+    const setsNewMax = pct > (Number(x.max_pct) || 0);
+    const maePre = setsNewMax ? mn : (Number.isFinite(Number(x.mae_pre)) ? Number(x.mae_pre) : mn);
     const resolved=(now-Number(x.ts)>=LEARN_HORIZON_MS) ? now : null;
-    stmts.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),reach_ts=COALESCE(reach_ts,?),resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
-      .bind(mx,mn,successTs,reachTs,resolved,x.id));
+    stmts.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),reach_ts=COALESCE(reach_ts,?),mae_pre=?,resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
+      .bind(mx,mn,successTs,reachTs,maePre,resolved,x.id));
   }
   if(stmts.length) await env.DB.batch(stmts);
 }
@@ -2643,7 +2690,7 @@ async function d1StoreRows(env, rows, opts={}){
   const placeholders=symbols.map(()=>'?').join(',');
 
   // Outcomes in EINER Abfrage laden und anschließend gebündelt aktualisieren.
-  const unresolved=(await env.DB.prepare(`SELECT id,symbol,ts,price,max_pct,min_pct,success_ts,reach_ts FROM market_snapshots
+  const unresolved=(await env.DB.prepare(`SELECT id,symbol,ts,price,max_pct,min_pct,success_ts,reach_ts,mae_pre FROM market_snapshots
     WHERE symbol IN (${placeholders}) AND asset_type=? AND source=? AND resolved_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 3000`)
     .bind(...symbols,assetType,source,now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
   const pxBySym=new Map(clean.map(x=>[x.symbol,x.price])), updates=[];
@@ -2652,8 +2699,10 @@ async function d1StoreRows(env, rows, opts={}){
     const pct=(price/Number(x.price)-1)*100, mx=Math.max(Number(x.max_pct)||0,pct), mn=Math.min(Number(x.min_pct)||0,pct);
     const successTs=x.success_ts || (mx>=5?now:null), resolved=(now-Number(x.ts)>=LEARN_HORIZON_MS)?now:null;
     const reachTs=x.reach_ts || (mx>=PICK_REACH_PCT ? now : null);
-    updates.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),reach_ts=COALESCE(reach_ts,?),resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
-      .bind(mx,mn,successTs,reachTs,resolved,x.id));
+    const setsNewMax = pct > (Number(x.max_pct) || 0);   // MAE-vor-MFE, siehe d1UpdateOutcomes
+    const maePre = setsNewMax ? mn : (Number.isFinite(Number(x.mae_pre)) ? Number(x.mae_pre) : mn);
+    updates.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),reach_ts=COALESCE(reach_ts,?),mae_pre=?,resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
+      .bind(mx,mn,successTs,reachTs,maePre,resolved,x.id));
   }
   if(updates.length) await d1BatchChunks(env,updates);
 
@@ -2725,8 +2774,8 @@ async function d1TwinFor(env, symbol){
   const vals=twins.map(x=>Number(x.max_pct)||0).sort((a,b)=>a-b);
   // Distance-weighted outcome: close historical analogues count more than marginal ones.
   let winW=0,totalW=0;
-  for(const x of twins){const w=1/Math.pow(1+Math.max(0,Number(x.d)||0),2);totalW+=w;if(Number(x.max_pct)>=5)winW+=w;}
-  return {n:twins.length,available,distinctSymbols,edge:totalW?Math.round(winW/totalW*100):0,stops:twins.filter(x=>Number(x.min_pct)<=-1.5).length,median:r1(vals[Math.floor(vals.length/2)]||0),source:'d1',independent:true};
+  for(const x of twins){const w=1/Math.pow(1+Math.max(0,Number(x.d)||0),2);totalW+=w;if(Number(x.max_pct)>=ECON_WIN_PCT)winW+=w;}
+  return {n:twins.length,available,distinctSymbols,edge:totalW?Math.round(winW/totalW*100):0,stops:twins.filter(x=>Number(x.min_pct)<=ECON_STOP_PCT).length,median:r1(vals[Math.floor(vals.length/2)]||0),source:'d1',independent:true};
 }
 async function d1LeadModel(env, symbol){
   if(!env.DB)return {n:0};
@@ -2792,8 +2841,11 @@ const ATTR = {
   OOS_CONFIDENT: 15,     // erst ab so vielen OOS-Episoden ist "disable" erlaubt;
                          //   darunter nur "beobachten", weil die Wilson-Untergrenze
                          //   bei kleinem n selbst echte Gewinner erschlagen wuerde.
-  WIN_PCT: 5,            // max_pct >= 5 % zaehlt als Treffer (wie bestehende Logik)
-  STOP_PCT: -1.5,        // min_pct <= -1,5 % zaehlt als ausgestoppt
+  /* v3.21.0: war hart auf 5 / -1,5. Beide Zahlen waren nie hergeleitet und
+     haben jede Auswertung dieser App an der Sache vorbeimessen lassen — ein
+     Setup mit zuverlaessigen +2,5 % galt als Misserfolg. Jetzt gerechnet. */
+  WIN_PCT: ECON_WIN_PCT,
+  STOP_PCT: ECON_STOP_PCT,
   DISABLE_POINT: 40,     // OOS-Punktschaetzung < 40 % UND
   DISABLE_WILSON: 33,    //   Wilson-Untergrenze < 33 % -> erst dann Abschalt-Empfehlung.
                          //   Zwei Kriterien verhindern, dass Stichprobenrauschen allein
@@ -2888,7 +2940,7 @@ function bucketStats(episodes){
 const PICK = {
   MIN_EVIDENCE: 20,     // ab hier "belegt"
   THIN_EVIDENCE: 6,     // darunter "unbelegt"
-  DEFAULT_NET_EUR: 120, // Zielgroesse netto, aus Abschnitt 4 des Handovers
+  DEFAULT_NET_EUR: ECON_NET_EUR,
   /* v3.20.0 · ZWEITER BEFUND, gerechnet statt vermutet.
      Die Stopweite darf NICHT frei gewaehlt werden. Bei 10.000 EUR, 38 EUR
      Fixkosten und 27,5 % KESt gilt fuer ein 120-EUR-Ziel (= 2,035 % Zielweite):
@@ -2902,11 +2954,10 @@ const PICK = {
      Haelfte der Frage "warum kommt nichts Gewinntraechtiges heraus".
      MIN_REWARD_RISK steht seit v3.9.0 im Client auf 2,0; hier wird die Stopweite
      daraus ABGELEITET statt geraten. */
-  MIN_REWARD_RISK: 2.0,
+  MIN_REWARD_RISK: ECON_MIN_REWARD_RISK,
   WINDOW_MS: 21 * 24 * 60 * 60_000,
   ROW_LIMIT: 8000,
 };
-const PICK_COST = { notionalEur: 10000, orderFeeEur: 11.5, frictionPct: 0.15, taxPct: 27.5 };
 
 const pickCfg = (cfg) => ({ ...PICK_COST, ...(cfg || {}) });
 /** Fixkosten eines vollstaendigen Trades: zwei Orders plus Ausfuehrungsreibung. */
@@ -2944,14 +2995,27 @@ function wilsonUpper(hits, n) {
 
 /** Auszaehlung einer Episodengruppe gegen Ziel- und Stopweite.
  *  Beruehrt eine Episode beides, gilt sie als ausgestoppt (Regel 1). */
-function pickOutcome(episodes, targetPct, stopPct) {
+function pickOutcome(episodes, targetPct, stopPct, opts = {}) {
   const eps = (episodes || []).filter((e) =>
     Number.isFinite(Number(e.max_pct)) && Number.isFinite(Number(e.min_pct)));
   const n = eps.length;
-  let hit = 0, stopped = 0, ambiguous = 0;
+  let hit = 0, stopped = 0, ambiguous = 0, measured = 0;
   const minutes = [];
   for (const e of eps) {
-    const mx = Number(e.max_pct), mn = Number(e.min_pct);
+    const mx = Number(e.max_pct);
+    /* v3.21.0 · WELCHE Gegenbewegung zaehlt.
+       `min_pct` ist das Minimum ueber das GANZE Fenster, auch NACH dem Ziel.
+       Wer damit prueft, ob ein Stop gerissen haette, bestraft Gewinner fuer
+       einen Rueckgang, den sie gar nicht mehr miterlebt haben — der Trade war
+       da schon zu. `mae_pre` ist die Gegenbewegung VOR dem Ziel und damit die
+       einzige Zahl, die die Frage beantwortet.
+       Fehlt sie (alte Zeilen), wird auf die pessimistische Variante
+       zurueckgefallen. Fail-closed: fehlende Daten machen es nie besser.
+       `strictHeat` erzwingt die pessimistische Variante fuer Gegenproben. */
+    const pre = Number(e.mae_pre);
+    const usePre = !opts.strictHeat && Number.isFinite(pre);
+    if (usePre) measured++;
+    const mn = usePre ? pre : Number(e.min_pct);
     const reached = mx >= targetPct, breached = mn <= stopPct;
     if (breached) { stopped++; if (reached) ambiguous++; }
     else if (reached) {
@@ -2963,6 +3027,7 @@ function pickOutcome(episodes, targetPct, stopPct) {
   minutes.sort((a, b) => a - b);
   return {
     n, hit, stopped, ambiguous, flat: n - hit - stopped,
+    heatMeasuredN: measured, heatStrict: !!opts.strictHeat,
     medianMinutes: minutes.length ? Math.round(minutes[Math.floor(minutes.length / 2)]) : null,
     minutesN: minutes.length,
   };
@@ -3017,6 +3082,143 @@ function rankPicks(picks) {
 }
 
 /* ---------------------------------------------------------------------------
+   v3.21.0 · DIE ZWEI FRAGEN AUSEINANDERHALTEN
+   Ein Situationstyp kann aus zwei voellig verschiedenen Gruenden nichts
+   einbringen, und die Konsequenzen sind gegensaetzlich:
+
+     A) Er bewegt sich nicht weit genug  -> anderer Kandidatenkreis noetig
+     B) Er bewegt sich, schuettelt aber vorher heraus -> anderer Stop/Einstieg
+
+   Bis hierher waren beide Faelle als \"Erwartungswert negativ\" ununterscheidbar.
+   `mae_pre` trennt sie: es misst die Gegenbewegung VOR dem Ziel.
+   ------------------------------------------------------------------------- */
+const quantile = (sorted, q) => sorted.length
+  ? sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(q * (sorted.length - 1))))] : null;
+
+/** Wie viel Gegenbewegung mussten die Gewinner aushalten? */
+function heatProfile(episodes, targetPct) {
+  const winners = (episodes || []).filter((e) => Number(e.max_pct) >= targetPct);
+  const measured = [], upper = [];
+  for (const e of winners) {
+    const pre = Number(e.mae_pre);
+    if (Number.isFinite(pre)) measured.push(Math.abs(pre));
+    else upper.push(Math.abs(Number(e.min_pct) || 0));
+  }
+  const use = measured.length >= 5 ? measured : [...measured, ...upper];
+  use.sort((a, b) => a - b);
+  return {
+    winners: winners.length,
+    heatSource: measured.length >= 5 ? 'gemessen' : (use.length ? 'Obergrenze' : 'keine'),
+    measuredN: measured.length,
+    heatMedian: use.length ? Math.round(quantile(use, 0.5) * 100) / 100 : null,
+    // Stopabstand, der 80 % der Gewinner im Trade gehalten haette.
+    stopFor80: use.length ? Math.round(quantile(use, 0.8) * 100) / 100 : null,
+  };
+}
+
+/** Zerlegt das Ergebnis in eine Ursache statt in eine Note. */
+function pickVerdict({ n, hit, heat, targetPct, maxStopPct, minSample }) {
+  if (n < minSample) return { verdict: 'zu wenige Faelle', why: `${n} von ${minSample} noetigen Episoden.` };
+  const reachRate = n ? hit / n : 0;
+  if (heat.winners / Math.max(1, n) < 0.15)
+    return { verdict: 'bewegt sich nicht weit genug',
+      why: `Nur ${heat.winners} von ${n} Episoden haben ${r2(targetPct)} % ueberhaupt beruehrt. Ein engerer Stop hilft hier nicht — der Kandidatenkreis ist der falsche.` };
+  if (heat.stopFor80 != null && heat.stopFor80 > maxStopPct)
+    return { verdict: 'zu verrauscht fuer diese Positionsgroesse',
+      why: `${heat.winners} Episoden haben das Ziel erreicht, brauchten dafuer aber ${r2(heat.stopFor80)} % Luft. Erlaubt sind bei ${r2(targetPct)} % Ziel nur ${r2(maxStopPct)} %. Diese Bewegung ist da, sie ist mit 10.000 EUR fix nur nicht greifbar.` };
+  if (reachRate <= 0)
+    return { verdict: 'keine sauberen Treffer', why: 'Jede Zielberuehrung ging mit einem Stopdurchbruch einher.' };
+  return { verdict: 'handelbar',
+    why: `${hit} von ${n} Episoden haben ${r2(targetPct)} % erreicht, ohne mehr als ${r2(maxStopPct)} % Luft zu brauchen.` };
+}
+
+/* ---------------------------------------------------------------------------
+   Rastersuche nach dem besten Ziel/Stop-Paar — MIT Ueberanpassungs-Bremse.
+   Optimiert wird auf dem AELTEREN Teil der Episoden, geurteilt auf dem
+   juengeren. Das beste Paar auf denselben Daten zu finden UND zu feiern, auf
+   denen es gesucht wurde, ist die haeufigste Selbsttaeuschung ueberhaupt.
+   Der Abstand zwischen beiden Werten wird ausgewiesen, nicht versteckt.
+   ------------------------------------------------------------------------- */
+const GRID = {
+  TARGET_MAX: 6.0, TARGET_STEP: 0.2,
+  STOP_MIN: 0.3, STOP_STEP: 0.1,
+  /* 12 statt 8: mit weniger Episoden im Nachweisteil ist die vorsichtige
+     Schaetzung so breit, dass sie auch echte Gewinner erschlaegt. Die
+     Rastersuche braucht damit rund 40 Episoden, bevor sie ueberhaupt anlaeuft. */
+  OOS_FRACTION: 0.3, OOS_MIN: 12,
+  OVERFIT_DROP_EUR: 40,
+};
+function optimizeGrid(episodes, minTargetPct, cfg) {
+  const eps = [...(episodes || [])].sort((a, b) => Number(a.ts) - Number(b.ts));
+  const splitAt = Math.max(1, Math.floor(eps.length * (1 - GRID.OOS_FRACTION)));
+  const inSample = eps.slice(0, splitAt), oos = eps.slice(splitAt);
+  if (oos.length < GRID.OOS_MIN)
+    return { available: false, reason: `Nur ${oos.length} Episoden im Nachweisteil, noetig sind ${GRID.OOS_MIN}.`, oosN: oos.length };
+
+  let best = null, points = 0;
+  for (let t = minTargetPct; t <= GRID.TARGET_MAX + 1e-9; t += GRID.TARGET_STEP) {
+    const stopCap = t / ECON_MIN_REWARD_RISK;
+    for (let st = GRID.STOP_MIN; st <= stopCap + 1e-9; st += GRID.STOP_STEP) {
+      points++;
+      /* Gerundet wird VOR der Auswertung, nicht danach. Sonst sucht das Raster
+         mit 1,7999999 und der Nachweisteil prueft mit 1,80 — und genau an der
+         Grenze, wo die Gegenbewegung den Stop beruehrt, kippt das Ergebnis.
+         Der Fehler war in meinem ersten Entwurf drin und hat einen tragfaehigen
+         Fall als ueberangepasst ausgewiesen. */
+      const tR = r2(t), stR = r2(st);
+      const o = pickOutcome(inSample, tR, -stR);
+      if (!o.hit) continue;
+      // In-Sample bewusst mit Punktschaetzung: hier wird GESUCHT, nicht geurteilt.
+      const ev = o.hit / o.n * netEurAtMove(tR, cfg)
+               - o.stopped / o.n * lossEurAtStop(-stR, cfg)
+               - o.flat / o.n * pickCosts(cfg);
+      if (!best || ev > best.evIn) best = { targetPct: tR, stopPct: -stR, evIn: Math.round(ev), inN: o.n, inHit: o.hit };
+    }
+  }
+  if (!best) return { available: false, reason: 'Kein Paar im Suchraum hat ueberhaupt einen Treffer erzeugt.', oosN: oos.length, gridPoints: points };
+
+  const oOut = pickOutcome(oos, best.targetPct, best.stopPct);
+  // Zwei Zahlen mit VERSCHIEDENEN Aufgaben:
+  //  - evOosPoint : gleiche Schaetzart wie im Suchteil. NUR damit laesst sich
+  //    Ueberanpassung erkennen. (Mein erster Entwurf verglich Punktschaetzung
+  //    gegen Wilson-Untergrenze — dabei sieht ALLES ueberangepasst aus, weil
+  //    der Unterschied aus der Schaetzart kommt und nicht aus den Daten.)
+  //  - eOut.evEur : vorsichtige Schaetzung. Nur die darf ranken und angezeigt
+  //    werden.
+  const evOosPoint = oOut.n
+    ? Math.round(oOut.hit / oOut.n * netEurAtMove(best.targetPct, cfg)
+               - oOut.stopped / oOut.n * lossEurAtStop(best.stopPct, cfg)
+               - oOut.flat / oOut.n * pickCosts(cfg))
+    : null;
+  const eOut = pickExpectancy(oOut, best.targetPct, best.stopPct, cfg);
+  const drop = best.evIn - (evOosPoint ?? 0);
+  /* Wie gross muss der Abstand sein, damit er nicht blosses Rauschen ist?
+     Eine feste Euro-Grenze war die falsche Antwort: bei zwoelf Episoden im
+     Nachweisteil schwankt der Punktwert allein durch die Stichprobe um weit
+     mehr als 40 EUR, und dann sieht JEDES Paar ueberangepasst aus.
+     Die Grenze waechst deshalb mit dem Stichprobenrauschen: erst ein Abstand
+     ueber 1,5 Standardfehlern gilt als Ueberanpassung. Die feste Zahl bleibt
+     als Untergrenze stehen, damit auch bei sehr grossen Stichproben nicht
+     jeder Zufallstreffer durchgeht. */
+  const pOos = oOut.n ? oOut.hit / oOut.n : 0;
+  const spread = netEurAtMove(best.targetPct, cfg) + lossEurAtStop(best.stopPct, cfg);
+  const seEur = Math.sqrt(Math.max(0.01, pOos * (1 - pOos)) / Math.max(1, oOut.n)) * spread;
+  const overfitLimit = Math.max(GRID.OVERFIT_DROP_EUR, 1.5 * seEur);
+  return {
+    available: true, gridPoints: points,
+    ...best, oosN: oos.length, oosHit: oOut.hit, evOos: eOut.evEur, evOosPoint,
+    pHitOos: eOut.pHit, medianMinutes: oOut.medianMinutes,
+    overfit: drop >= overfitLimit,
+    overfitLimit: Math.round(overfitLimit), seEur: Math.round(seEur),
+    heatNote: `Gegenbewegung gemessen als MAE-vor-MFE. Fuer Ziele unter dem Hoechststand ist das eine Obergrenze — die vorsichtige Richtung.`,
+    drop: Math.round(drop),
+    note: drop >= overfitLimit
+      ? `Suchteil ${best.evIn} EUR, Nachweisteil ${evOosPoint} EUR bei gleicher Rechenart — der Abstand von ${Math.round(drop)} EUR liegt ueber der Rauschgrenze von ${Math.round(overfitLimit)} EUR und spricht fuer Ueberanpassung. Das Paar wird angezeigt, aber nicht zum Ranken benutzt.`
+      : `Suchteil ${best.evIn} EUR, Nachweisteil ${evOosPoint} EUR bei gleicher Rechenart (${oOut.n} unabhaengige Episoden). Der Abstand von ${Math.round(drop)} EUR liegt unter der Rauschgrenze von ${Math.round(overfitLimit)} EUR. Vorsichtig gerechnet bleiben ${eOut.evEur} EUR.`,
+  };
+}
+
+/* ---------------------------------------------------------------------------
    Auswertung: Situationstypen gegen die wirtschaftliche Schwelle des Nutzers.
    EINE D1-Abfrage, danach nur noch Rechnen. Gruppiert wird nach Situationstyp,
    nicht je Symbol — ein einzelnes Symbol hat nie genug Episoden fuer eine
@@ -3038,7 +3240,7 @@ async function topPicks(env, opts = {}) {
     targetPct: r2(targetPct),
     winEur: Math.round(netEurAtMove(targetPct, cfg)),
     lossEur: Math.round(lossEurAtStop(stopPct, cfg)),
-    legacyWinPct: ATTR.WIN_PCT, reachRefPct: PICK_REACH_PCT,
+    legacyWinPct: LEGACY_WIN_PCT, reachRefPct: PICK_REACH_PCT,
     maxStopPct: r2(maxStopPct), minRewardRisk: PICK.MIN_REWARD_RISK,
     breakEvenHitPct: Math.round(breakEvenHitRate(targetPct, stopPct, cfg) * 100),
     minEvidence: PICK.MIN_EVIDENCE, thinEvidence: PICK.THIN_EVIDENCE,
@@ -3048,7 +3250,7 @@ async function topPicks(env, opts = {}) {
 
   const since = Date.now() - PICK.WINDOW_MS;
   const rows = (await env.DB.prepare(
-    `SELECT symbol,ts,bucket5,max_pct,min_pct,success_ts,reach_ts,score,payload
+    `SELECT symbol,ts,bucket5,max_pct,min_pct,success_ts,reach_ts,mae_pre,atr_pct,score,payload
        FROM market_snapshots
       WHERE resolved_ts IS NOT NULL AND asset_type='stock'
         AND source IN ('Twelve Data','Tiingo IEX') AND ts>=?
@@ -3070,16 +3272,24 @@ async function topPicks(env, opts = {}) {
   const situations = [...bySituation.entries()].map(([situation, eps]) => {
     const outcome = pickOutcome(eps, targetPct, stopPct);
     const exp = pickExpectancy(outcome, targetPct, stopPct, cfg);
+    const heat = heatProfile(eps, targetPct);
+    const diag = pickVerdict({ n: outcome.n, hit: outcome.hit, heat, targetPct,
+      maxStopPct, minSample: PICK.MIN_EVIDENCE });
+    const grid = outcome.n >= PICK.MIN_EVIDENCE ? optimizeGrid(eps, targetPct, cfg)
+      : { available: false, reason: 'zu wenige Episoden fuer eine Rastersuche' };
     // Gegenprobe an der alten 5-%-Schwelle. Sie steht bewusst DANEBEN, damit
     // der Unterschied sichtbar ist, statt behauptet werden zu muessen.
-    const legacy = pickOutcome(eps, ATTR.WIN_PCT, stopPct);
+    const legacy = pickOutcome(eps, LEGACY_WIN_PCT, stopPct);
     const tier = evidenceTier(outcome.n);
     return {
-      situation, tier, ...outcome, ...exp,
+      situation, tier, ...outcome, ...exp, ...heat, ...diag, grid,
+      /* Die Rangzahl ist der NACHWEIS-Wert, nicht der Suchwert. Ein Paar, das
+         nur im Suchteil gut aussah, darf die Liste nicht anfuehren. */
+      evBest: grid.available && !grid.overfit ? grid.evOos : null,
       legacyHit: legacy.hit, legacyPct: outcome.n ? Math.round(legacy.hit / outcome.n * 100) : null,
       symbols: new Set(eps.map((x) => String(x.symbol || '').toUpperCase())).size,
     };
-  }).sort((a, b) => (b.evEur ?? -1e9) - (a.evEur ?? -1e9));
+  }).sort((a, b) => (Math.max(b.evEur ?? -1e9, b.evBest ?? -1e9)) - (Math.max(a.evEur ?? -1e9, a.evBest ?? -1e9)));
 
   const evidence = new Map(situations.map((s) => [s.situation, s]));
 
@@ -3090,7 +3300,22 @@ async function topPicks(env, opts = {}) {
     const key = String(r.situation || 'WATCH').toUpperCase();
     const ev = evidence.get(key);
     const tier = ev ? ev.tier : 'unbelegt';
-    const evEur = ev && tier !== 'unbelegt' ? ev.evEur : null;
+    /* Wenn die Rastersuche ein Paar gefunden hat, das den Nachweisteil
+       ueberstanden hat, ist DAS die ehrlichere Zahl — sie beschreibt einen
+       Plan, den man wirklich handeln koennte. Ueberangepasste Paare zaehlen
+       ausdruecklich nicht mit (evBest ist dann null). */
+    /* Es gibt zwei moegliche Plaene: den aus dem Kostenmodell abgeleiteten und
+       den von der Rastersuche gefundenen. Genommen wird der BESSERE — aber der
+       gefundene nur, wenn er den Nachweisteil ueberstanden hat. Ein Plan, der
+       nur im Suchteil gut aussah, darf weder ranken noch angezeigt werden. */
+    const evFix = ev && tier !== 'unbelegt' ? ev.evEur : null;
+    const evGrid = ev && tier !== 'unbelegt' ? ev.evBest : null;
+    const useGrid = evGrid != null && (evFix == null || evGrid > evFix);
+    const evEur = useGrid ? evGrid : evFix;
+    const plan = useGrid
+      ? { targetPct: ev.grid.targetPct, stopPct: ev.grid.stopPct,
+          source: `Rastersuche über ${ev.grid.gridPoints} Ziel/Stop-Paare, im Nachweisteil über ${ev.grid.oosN} Episoden bestätigt` }
+      : { targetPct: r2(targetPct), stopPct: r2(stopPct), source: 'Kostenmodell' };
     return {
       symbol: String(r.symbol || '').toUpperCase(),
       situation: key, lifecycle: r.lifecycle || 'WATCH',
@@ -3099,7 +3324,9 @@ async function topPicks(env, opts = {}) {
       reasons: Array.isArray(r.reasons) ? r.reasons.slice(0, 3) : [],
       tier, evEur,
       n: ev?.n ?? 0, pHit: ev?.pHit ?? null, pStop: ev?.pStop ?? null,
-      medianMinutes: ev?.medianMinutes ?? null, ambiguous: ev?.ambiguous ?? 0,
+      medianMinutes: ev?.grid?.medianMinutes ?? ev?.medianMinutes ?? null, ambiguous: ev?.ambiguous ?? 0,
+      verdict: ev?.verdict ?? 'zu wenige Faelle', why: ev?.why ?? '', plan,
+      heatMedian: ev?.heatMedian ?? null, stopFor80: ev?.stopFor80 ?? null,
       rank: pickTier(tier, evEur),
       buyWeight: 0,
     };
@@ -3329,7 +3556,7 @@ async function patternLab(env){
     rowsScanned:rows.length, rowsCapped:rows.length>=PATTERN.ROW_LIMIT,
     resolvedRows:resolved.length, episodes:nTotal,
     counts:{up:groups.up.length,down:groups.down.length,flat:groups.flat.length},
-    minSample:ATTR.MIN_SAMPLE, winPct:ATTR.WIN_PCT, stopPct:ATTR.STOP_PCT,
+    minSample:ATTR.MIN_SAMPLE, winPct:ATTR.WIN_PCT, stopPct:ATTR.STOP_PCT, legacyWinPct:LEGACY_WIN_PCT,
     enoughOverall, features, offsets, path, calibration,
     situationCoverage:{withSituation,total:nTotal,
       note:'Die Situationstypen werden erst seit v3.17.0 mitgeschrieben. Aeltere Aufzeichnungen kennen sie nicht — das laesst sich nicht rueckwirkend ergaenzen.'},

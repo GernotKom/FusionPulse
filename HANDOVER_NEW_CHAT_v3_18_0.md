@@ -1163,3 +1163,88 @@ einzelnen. Für jeden Schutz einen Datensatz suchen, auf dem NUR er greift.
   deutlich über 60 Episoden liegt.
 - Kein Eingriff in Score, Ampel, Gate oder Freigabe. `buyWeight: 0`, und ein
   Test verbietet dem Modul, `light`, `crv`, `score` oder `buyReady` zu setzen.
+
+---
+
+## 8r. WAS v3.21.0 GEÄNDERT HAT — die Ursachentrennung
+
+**Zusammen mit 8q der wichtigste Teil der Lernschicht. Vor jeder Änderung daran
+lesen.**
+
+### Die 5 ist weg
+
+`ATTR.WIN_PCT` und `ATTR.STOP_PCT` werden nicht mehr gesetzt, sondern aus dem
+Kostenmodell gerechnet: `ECON_WIN_PCT = 2,04 %`, `ECON_STOP_PCT = −1,02 %`,
+`PICK_REACH_PCT = ECON_WIN_PCT`. Die alte Zahl lebt nur noch als
+`LEGACY_WIN_PCT` in der Anzeige weiter und steuert nichts.
+
+**Regel:** wer eine Kostenkonstante ändert, ändert damit jede Statistik der App.
+Das ist beabsichtigt. Ein Test prüft, dass die ausgeschriebene Konstante und
+`requiredMovePct()` dieselbe Zahl ergeben — beide Wege müssen übereinstimmen.
+
+### `mae_pre` — MAE vor MFE
+
+Neue Spalte (`migrations/0004_mae_pre.sql` + Nachzug in `ensureD1Schema`). Sie
+hält die schlimmste Gegenbewegung fest, die VOR dem bisherigen Höchststand
+ausgehalten werden musste. Aktualisiert wird sie im Auflöser genau dann, wenn
+ein neuer Höchststand entsteht.
+
+**Der Denkfehler, der dabei fast passiert wäre:** der erste Entwurf fror den
+Wert beim Erreichen der 2-%-Marke ein. Dann wäre er nur für Ziele bis 2 % gültig
+gewesen, und jedes größere Ziel hätte auf `min_pct` zurückfallen müssen — also
+auf einen Wert, der auch den Rückgang NACH dem Ausstieg enthält. Ein Setup mit
+1,8 % Luft und 4,2 % Ertrag wäre so als unhandelbar ausgewiesen worden. Mit
+MAE-vor-MFE gilt: um `max_pct` zu erreichen, musste man `mae_pre` aushalten; für
+kleinere Ziele ist das eine Obergrenze, also die vorsichtige Richtung.
+
+`pickOutcome` benutzt `mae_pre` und fällt bei fehlendem Wert auf `min_pct`
+zurück. **Diese Reihenfolge ist nicht verhandelbar** — umgekehrt wäre sie eine
+Beschönigung.
+
+### Die Ursachentrennung (`heatProfile`, `pickVerdict`)
+
+Ein Typ kann aus zwei gegensätzlichen Gründen nichts einbringen:
+`bewegt sich nicht weit genug` (anderer Kandidatenkreis nötig) oder
+`zu verrauscht fuer diese Positionsgroesse` (anderer Stop/Einstieg). Vorher
+waren beide als „EV negativ" ununterscheidbar — das war die eigentliche
+Sackgasse. `stopFor80` nennt den Stopabstand, der 80 % der Gewinner gehalten
+hätte; liegt er über `maxStopPct`, ist die Bewegung da und nur nicht greifbar.
+
+### `optimizeGrid` — und vier Fallen, die alle real waren
+
+1. **Rundung nach der Suche.** Gesucht mit 1,7999999, geprüft mit 1,80 — an der
+   Grenze kippt das Ergebnis. Jetzt `const tR = r2(t), stR = r2(st)` VOR der
+   Auswertung. Ein Test besteht darauf.
+2. **Verschiedene Rechenarten im Vergleich.** Punktschätzung im Suchteil gegen
+   Wilson-Untergrenze im Nachweisteil ließ jedes Paar überangepasst aussehen.
+   `drop` wird jetzt aus `evIn` und `evOosPoint` gebildet — beides
+   Punktschätzungen. Zum Ranken und Anzeigen dient weiterhin nur `evOos`
+   (vorsichtig).
+3. **Feste Überanpassungsgrenze.** 40 € schlug bei zwölf Nachweis-Episoden
+   ständig aus. Die Grenze wächst jetzt mit dem Stichprobenrauschen
+   (`1.5 * seEur`), die feste Zahl bleibt als Untergrenze.
+4. **Zu kleiner Nachweisteil.** `GRID.OOS_MIN` von 8 auf 12 — die Rastersuche
+   braucht damit rund 40 Episoden, bevor sie überhaupt anläuft.
+
+Ein überangepasstes Paar geht NICHT in `evBest` und damit nicht in die
+Rangfolge. Genommen wird der bessere der beiden Pläne (Kostenmodell oder
+bestätigte Rastersuche), nicht blind der gesuchte.
+
+### Sechs Negativkontrollen
+
+mae_pre ignorieren · fehlendes mae_pre als 0 · Verrauscht-Erkennung aus ·
+Bremse gelöst · Rundung nach hinten · gemischte Rechenarten — alle sechs lassen
+die Suite fallen. Protokoll in den Release Notes.
+
+**Verallgemeinerung aus 8q und 8r zusammen:** für jeden Schutzmechanismus einen
+Datensatz suchen, auf dem NUR er greift. Zwei Schutzmechanismen, die dasselbe
+Ergebnis erzeugen, werden von einem Test nur als Vereinigung geprüft.
+
+### Bewusst NICHT gemacht
+
+- Der Live-`situationScore` mit seinen 14 handgesetzten Koeffizienten wurde
+  nicht angefasst. Ihn gegen die Ergebnisse zu testen ist der logische nächste
+  Schritt, braucht aber deutlich mehr Episoden — und ist ein Eingriff in die
+  Bewertung, nicht in die Auswertung.
+- Keine feinere Gruppierung (Typ × Sektor, Typ × Tageszeit): bei der aktuellen
+  Datenmenge erzeugt das Rauschen statt Erkenntnis.
