@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.19.0 — Frontend
+   FusionPulse v3.20.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2198,7 +2198,11 @@ async function loadLearning(){
 function setLearningPoll(){clearInterval(learningTimer);learningTimer=setInterval(()=>{if(document.visibilityState==='visible'){loadLearning();loadAttribution();loadAladdin();}},120_000);
   /* Muster aendern sich ueber Tage, nicht Minuten. Halbstuendlich genuegt und
      haelt die D1-Abfrage (bis 6000 Zeilen) aus dem normalen Takt heraus. */
-  clearInterval(patternTimer);patternTimer=setInterval(()=>{if(document.visibilityState==='visible')loadPatterns();},30*60_000);}
+  clearInterval(patternTimer);patternTimer=setInterval(()=>{if(document.visibilityState==='visible')loadPatterns();},30*60_000);
+  /* v3.20.0: Die AUSWERTUNG aendert sich langsam, die lebenden Kandidaten
+     darin schnell. Fuenf Minuten ist der Takt des Radars — schneller waere
+     nur Last ohne neuen Inhalt. */
+  clearInterval(pickTimer);pickTimer=setInterval(()=>{if(document.visibilityState==='visible')loadTopPicks();},5*60_000);}
 
 /* Modul 1 UI: Aladdin-Style Market Recommendation oberhalb des Radars.
    Reine Anzeige der serverseitigen Marktmeinung; kein Score-Eingriff. */
@@ -3931,6 +3935,90 @@ function renderGateFunnel(){
    Deshalb Blau (stieg), Violett (fiel), Grau (seitwaerts).                  */
 let patternData=null, patternTimer=null;
 
+/* ==== v3.20.0 · TOP PICKS ====================================================
+   Die Kachel beantwortet die Frage, die der Score nie beantwortet hat:
+   *Was hat dieser Situationstyp in den aufgezeichneten Faellen tatsaechlich
+   eingebracht — in Euro, nach Gebuehren und KESt?*
+
+   Sie sortiert die lebenden Radar-Kandidaten nach dieser Zahl, nicht nach dem
+   Live-Score. Fehlende Beleglage hebt einen Kandidaten NIE nach oben; sie wird
+   ausgewiesen. 0 % Gewicht in Score, Ampel und Freigabe.                     */
+let pickData = null, pickTimer = null;
+
+async function loadTopPicks(){
+  try{
+    const q=new URLSearchParams();
+    if(S.token) q.set('t',S.token);
+    // Die Zielgroesse ist die des Nutzers, nicht eine Konstante im Server.
+    q.set('netEur', String(Math.max(20, Number(S.minNetProfitStock)||120)));
+    const r=await fetch('/api/toppicks?'+q,{cache:'no-store'});
+    pickData=await r.json();
+  }catch(e){ pickData={configured:true,state:'error',error:String(e.message||e)}; }
+  renderTopPicks();
+}
+
+const PICK_TIER_LABEL={belegt:'belegt',duenn:'dünne Belege',unbelegt:'nicht bewertbar'};
+const PICK_RANK_LABEL={
+  belegtPositiv:'Beleg trägt',
+  duennPositiv:'Beleg dünn, Tendenz positiv',
+  unbelegt:'ohne Beleg — nur Live-Score',
+  belegtNegativ:'Beleg spricht dagegen',
+};
+
+function renderTopPicks(){
+  const el=$('#topPicks'); if(!el) return;
+  const d=pickData;
+  const head=(extra='')=>`<div class="ophead"><b>🎯 Top Picks · erwarteter Netto-Euro</b>`
+    +`<span title="Rangfolge nach dem, was derselbe Situationstyp in aufgezeichneten, abgeschlossenen Fällen tatsächlich eingebracht hat — nach 2×${num(S.orderFeeEur??11.5,2)} € Gebühr, Ausführungsreibung und ${num(S.taxPct??27.5,1)} % KESt. Keine Vorhersage, eine Auszählung.">nach Kosten und Steuer · keine Vorhersage</span>`
+    +`<small>0 % Gewicht in Score, Ampel und Freigabe</small>${extra}</div>`;
+
+  if(!d) { paintPanel(el, head()+'<span class="hint">Wird geladen.</span>'); return; }
+  if(d.state==='error'){ paintPanel(el, head()+`<span class="hint">Auswertung nicht erreichbar: ${esc(String(d.error||''))}</span>`); return; }
+
+  /* Die Kopfrechnung steht IMMER da, auch ohne eine einzige Episode. Sie ist
+     die eigentliche Antwort auf "warum kommt nichts Gewinnträchtiges heraus". */
+  const math=`<div class="pick-math">`
+    +`<div title="Zielweite, die dein Nettoziel bei ${eur(d.cost?.notionalEur??10000,0)} Einsatz überhaupt erst erreichbar macht. Darunter zahlt der Trade nur Gebühren und Steuer."><span>Zielweite für ${eur(d.netEurTarget,0)} netto</span><b>${num(d.targetPct,2)} %</b></div>`
+    +`<div title="Weiter darf dein Stop nicht entfernt sein. Grund: Gewinne werden versteuert, Verluste tragen die vollen Gebühren mit. Bei einem 2-%-Stop und 2-%-Ziel bräuchtest du über 66 % Trefferquote — die gibt es im Intraday-Momentum nicht."><span>Stop höchstens</span><b>${num(d.maxStopPct,2)} %</b></div>`
+    +`<div title="Ab dieser Trefferquote trägt sich das Setup nach allen Kosten. Darunter verlierst du selbst mit lauter 'richtigen' Einschätzungen Geld."><span>nötige Trefferquote</span><b>${d.breakEvenHitPct} %</b></div>`
+    +`<div title="Gewinn am Ziel gegen Verlust am Stop, beides netto. Die Asymmetrie ist der Grund für die Regel darüber."><span>Gewinn / Verlust</span><b class="good">${eur(d.winEur,0)}</b> <b class="bad">−${eur(d.lossEur,0)}</b></div>`
+    +`</div>`;
+
+  /* Der Befund selbst, sichtbar statt behauptet. */
+  const legacy=`<small class="pick-note" title="Jede Lernstatistik dieser App hat Erfolg bisher bei +${d.legacyWinPct} % gemessen — im 180-Minuten-Horizont. Deine wirtschaftliche Schwelle liegt bei ${num(d.targetPct,2)} %. Ein Setup, das zuverlässig ${num(d.targetPct,2)} % liefert, galt damit überall als Misserfolg. Diese Kachel misst an deiner Schwelle.">Alte Lernschwelle +${d.legacyWinPct} % · deine wirtschaftliche Schwelle ${num(d.targetPct,2)} %</small>`;
+
+  const sit=(d.situations||[]).slice(0,8).map(s=>{
+    const cls=s.tier==='unbelegt'?'pick-thin':(s.evEur>0?'pick-pos':'pick-neg');
+    return `<div class="pick-sit ${cls}" title="${esc(`${s.situation}: ${s.n} unabhängige Episoden über ${s.symbols} verschiedene Titel. ${s.hit} erreichten ${num(d.targetPct,2)} %, ohne vorher den Stop zu reißen. ${s.stopped} wurden ausgestoppt, davon ${s.ambiguous} mehrdeutig (Reihenfolge ist nicht aufgezeichnet — diese zählen vorsichtshalber als Stop). An der alten +${d.legacyWinPct}-%-Schwelle wären es nur ${s.legacyHit} Treffer gewesen.`)}">`
+      +`<b>${esc(s.situation)}</b>`
+      +`<span class="pick-ev ${s.evEur>0?'good':'bad'}">${s.evEur==null?'–':(s.evEur>0?'+':'')+eur(s.evEur,0)}</span>`
+      +`<span>${s.pHit==null?'n.v.':s.pHit+' % vorsichtig · '+s.pointHit+' % roh'}</span>`
+      +`<span>${s.n} Episoden · ${esc(PICK_TIER_LABEL[s.tier]||s.tier)}</span>`
+      +`<em>${s.medianMinutes!=null?'typisch '+s.medianMinutes+' Min bis Ziel':'Haltedauer noch nicht messbar'}</em>`
+      +`</div>`;
+  }).join('');
+
+  const picks=(d.picks||[]).slice(0,10).map(p=>
+    `<button type="button" class="opcard pick-card rank-${esc(p.rank)}" data-openstock="${esc(p.symbol)}" `
+    +`title="${esc(`${p.symbol} · ${p.situation}. ${PICK_RANK_LABEL[p.rank]||''}. ${p.n?`${p.n} vergleichbare Episoden aufgezeichnet.`:'Für diesen Situationstyp liegen noch zu wenige abgeschlossene Fälle vor — der Kandidat wird deshalb NICHT nach oben gereiht.'} Klick öffnet ihn im Fokusfenster. Kein Kaufsignal.`)}">`
+    +`<b>${esc(p.symbol)}${isFavStock(p.symbol)?' ★':''}</b>`
+    +`<span class="situation-tag">${esc(p.situation)}</span>`
+    +`<span class="pick-ev ${p.evEur==null?'':(p.evEur>0?'good':'bad')}">${p.evEur==null?'kein Beleg':(p.evEur>0?'+':'')+eur(p.evEur,0)+' erwartet'}</span>`
+    +`<span>${p.movePct!=null?(Number(p.movePct)>=0?'+':'')+num(p.movePct,1)+' % Tag':'Bewegung n.v.'}</span>`
+    +`<em>${esc(PICK_RANK_LABEL[p.rank]||'')}</em></button>`).join('');
+
+  const body=(sit?`<div class="pick-sitgrid">${sit}</div>`:'')
+    +(picks?`<div class="opgrid">${picks}</div>`
+           :'<span class="hint">Keine lebenden Radar-Kandidaten im Zwischenspeicher.</span>')
+    +`<small class="hint">${esc(d.note||'')}</small>`;
+
+  const wrote=paintPanel(el, head(categoryFreshness(d.radarTs))+math+legacy+body);
+  if(wrote) el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>{
+    focusStock=b.dataset.openstock||''; renderStocks();
+    document.querySelector('.stockstage')?.scrollIntoView({behavior:'smooth',block:'start'});
+  }));
+}
+
 async function loadPatterns(){
   try{
     const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
@@ -4521,7 +4609,7 @@ $('#scan').onclick = async () => {
   // v3.4.2: manueller blauer Refresh bedeutet ECHTE Aktualisierung. FokusScope zuerst,
   // danach der gesamte Aktien-Snapshot; alte Cache-Daten duerfen nicht als Refresh gelten.
   if(focusStock) await searchStockNow(focusStock,true);
-  await Promise.allSettled([scan(true), scanStocks(true), scanOpeningMomentum(true), loadExperimental(true), loadCrowd(true), loadSentiment(false), loadEarnings(false), loadLearning(), loadAttribution(), loadAladdin(), loadHealth()]);
+  await Promise.allSettled([scan(true), scanStocks(true), scanOpeningMomentum(true), loadExperimental(true), loadCrowd(true), loadSentiment(false), loadEarnings(false), loadLearning(), loadTopPicks(), loadAttribution(), loadAladdin(), loadHealth()]);
 };
 $('#sound').onclick = () => {
   S.sound = !S.sound; saveSettings();
@@ -4854,6 +4942,7 @@ loadSentiment(false);
 loadEarnings(false);
 wireEarningsEditor();
 loadPatterns();
+loadTopPicks();
 loadLearning();
 loadAttribution();
 loadAladdin();

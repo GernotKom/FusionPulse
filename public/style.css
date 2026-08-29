@@ -693,7 +693,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"3.19.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"3.20.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1284,3 +1284,26 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .pat-cal-cell b{font-size:12px;color:var(--fg)}
 .pat-cal-cell.current{border-color:var(--accent)}
 .pat-cal-cell.current i{color:var(--accent)}
+
+/* ═══════════════════════════════════════════ v3.20.0 · Top Picks ═══════════ */
+.toppicks .pick-math{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin:8px 0}
+.toppicks .pick-math>div{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:2px}
+.toppicks .pick-math span{font-size:11px;opacity:.72;line-height:1.25}
+.toppicks .pick-math b{font-size:17px;font-variant-numeric:tabular-nums}
+.toppicks .pick-note{display:block;margin:2px 0 8px;opacity:.7;font-size:11px}
+.toppicks .pick-sitgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;margin-bottom:10px}
+.toppicks .pick-sit{border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:2px;
+  border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03)}
+.toppicks .pick-sit b{font-size:12px;letter-spacing:.02em}
+.toppicks .pick-sit span{font-size:11px;opacity:.75}
+.toppicks .pick-sit em{font-size:11px;opacity:.6;font-style:normal}
+.toppicks .pick-sit.pick-pos{border-color:rgba(70,190,120,.45)}
+.toppicks .pick-sit.pick-neg{border-color:rgba(220,90,90,.40)}
+.toppicks .pick-sit.pick-thin{border-style:dashed;opacity:.72}
+.toppicks .pick-ev{font-size:14px;font-variant-numeric:tabular-nums;font-weight:600}
+/* Die Rangstufe ist die Fail-Closed-Regel und muss deshalb SICHTBAR sein,
+   nicht nur in der Sortierung stecken. */
+.toppicks .pick-card.rank-belegtPositiv{border-left:3px solid rgba(70,190,120,.85)}
+.toppicks .pick-card.rank-duennPositiv{border-left:3px dashed rgba(70,190,120,.55)}
+.toppicks .pick-card.rank-unbelegt{border-left:3px dotted rgba(150,160,180,.55);opacity:.78}
+.toppicks .pick-card.rank-belegtNegativ{border-left:3px solid rgba(220,90,90,.7);opacity:.62}

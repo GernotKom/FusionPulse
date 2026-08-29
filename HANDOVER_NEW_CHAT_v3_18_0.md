@@ -1067,3 +1067,99 @@ wird): kein Aufteilen von `app.js` in nachladbare Teile (Umbau, keine
 Optimierung), kein Datenversions-Zähler zum Überspringen des String-Baus (ein
 vergessener Aufruf würde stillschweigend Veraltetes anzeigen — falscher Tausch
 in einer Trading-App), keine CSS-Bereinigung (braucht einen echten Browser).
+
+---
+
+## 8q. WAS v3.20.0 GEÄNDERT HAT — Top Picks nach Netto-Euro
+
+**Der wichtigste Abschnitt seit 8m (v3.16.0). Vor jeder Änderung an der
+Lernschicht lesen.**
+
+### Der Anlass — und eine Korrektur an mir selbst
+
+Der Nutzer sagte in v3.19.0 „die Effizienz der App war nicht vorhanden". Ich
+habe das als **Laufzeiteffizienz** gelesen und einen Renderbudget-Umbau gebaut.
+Gemeint war die **Ergebnisqualität**: gewinnträchtige Kandidaten. Die v3.19.0-
+Änderungen bleiben gültig und schaden nicht, sie beantworteten aber die falsche
+Frage. Für den nächsten Bearbeiter: bei dem Wort „Effizienz" in diesem Projekt
+zuerst nachfragen, ob Rechenzeit oder Euro gemeint sind. Die Antwort ist fast
+immer Euro.
+
+### Befund 1 — die Erfolgsschwelle war falsch gesetzt
+
+Jede Lernstatistik misst Erfolg als `max_pct >= 5` (`ATTR.WIN_PCT`, der Auflöser
+in `d1UpdateOutcomes`, `d1TwinFor`, `patternLab`) — bei einem Lernhorizont von
+180 Minuten. Die wirtschaftliche Schwelle folgt aber aus den eigenen
+Kostenkonstanten der App: 10.000 € Einsatz, 2 × 11,50 € Gebühr, 0,15 % Reibung,
+27,5 % KESt → **2,04 % Zielweite für 120 € netto**.
+
+Ein Setup, das zuverlässig +2,5 % liefert — genau das erklärte Ziel des Nutzers
+— galt damit überall in dieser App als **Misserfolg**. Die Lernschicht hat die
+seltenen volatilen Ausreißer belohnt und die tragfähigen Setups verworfen.
+
+Das ist der **dritte Fall desselben Musters**: v3.8.0 falsches Universum,
+v3.16.0 falsches Gate, jetzt falsche Zielscheibe. Regel daraus: bei jeder
+Kennzahl, die über Erfolg entscheidet, zuerst prüfen, ob sie dasselbe misst wie
+das erklärte Ziel des Nutzers. Nicht, ob sie plausibel gewählt ist.
+
+### Befund 2 — der Stop war nie frei wählbar
+
+Bei Ziel 2,04 %: Stop −2,0 % → 238 € Verlust → **66,5 % Trefferquote nötig**.
+Stop −1,0 % → 138 € → 53,5 %. Die Asymmetrie kommt aus KESt auf Gewinne bei
+vollen Kosten auf Verluste. `MIN_REWARD_RISK_FIXED = 2.0` stand seit v3.9.0 im
+Client — die Konsequenz („Stop höchstens 1,02 %") stand nirgends. In `topPicks`
+wird der Stop jetzt aus dem Ziel **abgeleitet**, ein Nutzerwunsch kann ihn nur
+verengen, nie erweitern.
+
+### Was neu ist
+
+- `PICK` / `pickCosts` / `netEurAtMove` / `lossEurAtStop` / `requiredMovePct` /
+  `wilsonUpper` / `pickOutcome` / `pickExpectancy` / `breakEvenHitRate` /
+  `evidenceTier` / `pickTier` / `rankPicks` — reine, testbare Funktionen in
+  `src/worker.js`, extrahierbar als zusammenhängender Block.
+- `topPicks(env, opts)` + `GET /api/toppicks?netEur=&stopPct=` — **eine** D1-
+  Abfrage, danach nur noch Rechnen. Gruppiert nach **Situationstyp**, nicht je
+  Symbol: ein Symbol hat nie genug Episoden.
+- Spalte `reach_ts` (`migrations/0003_toppicks.sql`, plus Nachzug in
+  `ensureD1Schema`), gefüllt bei erster Berührung von `PICK_REACH_PCT = 2.0`.
+  **Feste** Referenz, bewusst nicht an die Nutzereinstellung gekoppelt — sonst
+  wäre die Zeitreihe nicht über Monate vergleichbar. Nicht rückwirkend füllbar.
+- Client: `loadTopPicks` / `renderTopPicks`, Kachel `#topPicks`, 5-Minuten-Takt,
+  über `paintPanel` (v3.19.0-Regel).
+
+### Drei Regeln, die NICHT aufgeweicht werden dürfen
+
+1. **Reihenfolge ist nicht aufgezeichnet.** `max_pct` und `min_pct` sind zwei
+   unabhängige Extremwerte. Eine Episode, die beides berührt hat, zählt als
+   ausgestoppt. Wer das lockert, um die Quoten schöner zu machen, baut genau
+   die Selbsttäuschung ein, gegen die die ganze Datei geschrieben ist.
+2. **Wilson-Untergrenze für Treffer, -Obergrenze für Stops.** Kleine Stichproben
+   dürfen nie gut aussehen.
+3. **Fail-closed in der Rangfolge**: belegt-positiv → dünn-positiv → unbelegt →
+   belegt-negativ. Fehlende Belege heben nichts nach oben.
+
+### Eine Testschwäche, die ich selbst gefunden habe (Abschnitt 11, siebter Fall)
+
+Negativkontrolle 2 (Wilson-Untergrenze durch Punktschätzung ersetzt) lief beim
+ersten Anlauf **durch**. Grund: solange jede Episode entweder Treffer oder Stop
+ist, gilt exakt `wilsonLower(h,n) + wilsonUpper(n−h,n) = 1`; die Kürzungsregel
+in `pickExpectancy` stellt dieselbe Zahl dann von selbst wieder her. Der Test
+konnte den entfernten Schutz gar nicht bemerken. Er läuft jetzt auf einem
+Datensatz **mit** ergebnislosen Episoden, wo die Kürzung nicht greift. Der
+Hinweis steht als Kommentar im Test.
+
+**Verallgemeinerung für den nächsten Bearbeiter:** wenn zwei Schutzmechanismen
+dasselbe Ergebnis erzeugen, prüft ein Test nur ihre Vereinigung, nicht jeden
+einzelnen. Für jeden Schutz einen Datensatz suchen, auf dem NUR er greift.
+
+### Bewusst NICHT gemacht
+
+- `ATTR.WIN_PCT = 5` bleibt unverändert. Modul 0, Musterlabor, Twin-Statistik
+  und der ChatGPT-Strang hängen daran; eine Änderung würde alle historischen
+  Auswertungen unvergleichbar machen. Die neue Kachel stellt die richtige Zahl
+  **daneben**. Ob nachgezogen wird, ist eine Nutzerentscheidung.
+- Keine feinere Gruppierung (Typ × Sektor, Typ × Tageszeit). Mehr Gruppen bei
+  gleicher Datenmenge erzeugen Rauschen, nicht Erkenntnis. Erst wenn ein Typ
+  deutlich über 60 Episoden liegt.
+- Kein Eingriff in Score, Ampel, Gate oder Freigabe. `buyWeight: 0`, und ein
+  Test verbietet dem Modul, `light`, `crv`, `score` oder `buyReady` zu setzen.

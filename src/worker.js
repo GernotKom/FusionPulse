@@ -2459,6 +2459,12 @@ async function crowdPulse(env,symbols,force=false){
    Gespeichert werden echte Markt-Snapshots und nachfolgend beobachtete
    Outcomes. Browser-/PWA-Speicher ist damit nicht mehr die einzige Quelle.
    ======================================================================== */
+/* v3.20.0 · FESTE Referenzschwelle fuer reach_ts. Bewusst NICHT an die
+   Nutzereinstellung gekoppelt: sie muss ueber Monate vergleichbar bleiben.
+   2,0 % ist die aus den Kostenkonstanten abgeleitete Naehe zur 120-EUR-Marke
+   (siehe requiredMovePct). Die Auswertung kann jede andere Zielweite rechnen,
+   nur die Zeitmessung haengt an dieser einen Zahl. */
+const PICK_REACH_PCT = 2.0;
 const LEARN_HORIZON_MS = 180 * 60_000;
 const LEARN_HISTORY_MS = 120 * 60_000;
 const LEARN_SIGNAL_LABELS = ['attention','crowd','sector','rvol','vacuum','elliott','momentum','technical'];
@@ -2468,7 +2474,7 @@ let learnMemo={ts:0,key:'',data:null};
 async function ensureD1Schema(env){
   if(!env.DB||d1SchemaReady)return !!env.DB;
   const ddl=[
-    `CREATE TABLE IF NOT EXISTS market_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT,ts INTEGER NOT NULL,bucket5 INTEGER NOT NULL,source TEXT NOT NULL,asset_type TEXT NOT NULL,symbol TEXT NOT NULL,sector TEXT,phase TEXT,price REAL NOT NULL,score REAL,crv REAL,rvol REAL,ret15 REAL,ret60 REAL,atr_pct REAL,liquidity_vacuum REAL,sector_lag REAL,crowd_score REAL,structure_pct REAL,executability REAL,light TEXT,max_pct REAL NOT NULL DEFAULT 0,min_pct REAL NOT NULL DEFAULT 0,success_ts INTEGER,resolved_ts INTEGER,payload TEXT,UNIQUE(source,asset_type,symbol,bucket5))`,
+    `CREATE TABLE IF NOT EXISTS market_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT,ts INTEGER NOT NULL,bucket5 INTEGER NOT NULL,source TEXT NOT NULL,asset_type TEXT NOT NULL,symbol TEXT NOT NULL,sector TEXT,phase TEXT,price REAL NOT NULL,score REAL,crv REAL,rvol REAL,ret15 REAL,ret60 REAL,atr_pct REAL,liquidity_vacuum REAL,sector_lag REAL,crowd_score REAL,structure_pct REAL,executability REAL,light TEXT,max_pct REAL NOT NULL DEFAULT 0,min_pct REAL NOT NULL DEFAULT 0,success_ts INTEGER,reach_ts INTEGER,resolved_ts INTEGER,payload TEXT,UNIQUE(source,asset_type,symbol,bucket5))`,
     `CREATE INDEX IF NOT EXISTS idx_snap_symbol_ts ON market_snapshots(symbol, ts DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_snap_unresolved ON market_snapshots(resolved_ts, ts)`,
     `CREATE INDEX IF NOT EXISTS idx_snap_sector_resolved ON market_snapshots(sector, resolved_ts, ts DESC)`,
@@ -2481,6 +2487,12 @@ async function ensureD1Schema(env){
   // Bestehende Produktions-D1 aus älteren Versionen sicher nachziehen.
   const cols=(await env.DB.prepare('PRAGMA table_info(market_snapshots)').all()).results||[];
   if(!cols.some(c=>String(c.name)==='executability')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN executability REAL').run();
+  /* v3.20.0: Zeitpunkt, an dem eine Aufzeichnung erstmals die WIRTSCHAFTLICHE
+     Schwelle erreicht hat (PICK_REACH_PCT). `success_ts` misst +5 % und ist
+     damit fuer die Frage "wie lange muss ich halten" unbrauchbar — im
+     180-Minuten-Horizont erreichen das die wenigsten. Rueckwirkend laesst sich
+     das NICHT ergaenzen; die Spalte fuellt sich ab jetzt. */
+  if(!cols.some(c=>String(c.name)==='reach_ts')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN reach_ts INTEGER').run();
   d1SchemaReady=true;return true;
 }
 const dbNum = (x) => Number.isFinite(Number(x)) ? Number(x) : null;
@@ -2537,7 +2549,7 @@ async function d1StoreCrowd(env, rows){
 async function d1UpdateOutcomes(env, symbol, price, now=Date.now(), assetType='stock', source='server'){
   if(!env.DB || !(price>0) || !symbol) return;
   const rows=(await env.DB.prepare(
-    `SELECT id,ts,price,max_pct,min_pct,success_ts FROM market_snapshots
+    `SELECT id,ts,price,max_pct,min_pct,success_ts,reach_ts FROM market_snapshots
      WHERE symbol=? AND asset_type=? AND source=? AND resolved_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 500`
   ).bind(symbol, assetType, source, now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
   if(!rows.length) return;
@@ -2546,9 +2558,10 @@ async function d1UpdateOutcomes(env, symbol, price, now=Date.now(), assetType='s
     const pct=(price/Number(x.price)-1)*100;
     const mx=Math.max(Number(x.max_pct)||0,pct), mn=Math.min(Number(x.min_pct)||0,pct);
     const successTs=x.success_ts || (mx>=5 ? now : null);
+    const reachTs=x.reach_ts || (mx>=PICK_REACH_PCT ? now : null);
     const resolved=(now-Number(x.ts)>=LEARN_HORIZON_MS) ? now : null;
-    stmts.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
-      .bind(mx,mn,successTs,resolved,x.id));
+    stmts.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),reach_ts=COALESCE(reach_ts,?),resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
+      .bind(mx,mn,successTs,reachTs,resolved,x.id));
   }
   if(stmts.length) await env.DB.batch(stmts);
 }
@@ -2630,7 +2643,7 @@ async function d1StoreRows(env, rows, opts={}){
   const placeholders=symbols.map(()=>'?').join(',');
 
   // Outcomes in EINER Abfrage laden und anschließend gebündelt aktualisieren.
-  const unresolved=(await env.DB.prepare(`SELECT id,symbol,ts,price,max_pct,min_pct,success_ts FROM market_snapshots
+  const unresolved=(await env.DB.prepare(`SELECT id,symbol,ts,price,max_pct,min_pct,success_ts,reach_ts FROM market_snapshots
     WHERE symbol IN (${placeholders}) AND asset_type=? AND source=? AND resolved_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 3000`)
     .bind(...symbols,assetType,source,now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
   const pxBySym=new Map(clean.map(x=>[x.symbol,x.price])), updates=[];
@@ -2638,8 +2651,9 @@ async function d1StoreRows(env, rows, opts={}){
     const price=pxBySym.get(String(x.symbol).toUpperCase()); if(!(price>0)||!(Number(x.price)>0)) continue;
     const pct=(price/Number(x.price)-1)*100, mx=Math.max(Number(x.max_pct)||0,pct), mn=Math.min(Number(x.min_pct)||0,pct);
     const successTs=x.success_ts || (mx>=5?now:null), resolved=(now-Number(x.ts)>=LEARN_HORIZON_MS)?now:null;
-    updates.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
-      .bind(mx,mn,successTs,resolved,x.id));
+    const reachTs=x.reach_ts || (mx>=PICK_REACH_PCT ? now : null);
+    updates.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),reach_ts=COALESCE(reach_ts,?),resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
+      .bind(mx,mn,successTs,reachTs,resolved,x.id));
   }
   if(updates.length) await d1BatchChunks(env,updates);
 
@@ -2825,6 +2839,292 @@ function bucketStats(episodes){
     stopRateAll:stopRate(episodes), medianMaxAll:medianMax(episodes),
   };
 }
+/* ============================================================================
+   v3.20.0 · TOP PICKS — Rangfolge nach erwartetem NETTO-EURO
+   ----------------------------------------------------------------------------
+   DER BEFUND, DER DIESES MODUL AUSGELOEST HAT (dritter Fall derselben Art nach
+   v3.8.0 "falsches Universum" und v3.16.0 "falsches Gate"):
+
+   Jede Lernstatistik dieser App definiert Erfolg als `max_pct >= 5`
+   (ATTR.WIN_PCT, d1TwinFor, patternLab, der Aufloeser in d1UpdateOutcomes).
+   Der Lernhorizont betraegt aber nur 180 Minuten (LEARN_HORIZON_MS), und die
+   wirtschaftliche Schwelle des Nutzers liegt aus den EIGENEN Kostenkonstanten
+   der App bei rund 2,0 %:
+
+     10.000 EUR Einsatz, 2 x 11,50 EUR Ordergebuehr, 0,15 % Reibung, 27,5 % KESt
+     -> fuer 120 EUR netto sind ~2,04 % Zielweite noetig, nicht 5 %.
+
+   Folge: ein Setup, das zuverlaessig +2,5 % in zwei Stunden liefert — also
+   GENAU das, was der Nutzer will ("ein paar Prozent spaeter verkaufen") —
+   zaehlt in jeder Statistik dieser App als MISSERFOLG. Die Lernschicht hat
+   damit systematisch die seltenen, volatilen Ausreisser bevorzugt und die
+   tragfaehigen Setups verworfen. Nicht die Kandidaten waren schlecht; die
+   Zielscheibe stand an der falschen Stelle.
+
+   WAS DIESES MODUL TUT:
+   Es bewertet Situationstypen gegen die WIRTSCHAFTLICHE Schwelle des Nutzers
+   und rechnet das Ergebnis in Euro um. Keine Vorhersage — eine Auszaehlung
+   aufgeloester Aufzeichnungen.
+
+   DREI EHRLICHKEITSREGELN, die hier haerter greifen als anderswo:
+
+   1. REIHENFOLGE IST NICHT AUFGEZEICHNET. `max_pct` und `min_pct` sind zwei
+      unabhaengige Extremwerte ueber den Horizont. Ob der Stop VOR dem Ziel
+      erreicht wurde, steht nirgends. Deshalb gilt eine Episode, die BEIDES
+      beruehrt hat, als AUSGESTOPPT — die pessimistische Lesart. Ihre Anzahl
+      wird als `ambiguous` getrennt ausgewiesen, damit sichtbar bleibt, wie
+      gross dieser Unsicherheitsanteil ist.
+   2. VORSICHTIGE SCHRANKEN STATT PUNKTSCHAETZUNG. Die Trefferquote geht mit
+      der Wilson-UNTERgrenze ein, die Stopquote mit der Wilson-OBERgrenze.
+      Beides zieht den Erwartungswert nach unten. Eine kleine Stichprobe kann
+      damit nie gut aussehen — sie sieht unbestimmt aus, und das ist richtig.
+   3. FAIL-CLOSED IN DER RANGFOLGE. Ein Kandidat ohne ausreichende Beleglage
+      wird NIE ueber einen belegten positiven Kandidaten gereiht. Fehlende
+      Daten verbessern nichts. Sie werden ausgewiesen, nicht geschaetzt.
+
+   0 % Gewicht in Score, Ampel, Gate und Freigabe. Dieses Modul ordnet an,
+   es bewertet nicht neu.
+   ========================================================================== */
+const PICK = {
+  MIN_EVIDENCE: 20,     // ab hier "belegt"
+  THIN_EVIDENCE: 6,     // darunter "unbelegt"
+  DEFAULT_NET_EUR: 120, // Zielgroesse netto, aus Abschnitt 4 des Handovers
+  /* v3.20.0 · ZWEITER BEFUND, gerechnet statt vermutet.
+     Die Stopweite darf NICHT frei gewaehlt werden. Bei 10.000 EUR, 38 EUR
+     Fixkosten und 27,5 % KESt gilt fuer ein 120-EUR-Ziel (= 2,035 % Zielweite):
+       Stop -2,0 %  -> Verlust 238 EUR -> noetige Trefferquote 66,5 %
+       Stop -1,5 %  -> Verlust 188 EUR -> noetige Trefferquote 61,0 %
+       Stop -1,0 %  -> Verlust 138 EUR -> noetige Trefferquote 53,5 %
+       Stop -0,75 % -> Verlust 113 EUR -> noetige Trefferquote 48,5 %
+     Eine Trefferquote ueber 60 % gibt es im Intraday-Momentum nicht dauerhaft.
+     Mit einem 2-%-Stop ist ein 2-%-Ziel deshalb rechnerisch unmoeglich — ganz
+     unabhaengig davon, wie gut die Kandidaten sind. Das erklaert die zweite
+     Haelfte der Frage "warum kommt nichts Gewinntraechtiges heraus".
+     MIN_REWARD_RISK steht seit v3.9.0 im Client auf 2,0; hier wird die Stopweite
+     daraus ABGELEITET statt geraten. */
+  MIN_REWARD_RISK: 2.0,
+  WINDOW_MS: 21 * 24 * 60 * 60_000,
+  ROW_LIMIT: 8000,
+};
+const PICK_COST = { notionalEur: 10000, orderFeeEur: 11.5, frictionPct: 0.15, taxPct: 27.5 };
+
+const pickCfg = (cfg) => ({ ...PICK_COST, ...(cfg || {}) });
+/** Fixkosten eines vollstaendigen Trades: zwei Orders plus Ausfuehrungsreibung. */
+function pickCosts(cfg) {
+  const c = pickCfg(cfg);
+  return c.orderFeeEur * 2 + c.notionalEur * (c.frictionPct / 100);
+}
+/** Netto-Euro eines Gewinntrades bei Zielweite `pct` %. Kosten mindern den
+ *  steuerpflichtigen Gewinn — genau so rechnet auch `sizing()` im Client. */
+function netEurAtMove(pct, cfg) {
+  const c = pickCfg(cfg);
+  return (c.notionalEur * (pct / 100) - pickCosts(c)) * (1 - c.taxPct / 100);
+}
+/** Netto-Verlust am Stop. Bewusst OHNE Steuergutschrift: sie ist nicht
+ *  garantiert und wuerde den Verlust kleiner rechnen, als er sicher ist. */
+function lossEurAtStop(stopPct, cfg) {
+  const c = pickCfg(cfg);
+  return c.notionalEur * (Math.abs(stopPct) / 100) + pickCosts(c);
+}
+/** Umkehrung: welche Zielweite braucht es fuer `netEur` netto? Das ist die
+ *  Zahl, gegen die gelernt werden muss — nicht die 5 % aus ATTR.WIN_PCT. */
+function requiredMovePct(netEur, cfg) {
+  const c = pickCfg(cfg);
+  return ((Number(netEur) || 0) / (1 - c.taxPct / 100) + pickCosts(c)) / c.notionalEur * 100;
+}
+/** Wilson-OBERgrenze, Gegenstueck zu wilsonLower. Fuer die Stopquote. */
+function wilsonUpper(hits, n) {
+  if (n <= 0) return 1;
+  const z = 1.96, p = hits / n;
+  const denom = 1 + z * z / n;
+  const centre = p + z * z / (2 * n);
+  const margin = z * Math.sqrt((p * (1 - p) + z * z / (4 * n)) / n);
+  return Math.min(1, (centre + margin) / denom);
+}
+
+/** Auszaehlung einer Episodengruppe gegen Ziel- und Stopweite.
+ *  Beruehrt eine Episode beides, gilt sie als ausgestoppt (Regel 1). */
+function pickOutcome(episodes, targetPct, stopPct) {
+  const eps = (episodes || []).filter((e) =>
+    Number.isFinite(Number(e.max_pct)) && Number.isFinite(Number(e.min_pct)));
+  const n = eps.length;
+  let hit = 0, stopped = 0, ambiguous = 0;
+  const minutes = [];
+  for (const e of eps) {
+    const mx = Number(e.max_pct), mn = Number(e.min_pct);
+    const reached = mx >= targetPct, breached = mn <= stopPct;
+    if (breached) { stopped++; if (reached) ambiguous++; }
+    else if (reached) {
+      hit++;
+      const t0 = Number(e.ts), t1 = Number(e.reach_ts || e.success_ts);
+      if (t0 > 0 && t1 > t0) minutes.push((t1 - t0) / 60000);
+    }
+  }
+  minutes.sort((a, b) => a - b);
+  return {
+    n, hit, stopped, ambiguous, flat: n - hit - stopped,
+    medianMinutes: minutes.length ? Math.round(minutes[Math.floor(minutes.length / 2)]) : null,
+    minutesN: minutes.length,
+  };
+}
+
+/** Erwarteter Netto-Euro je Trade, mit vorsichtigen Schranken (Regel 2). */
+function pickExpectancy(outcome, targetPct, stopPct, cfg) {
+  const { n, hit, stopped } = outcome;
+  if (!n) return { evEur: null, pHit: null, pStop: null, reason: 'keine Episoden' };
+  let pHit = wilsonLower(hit, n);
+  let pStop = wilsonUpper(stopped, n);
+  // Beide Schranken zeigen nach aussen; ihre Summe kann 1 ueberschreiten. Dann
+  // wird die GUENSTIGE Groesse gekuerzt, nicht die unguenstige.
+  if (pHit + pStop > 1) pHit = Math.max(0, 1 - pStop);
+  const pFlat = Math.max(0, 1 - pHit - pStop);
+  const win = netEurAtMove(targetPct, cfg);
+  const loss = lossEurAtStop(stopPct, cfg);
+  const flatCost = pickCosts(cfg);           // weder Ziel noch Stop: Kosten bleiben
+  return {
+    evEur: Math.round(pHit * win - pStop * loss - pFlat * flatCost),
+    pHit: Math.round(pHit * 100), pStop: Math.round(pStop * 100),
+    pointHit: Math.round(hit / n * 100),
+    winEur: Math.round(win), lossEur: Math.round(loss),
+  };
+}
+
+/** Trefferquote, ab der ein Setup nach Kosten und Steuer bei null landet.
+ *  Die Zahl, die der Nutzer eigentlich braucht — sie stand nirgends. */
+function breakEvenHitRate(targetPct, stopPct, cfg) {
+  const win = netEurAtMove(targetPct, cfg), loss = lossEurAtStop(stopPct, cfg);
+  return win + loss > 0 ? loss / (win + loss) : 1;
+}
+
+const evidenceTier = (n) =>
+  n >= PICK.MIN_EVIDENCE ? 'belegt' : n >= PICK.THIN_EVIDENCE ? 'duenn' : 'unbelegt';
+
+/** Rangfolge. Die Reihenfolge der Stufen IST die Fail-Closed-Regel (Regel 3):
+ *  unbelegt kann belegt-positiv nie ueberholen, egal wie hoch der Live-Score. */
+const PICK_RANK = { belegtPositiv: 0, duennPositiv: 1, unbelegt: 2, belegtNegativ: 3 };
+function pickTier(tier, evEur) {
+  if (tier === 'unbelegt' || evEur == null) return 'unbelegt';
+  if (evEur > 0) return tier === 'belegt' ? 'belegtPositiv' : 'duennPositiv';
+  return tier === 'belegt' ? 'belegtNegativ' : 'unbelegt';
+}
+function rankPicks(picks) {
+  return [...(picks || [])].sort((a, b) => {
+    const ra = PICK_RANK[a.rank] ?? 9, rb = PICK_RANK[b.rank] ?? 9;
+    if (ra !== rb) return ra - rb;
+    if (a.rank === 'unbelegt') return (b.liveScore || 0) - (a.liveScore || 0);
+    return (b.evEur ?? -1e9) - (a.evEur ?? -1e9);
+  });
+}
+
+/* ---------------------------------------------------------------------------
+   Auswertung: Situationstypen gegen die wirtschaftliche Schwelle des Nutzers.
+   EINE D1-Abfrage, danach nur noch Rechnen. Gruppiert wird nach Situationstyp,
+   nicht je Symbol — ein einzelnes Symbol hat nie genug Episoden fuer eine
+   belastbare Quote, ein Situationstyp ueber alle Symbole schon.
+   ------------------------------------------------------------------------- */
+async function topPicks(env, opts = {}) {
+  const netEur = Number.isFinite(Number(opts.netEur)) ? Number(opts.netEur) : PICK.DEFAULT_NET_EUR;
+  const cfg = pickCfg(opts.cost);
+  const targetPct = requiredMovePct(netEur, cfg);
+  // Der maximal zulaessige Stop folgt aus dem Ziel, nicht umgekehrt.
+  const maxStopPct = targetPct / PICK.MIN_REWARD_RISK;
+  const wanted = Number(opts.stopPct);
+  const stopPct = -Math.min(maxStopPct, Number.isFinite(wanted) && wanted !== 0 ? Math.abs(wanted) : maxStopPct);
+  const base = {
+    configured: true, version: APP_VERSION,
+    horizonMin: Math.round(LEARN_HORIZON_MS / 60_000),
+    windowDays: Math.round(PICK.WINDOW_MS / 86_400_000),
+    cost: cfg, netEurTarget: netEur, stopPct,
+    targetPct: r2(targetPct),
+    winEur: Math.round(netEurAtMove(targetPct, cfg)),
+    lossEur: Math.round(lossEurAtStop(stopPct, cfg)),
+    legacyWinPct: ATTR.WIN_PCT, reachRefPct: PICK_REACH_PCT,
+    maxStopPct: r2(maxStopPct), minRewardRisk: PICK.MIN_REWARD_RISK,
+    breakEvenHitPct: Math.round(breakEvenHitRate(targetPct, stopPct, cfg) * 100),
+    minEvidence: PICK.MIN_EVIDENCE, thinEvidence: PICK.THIN_EVIDENCE,
+  };
+  if (!env?.DB) return { ...base, state: 'nodb', situations: [], picks: [], note: 'Ohne D1 gibt es keine aufgezeichneten Ergebnisse. Es wird bewusst nichts geschaetzt.' };
+  await ensureD1Schema(env);
+
+  const since = Date.now() - PICK.WINDOW_MS;
+  const rows = (await env.DB.prepare(
+    `SELECT symbol,ts,bucket5,max_pct,min_pct,success_ts,reach_ts,score,payload
+       FROM market_snapshots
+      WHERE resolved_ts IS NOT NULL AND asset_type='stock'
+        AND source IN ('Twelve Data','Tiingo IEX') AND ts>=?
+      ORDER BY ts DESC LIMIT ?`).bind(since, PICK.ROW_LIMIT).all()).results || [];
+
+  // Episoden statt Snapshots — dieselbe Regel wie in Modul 0 und im Musterlabor.
+  const episodes = collapseEpisodes(rows);
+  const bySituation = new Map();
+  let withSituation = 0;
+  for (const e of episodes) {
+    let situation = null;
+    try { situation = JSON.parse(e.payload || '{}').situation || null; } catch { situation = null; }
+    if (!situation) continue;
+    withSituation++;
+    const key = String(situation).toUpperCase();
+    (bySituation.get(key) ?? bySituation.set(key, []).get(key)).push(e);
+  }
+
+  const situations = [...bySituation.entries()].map(([situation, eps]) => {
+    const outcome = pickOutcome(eps, targetPct, stopPct);
+    const exp = pickExpectancy(outcome, targetPct, stopPct, cfg);
+    // Gegenprobe an der alten 5-%-Schwelle. Sie steht bewusst DANEBEN, damit
+    // der Unterschied sichtbar ist, statt behauptet werden zu muessen.
+    const legacy = pickOutcome(eps, ATTR.WIN_PCT, stopPct);
+    const tier = evidenceTier(outcome.n);
+    return {
+      situation, tier, ...outcome, ...exp,
+      legacyHit: legacy.hit, legacyPct: outcome.n ? Math.round(legacy.hit / outcome.n * 100) : null,
+      symbols: new Set(eps.map((x) => String(x.symbol || '').toUpperCase())).size,
+    };
+  }).sort((a, b) => (b.evEur ?? -1e9) - (a.evEur ?? -1e9));
+
+  const evidence = new Map(situations.map((s) => [s.situation, s]));
+
+  // Lebende Kandidaten aus dem persistierten Radar mit der Beleglage verbinden.
+  const radar = await readPersistedIexRadar(env);
+  const live = (radar?.rows || []).slice(0, 40);
+  const picks = rankPicks(live.map((r) => {
+    const key = String(r.situation || 'WATCH').toUpperCase();
+    const ev = evidence.get(key);
+    const tier = ev ? ev.tier : 'unbelegt';
+    const evEur = ev && tier !== 'unbelegt' ? ev.evEur : null;
+    return {
+      symbol: String(r.symbol || '').toUpperCase(),
+      situation: key, lifecycle: r.lifecycle || 'WATCH',
+      liveScore: Number(r.situationScore ?? r.score ?? 0),
+      movePct: r.movePct ?? null, speedPct: r.speedPct ?? null, spreadPct: r.spreadPct ?? null,
+      reasons: Array.isArray(r.reasons) ? r.reasons.slice(0, 3) : [],
+      tier, evEur,
+      n: ev?.n ?? 0, pHit: ev?.pHit ?? null, pStop: ev?.pStop ?? null,
+      medianMinutes: ev?.medianMinutes ?? null, ambiguous: ev?.ambiguous ?? 0,
+      rank: pickTier(tier, evEur),
+      buyWeight: 0,
+    };
+  }));
+
+  const belegt = situations.filter((s) => s.tier === 'belegt');
+  const positiv = belegt.filter((s) => (s.evEur ?? -1) > 0);
+  const note = !episodes.length
+    ? 'Noch keine aufgeloesten Aufzeichnungen im Fenster. Die Auswertung braucht Laufzeit, sie laesst sich nicht rueckwirkend erzeugen.'
+    : !withSituation
+    ? 'Aufzeichnungen vorhanden, aber ohne Situationstyp. Der Typ wird erst seit v3.17.0 mitgeschrieben — aeltere Zeilen kennen ihn nicht.'
+    : !belegt.length
+    ? `Kein Situationstyp hat bisher ${PICK.MIN_EVIDENCE} unabhaengige Episoden. Angezeigt wird der Zwischenstand, geurteilt wird nichts.`
+    : positiv.length
+    ? `${positiv.length} von ${belegt.length} belegten Situationstypen tragen bei ${r1(targetPct)} % Zielweite einen positiven Erwartungswert.`
+    : `KEIN belegter Situationstyp traegt bei ${r1(targetPct)} % Zielweite einen positiven Erwartungswert. Das ist ein Ergebnis, kein Fehler: die aufgezeichneten Setups haben die Kosten bisher nicht verdient.`;
+
+  return {
+    ...base, state: episodes.length ? 'ok' : 'empty',
+    rowsScanned: rows.length, rowsCapped: rows.length >= PICK.ROW_LIMIT,
+    episodes: episodes.length, withSituation,
+    situations, picks, radarTs: radar?.ts || null, note,
+  };
+}
+
 /* ============================================================================
    v3.17.0 · MUSTERLABOR — was ging einem Anstieg voraus, was einem Abfall?
    ----------------------------------------------------------------------------
@@ -4327,6 +4627,15 @@ export default {
     if (url.pathname === '/api/experimental') {
       try { return json(await experimentalPulse(url.searchParams.get('force') === '1'), 200, { 'cache-control':'no-store' }); }
       catch (e) { return json({state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/toppicks') {
+      try {
+        return json(await topPicks(env, {
+          netEur: url.searchParams.get('netEur'),
+          stopPct: url.searchParams.get('stopPct'),
+        }), 200, { 'cache-control':'no-store' });
+      } catch(e){ return json({configured:true,state:'error',error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
     }
 
     if (url.pathname === '/api/patterns') {

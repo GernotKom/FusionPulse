@@ -3401,3 +3401,190 @@ console.log('✓ FusionPulse v3.18.0 gate-funnel/calibration/sector-reserve regr
 }
 
 console.log('✓ FusionPulse v3.19.0 render-budget/sw-cache regressions: OK');
+
+/* ═══════════════════════════════════ v3.20.0 · TOP PICKS / Erwartungswert ═══
+   Der Befund dahinter (dritter Fall nach v3.8.0 und v3.16.0): jede
+   Lernstatistik der App misst Erfolg bei +5 %, die wirtschaftliche Schwelle des
+   Nutzers liegt aus den EIGENEN Kostenkonstanten aber bei rund 2 %. Ein Setup,
+   das zuverlaessig +2,5 % liefert, galt damit ueberall als Misserfolg.
+
+   Diese Suite prueft die Rechnung AUSGEFUEHRT, nicht per Regex. Grund:
+   Abschnitt 11 des Handovers listet sechs Faelle, in denen ein Test durchlief,
+   ohne etwas auszusagen. Bei einer Euro-Rechnung waere das besonders teuer. */
+{
+  const worker = workerText;
+  const src = worker.slice(worker.indexOf('const PICK = {'),
+                           worker.indexOf('async function topPicks('));
+  assert.ok(src.length > 2000, 'Das Top-Picks-Kernmodul muss auffindbar sein');
+  const wl = (w, n) => { if (n <= 0) return 0; const z = 1.96, p = w / n;
+    const d = 1 + z * z / n, c = p + z * z / (2 * n);
+    const m = z * Math.sqrt((p * (1 - p) + z * z / (4 * n)) / n);
+    return Math.max(0, (c - m) / d); };
+  const M = new Function('wilsonLower', 'LEARN_HORIZON_MS', src +
+    '; return {PICK,PICK_COST,pickCfg,pickCosts,netEurAtMove,lossEurAtStop,requiredMovePct,' +
+    'wilsonUpper,pickOutcome,pickExpectancy,breakEvenHitRate,evidenceTier,pickTier,rankPicks,PICK_RANK};')(wl, 180 * 60_000);
+
+  /* -- 1. Die Kostenrechnung selbst ---------------------------------------- */
+  // 10.000 EUR, 2 x 11,50 EUR, 0,15 % Reibung = 23 + 15 = 38 EUR Fixkosten.
+  assert.equal(M.pickCosts(), 38, 'Fixkosten eines vollstaendigen Trades muessen 38 EUR sein');
+  // Umkehrung und Hinrechnung muessen zueinander passen — sonst ist die ganze
+  // Rangfolge auf Sand gebaut.
+  for (const target of [30, 120, 250, 500]) {
+    const pct = M.requiredMovePct(target);
+    assert.ok(Math.abs(M.netEurAtMove(pct) - target) < 0.01,
+      `requiredMovePct(${target}) und netEurAtMove muessen invers sein`);
+  }
+  const req120 = M.requiredMovePct(120);
+  assert.ok(req120 > 1.9 && req120 < 2.2,
+    `120 EUR netto brauchen ~2,0 % Zielweite, gerechnet wurden ${req120}`);
+
+  /* -- 2. DER KERNBEFUND, als Zahl ----------------------------------------- */
+  // Die alte Lernschwelle liegt bei 5 %. Was haette der Nutzer bei 5 % netto
+  // verdient — und wie weit ist das von dem entfernt, was er braucht?
+  assert.ok(M.requiredMovePct(120) < 5,
+    'Die wirtschaftliche Schwelle MUSS unter der alten Lernschwelle von 5 % liegen — sonst gaebe es diesen Befund nicht');
+  const net5 = M.netEurAtMove(5);
+  assert.ok(net5 > 330,
+    `Bei +5 % waeren es ~${Math.round(net5)} EUR netto — die alte Schwelle verlangte also fast das Dreifache des Ziels`);
+
+  /* -- 3. Reihenfolge ist NICHT aufgezeichnet: die pessimistische Lesart ---- */
+  // Eine Episode, die BEIDES beruehrt hat, muss als ausgestoppt zaehlen.
+  const beides = [{ max_pct: 4, min_pct: -1.5, ts: 0, reach_ts: 0 }];
+  const o1 = M.pickOutcome(beides, 2, -1);
+  assert.equal(o1.hit, 0, 'Eine Episode, die auch den Stop gerissen hat, darf NICHT als Treffer zaehlen');
+  assert.equal(o1.stopped, 1, 'Sie muss als ausgestoppt zaehlen');
+  assert.equal(o1.ambiguous, 1, 'Und der Unsicherheitsanteil muss ausgewiesen werden');
+
+  /* -- 3b. ZWEITER BEFUND: die Stopweite folgt aus dem Ziel ---------------- */
+  // Bei Ziel 2,035 % und Stop -2 % braucht es 66,5 % Trefferquote. Die gibt es
+  // im Intraday-Momentum nicht. Deshalb MUSS der Stop abgeleitet werden.
+  const zielPct = M.requiredMovePct(120);
+  assert.ok(M.breakEvenHitRate(zielPct, -2) > 0.65,
+    'Mit einem 2-%-Stop muss die noetige Trefferquote ueber 65 % liegen — das ist der Befund');
+  const maxStop = zielPct / M.PICK.MIN_REWARD_RISK;
+  assert.ok(maxStop > 0.99 && maxStop < 1.05,
+    `Der maximal zulaessige Stop muss bei ~1,02 % liegen, war ${maxStop}`);
+  assert.ok(M.breakEvenHitRate(zielPct, -maxStop) < 0.55,
+    'Am abgeleiteten Stop muss die noetige Trefferquote unter 55 % fallen');
+  // Und die Ableitung muss monoton sein: engerer Stop -> niedrigere Huerde.
+  let prev = 1;
+  for (const st of [2, 1.5, 1.0, 0.75, 0.5]) {
+    const be = M.breakEvenHitRate(zielPct, -st);
+    assert.ok(be < prev, `Ein engerer Stop muss die noetige Trefferquote senken (${st} %)`);
+    prev = be;
+  }
+
+  /* -- 4. Der Fall, den die alte Schwelle verworfen hat --------------------- */
+  // 30 Episoden: 20 erreichten +2,6 % ohne den (abgeleiteten) 1,02-%-Stop zu
+  // reissen, 10 wurden ausgestoppt. Bei 5 % Schwelle: 0 Treffer -> "wertlos".
+  const t0 = 1_700_000_000_000;
+  /* Die Groesse dieser Stichprobe ist selbst eine Aussage: bei 30 Episoden und
+     67 % beobachteter Trefferquote liegt die Wilson-Untergrenze bei 48,8 % und
+     damit UNTER der Break-even-Quote von 53,5 % — der Erwartungswert bleibt
+     negativ. Erst rund 60 Episoden bei 75 % tragen. Das ist keine Schwaeche des
+     Tests, sondern die ehrliche Antwort auf "ab wann weiss die App etwas". */
+  const realistisch = [
+    ...Array.from({ length: 45 }, (_, i) => ({ symbol: `A${i}`, ts: t0, reach_ts: t0 + 45 * 60_000, max_pct: 2.6, min_pct: -0.6 })),
+    ...Array.from({ length: 15 }, (_, i) => ({ symbol: `B${i}`, ts: t0, reach_ts: null, max_pct: 0.4, min_pct: -1.4 })),
+  ];
+  const oNeu = M.pickOutcome(realistisch, zielPct, -maxStop);
+  const oAlt = M.pickOutcome(realistisch, 5, -maxStop);
+  assert.equal(oNeu.hit, 45, 'An der wirtschaftlichen Schwelle muessen 45 Treffer stehen');
+  assert.equal(oAlt.hit, 0, 'An der alten 5-%-Schwelle stehen dieselben 45 Episoden als NULL Treffer — das ist der Befund');
+  assert.equal(oNeu.medianMinutes, 45, 'Die Haltedauer bis zum Ziel muss aus reach_ts kommen');
+
+  const eNeu = M.pickExpectancy(oNeu, zielPct, -maxStop);
+  assert.ok(eNeu.evEur > 0, `Dieses Muster muss einen positiven Erwartungswert haben, war ${eNeu.evEur} EUR`);
+  /* WICHTIG fuer den naechsten Bearbeiter — hier hatte mein erster Test ein Loch:
+     Solange jede Episode entweder Treffer ODER Stop ist, gilt exakt
+     wilsonLower(h,n) + wilsonUpper(n-h,n) = 1. Die Kuerzungsregel in
+     pickExpectancy stellt dieselbe Zahl dann von selbst wieder her — ein Test
+     auf diesem Datensatz kann eine entfernte Wilson-Untergrenze NICHT bemerken.
+     Die Vorsicht muss deshalb an einem Datensatz MIT flat-Episoden geprueft
+     werden, wo die Kuerzung nicht greift. */
+  const mitFlat = [
+    ...Array.from({ length: 30 }, (_, i) => ({ symbol: `E${i}`, ts: t0, reach_ts: t0 + 60_000, max_pct: 3, min_pct: -0.3 })),
+    ...Array.from({ length: 10 }, (_, i) => ({ symbol: `F${i}`, ts: t0, max_pct: 0.3, min_pct: -1.5 })),
+    ...Array.from({ length: 20 }, (_, i) => ({ symbol: `G${i}`, ts: t0, max_pct: 0.9, min_pct: -0.4 })),
+  ];
+  const oFlat = M.pickOutcome(mitFlat, 2, -1);
+  assert.equal(oFlat.flat, 20, 'Episoden ohne Ziel und ohne Stop muessen als flat zaehlen');
+  const eFlat = M.pickExpectancy(oFlat, 2, -1);
+  assert.ok(eFlat.pHit < eFlat.pointHit - 5,
+    `Die Wilson-Untergrenze muss deutlich unter der Punktschaetzung liegen (${eFlat.pHit} vs ${eFlat.pointHit})`);
+  // Und flat darf nicht gratis sein: die Fixkosten fallen trotzdem an.
+  assert.ok(eFlat.evEur < Math.round(eFlat.pHit / 100 * eFlat.winEur - eFlat.pStop / 100 * eFlat.lossEur),
+    'Ergebnislose Episoden muessen die Fixkosten weiterhin abziehen');
+
+  /* -- 5. Vorsicht bei kleiner Stichprobe ---------------------------------- */
+  // 3 von 3 Treffern duerfen nicht wie ein sicherer Gewinn aussehen.
+  const winzig = Array.from({ length: 3 }, (_, i) => ({ symbol: `C${i}`, ts: t0, reach_ts: t0 + 60_000, max_pct: 6, min_pct: -0.2 }));
+  const eWinzig = M.pickExpectancy(M.pickOutcome(winzig, 2, -1), 2, -1);
+  assert.ok(eWinzig.pHit <= 45,
+    `3 von 3 duerfen hoechstens ~44 % Trefferquote ergeben, waren ${eWinzig.pHit} %`);
+  assert.equal(M.evidenceTier(3), 'unbelegt', '3 Episoden sind unbelegt');
+  assert.equal(M.evidenceTier(10), 'duenn', '10 Episoden sind duenn');
+  assert.equal(M.evidenceTier(20), 'belegt', '20 Episoden sind belegt');
+
+  /* -- 6. Die beiden Schranken duerfen sich nicht widersprechen ------------ */
+  assert.ok(M.wilsonUpper(1, 5) > wl(1, 5), 'Obergrenze muss ueber der Untergrenze liegen');
+  assert.equal(M.wilsonUpper(0, 0), 1, 'Ohne Daten ist die Stopquote-Obergrenze 1 — maximal vorsichtig');
+  assert.equal(wl(0, 0), 0, 'Ohne Daten ist die Trefferquote-Untergrenze 0');
+  // Gegenprobe zur Fail-Closed-Idee: mehr Unsicherheit darf den Erwartungswert
+  // nur SENKEN, nie heben.
+  const viele = Array.from({ length: 60 }, (_, i) => ({ symbol: `D${i}`, ts: t0, reach_ts: t0 + 60_000, max_pct: i < 40 ? 3 : 0.2, min_pct: i < 40 ? -0.5 : -1.5 }));
+  const quote = (a) => { const o = M.pickOutcome(a, 2, -1); return o.hit / o.n; };
+  // Gleiche QUOTE (2/3), kleinere Stichprobe — nicht einfach die ersten sechs,
+  // das waeren nur Gewinner gewesen und der Test haette nichts gezeigt.
+  const wenige = [...viele.slice(0, 6), ...viele.slice(40, 43)];
+  const evViele = M.pickExpectancy(M.pickOutcome(viele, 2, -1), 2, -1).evEur;
+  const evWenige = M.pickExpectancy(M.pickOutcome(wenige, 2, -1), 2, -1).evEur;
+  assert.ok(Math.abs(quote(viele) - quote(wenige)) < 0.02,
+    'Beide Stichproben muessen DIESELBE Trefferquote haben, sonst misst der Vergleich etwas anderes');
+  assert.ok(evWenige < evViele,
+    `Dieselbe Quote bei kleinerer Stichprobe muss einen NIEDRIGEREN Erwartungswert ergeben (${evWenige} vs ${evViele})`);
+
+  /* -- 7. FAIL-CLOSED IN DER RANGFOLGE ------------------------------------- */
+  // Ein unbelegter Kandidat mit maximalem Live-Score darf einen belegten
+  // positiven Kandidaten mit minimalem Live-Score NIE ueberholen.
+  const geordnet = M.rankPicks([
+    { symbol: 'LAUT', tier: 'unbelegt', evEur: null, liveScore: 99, rank: M.pickTier('unbelegt', null) },
+    { symbol: 'BELEGT', tier: 'belegt', evEur: 12, liveScore: 3, rank: M.pickTier('belegt', 12) },
+    { symbol: 'DUENN', tier: 'duenn', evEur: 80, liveScore: 50, rank: M.pickTier('duenn', 80) },
+    { symbol: 'NEGATIV', tier: 'belegt', evEur: -40, liveScore: 95, rank: M.pickTier('belegt', -40) },
+  ]).map((x) => x.symbol);
+  assert.deepEqual(geordnet, ['BELEGT', 'DUENN', 'LAUT', 'NEGATIV'],
+    'Rangfolge muss sein: belegt-positiv, duenn-positiv, unbelegt, belegt-negativ');
+
+  // Und die Kernregel noch einmal einzeln, damit sie nicht mit der Liste kippt:
+  assert.ok(M.PICK_RANK.belegtPositiv < M.PICK_RANK.unbelegt,
+    'Fehlende Belege duerfen einen Kandidaten NIE nach oben bringen');
+  assert.ok(M.PICK_RANK.unbelegt < M.PICK_RANK.belegtNegativ,
+    'Ein belegt schlechter Kandidat gehoert unter einen unbewerteten — Wissen schlaegt Nichtwissen in BEIDE Richtungen');
+
+  /* -- 7b. Die Stopweite muss im Aufruf ABGELEITET werden ------------------ */
+  // Ohne diese Pruefung koennte jemand maxStopPct wieder auf eine feste Zahl
+  // setzen, und alle Rechnungen oben blieben trotzdem gruen.
+  assert.match(worker, /const maxStopPct = targetPct \/ PICK\.MIN_REWARD_RISK;/,
+    'topPicks muss die Stopweite aus dem Ziel ableiten, nicht festschreiben');
+  assert.match(worker, /const stopPct = -Math\.min\(maxStopPct,/,
+    'Ein vom Nutzer gewuenschter Stop darf den abgeleiteten Hoechstwert nicht ueberschreiten');
+
+  /* -- 8. Das Modul darf nichts bewerten ----------------------------------- */
+  const mod = worker.slice(worker.indexOf('async function topPicks('),
+                           worker.indexOf('/* ============================================================================\n   v3.17.0 · MUSTERLABOR'));
+  assert.match(mod, /buyWeight: 0/, 'Top Picks muessen 0 % BUY-Gewicht ausweisen');
+  for (const verboten of ['light:', 'crv:', 'buyReady', 'score:'])
+    assert.ok(!mod.includes(verboten),
+      `Top Picks duerfen keine Bewertungsgroesse setzen: "${verboten}"`);
+
+  /* -- 9. reach_ts: die Zeitmessung darf nicht an der 5-%-Schwelle haengen -- */
+  assert.match(worker, /const PICK_REACH_PCT = 2\.0;/,
+    'Die Referenzschwelle fuer die Haltedauer muss fest und dokumentiert sein');
+  assert.match(worker, /reach_ts=COALESCE\(reach_ts,\?\)/,
+    'Der Aufloeser muss reach_ts mitschreiben');
+  assert.match(worker, /ADD COLUMN reach_ts INTEGER/,
+    'Bestehende Produktions-D1 muessen die Spalte nachgezogen bekommen');
+}
+
+console.log('✓ FusionPulse v3.20.0 top-picks/expectancy regressions: OK');
