@@ -1029,3 +1029,41 @@ fallen. **Regel dahinter, die hier fast gerissen wäre: ausgeliefert ist nicht f
   Kopfzeile? Seit v3.14.5 sagt sie `v… · Worker …`. Stimmen beide, ist es ein Codefehler;
   weichen sie ab, ist es die Auslieferung. **Vor dieser Prüfung nicht am Layout arbeiten** —
   das hat fünf Versionen gekostet.
+
+---
+
+## 8p. WAS v3.19.0 GEÄNDERT HAT — Renderbudget und Ladeweg
+
+Erste Version dieses Strangs, die **nichts an der Bewertung** anfasst. Anlass war
+die Aussage des Nutzers, die Effizienz der App sei nicht vorhanden. Sie stimmte,
+und sie war messbar — siehe `RELEASE_NOTES_v3_19_0.md`.
+
+Drei Eingriffe, alle klein und alle testgesichert:
+
+1. **`public/sw.js`** liefert Assets, deren URL `?v=<APP_VERSION dieses SW>`
+   trägt, cache-first aus. Die Bindung an die eigene Version ist der ganze
+   Sicherheitsbeweis: eine neuere Shell fordert eine andere URL an und fällt
+   automatisch auf Network-first zurück. `/api/` bleibt ungecacht, die Sperre
+   steht im Code weiterhin VOR der Cache-Regel (ein Test prüft die Reihenfolge).
+2. **`categoryFreshness` / `ageFreshness` / `paintPanel`** in `public/app.js`
+   trennen „Markup aus Daten" von „Alterung aus der Uhr". Der 30-Sekunden-Takt
+   baut damit nichts mehr neu, solange die Daten stehen.
+3. Sekundenuhr ruht im Hintergrund-Tab und cacht ihren Knoten.
+
+**Die Regel, die sich daraus für den nächsten Bearbeiter ergibt:**
+Wer eine der fünf Takt-Kacheln anfasst, muss `paintPanel` benutzen und die
+Klick-Handler hinter `if (wrote)` binden. Ohne das hängt nach zehn Minuten der
+zwanzigste Handler am selben Knopf, und der Klick löst zwanzigmal aus — ein
+Fehler, der beim Bauen unsichtbar ist und sich erst nach Minuten Laufzeit zeigt.
+Suite 38 besteht darauf.
+
+**Zum Abschnitt 11 (zu schwache eigene Tests):** diesmal wurden alle drei neuen
+Kernprüfungen mit einer Negativkontrolle belegt — Code absichtlich kaputt
+gemacht, Fehlschlag beobachtet, zurückgesetzt. Das Protokoll steht in den
+Release Notes. Ich empfehle, das für jede weitere Suite so zu halten.
+
+**Bewusst NICHT gemacht** (mit Begründung, damit es nicht als Versäumnis gelesen
+wird): kein Aufteilen von `app.js` in nachladbare Teile (Umbau, keine
+Optimierung), kein Datenversions-Zähler zum Überspringen des String-Baus (ein
+vergessener Aufruf würde stillschweigend Veraltetes anzeigen — falscher Tausch
+in einer Trading-App), keine CSS-Bereinigung (braucht einen echten Browser).

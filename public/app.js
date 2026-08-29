@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.18.0 — Frontend
+   FusionPulse v3.19.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2751,30 +2751,68 @@ async function openStockFromDiscovery(symbol){
   requestAnimationFrame(()=>$('#stockFocus')?.scrollIntoView({behavior:'smooth',block:'start'}));
 }
 
+/* ═══════════════════════════════════════════ v3.19.0 · Zeichnen nur bei Bedarf
+   BEFUND (gemessen, nicht vermutet): der 30-Sekunden-Takt am Dateiende hat fuenf
+   Kacheln KOMPLETT neu gebaut — 5 innerHTML-Ersetzungen, ~18 kB Markup und ~19
+   neu gebundene Klick-Handler pro Takt — nur damit die Frischeplakette altern
+   kann. Alles darin war identisch. Nebenwirkung war schlimmer als die Rechenzeit:
+   jeder Takt hat die Knoten zerstoert und damit offene Tooltips, Tastaturfokus
+   und die Scrollposition innerhalb der Kachel mitgenommen.
+
+   Die Trennung dagegen: das Markup einer Kachel haengt jetzt AUSSCHLIESSLICH von
+   den Daten ab, nicht mehr von der Uhr. Die Plakette traegt ihren Zeitstempel als
+   `data-fresh-ts` und wird von `ageFreshness()` an Ort und Stelle nachgezogen.
+   Damit ist der Takt fast gratis, und die Kacheln werden nur noch dann neu
+   gebaut, wenn wirklich neue Daten da sind. */
+function paintPanel(el, html){
+  if(!el) return false;
+  if(el.__fpHtml === html) return false;      // identisch → kein DOM-Anfassen
+  el.__fpHtml = html;
+  el.innerHTML = html;
+  ageFreshness(el);                            // Plakette sofort korrekt fuellen
+  return true;                                 // true = Knoten sind NEU, Handler binden
+}
+
+/* Plakette ohne Uhrzeit im Markup. `ageFreshness` fuellt Klasse, Text und Titel. */
 function categoryFreshness(ts){
   const t=Number(ts||0);
   if(!t)return '<span class="freshness-chip red" title="Noch kein belastbarer Datenzeitpunkt vorhanden.">NICHT AKTUALISIERT</span>';
-  const ageMs=Math.max(0,Date.now()-t), ageMin=ageMs/60000;
-  const level=ageMin<3?'green':ageMin<5?'yellow':ageMin<10?'orange':'red';
-  const ageTxt=ageMin<1?`${Math.max(0,Math.floor(ageMs/1000))} Sek.`:`${Math.floor(ageMin)} Min.`;
-  const label=level==='green'?'AKTUALISIERT':level==='yellow'?'3+ MIN':level==='orange'?'5+ MIN':'10+ MIN · VERALTET';
-  return `<span class="freshness-chip ${level}" title="Letzte tatsächlich empfangene Daten: ${clock(t)}. Grün <3 Min., Gelb 3–5 Min., Orange 5–10 Min., Rot ab 10 Min. Ein Klick/Request allein setzt diesen Status nicht zurück.">${label} · ${clock(t)} · vor ${ageTxt}</span>`;
+  return `<span class="freshness-chip" data-fresh-ts="${t}"></span>`;
+}
+
+/* Alterung der Frischeplaketten. Schreibt nur, wenn sich der Text wirklich
+   aendert — ein unveraenderter Text loest sonst unnoetige Layout-Arbeit aus. */
+function ageFreshness(scope){
+  const root = scope || document;
+  const chips = root.querySelectorAll ? root.querySelectorAll('[data-fresh-ts]') : [];
+  chips.forEach((c)=>{
+    const t=Number(c.dataset.freshTs||0); if(!t) return;
+    const ageMs=Math.max(0,Date.now()-t), ageMin=ageMs/60000;
+    const level=ageMin<3?'green':ageMin<5?'yellow':ageMin<10?'orange':'red';
+    const ageTxt=ageMin<1?`${Math.max(0,Math.floor(ageMs/1000))} Sek.`:`${Math.floor(ageMin)} Min.`;
+    const label=level==='green'?'AKTUALISIERT':level==='yellow'?'3+ MIN':level==='orange'?'5+ MIN':'10+ MIN · VERALTET';
+    const text=`${label} · ${clock(t)} · vor ${ageTxt}`;
+    if(c.textContent!==text) c.textContent=text;
+    const cls=`freshness-chip ${level}`;
+    if(c.className!==cls) c.className=cls;
+    if(!c.title) c.title=`Letzte tatsächlich empfangene Daten: ${clock(t)}. Grün <3 Min., Gelb 3–5 Min., Orange 5–10 Min., Rot ab 10 Min. Ein Klick/Request allein setzt diesen Status nicht zurück.`;
+  });
 }
 
 function renderExtendedWatch(){
   const el=$('#extendedWatch');if(!el)return;const phase=String(openingMeta.phaseLabel||stockMeta.market?.label||'');
   const extended=/pre|after|overnight/i.test(phase);const cand=openingRows.slice(0,6);
-  el.innerHTML=`<div class="ophead"><b>🌙 Nachbörse / Extended Hours</b><span>${esc(phase||'Sessionstatus wird geladen')}</span><small>Beobachtung · kein BUY allein</small>${categoryFreshness(openingMeta.ts)}</div>`+(cand.length?`<div class="opgrid">${cand.map(r=>{const sr=stockRows.find(x=>x.symbol===r.symbol);return `<button class="opcard ${Number(r.gapPct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="${esc(r.symbol)} außerhalb/nahe der Hauptsession beobachten. Warum sinnvoll? Vor- und Nachbörse können frühe Aufmerksamkeit zeigen; breitere Spreads und weniger Volumen machen die Bewegung aber unsicherer."><b>${esc(r.symbol)}</b><span class="trend-pct ${Number(r.gapPct)>=0?'up':'down'}">${r.gapPct>=0?'+':''}${num(r.gapPct,1)}%</span>${spark((sr?.intraday||[]).slice(-12),120,28)}<em>${extended?'Extended Hours':'Opening/Session'}</em></button>`}).join('')}</div>`:'<span class="hint">Noch keine Extended-Hours-Kandidaten.</span>');
-  el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
+  const wrote=paintPanel(el,`<div class="ophead"><b>🌙 Nachbörse / Extended Hours</b><span>${esc(phase||'Sessionstatus wird geladen')}</span><small>Beobachtung · kein BUY allein</small>${categoryFreshness(openingMeta.ts)}</div>`+(cand.length?`<div class="opgrid">${cand.map(r=>{const sr=stockRows.find(x=>x.symbol===r.symbol);return `<button class="opcard ${Number(r.gapPct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="${esc(r.symbol)} außerhalb/nahe der Hauptsession beobachten. Warum sinnvoll? Vor- und Nachbörse können frühe Aufmerksamkeit zeigen; breitere Spreads und weniger Volumen machen die Bewegung aber unsicherer."><b>${esc(r.symbol)}</b><span class="trend-pct ${Number(r.gapPct)>=0?'up':'down'}">${r.gapPct>=0?'+':''}${num(r.gapPct,1)}%</span>${spark((sr?.intraday||[]).slice(-12),120,28)}<em>${extended?'Extended Hours':'Opening/Session'}</em></button>`}).join('')}</div>`:'<span class="hint">Noch keine Extended-Hours-Kandidaten.</span>'));
+  if(wrote) el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
 }
 function renderOpeningPanel() {
   const el=$('#openingPanel'); if(!el) return;
-  if(openingMeta.configured===false){el.innerHTML='<b>🚀 Premarket / Opening</b><span>Alpaca noch nicht verbunden. Benötigt zwei Cloudflare-Secrets: <code>ALPACA_API_KEY_ID</code> und <code>ALPACA_API_SECRET_KEY</code>.</span>';return;}
+  if(openingMeta.configured===false){paintPanel(el,'<b>🚀 Premarket / Opening</b><span>Alpaca noch nicht verbunden. Benötigt zwei Cloudflare-Secrets: <code>ALPACA_API_KEY_ID</code> und <code>ALPACA_API_SECRET_KEY</code>.</span>');return;}
   const phase=openingMeta.phaseLabel||'Status wird geladen';
   const top=openingRows.slice(0,5);
-  el.innerHTML=`<div class="ophead"><b>🚀 Premarket / Opening</b><span title="${esc(openingMeta.phaseHelp||'')} ">${esc(phase)}</span><small title="${esc((openingMeta.limitations||'Alpaca Marktdatenfeed')+' — Diese Kachel zeigt Gaps VOR der Eröffnung. Bewegungen im laufenden Handel stehen in der Kachel „Momentum-Mover“ darüber.')}">Alpaca · ${esc(openingMeta.feed||'IEX')} · vor der Eröffnung · 60 s</small>${categoryFreshness(openingMeta.ts)}</div>`+
-    (top.length?`<div class="opgrid">${top.map(r=>`<button type="button" class="opcard ${r.light} ${Number(r.ret5)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="${esc(r.symbol)} im Aktienradar öffnen. Momentum-Score kombiniert Gap, Volumenbeschleunigung, kurzfristige Kursdynamik und Premarket-/Opening-Level. Kein BUY allein."><b>${esc(r.symbol)}${r.origin==='favorite'?' ★':''}</b><span class="trend-pct ${Number(r.gapPct)>=0?'up':'down'}">${r.gapPct>=0?'+':''}${num(r.gapPct,1)}% Gap</span><span>Mom ${num(r.momentumScore,1)}</span><span class="trend-pct ${Number(r.ret5)>=0?'up':'down'}" title="Speed = kurzfristige Kursänderung der letzten verfügbaren 5-Minuten-Periode gegenüber der vorherigen Periode. Positiv = Beschleunigung nach oben, negativ = Abschwächung/Rückgang, 0 % = kaum Veränderung. Kontextwert, kein eigenständiges BUY-Signal.">Speed ${Number(r.ret5)>=0?'+':''}${num(r.ret5,2)}%</span><span>RV ${r.relVol==null?'n.v.':num(r.relVol,1)+'×'}</span>${r.priceSource==='daily'?'<span class="warn" title="Alpaca liefert hier keinen aktuellen Minute-/Trade-Quote; verwendet wird nur der Tages-Bar als Discovery-Fallback. Kein Live-Kurs und kein BUY-Signal.">⚠ Tages-Bar/Fallback</span>':''}<span title="Elliott/Fibonacci-Strukturprojektion: grober möglicher Bewegungsraum aus aktuellem Impuls und 1,618-Projektion; kein garantiertes Kursziel.">Struktur ${num(r.structurePct,1)}%</span><em>${esc(r.phaseAction)}</em></button>`).join('')}</div>`:`<span class="hint">Noch keine verwertbaren Live-Daten im aktuellen ${esc(openingMeta.feed||'Alpaca')}-Zeitfenster.</span>`);
-  el.querySelectorAll('[data-openstock]').forEach(btn=>btn.addEventListener('click',()=>openStockFromDiscovery(btn.dataset.openstock)));
+  const wrote=paintPanel(el,`<div class="ophead"><b>🚀 Premarket / Opening</b><span title="${esc(openingMeta.phaseHelp||'')} ">${esc(phase)}</span><small title="${esc((openingMeta.limitations||'Alpaca Marktdatenfeed')+' — Diese Kachel zeigt Gaps VOR der Eröffnung. Bewegungen im laufenden Handel stehen in der Kachel „Momentum-Mover“ darüber.')}">Alpaca · ${esc(openingMeta.feed||'IEX')} · vor der Eröffnung · 60 s</small>${categoryFreshness(openingMeta.ts)}</div>`+
+    (top.length?`<div class="opgrid">${top.map(r=>`<button type="button" class="opcard ${r.light} ${Number(r.ret5)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="${esc(r.symbol)} im Aktienradar öffnen. Momentum-Score kombiniert Gap, Volumenbeschleunigung, kurzfristige Kursdynamik und Premarket-/Opening-Level. Kein BUY allein."><b>${esc(r.symbol)}${r.origin==='favorite'?' ★':''}</b><span class="trend-pct ${Number(r.gapPct)>=0?'up':'down'}">${r.gapPct>=0?'+':''}${num(r.gapPct,1)}% Gap</span><span>Mom ${num(r.momentumScore,1)}</span><span class="trend-pct ${Number(r.ret5)>=0?'up':'down'}" title="Speed = kurzfristige Kursänderung der letzten verfügbaren 5-Minuten-Periode gegenüber der vorherigen Periode. Positiv = Beschleunigung nach oben, negativ = Abschwächung/Rückgang, 0 % = kaum Veränderung. Kontextwert, kein eigenständiges BUY-Signal.">Speed ${Number(r.ret5)>=0?'+':''}${num(r.ret5,2)}%</span><span>RV ${r.relVol==null?'n.v.':num(r.relVol,1)+'×'}</span>${r.priceSource==='daily'?'<span class="warn" title="Alpaca liefert hier keinen aktuellen Minute-/Trade-Quote; verwendet wird nur der Tages-Bar als Discovery-Fallback. Kein Live-Kurs und kein BUY-Signal.">⚠ Tages-Bar/Fallback</span>':''}<span title="Elliott/Fibonacci-Strukturprojektion: grober möglicher Bewegungsraum aus aktuellem Impuls und 1,618-Projektion; kein garantiertes Kursziel.">Struktur ${num(r.structurePct,1)}%</span><em>${esc(r.phaseAction)}</em></button>`).join('')}</div>`:`<span class="hint">Noch keine verwertbaren Live-Daten im aktuellen ${esc(openingMeta.feed||'Alpaca')}-Zeitfenster.</span>`));
+  if(wrote) el.querySelectorAll('[data-openstock]').forEach(btn=>btn.addEventListener('click',()=>openStockFromDiscovery(btn.dataset.openstock)));
 }
 
 function renderMarketGainers(){
@@ -2789,14 +2827,14 @@ function renderMarketGainers(){
   if(!radar.length){
     const openingRadar=openingRows.filter(r=>r.origin==='radar').slice(0,12).map(r=>({symbol:r.symbol,movePct:r.gapPct,speedPct:r.ret5,score:r.momentumScore,spreadPct:null}));
     if(openingRadar.length){
-      el.innerHTML=`<div class="ophead"><b>📡 Momentum-Mover · Situation Radar</b><span>${openingRadar.length} verifizierte Opening-Radar-Kandidaten · Rückfallquelle</span><small title="Ersatzanzeige: der Tiingo-Radar hat gerade keine Kandidaten, deshalb werden hier Opening-Radar-Titel gezeigt.">Rückfall auf Opening-Radar · 0 % BUY-Gewicht</small>${categoryFreshness(openingMeta.ts)}</div><div class="opgrid">${openingRadar.map(r=>`<button type="button" class="opcard ${Number(r.movePct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="Vom verifizierten Opening-Radar erkannt. Der serverseitige Deep Scan übernimmt geeignete Kandidaten automatisch; BUY erst nach Elliott/Qualität/CRV."><b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b><span class="trend-pct ${Number(r.movePct)>=0?'up':'down'}">${Number(r.movePct)>=0?'+':''}${num(r.movePct,1)}% Gap</span><span>Mom ${num(r.score,1)}</span><span>Opening verified</span><em>Radar · Elliott prüfen</em></button>`).join('')}</div>`;
-      el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
+      const wroteFb=paintPanel(el,`<div class="ophead"><b>📡 Momentum-Mover · Situation Radar</b><span>${openingRadar.length} verifizierte Opening-Radar-Kandidaten · Rückfallquelle</span><small title="Ersatzanzeige: der Tiingo-Radar hat gerade keine Kandidaten, deshalb werden hier Opening-Radar-Titel gezeigt.">Rückfall auf Opening-Radar · 0 % BUY-Gewicht</small>${categoryFreshness(openingMeta.ts)}</div><div class="opgrid">${openingRadar.map(r=>`<button type="button" class="opcard ${Number(r.movePct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="Vom verifizierten Opening-Radar erkannt. Der serverseitige Deep Scan übernimmt geeignete Kandidaten automatisch; BUY erst nach Elliott/Qualität/CRV."><b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b><span class="trend-pct ${Number(r.movePct)>=0?'up':'down'}">${Number(r.movePct)>=0?'+':''}${num(r.movePct,1)}% Gap</span><span>Mom ${num(r.score,1)}</span><span>Opening verified</span><em>Radar · Elliott prüfen</em></button>`).join('')}</div>`);
+      if(wroteFb) el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
       return;
     }
-    el.innerHTML=`<div class="ophead"><b>📡 Momentum-Mover · Situation Radar</b><small title="Bewegung während der laufenden US-Handelszeit (Tiingo). Die Premarket-Kachel ist eine andere.">Tiingo · laufender Handel · 0 % BUY-Gewicht</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div>${gateLine}<span class="hint">Noch keine verifizierten marktweiten Radar-Kandidaten. Favoriten sind davon getrennt.</span>`;return;
+    paintPanel(el,`<div class="ophead"><b>📡 Momentum-Mover · Situation Radar</b><small title="Bewegung während der laufenden US-Handelszeit (Tiingo). Die Premarket-Kachel ist eine andere.">Tiingo · laufender Handel · 0 % BUY-Gewicht</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div>${gateLine}<span class="hint">Noch keine verifizierten marktweiten Radar-Kandidaten. Favoriten sind davon getrennt.</span>`);return;
   }
-  el.innerHTML=`<div class="ophead"><b>📡 Momentum-Mover · Situation Radar</b><span>${radar.length} verifizierte Kandidaten · Bewegung WÄHREND der Handelszeit</span><small title="Nicht mit „Premarket/Opening Momentum“ verwechseln: diese Kachel zeigt Titel, die sich JETZT im laufenden Handel bewegen (Tiingo). Die Premarket-Kachel darunter zeigt Gaps VOR der Eröffnung (Alpaca).">Tiingo · laufender Handel</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div>${gateLine}<small class="stage-note" title="Diese Liste ist bewusst KEINE Kaufempfehlung und will auch keine sein. Sie beantwortet die Frage „wo lohnt der Blick jetzt“ — die Einordnung, ob eine Nachricht den Titel wirklich trägt, kann nur ein Mensch mit Kontext leisten. Eine fehlende BUY-Ampel bedeutet daher NICHT, dass hier nichts ist.">Kandidatenliste, keine Kaufempfehlung — die Einordnung der Nachrichtenlage bleibt bei dir</small><div class="opgrid">${radar.map(r=>`<button type="button" class="opcard ${Number(r.movePct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="Situation-Radar: priorisiert frische Beschleunigung, Breakout-Druck, Opening-Drive, Reclaim, Volumenpuls und Spread-Qualität. Erst Deep-Analyse/Elliott/CRV kann BUY freigeben."><b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b><span class="situation-tag">${esc(r.lifecycle&&r.lifecycle!=='WATCH'?r.lifecycle+' · ':'')}${esc(r.situation||'WATCH')}</span><span class="trend-pct ${Number(r.movePct)>=0?'up':'down'}">${Number(r.movePct)>=0?'+':''}${num(r.movePct,1)}% Tag</span><span class="${r.speedPct!=null?'trend-pct '+(Number(r.speedPct)>=0?'up':'down'):''}">${r.speedPct!=null?'Speed '+(Number(r.speedPct)>=0?'+':'')+num(r.speedPct,2)+'%':'Situation '+num(r.situationScore??r.score,0)}</span><span>${r.spreadPct!=null?'Spread '+num(r.spreadPct,2)+'%':'Spread n.v.'}</span><em>${gainers.some(x=>x.symbol===r.symbol)?'Gainer · Deep Check':'Situation · Deep Check'}</em>${momentumContext(r.symbol)}</button>`).join('')}</div>`;
-  el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
+  const wrote=paintPanel(el,`<div class="ophead"><b>📡 Momentum-Mover · Situation Radar</b><span>${radar.length} verifizierte Kandidaten · Bewegung WÄHREND der Handelszeit</span><small title="Nicht mit „Premarket/Opening Momentum“ verwechseln: diese Kachel zeigt Titel, die sich JETZT im laufenden Handel bewegen (Tiingo). Die Premarket-Kachel darunter zeigt Gaps VOR der Eröffnung (Alpaca).">Tiingo · laufender Handel</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div>${gateLine}<small class="stage-note" title="Diese Liste ist bewusst KEINE Kaufempfehlung und will auch keine sein. Sie beantwortet die Frage „wo lohnt der Blick jetzt“ — die Einordnung, ob eine Nachricht den Titel wirklich trägt, kann nur ein Mensch mit Kontext leisten. Eine fehlende BUY-Ampel bedeutet daher NICHT, dass hier nichts ist.">Kandidatenliste, keine Kaufempfehlung — die Einordnung der Nachrichtenlage bleibt bei dir</small><div class="opgrid">${radar.map(r=>`<button type="button" class="opcard ${Number(r.movePct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="Situation-Radar: priorisiert frische Beschleunigung, Breakout-Druck, Opening-Drive, Reclaim, Volumenpuls und Spread-Qualität. Erst Deep-Analyse/Elliott/CRV kann BUY freigeben."><b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b><span class="situation-tag">${esc(r.lifecycle&&r.lifecycle!=='WATCH'?r.lifecycle+' · ':'')}${esc(r.situation||'WATCH')}</span><span class="trend-pct ${Number(r.movePct)>=0?'up':'down'}">${Number(r.movePct)>=0?'+':''}${num(r.movePct,1)}% Tag</span><span class="${r.speedPct!=null?'trend-pct '+(Number(r.speedPct)>=0?'up':'down'):''}">${r.speedPct!=null?'Speed '+(Number(r.speedPct)>=0?'+':'')+num(r.speedPct,2)+'%':'Situation '+num(r.situationScore??r.score,0)}</span><span>${r.spreadPct!=null?'Spread '+num(r.spreadPct,2)+'%':'Spread n.v.'}</span><em>${gainers.some(x=>x.symbol===r.symbol)?'Gainer · Deep Check':'Situation · Deep Check'}</em>${momentumContext(r.symbol)}</button>`).join('')}</div>`);
+  if(wrote) el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
 }
 
 /* ==== v3.6.4 · US-Handelszeiten in unserer Zeit + ehrlicher Datenstand ======
@@ -3722,7 +3760,7 @@ function renderEarningsBoard(){
     +`<span title="Anstehende Termine der Titel, die FusionPulse gerade analysiert. „nB“ = nach Börsenschluss, „vB“ = vor Börsenbeginn. Ein Termin ist keine Richtungsaussage — der Kurs kann danach in beide Richtungen weit laufen.">nächste 14 Tage · beobachtete Titel</span>`
     +`<small>Terminliste · 0 % BUY-Gewicht</small></div>`;
 
-  if(!earnData){ el.innerHTML=head+'<span class="hint">Terminkalender wird geladen.</span>'; return; }
+  if(!earnData){ paintPanel(el,head+'<span class="hint">Terminkalender wird geladen.</span>'); return; }
 
   const known=new Map((stockRows||[]).map(r=>[String(r.symbol||'').toUpperCase(),r]));
   const seen=new Map();
@@ -3743,7 +3781,7 @@ function renderEarningsBoard(){
       : earnData.state==='stale' || earnData.state==='unavailable'
       ? 'Der Terminkalender war zuletzt nicht erreichbar. Es wird bewusst nichts geschätzt.'
       : 'Für die aktuell beobachteten Titel steht in den nächsten 14 Tagen kein Termin an.';
-    el.innerHTML=head+`<span class="hint">${esc(why)}</span>`; return;
+    paintPanel(el,head+`<span class="hint">${esc(why)}</span>`); return;
   }
 
   const bySector=new Map();
@@ -3756,7 +3794,7 @@ function renderEarningsBoard(){
     .map(([sec,list])=>[sec,list.sort((a,b)=>a.days-b.days||String(a.symbol).localeCompare(String(b.symbol)))])
     .sort((a,b)=>a[1][0].days-b[1][0].days);
 
-  el.innerHTML=head+sectors.map(([sec,list])=>
+  const wroteEb=paintPanel(el,head+sectors.map(([sec,list])=>
     `<div class="earn-sector"><b class="earn-sec-name">${esc(sec)}<i>${list.length}</i></b><div class="earn-rows">`
     +list.map(e=>{
       const ft=flatexTradability(e.row);
@@ -3771,9 +3809,9 @@ function renderEarningsBoard(){
         +`<span class="earn-ft ft-${ft.tone}" title="${esc(ft.detail)}">${ft.tone==='ok'?'🏦':ft.tone==='no'?'⛔':'❓'}</span>`
         +`</button>`;
     }).join('')+'</div></div>').join('')
-    +`<small class="hint">„nB“ = nach Börsenschluss, „vB“ = vor Börsenbeginn. Ein Termin ist keine Richtungsaussage. Eine Position über die Zahlen zu halten ist eine andere Entscheidung als der hier bewertete Intraday-Plan.</small>`;
+    +`<small class="hint">„nB“ = nach Börsenschluss, „vB“ = vor Börsenbeginn. Ein Termin ist keine Richtungsaussage. Eine Position über die Zahlen zu halten ist eine andere Entscheidung als der hier bewertete Intraday-Plan.</small>`);
 
-  el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>{
+  if(wroteEb) el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>{
     focusStock=b.dataset.openstock||''; renderStocks();
     document.querySelector('.stockstage')?.scrollIntoView({behavior:'smooth',block:'start'});
   }));
@@ -4069,12 +4107,12 @@ function renderSectorLaggards(){
     const why=(stockRows||[]).some(r=>r.sectorLag!=null)
       ? 'Kein Sektor läuft gerade deutlich genug, oder kein Titel hinkt messbar hinterher.'
       : 'Noch keine Sektor-Vergleichswerte im aktuellen Scan. Es wird bewusst nichts geschätzt.';
-    el.innerHTML=head+`<span class="hint">${esc(why)}</span>`; return;
+    paintPanel(el,head+`<span class="hint">${esc(why)}</span>`); return;
   }
   const cand=rows.sort((a,b)=>Number(b.sectorLag)-Number(a.sectorLag)).slice(0,6);
   // Nur der erste Eintrag ist der staerkste Rueckstand — nur er darf pulsieren.
   const pulseSym=cand[0]?.symbol||'';
-  el.innerHTML=head+`<div class="opgrid">${cand.map((r,ix)=>{
+  const wroteSl=paintPanel(el,head+`<div class="opgrid">${cand.map((r,ix)=>{
     const lag=Number(r.sectorLag), lead=Number(r.sectorLeaderRet15), own=Number(r.ret15);
     const pulse=(ix===0 && r.symbol===pulseSym)?markAttention(r.symbol):'';
     const ft=flatexTradability(r);
@@ -4087,8 +4125,8 @@ function renderSectorLaggards(){
       +`<span class="lag-flatex ft-${ft.tone}" title="${esc(ft.detail)}">${ft.tone==='ok'?'🏦 handelbar':ft.tone==='no'?'⛔ bei flatex eher nicht':'❓ Verfügbarkeit prüfen'}</span>`
       +`<em>${esc(why||r.setup||'Beobachten')}</em></button>`;
   }).join('')}</div>`
-  +`<small class="hint">Rückstand heißt: der Sektor bewegt sich, dieser Titel noch nicht. Ob er nachzieht oder zu Recht zurückbleibt, entscheidet die Nachrichtenlage — nicht diese Kennzahl.</small>`;
-  el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>{
+  +`<small class="hint">Rückstand heißt: der Sektor bewegt sich, dieser Titel noch nicht. Ob er nachzieht oder zu Recht zurückbleibt, entscheidet die Nachrichtenlage — nicht diese Kennzahl.</small>`);
+  if(wroteSl) el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>{
     focusStock=b.dataset.openstock||''; renderStocks();
     document.querySelector('.stockstage')?.scrollIntoView({behavior:'smooth',block:'start'});
   }));
@@ -4249,9 +4287,15 @@ function exportJournal() {
 }
 
 /* ------------------------------------------------------- Bar-Close-Uhr */
+/* v3.19.0: lief bisher auch im Hintergrund-Tab weiter und suchte das Element bei
+   jedem der 86 400 Ticks pro Tag neu. Beides ohne Nutzen — im Hintergrund sieht
+   die Uhr niemand, und der Knoten wechselt nie. */
+let barclockNode = null;
 setInterval(() => {
+  if (document.visibilityState !== 'visible') return;
   const s = 300 - Math.floor((Date.now() / 1000) % 300);
-  const el = $('#barclock');
+  const el = barclockNode || (barclockNode = $('#barclock'));
+  if (!el) return;
   el.textContent = `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
   el.classList.toggle('soon', s <= 30);
 }, 1000);
@@ -4460,8 +4504,17 @@ document.addEventListener('keydown', (e) => {
 });
 
 renderAnalysisMethods();
-// Freshness-Farben muessen auch dann altern, wenn KEINE neue API-Antwort kommt.
-setInterval(()=>{if(document.visibilityState==='visible'){renderMarketGainers();renderExtendedWatch();renderOpeningPanel();renderSectorLaggards();renderEarningsBoard();}},30_000);
+/* Freshness-Farben muessen auch dann altern, wenn KEINE neue API-Antwort kommt.
+   v3.19.0: Dafuer werden nicht mehr fuenf Kacheln neu gebaut. `ageFreshness()`
+   zieht nur die Plaketten nach; die Renderer laufen weiter mit, sind ueber
+   `paintPanel` aber ein No-Op, solange sich an den Daten nichts geaendert hat.
+   Gemessen: vorher 5 innerHTML-Ersetzungen, ~18 kB Markup und ~19 neu
+   gebundene Klick-Handler pro Takt — jetzt null, solange die Daten stehen. */
+setInterval(()=>{
+  if(document.visibilityState!=='visible') return;
+  ageFreshness();
+  renderMarketGainers();renderExtendedWatch();renderOpeningPanel();renderSectorLaggards();renderEarningsBoard();
+},30_000);
 
 /* ------------------------------------------------------------------- Events */
 $('#scan').onclick = async () => {

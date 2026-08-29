@@ -3321,3 +3321,83 @@ console.log('✓ FusionPulse v3.17.0 pattern-lab regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.18.0 gate-funnel/calibration/sector-reserve regressions: OK');
+
+/* ═══════════════════════════════════ v3.19.0 · Effizienz-Invarianten ════════
+   ANLASS: Der 30-Sekunden-Takt hat fuenf Kacheln vollstaendig neu gebaut, nur
+   damit die Frischeplakette altern kann — gemessen 5 innerHTML-Ersetzungen,
+   ~18 kB Markup und ~19 neu gebundene Klick-Handler je Takt, bei identischem
+   Inhalt. Das kostete nicht nur Rechenzeit: der Neubau hat offene Tooltips,
+   Tastaturfokus und die Scrollposition in der Kachel jedes Mal mitgenommen.
+
+   Diese Pruefungen halten die Trennung fest, die das behoben hat. Sie sind
+   bewusst als HARTE Aussagen formuliert, nicht als Stilhinweise — ein spaeterer
+   Bearbeiter, der `paintPanel` durch `el.innerHTML=` ersetzt, faellt hier auf. */
+{
+  // 1) Die Plakette darf KEINE Uhrzeit im Markup tragen, sonst ist das Markup
+  //    zeitabhaengig und das Memo in paintPanel greift nie.
+  const cf = app.slice(app.indexOf('function categoryFreshness('), app.indexOf('function ageFreshness('));
+  assert.ok(!/Date\.now\(\)/.test(cf),
+    'categoryFreshness darf nicht von der Uhr abhaengen — sonst baut jeder Takt alles neu');
+  assert.match(cf, /data-fresh-ts="\$\{t\}"/,
+    'Die Plakette muss ihren Zeitstempel als data-fresh-ts tragen');
+
+  // 2) Die Alterung passiert an Ort und Stelle, ohne Knoten zu zerstoeren.
+  const af = app.slice(app.indexOf('function ageFreshness('), app.indexOf('function renderExtendedWatch('));
+  assert.match(af, /querySelectorAll\('\[data-fresh-ts\]'\)/, 'ageFreshness muss die Plaketten selbst finden');
+  assert.ok(!/innerHTML/.test(af), 'ageFreshness darf kein innerHTML schreiben');
+  assert.match(af, /ageMin<3\?'green':ageMin<5\?'yellow':ageMin<10\?'orange':'red'/,
+    'Die Schwellen der Frischeampel muessen unveraendert bleiben (gruen <3, gelb 3-5, orange 5-10, rot ab 10 Min.)');
+
+  // 3) Das Memo selbst.
+  const pp = app.slice(app.indexOf('function paintPanel('), app.indexOf('/* Plakette ohne Uhrzeit'));
+  assert.match(pp, /el\.__fpHtml === html/, 'paintPanel muss unveraendertes Markup erkennen');
+  assert.match(pp, /return false/, 'paintPanel muss melden, wenn NICHT geschrieben wurde');
+
+  // 4) Klick-Handler duerfen nur an NEUE Knoten. Wird das Markup nicht ersetzt,
+  //    haengt sonst bei jedem Takt ein weiterer Handler am selben Knopf und der
+  //    Klick loest mehrfach aus — ein Fehler, der erst nach Minuten auffaellt.
+  for (const fn of ['renderExtendedWatch', 'renderOpeningPanel', 'renderMarketGainers',
+                    'renderSectorLaggards', 'renderEarningsBoard']) {
+    const start = app.indexOf(`function ${fn}(`);
+    assert.ok(start > 0, `${fn} nicht gefunden`);
+    const body = app.slice(start, start + 12000);
+    const head = body.slice(0, body.indexOf(`function `, 10) === -1 ? body.length : body.indexOf(`\nfunction `));
+    assert.ok(!/\bel\.innerHTML\s*=/.test(head),
+      `${fn} darf nicht direkt el.innerHTML schreiben — sonst laeuft der 30-s-Takt wieder voll durch`);
+    if (/el\.querySelectorAll\('\[data-openstock\]'\)/.test(head))
+      assert.match(head, /if\(wrote\w*\) el\.querySelectorAll\('\[data-openstock\]'\)/,
+        `${fn} darf Klick-Handler nur binden, wenn die Knoten neu sind`);
+  }
+
+  // 5) Der Takt selbst.
+  const tick = app.slice(app.indexOf("if(document.visibilityState!=='visible') return;\n  ageFreshness();") - 400);
+  assert.match(tick.slice(0, 900), /ageFreshness\(\);/,
+    'Der 30-Sekunden-Takt muss die Plaketten altern lassen');
+
+  // 6) Sekundenuhr: kein Leerlauf im Hintergrund-Tab.
+  const clockIdx = app.indexOf('let barclockNode = null;');
+  assert.ok(clockIdx > 0, 'Die Sekundenuhr muss ihren Knoten zwischenspeichern');
+  assert.match(app.slice(clockIdx, clockIdx + 500), /visibilityState !== 'visible'/,
+    'Die Sekundenuhr darf im Hintergrund-Tab nicht weiterlaufen');
+}
+
+/* Service Worker: versionierte Assets sind unveraenderlich und muessen aus dem
+   Cache kommen. Vorher zog jeder Start ~160 kB (gzip) ueber das Netz. */
+{
+  const sw = fs.readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8');
+  assert.match(sw, /url\.searchParams\.get\('v'\) === APP_VERSION/,
+    'Der Service Worker muss versionierte Assets cache-first ausliefern');
+  assert.match(sw, /if \(url\.pathname\.startsWith\('\/api\/'\)\) return;/,
+    'API-Antworten duerfen NIE gecacht werden');
+  const cacheFirstIdx = sw.indexOf("url.searchParams.get('v') === APP_VERSION");
+  const apiIdx = sw.indexOf("url.pathname.startsWith('/api/')");
+  assert.ok(apiIdx < cacheFirstIdx,
+    'Die /api/-Sperre muss VOR der Cache-first-Regel stehen, sonst koennte ein Kurs gecacht werden');
+  // Die Bindung an APP_VERSION ist der ganze Sicherheitsbeweis: eine neuere
+  // Shell fordert ?v=<neu> an, trifft den Vergleich nicht und faellt auf
+  // Network-first zurueck. Ein Vergleich gegen "irgendein ?v=" waere unsicher.
+  assert.ok(!/searchParams\.has\('v'\)/.test(sw),
+    'Cache-first darf nicht auf einen beliebigen ?v=-Parameter reagieren, nur auf die eigene Version');
+}
+
+console.log('✓ FusionPulse v3.19.0 render-budget/sw-cache regressions: OK');
