@@ -1371,3 +1371,124 @@ bewusst teurer als die Standardannahmen.
 - Kein Krypto-Äquivalent zur Sektorlogik (BTC-Dominanz, L1/L2/Meme-Kohorten):
   braucht eine eigene Herleitung, keine Umbenennung der Aktienlogik.
 - Keine Sonderbehandlung für Staking/Lending/Tausch in der Steuerrechnung.
+
+---
+
+## 8u. WAS v3.24.0 GEÄNDERT HAT — Boot-Wächter und die Naht
+
+### Anlass
+
+Die Oberfläche stand still: alle Anzeigen auf den STATISCHEN Startwerten aus
+`index.html` (`v–`, `--:--`, `Verbinde…`). Also lief `app.js` gar nicht. Der
+ausgelieferte Code bootet sauber und ist vollständig — die Ursache lag außerhalb
+und war aus einem Bildschirmfoto nicht bestimmbar.
+
+**Die Lehre:** eine App, die lautlos stirbt, sieht aus wie eine App, die nur
+wartet. Solange der Ausfall nicht von „lädt noch" unterscheidbar ist, ist jede
+Ferndiagnose Raterei.
+
+### Boot-Wächter (`public/index.html`, INLINE)
+
+- 8-Sekunden-Timer, prüft `window.__fpBooted`.
+- Sondiert `app.js`, `version.js`, `/api/health` und meldet **HTTP-Status und
+  Content-Type**. Erkennt ausdrücklich den häufigsten stillen Totalausfall:
+  Server liefert `index.html` statt der Datei → Browser bekommt HTML statt
+  JavaScript und meldet nichts.
+- Zusätzlich ein `error`-Listener für Abbrüche beim Ausführen.
+- **Muss inline und vor `app.js` stehen** — eine externe Datei könnte am selben
+  Problem scheitern. Zwei Tests halten beides fest.
+- `app.js` setzt `self.__fpBooted = true` als **allerletzte Anweisung**. Ein
+  Test prüft, dass es wirklich die letzte ist; sonst würde ein Abbruch
+  mittendrin als erfolgreicher Start gelten.
+
+### Notausstieg `?fpreset=1` (ganz oben in `app.js`)
+
+SW abmelden, alle Caches löschen, neu laden. **Nicht** `localStorage.clear()` —
+ein Test verbietet es. Muss vor allem anderen stehen: wenn ein kaputter Cache
+die App lahmlegt, darf die Rettung nicht hinter dem toten Code liegen.
+
+### Drei Parameterfehler — dieselbe Ursache
+
+`Number(null)` und `Number('')` sind **0, nicht NaN**. `Number.isFinite(Number(x))`
+hält einen nicht gesetzten Suchparameter deshalb für eine gültige Null.
+
+- `spreadPct`/`feePct` → Krypto rechnete mit 0,80 % statt 0,40 % Rundlauf.
+- `netEur` → Mindestziel fiel von 2,04 % auf 0,38 %, Stop von 1,02 % auf 0,19 %.
+  Alles darunter war damit falsch.
+
+Behoben durch **einen** Helfer `posNum(v, fallback)`. Ein Test verbietet
+`Number.isFinite(Number(opts.x))` in `topPicks`.
+
+**Regel:** jede Zahl, die von außen kommt, läuft über `posNum`. `Number.isFinite`
+allein reicht NICHT. (Dieselbe Regel steht schon in 8t für `pickCosts` — ich
+hatte sie dort behoben und hier übersehen. Wer eine solche Regel aufstellt, muss
+alle Aufrufstellen durchsehen, nicht nur die, an der es aufgefallen ist.)
+
+### Die Testlücke, die das möglich gemacht hat
+
+42 grüne Suiten haben keinen der drei Fehler gefunden, weil sie
+`requiredMovePct` und `pickCosts` **direkt und mit sauberen Zahlen** prüfen.
+Die **Naht** zwischen Parameterschicht und Rechnung war nie geprüft.
+
+Suite 43 ruft den ECHTEN Endpunkt auf — ohne Parameter, mit leeren, mit
+kaputten. **Für den nächsten Bearbeiter:** Unit-Tests der reinen Funktionen
+reichen nicht. Jeder Endpunkt braucht mindestens einen Aufruf ohne jeden
+Parameter, der die dokumentierten Standardwerte bestätigt.
+
+---
+
+## 8v. WAS v3.25.0 GEÄNDERT HAT — der Ausfall vom 29.08. und seine Ursache
+
+**Der wichtigste Abschnitt für jeden, der `public/sw.js` anfasst.**
+
+### Ursache
+
+Safari: „Service Worker context closed" / „Failed to load resource". `app.js`
+wurde nie ausgeführt, die Oberfläche blieb auf den statischen Startwerten.
+
+Zwei Fehler, beide in v3.19.0 von mir eingebaut:
+
+1. **Der Cache-first-Zweig hatte kein `.catch()`.** Lehnt `caches.match()` ab —
+   in Safari genügt Speicherdruck oder ITP-Räumung —, lehnt `respondWith()` ab,
+   und für den Browser existiert die Datei dann nicht. Der Network-first-Zweig
+   hatte einen `.catch()`, lieferte `index.html` aus, das Grundgerüst erschien —
+   deshalb sah der Totalausfall wie „keine Daten" aus.
+2. **Hintergrund-Schreibvorgänge lagen nicht in `e.waitUntil()`.** Der Browser
+   durfte den Service Worker mitten im Schreiben beenden.
+
+### Die Regel
+
+> **Ein `respondWith` darf NIEMALS ablehnen.** Ein Service Worker sitzt zwischen
+> der App und allem, was sie braucht. Jeder unbehandelte Fehler darin nimmt
+> nicht eine Datei aus dem Verkehr, sondern die ganze Anwendung.
+
+Jeder Zweig endet in einer Antwort: Netz, Cache oder `lastResort()` (504 mit
+lesbarem Text). Nie in einem stillen Nichts. Alle Cache-Schreibvorgänge laufen
+über `cachePut(e, req, res)`, das `e.waitUntil()` benutzt.
+
+### Die Testlücke — und warum sie exemplarisch ist
+
+43 grüne Suiten haben den Fehler nicht gefunden, weil sie `sw.js` nur als TEXT
+prüfen. **Regex sieht, was da ist, nie was fehlt.** Ein fehlendes `.catch()` ist
+per Textprüfung unsichtbar.
+
+`tests/sw-fault.mjs` (via `npm run test:sw`, in `check` eingehängt) baut eine
+Service-Worker-Umgebung nach und FÜHRT den echten `sw.js` aus — unter kaputtem
+Cache, fehlendem Netz, scheiterndem Schreibvorgang, für Assets und Shell. Die
+Kernforderung: es muss IMMER eine Antwort herauskommen.
+
+**Verallgemeinerung für den nächsten Bearbeiter:** Für jede Komponente, die
+zwischen der App und ihren Daten sitzt (Service Worker, Netzwerkschicht,
+Cache-Schichten), reicht eine Textprüfung nicht. Sie muss unter Störung
+ausgeführt werden. Der Fehlerpfad ist dort der wichtige Pfad, nicht der
+Erfolgspfad.
+
+### Selbstheilung (`public/app.js`, ganz oben)
+
+Nach 12 s ohne verarbeitete Antwort: Service Worker abmelden, Caches löschen,
+neu laden.
+- Auslöser ist `self.__fpScanOk` (im Erfolgspfad von `scan()` gesetzt), NICHT
+  das bloße Starten von app.js — ein kaputter SW blockiert alles danach.
+- Sperrfrist 6 h über `localStorage['fp_sw_healed_at']`. Ohne sie entstünde eine
+  Neulade-Schleife, die schlimmer wäre als der Fehler.
+- Kein `localStorage.clear()`. Tests halten alle drei Punkte fest.

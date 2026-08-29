@@ -4030,3 +4030,117 @@ console.log('✓ FusionPulse v3.22.0 tempo/cost-load/domain regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.23.0 coin-lane/cost-model regressions: OK');
+
+/* ═══════════════════ v3.24.0 · Der Endpunkt selbst, nicht nur die Rechnung ══
+   ANLASS: Die Oberfläche stand still, und aus dem Bildschirmfoto liess sich die
+   Ursache nicht bestimmen — alle Anzeigen standen auf ihren statischen
+   Startwerten. Beim Nachsehen fielen drei Fehler derselben Sorte auf, die
+   KEINE der 42 bestehenden Suiten gefunden hat.
+
+   DIE URSACHE ALLER DREI: `Number(null)` und `Number('')` sind 0, nicht NaN.
+   Eine Pruefung mit `Number.isFinite(Number(x))` haelt einen nicht gesetzten
+   Suchparameter deshalb fuer eine gueltige Null.
+     - spreadPct/feePct → Krypto rechnete mit 0,80 % statt 0,40 % Rundlauf
+     - netEur           → das Mindestziel fiel von 2,04 % auf 0,38 %, also auf
+                          die reine Kostenschwelle. Alles darunter war falsch.
+
+   WARUM DIE ALTEN TESTS DAS NICHT FANDEN: sie pruefen `requiredMovePct` und
+   `pickCosts` direkt und mit sauberen Zahlen. Die NAHT zwischen Parameter-
+   schicht und Rechnung war nie geprueft. Genau dort sass der Fehler.
+   Diese Suite ruft deshalb den ECHTEN Endpunkt auf — ohne Parameter, mit
+   leeren, mit kaputten. */
+{
+  const worker = workerText;
+  const mod = await import('../src/worker.js');
+  const call = async (qs) => {
+    const r = await mod.default.fetch(
+      new Request('https://t.local/api/toppicks' + qs), {}, { waitUntil() {}, passThroughOnException() {} });
+    assert.equal(r.status, 200, `${qs} muss 200 liefern`);
+    return r.json();
+  };
+
+  /* -- 1. OHNE Parameter muessen die dokumentierten Werte herauskommen ----- */
+  const st = await call('');
+  assert.equal(st.asset, 'stock', 'Ohne asset-Parameter gilt Aktien');
+  assert.equal(st.roundTripPct, 0.38, 'Aktien-Rundlauf muss 0,38 % sein');
+  assert.equal(st.targetPct, 2.04,
+    `Ohne netEur muss das Mindestziel 2,04 % sein, war ${st.targetPct} — hier stand der Fehler`);
+  assert.equal(st.maxStopPct, 1.02, 'Und der zulaessige Stop 1,02 %');
+  assert.equal(st.netEurTarget, 120, 'Die Zielgroesse muss auf den Standardwert fallen, nicht auf 0');
+
+  const co = await call('?asset=coin');
+  assert.equal(co.asset, 'coin', 'asset=coin muss greifen');
+  assert.equal(co.costKind, 'proportional', 'Krypto muss proportional rechnen');
+  assert.equal(co.roundTripPct, 0.4,
+    `Krypto-Rundlauf muss 0,40 % sein, war ${co.roundTripPct} — hier stand der zweite Fehler`);
+  assert.equal(co.cost.spreadPct, 0.1, 'Der Standard-Spread darf nicht auf 0 gesetzt werden');
+  assert.equal(co.cost.feePct, 0.15, 'Die Standard-Gebuehr darf nicht auf 0 gesetzt werden');
+
+  /* -- 2. Leere und kaputte Parameter duerfen nichts verstellen ------------ */
+  for (const qs of ['?netEur=', '?netEur=0', '?netEur=abc', '?netEur=-5',
+                    '?stopPct=', '?stopPct=0', '?spreadPct=', '?feePct=']) {
+    const d = await call('?asset=stock&' + qs.slice(1));
+    assert.equal(d.targetPct, 2.04, `${qs} darf das Mindestziel nicht verstellen (war ${d.targetPct})`);
+    assert.equal(d.maxStopPct, 1.02, `${qs} darf den zulaessigen Stop nicht verstellen`);
+  }
+  for (const qs of ['?spreadPct=', '?spreadPct=0', '?spreadPct=abc', '?feePct=0']) {
+    const d = await call('?asset=coin&' + qs.slice(1));
+    assert.equal(d.roundTripPct, 0.4, `${qs} darf die Kryptokosten nicht verstellen (war ${d.roundTripPct})`);
+  }
+
+  /* -- 3. GUELTIGE Werte muessen dagegen sehr wohl wirken ------------------ */
+  const teuer = await call('?asset=coin&spreadPct=0.8');
+  assert.ok(teuer.roundTripPct > 1, 'Ein echter weiter Spread muss durchschlagen');
+  assert.ok(teuer.targetPct > co.targetPct + 0.5, 'Und die noetige Zielweite anheben');
+  assert.ok(teuer.breakEvenHitPct > co.breakEvenHitPct + 8,
+    'Ein weiter Spread muss die noetige Trefferquote sichtbar erhoehen');
+  const gross = await call('?asset=stock&netEur=250');
+  assert.ok(gross.targetPct > 3.5, 'Ein hoeheres Nettoziel muss die Zielweite anheben');
+  assert.ok(gross.breakEvenHitPct < st.breakEvenHitPct,
+    'Und dabei die noetige Trefferquote SENKEN — die Fixkosten verteilen sich besser');
+
+  /* -- 4. Kein Endpunkt darf am fehlenden D1-Binding sterben --------------- */
+  // Ohne DB ist die ehrliche Antwort "keine Daten", nicht ein Fehler 500.
+  for (const qs of ['', '?asset=coin']) {
+    const d = await call(qs);
+    assert.equal(d.state, 'nodb', 'Ohne D1 muss der Zustand ausgewiesen werden');
+    assert.deepEqual(d.picks, [], 'Und es darf nichts erfunden werden');
+    assert.ok(String(d.note).length > 20, 'Mit einer Begruendung, die man lesen kann');
+  }
+
+  /* -- 5. Der Boot-Waechter -------------------------------------------------
+     Eine App, die lautlos stirbt, sieht aus wie eine App, die nur wartet.
+     Genau das hat die Diagnose unmoeglich gemacht. */
+  const idx = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(idx, /window\.__fpBootWatch = setTimeout/,
+    'Der Boot-Waechter muss vorhanden sein');
+  assert.ok(idx.indexOf('__fpBootWatch') < idx.indexOf('src="/app.js'),
+    'Er muss VOR app.js stehen — sonst laeuft er genau dann nicht, wenn er gebraucht wird');
+  assert.ok(!/<script src=[^>]*bootwatch/.test(idx),
+    'Und INLINE sein: eine externe Datei koennte am selben Problem scheitern');
+  assert.match(idx, /HTML statt JavaScript/,
+    'Der haeufigste stille Totalausfall (Server liefert index.html statt der Datei) muss benannt werden');
+  assert.match(idx, /id="bootFail"/, 'Es braucht einen sichtbaren Kasten');
+  assert.match(app, /^self\.__fpBooted = true;$/m,
+    'app.js muss den Start bestaetigen — als aktive Anweisung, nicht auskommentiert');
+  assert.ok(app.trimEnd().endsWith("document.getElementById('bootFail')?.setAttribute('hidden','');"),
+    'Die Bestaetigung muss die LETZTE Anweisung sein — ein Abbruch mittendrin soll die Warnung stehen lassen');
+
+  /* -- 6. Notausstieg ------------------------------------------------------ */
+  assert.match(app, /\/\[\?&\]fpreset=1\//, 'Es braucht einen Weg, Cache und Service Worker zurueckzusetzen');
+  const resetIdx = app.indexOf('fpreset=1'), scanIdx = app.indexOf('async function scan(');
+  assert.ok(resetIdx > 0 && resetIdx < scanIdx,
+    'Die Rettung muss VOR dem Code stehen, der moeglicherweise gerade nicht laeuft');
+  assert.ok(!/localStorage\.clear\(\)/.test(app.slice(resetIdx, resetIdx + 900)),
+    'Der Notausstieg darf die Einstellungen NICHT loeschen — nur das, was sich neu holen laesst');
+
+  /* -- 7. Die Regel, die aus allen drei Fehlern folgt ---------------------- */
+  assert.match(worker, /const posNum = \(v, fallback = null\) =>/,
+    'Zahlen von aussen muessen ueber einen gemeinsamen Helfer laufen');
+  const picksBlock = worker.slice(worker.indexOf('async function topPicks('),
+    worker.indexOf('/* ============================================================================\n   v3.17.0 · MUSTERLABOR'));
+  assert.ok(!/Number\.isFinite\(Number\(opts\./.test(picksBlock),
+    'In topPicks darf `Number.isFinite(Number(opts.x))` nicht mehr vorkommen — das war die Fehlerquelle');
+}
+
+console.log('✓ FusionPulse v3.24.0 endpoint-seam/boot-watchdog regressions: OK');

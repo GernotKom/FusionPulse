@@ -8,18 +8,83 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/style.css?v=3.23.0">
+<link rel="stylesheet" href="/style.css?v=3.25.0">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
-<script src="/version.js?v=3.23.0"></script>
-<title>FusionPulse 3.23.0</title>
+<script src="/version.js?v=3.25.0"></script>
+<!-- ══════════════════════════════════════════════ v3.24.0 · BOOT-WÄCHTER ═══
+     ANLASS: Am 29.08. stand die Oberfläche still — Statusampeln grau, Version
+     "v–", Taktuhr "--:--". Alles stand auf den STATISCHEN Startwerten aus
+     dieser Datei. Also lief app.js gar nicht. Von außen war das nicht von
+     "keine Daten" zu unterscheiden, und aus einem Bildschirmfoto ließ sich die
+     Ursache nicht bestimmen.
+     Das ist der eigentliche Mangel: eine App, die lautlos stirbt, sieht aus wie
+     eine App, die nur wartet. Dieser Wächter läuft INLINE — er ist genau dann
+     noch da, wenn die externe Datei fehlt. -->
+<script>
+(function () {
+  var t0 = Date.now();
+  window.__fpBootWatch = setTimeout(function () {
+    if (window.__fpBooted) return;
+    var box = document.getElementById('bootFail');
+    var det = document.getElementById('bootFailDetail');
+    if (!box) return;
+    box.hidden = false;
+    var lines = ['Oberfläche nach ' + Math.round((Date.now() - t0) / 1000) + ' s nicht gestartet.'];
+    lines.push('FP_VERSION: ' + (typeof self.FP_VERSION === 'string' ? self.FP_VERSION : 'FEHLT — /version.js wurde nicht ausgeführt'));
+    function probe(url, label) {
+      return fetch(url, { cache: 'no-store' }).then(function (r) {
+        var ct = r.headers.get('content-type') || '?';
+        lines.push(label + ': HTTP ' + r.status + ' · ' + ct);
+        /* Der haeufigste stille Totalausfall: eine fehlende Datei wird als
+           index.html ausgeliefert. Der Browser bekommt dann HTML statt
+           JavaScript, fuehrt nichts aus und meldet auch nichts. */
+        if (/text\/html/.test(ct) && /\.js/.test(url)) lines.push('   ⚠ HTML statt JavaScript — die Datei fehlt auf dem Server.');
+      }).catch(function (e) { lines.push(label + ': nicht erreichbar (' + e.message + ')'); });
+    }
+    var v = document.querySelector('meta[name="fp-shell-version"]');
+    var q = '?v=' + (v ? v.content : '');
+    Promise.all([
+      probe('/app.js' + q, 'app.js'),
+      probe('/version.js' + q, 'version.js'),
+      probe('/api/health', 'API /api/health')
+    ]).then(function () {
+      if (navigator.serviceWorker) return navigator.serviceWorker.getRegistrations().then(function (rs) {
+        lines.push('Service Worker: ' + (rs.length ? rs.length + ' registriert' : 'keiner'));
+      }).catch(function () {});
+    }).then(function () { det.textContent = lines.join('\n'); });
+    det.textContent = lines.join('\n');
+  }, 8000);
+  /* Faengt den Fall ab, in dem der Browser die Datei zwar laedt, sie aber einen
+     Fehler wirft — sonst bliebe die Seite ebenfalls stumm. */
+  window.addEventListener('error', function (ev) {
+    if (window.__fpBooted) return;
+    var det = document.getElementById('bootFailDetail'), box = document.getElementById('bootFail');
+    if (!box || !det) return;
+    box.hidden = false;
+    det.textContent = 'Fehler beim Start:\n' + (ev.message || ev.error) +
+      (ev.filename ? '\n' + ev.filename + ':' + ev.lineno + ':' + ev.colno : '');
+  });
+})();
+</script>
+<title>FusionPulse 3.25.0</title>
 <!-- v3.14.1: Versionsstempel der SHELL (index.html). Wird von sync-version.mjs
      gesetzt und beim Start gegen FP_VERSION aus version.js verglichen. Weichen
      die beiden ab, ist eine halb aktualisierte Auslieferung im Umlauf: neues
      app.js/style.css auf altem index.html. Das erzeugt Fehler, die wie
      Layout-Probleme aussehen, aber keine sind — und kostet beim Suchen Stunden. -->
-<meta name="fp-shell-version" content="3.23.0">
+<meta name="fp-shell-version" content="3.25.0">
 </head>
 <body>
+<!-- v3.24.0 · Wird nur sichtbar, wenn app.js nicht startet. -->
+<div id="bootFail" class="bootfail" hidden role="alert">
+  <b>⚠ FusionPulse konnte die Oberfläche nicht starten</b>
+  <p>Die Seite zeigt nur ihre Startwerte — die Zahlen darunter sind keine Marktdaten. Diagnose:</p>
+  <pre id="bootFailDetail">wird ermittelt…</pre>
+  <div class="bootfail-actions">
+    <button type="button" onclick="location.reload(true)">Neu laden</button>
+    <button type="button" onclick="location.href=location.pathname+'?fpreset=1'">Cache &amp; Service Worker zurücksetzen</button>
+  </div>
+</div>
 
 <!-- ═════════════════════════════════════════════ Update-Hinweis (v3.0.7) ═══ -->
 <div id="updateBar" class="updatebar hidden">
@@ -412,6 +477,6 @@
      Muss das LETZTE Element im Fluss bleiben. Hoehe kommt aus derselben
      Messung wie alles andere (--fp-foot-h). -->
 <div class="foot-spacer" aria-hidden="true"></div>
-<script src="/app.js?v=3.23.0"></script>
+<script src="/app.js?v=3.25.0"></script>
 </body>
 </html>

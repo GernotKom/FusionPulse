@@ -1,6 +1,6 @@
 {
   "name": "fusionpulse",
-  "version": "3.23.0",
+  "version": "3.25.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,9 +10,10 @@
     "predeploy": "npm run sync-version",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
-    "check": "node --check public/app.js && node --check src/worker.js && node --check public/sw.js && npm run test:safety",
+    "check": "node --check public/app.js && node --check src/worker.js && node --check public/sw.js && npm run test:safety && npm run test:sw",
     "test:safety": "node tests/safety-regression.mjs",
-    "audit:reach": "node tests/reachability-audit.mjs"
+    "audit:reach": "node tests/reachability-audit.mjs",
+    "test:sw": "node tests/sw-fault.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.68.0"

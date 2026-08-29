@@ -3353,8 +3353,25 @@ function optimizeGrid(episodes, minTargetPct, cfg) {
    nicht je Symbol — ein einzelnes Symbol hat nie genug Episoden fuer eine
    belastbare Quote, ein Situationstyp ueber alle Symbole schon.
    ------------------------------------------------------------------------- */
+/* v3.24.0 · EIN Helfer fuer alle Zahlen, die von aussen kommen.
+   Grund: `Number(null)` und `Number('')` sind 0, nicht NaN. Eine Pruefung mit
+   `Number.isFinite(Number(x))` haelt einen NICHT gesetzten Suchparameter
+   deshalb fuer eine gueltige Null. Genau das ist dreimal passiert:
+     - spreadPct/feePct → Kryptokosten liefen mit 0,80 % statt 0,40 % Rundlauf
+     - netEur           → das Mindestziel fiel von 2,04 % auf 0,38 %, also auf
+                          die reine Kostenschwelle, und der zulaessige Stop
+                          gleich mit. Alles darunter war damit falsch.
+   Die Unit-Tests haben das NICHT gefunden, weil sie `requiredMovePct` direkt
+   geprueft haben und nie den Endpunkt OHNE Parameter. Die Naht zwischen
+   Parameterschicht und Rechnung war ungetestet — dort sass der Fehler.
+   Regel ab hier: Zahlen von aussen ausschliesslich ueber `posNum`. */
+const posNum = (v, fallback = null) => {
+  const n = Number(v);
+  return (v !== null && v !== '' && Number.isFinite(n) && n > 0) ? n : fallback;
+};
+
 async function topPicks(env, opts = {}) {
-  const netEur = Number.isFinite(Number(opts.netEur)) ? Number(opts.netEur) : PICK.DEFAULT_NET_EUR;
+  const netEur = posNum(opts.netEur, PICK.DEFAULT_NET_EUR);
   /* v3.23.0 · Zwei Anlageklassen, EINE Auswertung, aber ZWEI Kostenmodelle.
      Bewusst kein zweiter Code-Pfad: die Wahrscheinlichkeitsrechnung ist
      identisch, nur die Kostenfunktion unterscheidet sich. Ein Duplikat waere
@@ -3364,17 +3381,27 @@ async function topPicks(env, opts = {}) {
   const baseCost = coin ? COIN_COST : PICK_COST;
   const override = { ...(opts.cost || {}) };
   if (coin) {
-    // Spread und Gebuehr sind bei Krypto die ganze Kostenrechnung — deshalb
-    // muessen beide von aussen setzbar sein (Gebuehrenstufe, gemessener Spread).
-    if (Number.isFinite(Number(opts.spreadPct))) override.spreadPct = Math.abs(Number(opts.spreadPct));
-    if (Number.isFinite(Number(opts.feePct))) override.feePct = Math.abs(Number(opts.feePct));
+    /* Spread und Gebuehr sind bei Krypto die ganze Kostenrechnung, deshalb von
+       aussen setzbar (Gebuehrenstufe, gemessener Spread).
+       v3.24.0 · BUGFIX. Hier stand `Number.isFinite(Number(x))`. Da ein nicht
+       gesetzter Suchparameter `null` ist und `Number(null)` gleich 0 ergibt,
+       hat diese Pruefung IMMER zugeschlagen und beide Werte auf 0 gesetzt.
+       `pickCosts` hat daraufhin — korrekt — die pessimistischen Rueckfallwerte
+       genommen, und die Kryptorechnung lief still mit 0,80 % Rundlauf statt
+       0,40 %. Die noetige Zielweite war damit fast doppelt so hoch wie richtig.
+       Derselbe Fallstrick, den ich eine Ebene tiefer in v3.23.0 schon behoben
+       hatte — und den ich hier uebersehen habe. Es gilt ueberall dieselbe
+       Regel: nur ein POSITIVER Zahlenwert zaehlt als Angabe. */
+    const sp = posNum(opts.spreadPct), fp = posNum(opts.feePct);
+    if (sp != null) override.spreadPct = sp;
+    if (fp != null) override.feePct = fp;
   }
   const cfg = { ...baseCost, ...override };
   const targetPct = requiredMovePct(netEur, cfg);
   // Der maximal zulaessige Stop folgt aus dem Ziel, nicht umgekehrt.
   const maxStopPct = targetPct / PICK.MIN_REWARD_RISK;
-  const wanted = Number(opts.stopPct);
-  const stopPct = -Math.min(maxStopPct, Number.isFinite(wanted) && wanted !== 0 ? Math.abs(wanted) : maxStopPct);
+  const wanted = posNum(Math.abs(Number(opts.stopPct) || 0));
+  const stopPct = -Math.min(maxStopPct, wanted ?? maxStopPct);
   const base = {
     configured: true, version: APP_VERSION, asset,
     costKind: cfg.kind, roundTripPct: r2(roundTripPct(cfg)),

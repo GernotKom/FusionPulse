@@ -693,7 +693,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"3.23.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"3.25.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1370,3 +1370,19 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .toppicks .pick-card .pick-tempo{font-size:11px;opacity:.85}
 .toppicks .pick-tempo-note{display:block;margin-top:4px;opacity:.8}
 [data-tile="topPicksCoin"]{border-color:var(--tint-topPicksCoin,var(--line));background:var(--tint-topPicksCoin-bg,var(--panel2))}
+
+/* v3.24.0 · Startfehler sichtbar machen. Eine App, die lautlos stirbt, sieht
+   aus wie eine App, die nur wartet — genau das hat die Diagnose am 29.08.
+   unmoeglich gemacht. Bewusst NICHT in den Ampelfarben: das hier ist ein
+   Zustand der Anwendung, kein Handelssignal. */
+.bootfail{position:fixed;inset:12px 12px auto 12px;z-index:9999;padding:14px 16px;
+  border-radius:12px;border:1px solid #b0642a;background:#241a10;color:#f0e2d2;
+  font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;box-shadow:0 8px 28px rgba(0,0,0,.5)}
+.bootfail b{display:block;font-size:14px;margin-bottom:4px;color:#f0b26a}
+.bootfail p{margin:0 0 8px;opacity:.85;font-family:inherit}
+.bootfail pre{margin:0;padding:8px 10px;border-radius:8px;background:rgba(0,0,0,.35);
+  white-space:pre-wrap;word-break:break-word;max-height:40vh;overflow:auto}
+.bootfail-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.bootfail-actions button{padding:6px 12px;border-radius:8px;cursor:pointer;
+  border:1px solid #b0642a;background:#3a2716;color:#f0e2d2;font:inherit}
+.bootfail-actions button:hover{background:#4a3220}

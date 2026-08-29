@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.23.0 — Frontend
+   FusionPulse v3.25.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -10,6 +10,51 @@ const $$ = (s) => [...document.querySelectorAll(s)];
 
 /* Version: kommt aus /version.js, das aus package.json generiert wird. */
 const FP_VERSION = (typeof self !== 'undefined' && self.FP_VERSION) || '0.0.0';
+
+/* ══════════════════════════════════════════ v3.24.0 · NOTAUSSTIEG ══════════
+   `?fpreset=1` meldet den Service Worker ab, loescht alle Caches und laedt neu.
+   Warum das GANZ oben steht: wenn ein kaputter Cache-Eintrag die App lahmlegt,
+   darf die Rettung nicht hinter dem Code stehen, der gerade nicht laeuft.
+   Die Einstellungen im localStorage bleiben unberuehrt — geloescht wird nur,
+   was sich jederzeit neu holen laesst. */
+/* v3.25.0 · Ein kaputter Service Worker kann die App vollstaendig lahmlegen
+   (siehe Kopf von public/sw.js). Deshalb zwei Sicherungen VOR allem anderen:
+   der Notausstieg unten, und diese hier — wenn der Browser 12 Sekunden lang
+   keine brauchbare Antwort liefert, obwohl ein Service Worker registriert ist,
+   wird er abgemeldet und neu geladen. Einmalig, mit Merker, damit daraus keine
+   Schleife wird. */
+if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
+  const HEAL = 'fp_sw_healed_at';
+  setTimeout(async () => {
+    if (self.__fpScanOk) return;                        // App laeuft, alles gut
+    const last = Number(localStorage.getItem(HEAL) || 0);
+    if (Date.now() - last < 6 * 60 * 60_000) return;    // hoechstens alle 6 Stunden
+    try {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      if (!regs.length) return;
+      localStorage.setItem(HEAL, String(Date.now()));
+      await Promise.all(regs.map((r) => r.unregister()));
+      if (self.caches) await Promise.all((await caches.keys()).map((k) => caches.delete(k)));
+      location.reload();
+    } catch (e) { console.warn('sw-heal:', e); }
+  }, 12_000);
+}
+
+if (typeof location !== 'undefined' && /[?&]fpreset=1/.test(location.search)) {
+  (async () => {
+    try {
+      if (navigator.serviceWorker) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+      }
+      if (self.caches) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      }
+    } catch (e) { console.warn('fpreset:', e); }
+    location.replace(location.pathname);
+  })();
+}
 
 
 /* ---------------------------------------------------- Netzwerk-Stabilität */
@@ -1447,6 +1492,11 @@ async function scan(force = false) {
     rows = data.rows || [];
     rows.forEach(claudeOverlayRow);
     meta = data;
+    /* v3.25.0: Quittung fuer die Selbstheilung ganz oben in dieser Datei. Erst
+       eine tatsaechlich verarbeitete Antwort gilt als "App laeuft" — dass
+       app.js gestartet ist, reicht nicht, denn ein kaputter Service Worker
+       kann alles danach blockieren. */
+    self.__fpScanOk = true;
     const serverTs=Number(data.ts||0); if(serverTs>0) lastCryptoDataTs=serverTs;
     const cryptoAgeSec=serverTs>0?Math.max(0,Math.round((Date.now()-serverTs)/1000)):null;
     const cryptoStale = !!(data.stale || data.staleWhileRefresh || cryptoAgeSec==null || cryptoAgeSec>90);
@@ -5028,3 +5078,10 @@ setStockPoll();
 setHealthPoll();
 startConnectionWatchdog();
 setLearningPoll();
+
+/* v3.24.0: Das Startsignal fuer den Wächter in index.html. Es steht bewusst als
+   ALLERLETZTE Zeile: erst wenn wirklich alles davor durchgelaufen ist, gilt die
+   Oberfläche als gestartet. Ein Abbruch mittendrin laesst die Warnung stehen. */
+self.__fpBooted = true;
+clearTimeout(self.__fpBootWatch);
+document.getElementById('bootFail')?.setAttribute('hidden','');
