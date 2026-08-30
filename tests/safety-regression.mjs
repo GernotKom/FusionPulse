@@ -4724,6 +4724,58 @@ console.log('✓ FusionPulse v3.28.0 ride/journal regressions: OK');
   const cand = E.eveCandidate('OK', E.eveBars(compressionBars({})), 'momentum', ctx);
   for (const k of ['score', 'verdict', 'gate', 'release', 'ampel', 'buy'])
     assert.ok(!(k in cand), `Der Vorabend-Kandidat darf kein Feld "${k}" tragen`);
+  // -- DAS DATUM MUSS ANGEFORDERT WERDEN. Tiingo liefert es nur mit, solange
+  //    `columns` gar nicht gesetzt ist. Fehlt es, verwirft `eveBars()` korrekt
+  //    JEDEN Balken — 40 Abrufe, 0 verwertbar, kein einziger Fehler. Genau so
+  //    ist v3.29.0 beim Nutzer gelandet.
+  {
+    const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+    const fn = worker.slice(worker.indexOf('async function eveDailyBars('),
+                            worker.indexOf('async function eveningList('));
+    assert.match(fn, /columns=date,/,
+      'Die Spaltenliste MUSS mit `date` beginnen, sonst kommt kein Datum zurueck');
+    // Und die Abwehr muss echt sein: ein Balken ohne Datum bleibt draussen.
+    const undated = compressionBars({}).map(({ date, ...rest }) => rest);
+    assert.equal(E.eveBars(undated).length, 0,
+      'Balken ohne Datum sind keine Beobachtung und duerfen nie durchgehen');
+  }
+
+  // -- EIN LAUF OHNE VERWERTBARE DATEN IST KEIN ERGEBNIS.
+  //    Die alte Meldung sagte auch bei NULL geprueften Titeln "ist das der
+  //    Normalfall" und hat einen Totalausfall beruhigend verpackt.
+  {
+    const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+    const fn = worker.slice(worker.indexOf('async function eveningList('),
+                            worker.indexOf('async function eveReadCache('));
+    assert.match(fn, /dataOk: barsOk > 0/,
+      'Der Lauf muss ausweisen, ob ueberhaupt Daten ankamen');
+    assert.match(fn, /barsOk === 0[\s\S]{0,400}AUSFALL/,
+      'Bei null verwertbaren Titeln muss die Meldung von einem Ausfall sprechen');
+    const normal = fn.slice(fn.indexOf('Normalfall') - 400, fn.indexOf('Normalfall'));
+    assert.ok(!/barsOk === 0/.test(normal.slice(-120)),
+      'Der Normalfall-Satz darf nie fuer einen Ausfall verwendet werden');
+    const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+    assert.match(app, /dataOk === false[\s\S]{0,200}Datenausfall/,
+      'Die Anzeige muss einen Ausfall als Ausfall kennzeichnen');
+  }
+
+  // -- DIE KENNZAHLENZEILE IST KEIN FORTSCHRITTSBALKEN.
+  //    `.eve-bar` bekam `height:6px;overflow:hidden`, weil ich die Klasse am
+  //    NAMEN gelesen habe statt im Markup. Damit waren die Kennzahlen UND der
+  //    "neu rechnen"-Knopf auf sechs Pixel gestutzt und unsichtbar.
+  {
+    const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+    const rule = css.slice(css.indexOf('.eve-bar{'), css.indexOf('}', css.indexOf('.eve-bar{')));
+    assert.ok(!/height:\s*\d+px/.test(rule),
+      'Die Kennzahlenzeile darf keine feste Hoehe haben — sie enthaelt Text und einen Knopf');
+    assert.ok(!/overflow:\s*hidden/.test(rule),
+      'Nichts in dieser Zeile darf abgeschnitten werden');
+    const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+    assert.ok(app.includes('id="eveReload"') && app.indexOf('id="eveReload"') > app.indexOf('class="eve-bar"'),
+      'Der Knopf sitzt in dieser Zeile — deshalb darf sie ihn nicht kappen');
+    assert.match(css, /\.eve-bar>button/,
+      'Der Knopf in der Kennzahlenzeile braucht eine eigene Regel');
+  }
 }
 
 console.log('✓ FusionPulse v3.29.0 evening-list geometry/study regressions: OK');

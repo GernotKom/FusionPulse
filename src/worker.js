@@ -4683,8 +4683,13 @@ function eveUniverse(radarRows, favorites) {
 
 async function eveDailyBars(env, symbol) {
   const start = new Date(Date.now() - EVE.HISTORY_DAYS * 86_400_000).toISOString().slice(0, 10);
+  /* `date` MUSS in der Spaltenliste stehen. Tiingo liefert das Datum nur
+     solange mit, wie man `columns` GAR NICHT angibt; sobald die Liste gesetzt
+     ist, kommt ausschliesslich das Angeforderte. Ohne Datum verwirft
+     `eveBars()` voellig korrekt jeden Balken — 40 Abrufe, 0 verwertbar, und
+     kein einziger Fehler, weil technisch alles geklappt hat. */
   const d = await tiingoFetch(env,
-    `/tiingo/daily/${encodeURIComponent(symbol)}/prices?startDate=${start}&columns=open,high,low,close,volume`);
+    `/tiingo/daily/${encodeURIComponent(symbol)}/prices?startDate=${start}&columns=date,open,high,low,close,volume`);
   return eveBars(d);
 }
 
@@ -4732,9 +4737,13 @@ async function eveningList(env, opts = {}) {
 
   const rows = [], wide = [], nearMiss = [];
   const studyCases = { momentum: [], rueckkehr: [] };
-  let barsOk = 0, failedFetch = 0;
+  let barsOk = 0, failedFetch = 0, thinBars = 0, firstError = null;
   for (const res of results) {
-    if (res.error || res.bars.length < EVE.MIN_BARS) { if (res.error) failedFetch++; continue; }
+    if (res.error || res.bars.length < EVE.MIN_BARS) {
+      if (res.error) { failedFetch++; if (!firstError) firstError = res.error; }
+      else thinBars++;
+      continue;
+    }
     barsOk++;
     for (const kind of EVE_KINDS) {
       const cand = eveCandidate(res.symbol, res.bars, kind, ctx);
@@ -4768,14 +4777,27 @@ async function eveningList(env, opts = {}) {
 
   const payload = {
     ...base, state: 'ok', ts: Date.now(), cached: false,
-    checked: universe.length, withBars: barsOk, failedFetch,
+    checked: universe.length, withBars: barsOk, failedFetch, thinBars, firstError,
+    /* Ein Lauf ohne einen einzigen verwertbaren Titel ist KEIN Ergebnis. Ihn
+       als solches zu melden, war der eigentliche Fehler dieser Version. */
+    dataOk: barsOk > 0,
     rows: ranked, wide: rankedWide,
     near: nearMiss.sort((a, b) => a.fail.length - b.fail.length).slice(0, 4),
     study,
     counts: Object.fromEntries(EVE_KINDS.map((k) => [k, ranked.filter((r) => r.kind === k).length])),
-    note: ranked.length
+    /* FAIL-CLOSED IN DER MELDUNG. Kein Kandidat aus 40 geprueften Titeln ist
+       ein Befund. Kein Kandidat aus NULL geprueften Titeln ist ein Ausfall —
+       und muss auch so heissen. Die alte Fassung sagte in beiden Faellen
+       "ist das der Normalfall" und hat einen Totalausfall beruhigend
+       verpackt. */
+    note: barsOk === 0
+      ? `AUSFALL: von ${universe.length} Titeln lieferte KEINER verwertbare Tagesbalken`
+        + `${failedFetch ? ` (${failedFetch} Abrufe mit Fehler` + (firstError ? `, erster: ${firstError}` : '') + ')' : ''}`
+        + `${thinBars ? ` (${thinBars} Abrufe ohne Fehler, aber mit zu wenigen Balken — typisch, wenn die Antwort kein Datumsfeld enthaelt)` : ''}`
+        + `. Das ist kein Ergebnis, sondern ein Datenproblem. Es wird bewusst nichts geschaetzt.`
+      : ranked.length
       ? `${ranked.length} Kandidat${ranked.length === 1 ? '' : 'en'} fuer den naechsten Handelstag aus ${barsOk} geprueften Titeln.`
-      : `${barsOk} Titel gepruefte Tagesbalken, kein Kandidat erfuellt alle Huerden. Bei einem Stopbudget von ${r2(maxStopPct)} % ist das der Normalfall.`,
+      : `${barsOk} Titel mit geprueften Tagesbalken, kein Kandidat erfuellt alle Huerden. Bei einem Stopbudget von ${r2(maxStopPct)} % ist das der Normalfall.`,
   };
   if (env?.DB) await eveWriteCache(env, payload, netEur).catch(() => {});
   return payload;

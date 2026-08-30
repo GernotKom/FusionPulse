@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.29.0 — Frontend
+   FusionPulse v3.29.1 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1125,7 +1125,7 @@ function applyTileTints(){
   const root=document.documentElement?.style; if(!root) return;
   for(const [key] of TINTABLE_TILES){
     const v=tintFor(key);
-    if(v){ root.setProperty(`--tint-${key}`,v); root.setProperty(`--tint-${key}-bg`,`color-mix(in srgb, ${v} 8%, var(--panel))`); }
+    if(v){ root.setProperty(`--tint-${key}`,v); root.setProperty(`--tint-${key}-bg`,`color-mix(in srgb, ${v} 20%, var(--panel))`); }
     else { root.removeProperty(`--tint-${key}`); root.removeProperty(`--tint-${key}-bg`); }
   }
   for(const [key,,fallback] of DOMAIN_TINTS){
@@ -4422,14 +4422,15 @@ function renderEvening() {
   const bar = `<div class="eve-bar" title="Das Stopbudget folgt aus deinem Ziel: ${num(d.econTargetPct, 2)} % Zielweite bei einem Chance-Risiko-Verhältnis von 2,0 lassen höchstens ${num(d.maxStopPct, 2)} % Stopweite zu. Ein Kandidat, dessen strukturelle Ungültigkeit weiter entfernt liegt, ist für dich unhandelbar — egal wie gut er aussieht.">`
     + `<span>Zielweite <b>${num(d.econTargetPct, 2)} %</b></span>`
     + `<span>Stopbudget <b>${num(d.maxStopPct, 2)} %</b></span>`
-    + `<span>${d.withBars || 0} von ${d.checked || 0} Titeln mit Tagesbalken</span>`
+    + `<span class="${d.dataOk === false ? 'bad' : ''}">${d.withBars || 0} von ${d.checked || 0} Titeln mit Tagesbalken</span>`
     + `<button type="button" id="eveReload" title="Neu rechnen. Ein Lauf kostet einen Tiingo-Abruf je Titel; das Ergebnis wird sechs Stunden zwischengespeichert.">neu rechnen</button></div>`;
 
   if (!rows.length) {
     const near = (d.near || []).slice(0, 3).map((n) =>
       `<li>${esc(n.symbol)} <em>${esc(EVE_KIND_NAME[n.kind] || n.kind)}</em> — ${esc(n.fail.join(' · '))}</li>`).join('');
     paintPanel(el, head + bar
-      + `<div class="eve-quiet"><b>Kein Kandidat für morgen.</b>`
+      + `<div class="eve-quiet${d.dataOk === false ? ' eve-fail' : ''}">`
+      + `<b>${d.dataOk === false ? '⚠ Datenausfall — kein Lauf zustande gekommen' : 'Kein Kandidat für morgen.'}</b>`
       + `<span>${esc(d.note || '')}</span>`
       + (near ? `<small>Am knappsten gescheitert:</small><ul class="eve-near">${near}</ul>` : '')
       + `</div>`
