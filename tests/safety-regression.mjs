@@ -80,6 +80,19 @@ assert.match(index,/class="hclock fast-tip"/,'Countdown muss schnellen Tooltip v
 assert.match(app, /OPPORTUNITY_MIN_NET_EUR\s*=\s*20/, 'FusionPulse adaptive absolute opportunity floor must remain explicit and reachable');
 assert.match(app, /BOATS \$\{mark\(boats\)\}/, 'Tiingo UI must report BOATS separately');
 const workerText=fs.readFileSync(new URL('../src/worker.js',import.meta.url),'utf8');
+/* v3.27.0 · Schneidet GENAU eine Top-Level-Funktion aus. Vorher endeten diese
+   Schnitte an einem entfernten Kommentar-Anker; als in v3.27.0 ein neues Modul
+   dazwischen kam, zog der Schnitt es mit hinein und meldete einen Fehler in
+   Code, der gar nicht geprueft werden sollte. Ein Test, der von der Reihenfolge
+   der Datei abhaengt, ist ein Test, der irgendwann falsch anschlaegt. */
+function sliceFn(src, header) {
+  const i = src.indexOf(header);
+  if (i < 0) throw new Error('Funktion nicht gefunden: ' + header);
+  const j = src.indexOf('\n}\n', i);
+  if (j < 0) throw new Error('Funktionsende nicht gefunden: ' + header);
+  return src.slice(i, j + 3);
+}
+
 assert.match(workerText, /out\.tests\.boats=/, 'Tiingo validation must test BOATS separately');
 assert.doesNotMatch(workerText, /d\.values\.length>=24/, 'Tiingo 5-min validation must not use the arbitrary 24-bar gate');
 assert.match(workerText, /const usable=vals\.length>=2 && ohlcKnown/, 'Tiingo 5-min validation must test actual bar usability');
@@ -3584,8 +3597,7 @@ console.log('✓ FusionPulse v3.19.0 render-budget/sw-cache regressions: OK');
     'Ein vom Nutzer gewuenschter Stop darf den abgeleiteten Hoechstwert nicht ueberschreiten');
 
   /* -- 8. Das Modul darf nichts bewerten ----------------------------------- */
-  const mod = worker.slice(worker.indexOf('async function topPicks('),
-                           worker.indexOf('/* ============================================================================\n   v3.17.0 · MUSTERLABOR'));
+  const mod = sliceFn(worker, 'async function topPicks(');
   assert.match(mod, /buyWeight: 0/, 'Top Picks muessen 0 % BUY-Gewicht ausweisen');
   for (const verboten of ['light:', 'crv:', 'buyReady', 'score:'])
     assert.ok(!mod.includes(verboten),
@@ -3743,8 +3755,7 @@ console.log('✓ FusionPulse v3.20.0 top-picks/expectancy regressions: OK');
   assert.equal(g.stopPct, r2(g.stopPct), 'Der Stop muss auf zwei Stellen gerundet sein');
 
   /* -- 9. Ein ueberangepasstes Paar darf nicht ranken ---------------------- */
-  const mod = worker.slice(worker.indexOf('async function topPicks('),
-    worker.indexOf('/* ============================================================================\n   v3.17.0 · MUSTERLABOR'));
+  const mod = sliceFn(worker, 'async function topPicks(');
   assert.match(mod, /evBest: grid\.available && !grid\.overfit \? grid\.evFull : null/,
     'Nur ein im Nachweisteil bestaetigtes Paar darf in die Rangfolge eingehen');
   /* v3.22.0: geschaetzt wird nach bestandener Pruefung auf ALLEN Episoden.
@@ -3990,8 +4001,7 @@ console.log('✓ FusionPulse v3.22.0 tempo/cost-load/domain regressions: OK');
   assert.ok(c.evPerDay > st.evPerDay, 'Dieselbe Haeufigkeit ergibt bei Krypto mehr Ertrag je Tag');
 
   /* -- 6. Die Auswertung darf NICHT zwei Code-Pfade haben ------------------ */
-  const mod = worker.slice(worker.indexOf('async function topPicks('),
-    worker.indexOf('/* ============================================================================\n   v3.17.0 · MUSTERLABOR'));
+  const mod = sliceFn(worker, 'async function topPicks(');
   assert.match(mod, /const asset = opts\.asset === 'coin' \? 'coin' : 'stock';/,
     'Die Anlageklasse muss ein Parameter sein');
   assert.match(mod, /const baseCost = coin \? COIN_COST : PICK_COST;/,
@@ -4138,8 +4148,7 @@ console.log('✓ FusionPulse v3.23.0 coin-lane/cost-model regressions: OK');
   /* -- 7. Die Regel, die aus allen drei Fehlern folgt ---------------------- */
   assert.match(worker, /const posNum = \(v, fallback = null\) =>/,
     'Zahlen von aussen muessen ueber einen gemeinsamen Helfer laufen');
-  const picksBlock = worker.slice(worker.indexOf('async function topPicks('),
-    worker.indexOf('/* ============================================================================\n   v3.17.0 · MUSTERLABOR'));
+  const picksBlock = sliceFn(worker, 'async function topPicks(');
   assert.ok(!/Number\.isFinite\(Number\(opts\./.test(picksBlock),
     'In topPicks darf `Number.isFinite(Number(opts.x))` nicht mehr vorkommen — das war die Fehlerquelle');
 }
@@ -4255,3 +4264,322 @@ console.log('✓ FusionPulse v3.24.0 endpoint-seam/boot-watchdog regressions: OK
 }
 
 console.log('✓ FusionPulse v3.26.0 section-order regressions: OK');
+
+/* ══════════════════ v3.27.0 · Der Situation-Score wird prüfbar ══════════════
+   DER SCORE ist der früheste und folgenreichste Eingriffspunkt der App: er
+   entscheidet, WELCHE Titel überhaupt in die Kandidatenliste kommen. Alles
+   danach — Kostenrechnung, Hitze, Erwartungswert, Rangfolge — arbeitet nur noch
+   mit dem, was er durchgelassen hat.
+
+   Seine elf Terme standen als Zahlenkette im Code: 24, 16, 14, 12, 45, 12, 8,
+   -4, 7, -3, 0.16, -18, 42. Keine davon war je gegen ein Ergebnis geprüft.
+   Schlimmer: die ZUTATEN wurden nirgends aufgezeichnet — die Frage „trägt
+   dieser Koeffizient etwas bei" war nicht nur unbeantwortet, sondern
+   unbeantwortBAR. Vierte Wiederholung derselben Lehre nach Situationstyp
+   (v3.17.0), Dollarumsatz (v3.18.0) und Spread (v3.23.0). */
+{
+  const worker = workerText;
+  const idx = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+
+  /* -- 1. DIE UMSTELLUNG DARF NICHTS VERÄNDERN ----------------------------- */
+  // Ohne diesen Nachweis wäre das Herausziehen der Koeffizienten eine stille
+  // Verhaltensänderung an der folgenreichsten Stelle der App.
+  const W = new Function(worker.slice(worker.indexOf('const SITU_W = {'),
+    worker.indexOf('};', worker.indexOf('const SITU_W = {')) + 2) + '\nreturn SITU_W;')();
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const alt = (i) => {                       // v3.26.0, wortwörtlich
+    let s = 0;
+    s += i.brokePriorHigh ? 24 : i.nearBreakout ? 16 : 0;
+    s += i.squeezeRelease ? 16 : 0;
+    s += (i.reclaimVwap || i.reclaimEma21) ? 14 : 0;
+    s += i.pullbackHold ? 12 : 0;
+    s += Math.min(14, Math.max(0, i.accel5v15) * 45);
+    s += i.relVolScore == null ? -8 : Math.min(14, Math.max(0, i.relVolScore - 0.8) * 12);
+    s += i.volumeKnown && i.aboveVwap ? 8 : -4;
+    s += i.emaUp ? 7 : -3;
+    s += Math.min(8, Math.max(0, i.liquidityVacuum - 50) * 0.16);
+    if (i.overextended) s -= 18;
+    if (!i.volumeKnown) s = Math.min(s, 42);
+    return +clamp(s, 0, 100).toFixed(0);
+  };
+  const neu = (i) => {                       // Tabellenfassung, aus SITU_W
+    const t = {
+      breakout: i.brokePriorHigh ? W.brokeHigh : i.nearBreakout ? W.nearBreak : 0,
+      squeeze: i.squeezeRelease ? W.squeeze : 0,
+      reclaim: (i.reclaimVwap || i.reclaimEma21) ? W.reclaim : 0,
+      pullback: i.pullbackHold ? W.pullback : 0,
+      accel: Math.min(W.accelCap, Math.max(0, i.accel5v15) * W.accelMul),
+      rvol: i.relVolScore == null ? W.rvolMissing
+        : Math.min(W.rvolCap, Math.max(0, i.relVolScore - W.rvolBase) * W.rvolMul),
+      vwap: i.volumeKnown && i.aboveVwap ? W.aboveVwap : W.belowVwap,
+      emaStack: i.emaUp ? W.emaUp : W.emaDown,
+      vacuum: Math.min(W.vacCap, Math.max(0, i.liquidityVacuum - W.vacBase) * W.vacMul),
+      extended: i.overextended ? W.overextended : 0,
+    };
+    let s = Object.values(t).reduce((a, b) => a + b, 0);
+    if (!i.volumeKnown) s = Math.min(s, W.noVolumeCap);
+    return +clamp(s, 0, 100).toFixed(0);
+  };
+  let seed = 12345; const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  for (let k = 0; k < 20000; k++) {
+    const i = { brokePriorHigh: rnd() < .3, nearBreakout: rnd() < .3, squeezeRelease: rnd() < .15,
+      reclaimVwap: rnd() < .2, reclaimEma21: rnd() < .2, pullbackHold: rnd() < .2,
+      accel5v15: (rnd() - 0.4) * 0.8, relVolScore: rnd() < .12 ? null : rnd() * 4,
+      volumeKnown: rnd() < .85, aboveVwap: rnd() < .5, emaUp: rnd() < .5,
+      liquidityVacuum: rnd() * 100, overextended: rnd() < .1 };
+    assert.equal(neu(i), alt(i),
+      `Die Tabellenfassung muss EXAKT die alten Werte liefern: ${JSON.stringify(i)}`);
+  }
+  // Und die Formel im Worker muss wirklich die Tabelle benutzen, keine Zahlen mehr.
+  const formel = worker.slice(worker.indexOf('const situ = {'), worker.indexOf('const grossCRV'));
+  assert.ok(!/[?:]\s*(24|16|14|12|45|18|42)\b/.test(formel.replace(/SITU_W\.\w+/g, 'W')),
+    'In der Score-Formel darf keine nackte Zahl mehr stehen — sonst ist die Tabelle Dekoration');
+  for (const k of ['brokeHigh', 'nearBreak', 'squeeze', 'reclaim', 'pullback', 'accelMul',
+                   'rvolMul', 'aboveVwap', 'emaUp', 'vacMul', 'overextended', 'noVolumeCap'])
+    assert.ok(formel.includes(`SITU_W.${k}`) || worker.includes(`SITU_W.${k}`),
+      `Der Koeffizient ${k} muss aus der Tabelle kommen`);
+
+  /* -- 2. DIE ZUTATEN MÜSSEN AUFGEZEICHNET WERDEN -------------------------- */
+  // Ohne das bleibt der Score dauerhaft unprüfbar — der eigentliche Befund.
+  const payload = sliceFn(worker, 'function snapshotPayload(row)');
+  assert.match(payload, /situParts:/, 'Die Einzelbeiträge müssen im Snapshot landen');
+  assert.match(payload, /situScore:/, 'Und der Score selbst');
+  assert.match(worker, /situParts: Object\.fromEntries/,
+    'Die Beiträge müssen die Scanfunktion überhaupt verlassen');
+
+  /* -- 3. DAS URTEIL: erkennt es Unsinn? ----------------------------------- */
+  const A = new Function('r2', 'aucSeparation', 'aucNoiseFloor',
+    worker.slice(worker.indexOf('const AUDIT = {'), worker.indexOf('async function scoreAudit(')) +
+    '\nreturn {AUDIT,SITU_TERMS,auditVerdict};')(
+    (x) => Math.round(x * 100) / 100,
+    (a, b) => { const A2 = a.filter(Number.isFinite), B2 = b.filter(Number.isFinite);
+      if (!A2.length || !B2.length) return null; let w = 0;
+      for (const x of A2) for (const y of B2) w += x > y ? 1 : x === y ? 0.5 : 0;
+      return w / (A2.length * B2.length); },
+    () => 0.58);
+
+  assert.equal(A.SITU_TERMS.length, 10, 'Alle Terme des Score müssen im Audit auftauchen');
+  // Ein klar tragender Term
+  assert.equal(A.auditVerdict({ n: 400, nActive: 180, nIdle: 220, auc: 0.68, floor: 0.58, weight: 20 }).verdict,
+    'traegt', 'Ein deutlich trennender Term muss als tragend erkannt werden');
+  // Reiner Zufall
+  assert.equal(A.auditVerdict({ n: 400, nActive: 180, nIdle: 220, auc: 0.53, floor: 0.58, weight: 20 }).verdict,
+    'kein messbarer Beitrag', 'Ein Term innerhalb der Rauschgrenze darf nicht als tragend gelten');
+  // Verkehrt herum — der teuerste Fall: er hebt die falschen Titel nach oben
+  const inv = A.auditVerdict({ n: 400, nActive: 180, nIdle: 220, auc: 0.40, floor: 0.58, weight: 20 });
+  assert.equal(inv.verdict, 'wirkt verkehrt herum',
+    'Ein Term, dessen Fälle SELTENER ins Ziel liefen, muss als solcher benannt werden');
+  assert.match(inv.why, /falschen Titel/, 'Und die Folge muss dabeistehen');
+  /* ABZUGSTERME: das Vorzeichen bestimmt, was "richtig" heisst.
+     Die Ueberdehnung (-18) SOLL die schlechteren Faelle treffen. Mein erster
+     Entwurf hat sie deshalb als "wirkt verkehrt herum" gemeldet — genau wenn
+     sie tat, wofuer sie gebaut wurde. Und ein KAPUTTER Abzugsterm waere
+     unentdeckt geblieben. Beide Richtungen werden jetzt geprueft. */
+  assert.equal(A.auditVerdict({ n: 400, nActive: 180, nIdle: 220, auc: 0.35, floor: 0.58, weight: -18 }).verdict,
+    'traegt', 'Ein Abzugsterm, der die schlechteren Faelle trifft, arbeitet RICHTIG');
+  const kaputterAbzug = A.auditVerdict({ n: 400, nActive: 180, nIdle: 220, auc: 0.68, floor: 0.58, weight: -18 });
+  assert.equal(kaputterAbzug.verdict, 'wirkt verkehrt herum',
+    'Ein Abzugsterm, der die BESSEREN Faelle trifft, ist kaputt — und muss auffallen');
+  assert.match(kaputterAbzug.why, /richtigen Titel nach unten/,
+    'Und die Folge muss in der richtigen Richtung benannt werden');
+  // Symmetrie: dieselbe Trennschaerfe, entgegengesetztes Gewicht, entgegengesetztes Urteil.
+  for (const auc of [0.30, 0.35, 0.65, 0.70]) {
+    const plus = A.auditVerdict({ n: 400, nActive: 180, nIdle: 220, auc, floor: 0.58, weight: 20 }).verdict;
+    const minus = A.auditVerdict({ n: 400, nActive: 180, nIdle: 220, auc, floor: 0.58, weight: -20 }).verdict;
+    assert.notEqual(plus, minus,
+      `Bei AUC ${auc} muessen Plus- und Abzugsterm entgegengesetzt beurteilt werden`);
+  }
+
+  // FAIL-CLOSED: zu wenig ist NICHT "neutral"
+  for (const c of [{ n: 20, nActive: 8, nIdle: 12 }, { n: 400, nActive: 5, nIdle: 395 },
+                   { n: 400, nActive: 395, nIdle: 5 }]) {
+    assert.equal(A.auditVerdict({ ...c, auc: 0.9, floor: 0.58, weight: 20 }).verdict, 'nicht bewertbar',
+      'Zu wenige Fälle müssen "nicht bewertbar" ergeben — niemals "neutral" und niemals "trägt"');
+  }
+
+  /* -- 4. Mehrfachtestkorrektur: elf Terme sind elf Tests ------------------ */
+  // Bei elf Vergleichen liefert reiner Zufall regelmäßig einen "Treffer".
+  const auditSrc = worker.slice(worker.indexOf('const AUDIT = {'), worker.indexOf('async function scoreAudit('));
+  const fullSrc = worker.slice(worker.indexOf('async function scoreAudit('));
+  assert.match(fullSrc, /aucNoiseFloor\(active\.length, idle\.length, SITU_TERMS\.length\)/,
+    'Die Rauschgrenze MUSS über die Zahl der Terme korrigiert werden, sonst ist jeder Zufallstreffer signifikant');
+  assert.match(fullSrc, /const oos = cases\.slice\(splitAt\)/,
+    'Geurteilt werden muss außerhalb der Stichprobe');
+  assert.ok(!/rows = SITU_TERMS\.map\(\(\[key[^)]*\) => \{\s*const active = cases/.test(fullSrc),
+    'Es darf nicht auf ALLEN Fällen geurteilt werden');
+
+  /* -- 5. Das Modul darf nichts ändern ------------------------------------- */
+  const mod = sliceFn(worker, 'async function scoreAudit(');
+  assert.match(mod, /changesNothing: true/, 'Das Audit muss ausweisen, dass es nichts verändert');
+  for (const verboten of ['SITU_W.brokeHigh =', 'SITU_W[', 'buyReady', 'light ='])
+    assert.ok(!mod.includes(verboten), `Das Audit darf nichts setzen: "${verboten}"`);
+  assert.ok(!/SITU_W\.\w+\s*=/.test(worker.slice(worker.indexOf('async function scoreAudit('))),
+    'Die Gewichte dürfen NIE automatisch überschrieben werden — empfehlen, nicht handeln');
+
+  /* -- 6. Oberfläche: im Auswertungsbereich, nicht bei den Aktien ---------- */
+  const stocksClose = idx.indexOf('</section>', idx.indexOf('id="stockGroups"'));
+  assert.ok(idx.indexOf('id="scoreAudit"') > stocksClose,
+    'Das Audit gehört in den Auswertungsbereich, nicht in die Aktien');
+  assert.ok(app.includes("['scoreAudit','Score-Audit']"), 'Die Kachel muss färbbar sein');
+  assert.ok(css.includes('[data-tile="scoreAudit"]'), 'Und eine CSS-Regel haben');
+  assert.match(app, /0 % Gewicht in Score, Ampel und Freigabe/,
+    'Die Kachel muss ihre Wirkungslosigkeit selbst ausweisen');
+  // "nicht bewertbar" darf NIE wie "geprüft harmlos" aussehen.
+  assert.match(css, /\.a-none\{border-style:dashed/,
+    'Unbewertete Terme brauchen eine eigene Darstellung — grau wäre "geprüft und harmlos"');
+}
+
+console.log('✓ FusionPulse v3.27.0 score-audit regressions: OK');
+
+/* ═══════════════ v3.28.0 · Fahrt-Meldung und Handelstagebuch ═══════════════
+   ZWEI ANLIEGEN DES NUTZERS, beide mit einem eigenen Fallstrick.
+
+   1) „Ich brauche nur den NAMEN der Aktie, die Fahrt aufnimmt."
+      Der Fallstrick ist nicht das Finden, sondern das Schweigen. Eine Kachel,
+      die immer etwas anzeigt, wird nach zwei Wochen nicht mehr gelesen — und
+      wer bei 2,04 % Zielweite einem Titel hinterherläuft, der schon oben steht,
+      hat sein Ziel hinter sich. Die Hürden müssen also HOCH sein, und der
+      Normalfall muss Schweigen sein.
+
+   2) „Ein Trade mit höherer Summe bei gutem Momentum ist ok."
+      Ja — aber eine größere Position ist NUR erlaubt, weil der Stop enger
+      sitzt, nicht weil das Setup sich besser anfühlt. Der Euro-Verlust bleibt
+      gedeckelt. Sonst ist „höhere Summe bei Überzeugung" nur ein anderes Wort
+      für „mehr riskieren, wenn man sich sicher fühlt".
+
+   Und das Tagebuch schließt die Lücke, die alle anderen Auswertungen offen
+   lassen: sie messen den MARKT, nicht die AUSFÜHRUNG. */
+{
+  const worker = workerText;
+  const idx = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  const econ = worker.slice(worker.indexOf('const PICK_COST = {'), worker.indexOf('const LEGACY_WIN_PCT = 5;') + 26);
+  const cost = worker.slice(worker.indexOf('const pickCfg ='), worker.indexOf('/** Wilson-OBERgrenze'));
+  const ride = worker.slice(worker.indexOf('const RIDE = {'), worker.indexOf('async function rideNow('));
+  const jr = worker.slice(worker.indexOf('const JOURNAL = {'), worker.indexOf('async function journalList('));
+  const r2 = (x) => Math.round(x * 100) / 100;
+  const clp = worker.slice(worker.indexOf('function costLoadPct('), worker.indexOf('const evidenceTier'));
+  const R = new Function('r2', econ + cost + clp + ride + jr +
+    ';return {RIDE,pickCfg,requiredMovePct,lossEurAtStop,netEurAtMove,costLoadPct,rideSize,rideCheck,journalRow,journalSummary,ECON_MIN_REWARD_RISK,COIN_COST,PICK_COST};')(r2);
+
+  const cfg = R.pickCfg(), T = R.requiredMovePct(120, cfg), MS = T / R.ECON_MIN_REWARD_RISK;
+
+  /* -- 1. DAS RISIKOBUDGET MUSS DIE KOSTEN ENTHALTEN ----------------------- */
+  // Mein erster Entwurf rechnete nur den Kursverlust: 200 EUR Budget ergaben
+  // eine Position, deren Stop tatsächlich 252 EUR gekostet hätte — die
+  // Gebühren fielen genau dort unter den Tisch, wo die Position wachsen soll.
+  for (const [name, c] of [['Aktien', R.PICK_COST], ['Krypto', R.COIN_COST]]) {
+    for (const stop of [2.0, 1.02, 0.75]) {
+      const sz = R.rideSize(stop, c);
+      const budget = c.notionalEur * R.RIDE.RISK_BUDGET_PCT / 100;
+      if (sz.capped) continue;
+      assert.ok(Math.abs(sz.riskEur - budget) <= 2,
+        `${name} bei Stop ${stop} %: der VOLLE Verlust am Stop (${sz.riskEur} EUR) muss dem Budget (${budget} EUR) entsprechen`);
+      assert.ok(Math.abs(R.lossEurAtStop(-stop, sz.cfg) - sz.riskEur) <= 1,
+        `${name}: riskEur muss mit lossEurAtStop übereinstimmen — zwei Zahlen für dasselbe wären ein Widerspruch in der Anzeige`);
+      assert.ok(sz.priceRiskEur < sz.riskEur,
+        `${name}: der reine Kursverlust muss KLEINER sein als der volle Verlust`);
+    }
+  }
+  // Enger Stop -> größere Position, aber gleiches Risiko. Das ist die ganze Idee.
+  const eng = R.rideSize(1.02, cfg), weit = R.rideSize(2.0, cfg);
+  assert.ok(eng.notionalEur > weit.notionalEur * 1.5,
+    'Ein engerer Stop MUSS eine deutlich größere Position erlauben');
+  assert.ok(Math.abs(eng.riskEur - weit.riskEur) <= 2,
+    'Bei beiden muss derselbe Euro-Betrag auf dem Spiel stehen — sonst ist es nicht Risiko-, sondern Bauchgefühl-Größe');
+  // Der Deckel muss greifen.
+  const winzig = R.rideSize(0.2, cfg);
+  assert.ok(winzig.capped && winzig.notionalEur <= cfg.notionalEur * R.RIDE.MAX_NOTIONAL_MULT,
+    'Ein sehr enger Stop darf die Position nicht ins Unendliche wachsen lassen');
+
+  /* -- 2. DIE HÜRDEN: Schweigen ist der Normalfall ------------------------- */
+  const gut = { ignition: true, volPulsePct: 140, gapPct: 3.2, spreadPct: 0.12,
+    rangePosition: 0.62, rangePct: 6.0, movePct: 4.1, lifecycle: 'IGNITION' };
+  const ctx = { targetPct: T, maxStopPct: MS };
+  assert.ok(R.rideCheck(gut, ctx).ok, 'Der Idealfall muss gemeldet werden');
+  assert.equal(R.rideCheck(gut, ctx).catalyst, 'Eroeffnungsluecke', 'Und sein Auslöser benannt werden');
+  // Jede einzelne Hürde muss für sich zum Schweigen führen.
+  const bricht = [
+    ['kein Zustandswechsel', { ignition: false, lifecycle: 'CONFIRM' }],
+    ['Umsatz normal', { volPulsePct: 12 }],
+    ['kein Auslöser', { gapPct: 0.3 }],
+    ['Spread zu weit', { spreadPct: 0.45 }],
+    ['schon am Tageshoch', { rangePosition: 0.97 }],
+    ['Restweg zu kurz', { rangePct: 2.0, rangePosition: 0.80 }],
+    ['Tagesbilanz negativ', { movePct: -1.2 }],
+    ['Spread unbekannt', { spreadPct: null }],
+    ['Spanne unbekannt', { rangePosition: null }],
+  ];
+  for (const [name, over] of bricht) {
+    const c = R.rideCheck({ ...gut, ...over }, ctx);
+    assert.ok(!c.ok, `Hürde „${name}" muss zum Schweigen führen`);
+    assert.ok(c.fail.length >= 1, `Und der Grund muss benannt werden: ${name}`);
+  }
+  // Der Quartalstermin ist der einzige HARTE Beleg — er ersetzt die Lücke.
+  assert.ok(R.rideCheck({ ...gut, gapPct: 0.2 }, { ...ctx, earnDays: 1 }).ok,
+    'Ein Quartalstermin muss als Auslöser genügen, auch ohne Eröffnungslücke');
+  assert.equal(R.rideCheck({ ...gut, gapPct: 0.2 }, { ...ctx, earnDays: 1 }).catalyst, 'Quartalstermin');
+  assert.ok(!R.rideCheck({ ...gut, gapPct: 0.2 }, { ...ctx, earnDays: 9 }).ok,
+    'Ein weit entfernter Termin ist kein Auslöser');
+  // FAIL-CLOSED: unbekannte Werte dürfen nie durchgehen.
+  for (const feld of ['volPulsePct', 'spreadPct', 'rangePosition'])
+    assert.ok(!R.rideCheck({ ...gut, [feld]: undefined }, ctx).ok,
+      `Ein unbekanntes ${feld} darf NICHT zu einer Meldung führen`);
+
+  /* -- 3. Die App darf keine Nachricht behaupten, die sie nicht hat -------- */
+  const mod = sliceFn(worker, 'async function rideNow(');
+  assert.match(mod, /noNewsFeed: true/, 'Die App muss ausweisen, dass sie keine Nachrichtenquelle hat');
+  assert.match(mod, /FINGERABDRUCK eines Ausloesers .*nicht der Ausloeser selbst/,
+    'Und den Unterschied zwischen Fingerabdruck und Auslöser benennen');
+  assert.match(mod, /buyWeight: 0/, 'Kein Gewicht in der Bewertung');
+  assert.match(app, /Kein Kaufsignal\. Die App hat keine Nachrichtenquelle/,
+    'Der Hinweis muss auch in der Anzeige stehen, nicht nur in der Antwort');
+
+  /* -- 4. HANDELSTAGEBUCH: Soll gegen Ist ---------------------------------- */
+  const t = { id: 'a', ts: 1, symbol: 'sofi', plan_entry: 100, plan_target: 102.04, plan_stop: 98.98,
+    plan_notional: 19600, fill_entry: 100.18, fill_entry_ts: 1000,
+    fill_exit: 101.90, fill_exit_ts: 1000 + 42 * 60000, skipped: 0 };
+  const r = R.journalRow(t);
+  assert.equal(r.symbol, 'SOFI', 'Symbole werden vereinheitlicht');
+  assert.equal(r.state, 'abgeschlossen');
+  assert.equal(r.planMovePct, 2.04, 'Die geplante Bewegung muss aus Plan-Einstieg und Ziel folgen');
+  assert.equal(r.realMovePct, 1.72, 'Die echte Bewegung aus den Ist-Kursen');
+  assert.equal(r.slipEntryPct, 0.18, 'Und die Einstiegsabweichung dazwischen');
+  assert.ok(r.realNet < r.planNet, 'Ein teurerer Einstieg muss weniger Netto ergeben');
+  assert.ok(r.deltaEur < 0, 'Und der Abstand muss negativ ausgewiesen werden');
+  assert.equal(r.holdMin, 42, 'Die Haltedauer folgt aus den Zeitstempeln');
+  // Die Zustände müssen sich unterscheiden — „geplant" ist nicht „abgeschlossen".
+  assert.equal(R.journalRow({ ...t, fill_entry: null, fill_exit: null }).state, 'geplant');
+  assert.equal(R.journalRow({ ...t, fill_exit: null }).state, 'offen');
+  assert.equal(R.journalRow({ ...t, skipped: 1 }).state, 'uebersprungen');
+  // Ein übersprungener Trade ist eine Information, kein Fehler — und darf die
+  // Bilanz der ausgeführten nicht verfälschen.
+  const gemischt = [r, R.journalRow({ ...t, id: 'b', skipped: 1 }), R.journalRow({ ...t, id: 'c', fill_exit: null })];
+  const sum = R.journalSummary(gemischt);
+  assert.equal(sum.done, 1, 'Nur abgeschlossene Trades zählen in die Bilanz');
+  assert.equal(sum.skipped, 1, 'Übersprungene werden getrennt ausgewiesen');
+  assert.equal(sum.open, 1, 'Offene ebenfalls');
+  assert.ok(sum.costPerTradeEur < 0, 'Der Abstand je Trade muss die Ausführungskosten zeigen');
+  assert.equal(sum.deltaSumEur, sum.realSumEur - sum.planSumEur, 'Der Abstand muss die Differenz sein');
+  // Ohne Ist-Werte darf nichts erfunden werden.
+  const leer = R.journalRow({ id: 'x', ts: 1, symbol: 'X', plan_entry: 100, plan_target: 102, skipped: 0 });
+  assert.equal(leer.realNet, null, 'Ohne Ist-Kurse darf kein Ergebnis erfunden werden');
+  assert.equal(leer.deltaEur, null, 'Und kein Abstand');
+
+  /* -- 5. Oberfläche ------------------------------------------------------- */
+  assert.ok(idx.indexOf('id="rideAlert"') < idx.indexOf('id="bandCoin"'),
+    'Die Fahrt-Meldung gehört GANZ nach oben — eine Meldung, die man suchen muss, ist keine');
+  assert.match(css, /\.ridealert:empty\{display:none\}/,
+    'Ohne Inhalt darf die Meldung keinen Platz belegen');
+  assert.match(css, /\.ride-name b\{font-size:3\dpx/,
+    'Der NAME ist die Botschaft und muss entsprechend groß sein');
+  const stocksClose = idx.indexOf('</section>', idx.indexOf('id="stockGroups"'));
+  assert.ok(idx.indexOf('id="tradeJournal"') > stocksClose,
+    'Das Tagebuch gehört in den Auswertungsbereich');
+  for (const k of ['ride', 'journal'])
+    assert.ok(app.includes(`['${k}',`) && css.includes(`[data-tile="${k}"]`),
+      `Kachel ${k} muss färbbar sein und eine CSS-Regel haben`);
+}
+
+console.log('✓ FusionPulse v3.28.0 ride/journal regressions: OK');

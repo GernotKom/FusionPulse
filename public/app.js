@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.26.0 — Frontend
+   FusionPulse v3.28.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1078,6 +1078,9 @@ const TINTABLE_TILES=[
      nicht dabei — deshalb wirkte die Einstellung, als gaebe es sie nicht. */
   ['topPicks','Top Picks · Aktien'],
   ['topPicksCoin','Top Picks · Krypto'],
+  ['scoreAudit','Score-Audit'],
+  ['ride','Fahrt-Meldung'],
+  ['journal','Handelstagebuch'],
   ['gainers','Momentum-Mover'],
   ['opening','Premarket / Opening'],
   ['extended','Nachbörse / Extended Hours'],
@@ -2278,11 +2281,14 @@ async function loadLearning(){
 function setLearningPoll(){clearInterval(learningTimer);learningTimer=setInterval(()=>{if(document.visibilityState==='visible'){loadLearning();loadAttribution();loadAladdin();}},120_000);
   /* Muster aendern sich ueber Tage, nicht Minuten. Halbstuendlich genuegt und
      haelt die D1-Abfrage (bis 6000 Zeilen) aus dem normalen Takt heraus. */
-  clearInterval(patternTimer);patternTimer=setInterval(()=>{if(document.visibilityState==='visible')loadPatterns();},30*60_000);
+  clearInterval(patternTimer);patternTimer=setInterval(()=>{if(document.visibilityState==='visible'){loadPatterns();loadScoreAudit();}},30*60_000);
   /* v3.20.0: Die AUSWERTUNG aendert sich langsam, die lebenden Kandidaten
      darin schnell. Fuenf Minuten ist der Takt des Radars — schneller waere
      nur Last ohne neuen Inhalt. */
-  clearInterval(pickTimer);pickTimer=setInterval(()=>{if(document.visibilityState==='visible')loadAllTopPicks();},5*60_000);}
+  clearInterval(pickTimer);pickTimer=setInterval(()=>{if(document.visibilityState==='visible')loadAllTopPicks();},5*60_000);
+  /* Die Fahrt-Meldung ist die einzige zeitkritische Kachel: ein Ausbruch, den
+     man erst in fuenf Minuten sieht, hat sein Ziel schon hinter sich. */
+  clearInterval(rideTimer);rideTimer=setInterval(()=>{if(document.visibilityState==='visible')loadRide();},60_000);}
 
 /* Modul 1 UI: Aladdin-Style Market Recommendation oberhalb des Radars.
    Reine Anzeige der serverseitigen Marktmeinung; kein Score-Eingriff. */
@@ -4147,6 +4153,217 @@ function renderTopPicks(asset='stock'){
   }));
 }
 
+/* ==== v3.28.0 · „NIMMT FAHRT AUF" + HANDELSTAGEBUCH =========================
+   Die Meldung zeigt EINEN Namen oder schweigt. Eine Kachel, die immer etwas
+   anzeigt, wird nach zwei Wochen nicht mehr gelesen.
+   Das Tagebuch schliesst die Luecke, die alle anderen Auswertungen offen
+   lassen: sie messen den Markt, nicht die Ausfuehrung.                       */
+let rideData = { stock: null, coin: null }, rideTimer = null;
+let journalData = null;
+
+async function loadRide() {
+  const q = (a) => { const p = new URLSearchParams(); if (S.token) p.set('t', S.token);
+    p.set('asset', a); p.set('netEur', String(Math.max(20, Number(S.minNetProfitStock) || 120))); return p; };
+  await Promise.allSettled(['stock', 'coin'].map(async (a) => {
+    try { rideData[a] = await (await fetch('/api/ride?' + q(a), { cache: 'no-store' })).json(); }
+    catch (e) { rideData[a] = { state: 'error', error: String(e.message || e) }; }
+  }));
+  renderRide();
+}
+
+function renderRide() {
+  const el = $('#rideAlert'); if (!el) return;
+  const list = ['stock', 'coin'].map((a) => rideData[a]).filter((d) => d && d.state === 'ok');
+  if (!list.length) { paintPanel(el, ''); el.classList.remove('on'); return; }
+  const hits = list.filter((d) => d.hit).sort((a, b) => (b.hit.score || 0) - (a.hit.score || 0));
+  const geprueft = list.reduce((n, d) => n + (d.checked || 0), 0);
+
+  if (!hits.length) {
+    /* Der Ruhezustand ist bewusst klein und leise — aber er zeigt, dass die
+       Erkennung arbeitet, und woran die knappsten Kandidaten scheitern. Eine
+       Kachel, die nur schweigt, laesst offen ob sie noch lebt. */
+    const near = list.flatMap((d) => d.near || []).slice(0, 2);
+    paintPanel(el, `<div class="ride-quiet" title="Es wird nur gemeldet, wenn ALLE Hürden erfüllt sind: frischer Zustandswechsel, Umsatzstoß über ${list[0].rules.MIN_VOL_PULSE} %, ein Auslöser (Quartalstermin oder Eröffnungslücke), Spread innerhalb des Stopbudgets, und noch genug Restweg zum Tageshoch. Schweigen ist der Normalfall.">`
+      + `<b>Nichts, das Fahrt aufnimmt.</b><span>${geprueft} Kandidaten geprüft</span>`
+      + (near.length ? `<small>Am knappsten: ${near.map((n) => `${esc(n.symbol)} (${esc(n.fail[0] || '')})`).join(' · ')}</small>` : '')
+      + `</div>`);
+    el.classList.remove('on');
+    return;
+  }
+
+  const d = hits[0], h = d.hit, p = h.plan;
+  const wrote = paintPanel(el,
+    `<div class="ride-hit">`
+    /* Der NAME zuerst, gross. Alles andere ist Begruendung. */
+    + `<div class="ride-name"><b>${esc(h.symbol)}</b>`
+    + `<span class="ride-tag">${d.asset === 'coin' ? '🪙 Krypto' : '📈 Aktie'} · ${esc(h.situation)}</span>`
+    + `<span class="ride-cat" title="${esc(d.disclaimer)}">Auslöser: ${esc(h.catalyst)}${h.earnDays != null ? ` (${h.earnDays === 0 ? 'heute' : h.earnDays > 0 ? 'in ' + h.earnDays + ' T' : 'vor ' + Math.abs(h.earnDays) + ' T'})` : ''}</span></div>`
+    + `<div class="ride-facts">`
+    + `<span title="Bewegung seit Vortagesschluss.">${h.movePct != null ? (h.movePct >= 0 ? '+' : '') + num(h.movePct, 1) + ' % Tag' : '—'}</span>`
+    + `<span title="Umsatzstoß gegen die Vorperiode. Das ist der Fingerabdruck eines Auslösers — nicht der Auslöser selbst.">Umsatz +${num(h.volPulsePct, 0)} %</span>`
+    + `<span title="Handelsspanne: der Spread muss innerhalb deines Stopbudgets bleiben, sonst frisst er den Plan.">Spread ${num(h.spreadPct, 2)} %</span>`
+    + `<span title="Lage in der Tagesspanne. Über 94 % wird nicht mehr gemeldet — dann liegt das Ziel hinter dir.">Spanne ${Math.round((h.rangePosition || 0) * 100)} %</span>`
+    + `</div>`
+    /* Der Plan in Euro. Die groessere Position folgt aus dem RISIKO, nicht aus
+       der Ueberzeugung — der Euro-Verlust am Stop bleibt gleich. */
+    + `<div class="ride-plan" title="${esc(`Die Position ist größer als die Grundgröße, WEIL der Stop enger sitzt — nicht weil das Setup sich besser anfühlt. Der Euro-Verlust am Stop bleibt bei ${p.riskEur} €. Gerechnet nach ${p.sizedBy}.${p.capped ? ' Gedeckelt bei der doppelten Grundposition.' : ''}`)}">`
+    + `<div><span>Position</span><b>${eur(p.notionalEur, 0)}</b></div>`
+    + `<div><span>Ziel ${num(p.targetPct, 2)} %</span><b class="good">+${eur(p.winEur, 0)}</b></div>`
+    + `<div title="Verlust am Stop, Gebühren eingerechnet. Muss dem Risikobudget entsprechen — tut er das nicht, ist die Positionsgröße falsch gerechnet."><span>Stop ${num(p.stopPct, 2)} %</span><b class="bad">−${eur(p.lossEur, 0)}</b></div>`
+    + `<div title="Der VOLLE Verlust am Stop, Gebühren eingerechnet. Das ist die Zahl, die dein Risikobudget begrenzt — und sie bleibt gleich, egal wie groß die Position wird."><span>Risiko gedeckelt</span><b>${eur(p.riskEur, 0)}</b></div>`
+    + `<div><span>Kostenlast</span><b>${num(p.costLoadPct, 1)} %</b></div>`
+    + `</div>`
+    + `<div class="ride-actions">`
+    + `<button type="button" data-ride-open="${esc(h.symbol)}" data-ride-asset="${esc(d.asset)}">Im Fokus öffnen</button>`
+    + `<button type="button" data-ride-log="${esc(h.symbol)}">In Tagebuch notieren</button>`
+    + `</div>`
+    + `<small class="ride-warn" title="${esc(d.disclaimer)}">Kein Kaufsignal. Die App hat keine Nachrichtenquelle — erkannt wurde der Fingerabdruck eines Auslösers, nicht der Auslöser. Prüfe die Meldungslage selbst, bevor du eine größere Position eingehst.</small>`
+    + `</div>`);
+  el.classList.add('on');
+  if (!wrote) return;
+  el.querySelector('[data-ride-open]')?.addEventListener('click', (e) => {
+    const b = e.currentTarget;
+    if (b.dataset.rideAsset === 'coin') { const pair = b.dataset.rideOpen;
+      if (rows.some((r) => r.pair === pair)) select(pair, true); else { $('#q').value = String(pair).split('-')[0]; render(); }
+    } else { focusStock = b.dataset.rideOpen; renderStocks();
+      document.querySelector('.stockstage')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  });
+  el.querySelector('[data-ride-log]')?.addEventListener('click', () => {
+    journalPrefill = { symbol: h.symbol, asset: d.asset, origin: `Fahrt · ${h.catalyst}`,
+      planTarget: null, planStop: null, notional: p.notionalEur, planNet: p.winEur };
+    renderJournal();
+    $('#tradeJournal')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+
+/* ---------------------------------------------------------- Handelstagebuch */
+let journalPrefill = null;
+
+async function loadJournal() {
+  try { journalData = await (await fetch('/api/journal' + (S.token ? '?t=' + encodeURIComponent(S.token) : ''), { cache: 'no-store' })).json(); }
+  catch (e) { journalData = { state: 'error', error: String(e.message || e) }; }
+  renderJournal();
+}
+async function journalSave(body) {
+  try {
+    const r = await fetch('/api/journal' + (S.token ? '?t=' + encodeURIComponent(S.token) : ''),
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'Speichern fehlgeschlagen');
+    journalPrefill = null;
+    await loadJournal();
+  } catch (e) { toast?.(`Tagebuch: ${e.message}`); }
+}
+
+const JSTATE = { geplant: 'j-plan', offen: 'j-open', abgeschlossen: 'j-done', uebersprungen: 'j-skip' };
+
+function renderJournal() {
+  const el = $('#tradeJournal'); if (!el) return;
+  const d = journalData;
+  const head = `<div class="ophead"><b>📓 Handelstagebuch · Soll gegen Ist</b>`
+    + `<span title="Alle anderen Auswertungen dieser App messen den MARKT. Diese misst die AUSFÜHRUNG — was du wirklich bezahlt und bekommen hast. Bei 1,02 % Stopweite sind zwei Zehntelprozent Abweichung bereits ein Fünftel deines Budgets.">die einzige Stelle, die dich statt des Marktes misst</span>`
+    + `<small>keine Bewertung · 0 % Gewicht in Score, Ampel und Freigabe</small></div>`;
+  if (!d) { paintPanel(el, head + '<span class="hint">Wird geladen.</span>'); return; }
+  if (d.state === 'error') { paintPanel(el, head + `<span class="hint">Nicht erreichbar: ${esc(String(d.error || ''))}</span>`); return; }
+  if (d.state === 'nodb') { paintPanel(el, head + `<span class="hint">${esc(d.note || '')}</span>`); return; }
+
+  const s = d.summary || {};
+  const bilanz = s.done ? `<div class="j-sum">`
+    + `<div title="Was die App für die abgeschlossenen Trades vorhergesagt hat."><span>Plan</span><b>${eur(s.planSumEur, 0)}</b></div>`
+    + `<div title="Was tatsächlich herausgekommen ist, aus deinen eingetragenen Kursen."><span>Ist</span><b class="${s.realSumEur >= 0 ? 'good' : 'bad'}">${eur(s.realSumEur, 0)}</b></div>`
+    + `<div title="Der Abstand zwischen beidem. Das ist der Betrag, den die Ausführung kostet — und er gehört in jede Erwartungsrechnung."><span>Abstand</span><b class="${(s.deltaSumEur ?? 0) >= 0 ? 'good' : 'bad'}">${eur(s.deltaSumEur, 0)}</b></div>`
+    + `<div title="Wie viel teurer du im Median eingestiegen bist als geplant. Setze diese Zahl ins Verhältnis zu deiner Stopweite."><span>Einstieg teurer</span><b>${s.slipEntryMedianPct != null ? num(s.slipEntryMedianPct, 2) + ' %' : '—'}</b></div>`
+    + `<div title="Wie lange deine abgeschlossenen Trades im Median gelaufen sind."><span>Haltedauer</span><b>${s.holdMedianMin != null ? s.holdMedianMin + ' Min' : '—'}</b></div>`
+    + `<div title="Abgeschlossene Trades mit positivem Nettoergebnis."><span>Gewinner</span><b>${s.winners}/${s.done}</b></div>`
+    + `</div>` : '';
+
+  const pf = journalPrefill || {};
+  const form = `<div class="j-form">`
+    + `<input id="jSym" placeholder="Symbol" value="${esc(pf.symbol || '')}" title="Kürzel des Titels, z. B. SOFI oder BTC-EUR.">`
+    + `<input id="jEntry" type="number" step="0.01" placeholder="Plan-Einstieg" title="Kurs, zu dem du laut Plan einsteigen wolltest.">`
+    + `<input id="jTarget" type="number" step="0.01" placeholder="Ziel" title="Geplanter Ausstiegskurs.">`
+    + `<input id="jStop" type="number" step="0.01" placeholder="Stop" title="Geplanter Stopkurs.">`
+    + `<input id="jNotional" type="number" step="100" placeholder="Einsatz €" value="${esc(String(pf.notional || ''))}" title="Positionsgröße in Euro.">`
+    + `<button type="button" id="jAdd" title="Legt den Trade als GEPLANT an. Die Ist-Werte trägst du später nach — genau dieser Abstand ist der Punkt.">Plan anlegen</button>`
+    + `</div>`;
+
+  const rows = (d.rows || []).slice(0, 20).map((r) => `<div class="j-row ${JSTATE[r.state] || ''}" data-id="${esc(r.id)}">`
+    + `<b>${esc(r.symbol)}</b>`
+    + `<span class="j-state">${esc(r.state)}${r.origin ? ' · ' + esc(r.origin) : ''}</span>`
+    + `<span title="Geplante gegen tatsächlich erzielte Bewegung.">${r.planMovePct != null ? 'Plan ' + num(r.planMovePct, 2) + ' %' : '—'}${r.realMovePct != null ? ' · Ist ' + num(r.realMovePct, 2) + ' %' : ''}</span>`
+    + `<span class="${(r.deltaEur ?? 0) >= 0 ? 'good' : 'bad'}" title="Nettoergebnis Ist gegen Plan.">${r.realNet != null ? eur(r.realNet, 0) : '—'}${r.deltaEur != null ? ` (${r.deltaEur >= 0 ? '+' : ''}${eur(r.deltaEur, 0)})` : ''}</span>`
+    + (r.state === 'abgeschlossen' || r.state === 'uebersprungen' ? ''
+      : `<span class="j-fill"><input type="number" step="0.01" data-fill="${esc(r.id)}" placeholder="${r.fillEntry ? 'Ausstieg' : 'Einstieg'} ist" title="Trage hier den Kurs ein, den du WIRKLICH bekommen hast — nicht den geplanten."></span>`)
+    + `<button type="button" class="j-del" data-del="${esc(r.id)}" title="Eintrag löschen." aria-label="Löschen">×</button>`
+    + `</div>`).join('');
+
+  const wrote = paintPanel(el, head + bilanz + form
+    + (rows ? `<div class="j-list">${rows}</div>` : '')
+    + `<small class="hint">${esc(d.note || '')}</small>`);
+  if (!wrote) return;
+
+  $('#jAdd')?.addEventListener('click', () => {
+    const v = (id) => { const x = $(id); return x && x.value !== '' ? Number(x.value) : null; };
+    const sym = String($('#jSym')?.value || '').trim().toUpperCase();
+    if (!sym) { toast?.('Symbol fehlt'); return; }
+    journalSave({ symbol: sym, asset: pf.asset || 'stock', origin: pf.origin || 'manuell',
+      planEntry: v('#jEntry'), planTarget: v('#jTarget'), planStop: v('#jStop'),
+      notional: v('#jNotional'), planNet: pf.planNet ?? null });
+  });
+  el.querySelectorAll('[data-fill]').forEach((inp) => inp.addEventListener('change', () => {
+    const val = Number(inp.value); if (!Number.isFinite(val) || val <= 0) return;
+    const row = (journalData.rows || []).find((x) => x.id === inp.dataset.fill);
+    journalSave(row?.fillEntry ? { id: inp.dataset.fill, symbol: row.symbol, fillExit: val }
+      : { id: inp.dataset.fill, symbol: row.symbol, fillEntry: val });
+  }));
+  el.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () =>
+    journalSave({ action: 'delete', id: b.dataset.del, symbol: 'x' })));
+}
+
+/* ==== v3.27.0 · SCORE-AUDIT ==================================================
+   Der Situation-Score entscheidet, WELCHE Titel ueberhaupt in die Liste kommen.
+   Er sitzt vor jeder Kostenrechnung und jeder Rangfolge — und seine elf Terme
+   waren nie gegen ein Ergebnis geprueft. Diese Kachel holt das nach.
+   Sie empfiehlt, sie schaltet nicht ab: 0 % Gewicht in Score, Ampel, Freigabe. */
+let auditData=null;
+async function loadScoreAudit(){
+  try{
+    const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
+    q.set('netEur', String(Math.max(20, Number(S.minNetProfitStock)||120)));
+    const r=await fetch('/api/scoreaudit?'+q,{cache:'no-store'});
+    auditData=await r.json();
+  }catch(e){ auditData={configured:true,state:'error',error:String(e.message||e)}; }
+  renderScoreAudit();
+}
+const AUDIT_ICON={'traegt':'✅','kein messbarer Beitrag':'⚪','wirkt verkehrt herum':'🔻','nicht bewertbar':'…'};
+const AUDIT_CLS={'traegt':'a-good','kein messbarer Beitrag':'a-flat','wirkt verkehrt herum':'a-bad','nicht bewertbar':'a-none'};
+
+function renderScoreAudit(){
+  const el=$('#scoreAudit'); if(!el) return;
+  const d=auditData;
+  const head=`<div class="ophead"><b>⚖️ Score-Audit · was ist jeder Term wert?</b>`
+    +`<span title="Der Situation-Score entscheidet, welche Titel überhaupt in die Kandidatenliste kommen — vor jeder Kostenrechnung. Hier wird für jeden seiner elf Terme gefragt: sind die Fälle, in denen er Punkte vergeben hat, danach häufiger ins Ziel gelaufen? Gemessen außerhalb der Stichprobe und mehrfachtestkorrigiert.">Trennschärfe gegen das Ergebnis · außerhalb der Stichprobe</span>`
+    +`<small>empfiehlt, schaltet nicht ab · 0 % Gewicht in Score, Ampel und Freigabe</small></div>`;
+  if(!d){ paintPanel(el, head+'<span class="hint">Wird geladen.</span>'); return; }
+  if(d.state==='error'){ paintPanel(el, head+`<span class="hint">Nicht erreichbar: ${esc(String(d.error||''))}</span>`); return; }
+
+  const w=d.whole||{};
+  const ganz=`<div class="audit-whole ${esc(AUDIT_CLS[w.verdict]||'a-none')}" title="Trennt der Score als GANZES? Verglichen werden Fälle mit Score ab 60 gegen Fälle darunter. Liegt die Trennschärfe innerhalb der Rauschgrenze, sortiert der Score nicht besser als eine Münze — unabhängig davon, wie plausibel seine einzelnen Terme klingen.">`
+    +`<b>${AUDIT_ICON[w.verdict]||''} Der Score als Ganzes: ${esc(w.verdict||'—')}</b>`
+    +`<span>${w.auc!=null?`Trennschärfe ${w.auc} % gegen ${w.floor} % Rauschgrenze · ${w.nHigh} Fälle ab Score 60, ${w.nLow} darunter`:'noch nicht messbar'}</span></div>`;
+
+  const rows=(d.rows||[]).map(r=>
+    `<div class="audit-row ${esc(AUDIT_CLS[r.verdict]||'a-none')}" title="${esc(`${r.help}. ${r.why}`)}">`
+    +`<b>${AUDIT_ICON[r.verdict]||''} ${esc(r.label)}</b>`
+    +`<span class="audit-w" title="Durchschnittlicher Punktbeitrag dieses Terms, wenn er aktiv war.">${r.weight>0?'+':''}${num(r.weight,1)} Pkt</span>`
+    +`<span>${r.auc!=null?`${r.auc} % / ${r.floor} % Rauschen`:'—'}</span>`
+    +`<span>${r.hitActive!=null&&r.hitIdle!=null?`Treffer mit ${r.hitActive} % · ohne ${r.hitIdle} %`:'zu wenige Vergleichsfälle'}</span>`
+    +`<em>${esc(r.verdict)} · ${r.nActive}/${r.nIdle} Fälle</em></div>`).join('');
+
+  paintPanel(el, head+ganz+`<div class="audit-grid">${rows}</div>`
+    +`<small class="hint">${esc(d.note||'')}</small>`
+    +`<small class="hint" title="Ein Term kann trennen, weil er dasselbe misst wie ein anderer. Diese Auswertung zeigt Trennschärfe, nicht Ursache — und sie ändert von sich aus nichts.">Trennschärfe ist keine Ursache. Diese Kachel ändert nichts von selbst; Änderungen an den Gewichten sind deine Entscheidung.</small>`);
+}
 async function loadPatterns(){
   try{
     const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
@@ -4898,8 +5115,10 @@ const VIEW_SECTIONS = {
   ],
   lab: [
     ['#bandLab',            'Auswertung', 'Anfang des Auswertungsbereichs — Rückblick über beide Märkte.'],
+    ['#tradeJournal',       'Tagebuch',       'Soll gegen Ist: was die App vorschlug und was wirklich passierte.'],
     ['#learningReport',     'Learning',       'Was im Hintergrund gespeichert und ausgewertet wurde.'],
     ['#patternLab',         'Musterlabor',    'Was war VOR einer Bewegung messbar? Ereignisstudie über die Aufzeichnungen.'],
+    ['#scoreAudit',         'Score-Audit',    'Was ist jeder Term des Situation-Score wirklich wert?'],
     ['#attributionReport',  'Selbstauswertung','Modul 0: ehrliche Out-of-Sample-Bilanz je Setup.'],
     ['#experimentalPanel',  'Lab',            'Experimentelle Einflussgrößen, 0 % BUY-Gewicht.'],
     ['#aladdinCard',        'Marktmeinung',   'Hierarchische Marktmeinung aus Regime, Rotation, Breadth und Stress.'],
@@ -5081,6 +5300,9 @@ loadEarnings(false);
 wireEarningsEditor();
 loadPatterns();
 loadAllTopPicks();
+loadScoreAudit();
+loadRide();
+loadJournal();
 loadLearning();
 loadAttribution();
 loadAladdin();

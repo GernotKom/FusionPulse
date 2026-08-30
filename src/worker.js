@@ -649,6 +649,41 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
   };
 }
 
+/* ============================================================================
+   v3.27.0 · DIE ELF TERME DES SITUATION-SCORE, EINZELN BENANNT
+   ----------------------------------------------------------------------------
+   Jede Zahl hier ist eine BEHAUPTUNG darueber, wie viel ein Merkmal wert ist.
+   Keine davon ist bisher gegen ein Ergebnis geprueft worden. Sie stehen ab
+   jetzt an einer Stelle, damit `/api/scoreaudit` sie einzeln nachrechnen kann.
+
+   Werte unveraendert gegenueber v3.26.0 — ein Test beweist das an
+   Zufallseingaben. Wer eine Zahl aendert, aendert damit, welche Titel ueberhaupt
+   in der Kandidatenliste erscheinen. Das ist der frueheste und folgenreichste
+   Eingriffspunkt der ganzen App.
+   ========================================================================== */
+const SITU_W = {
+  brokeHigh:    24,   // Kurs ueber dem 60-Minuten-Hoch — staerkstes Einzelmerkmal
+  nearBreak:    16,   // nahe an der Triggerzone, aber noch nicht darueber
+  squeeze:      16,   // Kompression loest sich (enge Vorphase + Ausbruch + Range-Ausweitung)
+  reclaim:      14,   // VWAP oder EMA21 zurueckerobert
+  pullback:     12,   // Ruecksetzer haelt die EMA21 und dreht
+  accelMul:     45,   // Beschleunigung 5 gegen 15 Minuten, Faktor
+  accelCap:     14,   //   ... gedeckelt
+  rvolBase:    0.8,   // relatives Volumen ab dieser Schwelle zaehlt
+  rvolMul:      12,   //   ... Faktor
+  rvolCap:      14,   //   ... gedeckelt
+  rvolMissing:  -8,   // kein RVOL messbar -> Abzug (fail-closed)
+  aboveVwap:     8,   // ueber VWAP
+  belowVwap:    -4,   // darunter oder Volumen unbekannt
+  emaUp:         7,   // EMA9 ueber EMA21
+  emaDown:      -3,   //   ... darunter
+  vacBase:      50,   // Liquiditaetsvakuum ab hier zaehlt
+  vacMul:     0.16,   //   ... Faktor
+  vacCap:        8,   //   ... gedeckelt
+  overextended: -18,  // mehr als 3 ATR ueber EMA21 -> Abzug
+  noVolumeCap:  42,   // ohne belastbares Volumen Deckel auf Beobachtungsniveau
+};
+
 /* ================================================================= Scanning */
 async function runScan(key, opts = {}) {
   const c = makeClient(key);
@@ -1420,19 +1455,36 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
   if(liquidityVacuum>=70)situationReasons.push('wenig Overhead-Aktivitaet');
   if(overextended)situationReasons.push('bereits >3 ATR ueber EMA21');
 
-  let situationScore=0;
-  situationScore += brokePriorHigh?24:nearBreakout?16:0;
-  situationScore += squeezeRelease?16:0;
-  situationScore += (reclaimVwap||reclaimEma21)?14:0;
-  situationScore += pullbackHold?12:0;
-  situationScore += Math.min(14,Math.max(0,accel5v15)*45);
-  situationScore += relVolScore==null?-8:Math.min(14,Math.max(0,relVolScore-0.8)*12);
-  situationScore += volumeKnown&&last.c>=vwap?8:-4;
-  situationScore += ema9>ema21?7:-3;
-  situationScore += Math.min(8,Math.max(0,liquidityVacuum-50)*0.16);
-  if(overextended)situationScore-=18;
-  if(!volumeKnown)situationScore=Math.min(situationScore,42);
-  situationScore=+clamp(situationScore,0,100).toFixed(0);
+  /* ══════════════════════════════════════ v3.27.0 · Score aufgeschluesselt ══
+     Bis hierher standen die elf Terme als Zahlenkette im Code: 24, 16, 14, 12,
+     45, 12, 8, -4, 7, -3, 0.16, -18, 42. Keine dieser Zahlen ist je gegen ein
+     Ergebnis geprueft worden — sie stammen aus meinen und deinen Annahmen. Und
+     genau dieser Score entscheidet, WELCHE Kandidaten ueberhaupt in der Liste
+     landen. Er sitzt damit VOR jeder Kostenrechnung und jeder Rangfolge, die in
+     v3.20.0 bis v3.23.0 entstanden ist.
+
+     Die Zahlen sind unveraendert. Was sich aendert: sie stehen jetzt an EINER
+     Stelle, jede mit ihrer Behauptung daneben, und jeder Beitrag wird einzeln
+     mitgeschrieben. Erst dadurch wird die Frage "traegt dieser Term etwas bei
+     oder schadet er" ueberhaupt beantwortbar.
+     Ein Test stellt sicher, dass die Umstellung rechnerisch nichts veraendert.
+     ═══════════════════════════════════════════════════════════════════════ */
+  const situ = {
+    breakout:  brokePriorHigh ? SITU_W.brokeHigh : nearBreakout ? SITU_W.nearBreak : 0,
+    squeeze:   squeezeRelease ? SITU_W.squeeze : 0,
+    reclaim:   (reclaimVwap || reclaimEma21) ? SITU_W.reclaim : 0,
+    pullback:  pullbackHold ? SITU_W.pullback : 0,
+    accel:     Math.min(SITU_W.accelCap, Math.max(0, accel5v15) * SITU_W.accelMul),
+    rvol:      relVolScore == null ? SITU_W.rvolMissing
+               : Math.min(SITU_W.rvolCap, Math.max(0, relVolScore - SITU_W.rvolBase) * SITU_W.rvolMul),
+    vwap:      volumeKnown && last.c >= vwap ? SITU_W.aboveVwap : SITU_W.belowVwap,
+    emaStack:  ema9 > ema21 ? SITU_W.emaUp : SITU_W.emaDown,
+    vacuum:    Math.min(SITU_W.vacCap, Math.max(0, liquidityVacuum - SITU_W.vacBase) * SITU_W.vacMul),
+    extended:  overextended ? SITU_W.overextended : 0,
+  };
+  let situationScore = Object.values(situ).reduce((a, b) => a + b, 0);
+  if (!volumeKnown) situationScore = Math.min(situationScore, SITU_W.noVolumeCap);
+  situationScore = +clamp(situationScore, 0, 100).toFixed(0);
 
   const grossCRV = (tp2 - entry) / risk;
   const costPct = 0.18;                                   // Broker + Spread, konservativ
@@ -1755,6 +1807,11 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
     liquidityVacuum: +liquidityVacuum.toFixed(0),
     // Situation-/Erklaerungsfelder: Discovery bleibt 0 % direktes BUY-Gewicht; FusionPulse Adaptiv nutzt nur die Deep-Situation als Analysekomponente.
     situationType, situationScore, situationReasons:situationReasons.slice(0,4),
+    /* v3.27.0: die EINZELBEITRAEGE, gerundet. Ohne sie laesst sich nie
+       feststellen, welcher Term den Score getragen hat und welcher ihn nur
+       verwaessert. Vier Zeichen je Term im Snapshot — die Alternative ist,
+       die Frage nie beantworten zu koennen. */
+    situParts: Object.fromEntries(Object.entries(situ).map(([k, v]) => [k, +Number(v).toFixed(1)])),
     triggerUsd: priorHigh, triggerEur:e(priorHigh), triggerDistancePct:triggerDistancePct==null?null:+triggerDistancePct.toFixed(2),
     breakout60m:brokePriorHigh, nearBreakout, reclaimVwap, reclaimEma21, pullbackHold, squeezeRelease,
     accel5v15:+accel5v15.toFixed(2), rangeExpansion:rangeExpansion==null?null:+rangeExpansion.toFixed(2), overextended,
@@ -2699,6 +2756,16 @@ function snapshotPayload(row){
        was man nicht aufzeichnet, kann man nie kalibrieren. */
     spreadPct: Number.isFinite(Number(row?.spreadPct))
       ? Math.round(Number(row.spreadPct) * 10000) / 10000 : null,
+    /* v3.27.0 · VIERTE Wiederholung derselben Lehre, nach Situationstyp
+       (v3.17.0), Dollarumsatz (v3.18.0) und Spread (v3.23.0):
+       was man nicht aufzeichnet, kann man nie kalibrieren.
+       Der `situationScore` entscheidet, WELCHE Titel ueberhaupt in die
+       Kandidatenliste kommen — er sitzt vor jeder Kostenrechnung und jeder
+       Rangfolge. Seine elf Terme waren bis hierher nirgends gespeichert.
+       Damit war die Frage "traegt dieser Koeffizient etwas bei" nicht nur
+       unbeantwortet, sondern unbeantwortBAR. */
+    situScore: Number.isFinite(Number(row?.situationScore)) ? Math.round(Number(row.situationScore)) : null,
+    situParts: row?.situParts && typeof row.situParts === 'object' ? row.situParts : null,
   });
 }
 async function d1StoreRows(env, rows, opts={}){
@@ -3564,6 +3631,562 @@ async function topPicks(env, opts = {}) {
     rowsScanned: rows.length, rowsCapped: rows.length >= PICK.ROW_LIMIT,
     episodes: episodes.length, withSituation, tradingDays,
     situations, picks, radarTs: radar?.ts || null, note, tempoNote,
+  };
+}
+
+/* ============================================================================
+   v3.28.0 · HANDELSTAGEBUCH — der Abstand zwischen Plan und Wirklichkeit
+   ----------------------------------------------------------------------------
+   DAS GRÖSSTE LOCH DER GANZEN APP, und es war nie im Code: sie misst den MARKT,
+   nicht den HÄNDLER. Jede Lernschicht seit v3.20.0 rechnet mit einem Phantom,
+   das zum aufgezeichneten Preis kauft und exakt am Ziel verkauft.
+
+   Der Abstand zwischen diesem Phantom und einem echten Menschen ist in aller
+   Regel groesser als der ganze Vorteil, den die App zu vermessen versucht:
+   Bei 1,02 % Stopweite sind zwei Zehntelprozent Ausfuehrungsabweichung bereits
+   ein Fuenftel des Budgets. Solange das nicht gemessen wird, kann die App
+   beliebig recht haben und der Kontostand trotzdem sinken.
+
+   WAS HIER AUFGEZEICHNET WIRD: was die App vorgeschlagen hat (Soll) und was
+   tatsaechlich passiert ist (Ist) — Einstiegskurs, Ausstiegskurs, Zeiten.
+   Daraus folgt die einzige Zahl, die den Unterschied wirklich beziffert:
+   die Abweichung in Euro, je Trade und in Summe.
+
+   WAS HIER NICHT PASSIERT: keine Bewertung, keine Note, keine automatische
+   Aenderung an irgendeiner Regel. Ein Tagebuch, das seinen Fuehrer belehrt,
+   wird nicht gefuehrt.
+   ========================================================================== */
+const JOURNAL = { MAX_ROWS: 500, WINDOW_MS: 365 * 24 * 60 * 60_000 };
+
+async function journalSchema(env) {
+  await ensureD1Schema(env);
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS trades(
+    id TEXT PRIMARY KEY,
+    ts INTEGER NOT NULL,
+    symbol TEXT NOT NULL,
+    asset TEXT NOT NULL DEFAULT 'stock',
+    origin TEXT,
+    plan_entry REAL, plan_target REAL, plan_stop REAL,
+    plan_notional REAL, plan_net_eur REAL,
+    fill_entry REAL, fill_entry_ts INTEGER,
+    fill_exit REAL, fill_exit_ts INTEGER,
+    real_net_eur REAL,
+    skipped INTEGER NOT NULL DEFAULT 0,
+    note TEXT,
+    updated_ts INTEGER NOT NULL
+  )`).run();
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts DESC)').run();
+}
+
+/** Rechnet Soll und Ist eines Eintrags gegeneinander. Reine Funktion. */
+function journalRow(t) {
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+  const planEntry = num(t.plan_entry), planTarget = num(t.plan_target), planStop = num(t.plan_stop);
+  const fillEntry = num(t.fill_entry), fillExit = num(t.fill_exit);
+  const notional = num(t.plan_notional) || PICK_COST.notionalEur;
+
+  // Abweichung beim EINSTIEG: teurer gekauft als geplant = negativ fuer dich.
+  const slipEntryPct = (planEntry && fillEntry) ? (fillEntry - planEntry) / planEntry * 100 : null;
+  // Abweichung beim AUSSTIEG gegen das geplante Ziel.
+  const slipExitPct = (planTarget && fillExit) ? (fillExit - planTarget) / planTarget * 100 : null;
+
+  const realMovePct = (fillEntry && fillExit) ? (fillExit - fillEntry) / fillEntry * 100 : null;
+  const planMovePct = (planEntry && planTarget) ? (planTarget - planEntry) / planEntry * 100 : null;
+
+  const cfg = { ...PICK_COST, notionalEur: notional };
+  const realNet = num(t.real_net_eur) ?? (realMovePct != null ? Math.round(netEurAtMove(realMovePct, cfg)) : null);
+  const planNet = num(t.plan_net_eur) ?? (planMovePct != null ? Math.round(netEurAtMove(planMovePct, cfg)) : null);
+
+  return {
+    id: t.id, ts: Number(t.ts), symbol: String(t.symbol || '').toUpperCase(),
+    asset: t.asset || 'stock', origin: t.origin || null,
+    skipped: !!Number(t.skipped), note: t.note || null,
+    planEntry, planTarget, planStop, notional,
+    fillEntry, fillExit,
+    fillEntryTs: num(t.fill_entry_ts), fillExitTs: num(t.fill_exit_ts),
+    planMovePct: planMovePct == null ? null : r2(planMovePct),
+    realMovePct: realMovePct == null ? null : r2(realMovePct),
+    slipEntryPct: slipEntryPct == null ? null : r2(slipEntryPct),
+    slipExitPct: slipExitPct == null ? null : r2(slipExitPct),
+    planNet, realNet,
+    deltaEur: (planNet != null && realNet != null) ? Math.round(realNet - planNet) : null,
+    holdMin: (num(t.fill_entry_ts) && num(t.fill_exit_ts))
+      ? Math.round((num(t.fill_exit_ts) - num(t.fill_entry_ts)) / 60_000) : null,
+    state: Number(t.skipped) ? 'uebersprungen'
+      : (fillEntry && fillExit) ? 'abgeschlossen'
+      : fillEntry ? 'offen' : 'geplant',
+  };
+}
+
+/** Zusammenfassung. Bewusst OHNE Note: die Zahlen sprechen fuer sich. */
+function journalSummary(rows) {
+  const done = rows.filter((r) => r.state === 'abgeschlossen');
+  const withSlip = done.filter((r) => r.slipEntryPct != null);
+  const med = (a) => { const s = [...a].sort((x, y) => x - y);
+    return s.length ? s[Math.floor(s.length / 2)] : null; };
+  const slipMed = withSlip.length ? med(withSlip.map((r) => r.slipEntryPct)) : null;
+  const planSum = done.reduce((a, r) => a + (r.planNet ?? 0), 0);
+  const realSum = done.reduce((a, r) => a + (r.realNet ?? 0), 0);
+  return {
+    total: rows.length, done: done.length,
+    skipped: rows.filter((r) => r.skipped).length,
+    open: rows.filter((r) => r.state === 'offen').length,
+    planSumEur: Math.round(planSum), realSumEur: Math.round(realSum),
+    deltaSumEur: Math.round(realSum - planSum),
+    slipEntryMedianPct: slipMed == null ? null : r2(slipMed),
+    slipEntryN: withSlip.length,
+    winners: done.filter((r) => (r.realNet ?? 0) > 0).length,
+    holdMedianMin: med(done.map((r) => r.holdMin).filter(Number.isFinite)),
+    /* Die eigentliche Aussage: was kostet der Abstand zwischen App und
+       Wirklichkeit, umgerechnet auf einen Trade? */
+    costPerTradeEur: done.length ? Math.round((realSum - planSum) / done.length) : null,
+  };
+}
+
+async function journalList(env) {
+  await journalSchema(env);
+  const res = (await env.DB.prepare(
+    `SELECT * FROM trades WHERE ts>=? ORDER BY ts DESC LIMIT ?`)
+    .bind(Date.now() - JOURNAL.WINDOW_MS, JOURNAL.MAX_ROWS).all()).results || [];
+  const rows = res.map(journalRow);
+  const summary = journalSummary(rows);
+  return {
+    configured: true, state: 'ok', version: APP_VERSION, rows, summary, buyWeight: 0,
+    note: !rows.length
+      ? 'Noch nichts eingetragen. Ohne Ist-Werte misst jede Auswertung dieser App einen Händler, den es nicht gibt.'
+      : summary.done < 10
+      ? `${summary.done} abgeschlossene Trades. Ab etwa zehn wird die Abweichung zwischen Plan und Wirklichkeit ablesbar.`
+      : summary.costPerTradeEur != null && summary.costPerTradeEur < 0
+      ? `Der Abstand zwischen Plan und Wirklichkeit kostet im Schnitt ${Math.abs(summary.costPerTradeEur)} EUR je Trade. Diese Zahl gehört in jede Erwartungsrechnung.`
+      : 'Die Ausführung liegt im Schnitt nicht unter dem Plan.',
+  };
+}
+
+async function journalWrite(env, body) {
+  await journalSchema(env);
+  const now = Date.now();
+  const id = String(body?.id || `t_${now}_${Math.random().toString(36).slice(2, 8)}`);
+  const num = (v) => (Number.isFinite(Number(v)) && Number(v) !== 0 ? Number(v) : null);
+
+  if (body?.action === 'delete') {
+    await env.DB.prepare('DELETE FROM trades WHERE id=?').bind(id).run();
+    return { ok: true, deleted: id };
+  }
+  const sym = String(body?.symbol || '').trim().toUpperCase();
+  if (!sym) return { ok: false, error: 'Symbol fehlt' };
+
+  const prev = await env.DB.prepare('SELECT * FROM trades WHERE id=? LIMIT 1').bind(id).first();
+  const merged = {
+    id, ts: Number(prev?.ts) || now, symbol: sym,
+    asset: body?.asset === 'coin' ? 'coin' : (prev?.asset || 'stock'),
+    origin: body?.origin ?? prev?.origin ?? null,
+    plan_entry: num(body?.planEntry) ?? prev?.plan_entry ?? null,
+    plan_target: num(body?.planTarget) ?? prev?.plan_target ?? null,
+    plan_stop: num(body?.planStop) ?? prev?.plan_stop ?? null,
+    plan_notional: num(body?.notional) ?? prev?.plan_notional ?? null,
+    plan_net_eur: num(body?.planNet) ?? prev?.plan_net_eur ?? null,
+    fill_entry: num(body?.fillEntry) ?? prev?.fill_entry ?? null,
+    fill_entry_ts: num(body?.fillEntryTs) ?? prev?.fill_entry_ts ?? (num(body?.fillEntry) ? now : null),
+    fill_exit: num(body?.fillExit) ?? prev?.fill_exit ?? null,
+    fill_exit_ts: num(body?.fillExitTs) ?? prev?.fill_exit_ts ?? (num(body?.fillExit) ? now : null),
+    real_net_eur: num(body?.realNet) ?? prev?.real_net_eur ?? null,
+    skipped: body?.skipped != null ? (body.skipped ? 1 : 0) : (Number(prev?.skipped) || 0),
+    note: body?.note ?? prev?.note ?? null,
+    updated_ts: now,
+  };
+  await env.DB.prepare(
+    `INSERT INTO trades(id,ts,symbol,asset,origin,plan_entry,plan_target,plan_stop,plan_notional,
+       plan_net_eur,fill_entry,fill_entry_ts,fill_exit,fill_exit_ts,real_net_eur,skipped,note,updated_ts)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(id) DO UPDATE SET symbol=excluded.symbol,asset=excluded.asset,origin=excluded.origin,
+       plan_entry=excluded.plan_entry,plan_target=excluded.plan_target,plan_stop=excluded.plan_stop,
+       plan_notional=excluded.plan_notional,plan_net_eur=excluded.plan_net_eur,
+       fill_entry=excluded.fill_entry,fill_entry_ts=excluded.fill_entry_ts,
+       fill_exit=excluded.fill_exit,fill_exit_ts=excluded.fill_exit_ts,
+       real_net_eur=excluded.real_net_eur,skipped=excluded.skipped,note=excluded.note,
+       updated_ts=excluded.updated_ts`)
+    .bind(merged.id, merged.ts, merged.symbol, merged.asset, merged.origin,
+      merged.plan_entry, merged.plan_target, merged.plan_stop, merged.plan_notional,
+      merged.plan_net_eur, merged.fill_entry, merged.fill_entry_ts, merged.fill_exit,
+      merged.fill_exit_ts, merged.real_net_eur, merged.skipped, merged.note, merged.updated_ts).run();
+  return { ok: true, id, row: journalRow(merged) };
+}
+
+/* ============================================================================
+   v3.28.0 · „NIMMT FAHRT AUF" — ein Name, oder Schweigen
+   ----------------------------------------------------------------------------
+   Der Nutzer braucht keine Liste. Er braucht EINEN Namen, wenn wirklich etwas
+   losgeht, und sonst Ruhe. Eine Kachel, die immer etwas anzeigt, ist eine
+   Kachel, die man nach zwei Wochen nicht mehr liest.
+
+   WAS DIESE ERKENNUNG NICHT KANN — und was sie deshalb nicht behauptet:
+   Die App hat KEINE Nachrichtenquelle. Sie kann nicht wissen, ob eine Meldung
+   der Ausloeser war. Was sie messen kann, ist der FINGERABDRUCK einer
+   Nachricht: eine Eroeffnungsluecke, ein Umsatzstoss weit ueber dem Ueblichen,
+   und ein frischer Zustandswechsel. Das ist ein Hinweis auf einen Ausloeser,
+   nicht seine Identifikation. Genau so steht es auch in der Anzeige.
+   Ein Quartalstermin in der Naehe ist der einzige harte Beleg, den die App hat
+   — der kommt aus dem Terminkalender und wird getrennt ausgewiesen.
+
+   WARUM DIE HUERDEN SO HOCH SIND:
+   Bei 10.000 EUR Einsatz und 2,04 % Zielweite darf der Stop hoechstens 1,02 %
+   entfernt liegen. Ein Spread von 0,3 % frisst davon fast ein Drittel. Ein
+   Titel, der schon 9 % gelaufen ist, hat sein Ziel hinter sich. Deshalb wird
+   hier nicht "auffaellig" gesucht, sondern "auffaellig UND noch handelbar".
+   ========================================================================== */
+const RIDE = {
+  MIN_VOL_PULSE: 60,      // % Umsatzstoss gegen die Vorperiode
+  MIN_GAP_PCT: 1.5,       // Eroeffnungsluecke als Nachrichten-Fingerabdruck
+  MAX_SPREAD_SHARE: 0.30, // Spread darf hoechstens 30 % des Stopbudgets fressen
+  MAX_RANGE_POS: 0.94,    // nicht am absoluten Tageshoch hinterherlaufen
+  MIN_RUNWAY_MULT: 1.0,   // Restweg bis zum Tageshoch >= Zielweite
+  EARN_WINDOW_DAYS: 3,    // Quartalstermin in diesem Fenster gilt als Beleg
+  RISK_BUDGET_PCT: 2.0,   // Anteil des Kapitals, der je Trade riskiert wird
+  MAX_NOTIONAL_MULT: 2.0, // hoechstens doppelte Grundposition
+};
+
+/** Positionsgroesse aus dem RISIKO, nicht aus der Ueberzeugung.
+ *  Das ist der einzige ehrliche Weg zu "hoehere Summe bei gutem Setup": eine
+ *  groessere Position ist erlaubt, WEIL der Stop enger sitzt — nicht, weil das
+ *  Setup sich besser anfuehlt. Der Euro-Verlust am Stop bleibt konstant. */
+function rideSize(stopPct, cfg) {
+  const c = pickCfg(cfg);
+  const budget = c.notionalEur * (RIDE.RISK_BUDGET_PCT / 100);
+  const stop = Math.abs(Number(stopPct) || 0);
+  if (!(stop > 0)) return null;
+  /* Das Budget muss die KOSTEN einschliessen, sonst ist es keine Obergrenze.
+     Mein erster Entwurf rechnete nur den Kursverlust: 200 EUR Budget ergaben
+     eine Position, deren Stop tatsaechlich 252 EUR gekostet haette — die
+     Gebuehren fielen unter den Tisch, ausgerechnet an der Stelle, an der die
+     Position groesser werden soll.
+     Kosten sind ein fester plus ein anteiliger Block:
+       verlust(N) = N*stop/100 + fix + N*rate  =  budget
+       -> N = (budget - fix) / (stop/100 + rate)                            */
+  const fix = c.kind === 'proportional' ? 0 : (Number(c.orderFeeEur) || 0) * 2;
+  const rate = (c.kind === 'proportional'
+    ? (Number(c.feePct) || 0) * 2 + (Number(c.spreadPct) || 0)
+    : (Number(c.frictionPct) || 0)) / 100;
+  const raw = Math.max(0, (budget - fix) / (stop / 100 + rate));
+  const notional = Math.min(raw, c.notionalEur * RIDE.MAX_NOTIONAL_MULT);
+  const scaled = { ...c, notionalEur: Math.round(notional / 100) * 100 };
+  return {
+    notionalEur: scaled.notionalEur,
+    // Der VOLLE Verlust am Stop, Gebuehren eingerechnet. Genau das ist das Budget.
+    riskEur: Math.round(lossEurAtStop(-stop, scaled)),
+    priceRiskEur: Math.round(scaled.notionalEur * (stop / 100)),
+    budgetEur: Math.round(budget),
+    capped: raw > c.notionalEur * RIDE.MAX_NOTIONAL_MULT,
+    costLoadPct: costLoadPct(Math.abs(stopPct) * ECON_MIN_REWARD_RISK, scaled),
+    cfg: scaled,
+  };
+}
+
+/** Prueft EINEN Kandidaten gegen alle Huerden und benennt die, an denen er
+ *  scheitert. Das Ausweisen der Gruende ist kein Beiwerk: eine Kachel, die nur
+ *  "nichts gefunden" sagt, laesst offen ob sie funktioniert. */
+function rideCheck(r, ctx) {
+  const { targetPct, maxStopPct, earnDays } = ctx;
+  const fail = [];
+  /* FUENFTES Mal derselbe Fallstrick — und diesmal hat ihn der eigene Test
+     gefangen: `Number(null)` und `Number('')` sind 0, nicht NaN. Ein FEHLENDER
+     Spread waere damit als 0 % durchgegangen, also als bestmoeglicher Wert,
+     ausgerechnet an der Huerde, die vor unhandelbaren Titeln schuetzt.
+     `feld()` behandelt fehlende Werte als fehlend. Nirgends `Number(x)` direkt. */
+  const feld = (v) => { if (v === null || v === undefined || v === '') return NaN;
+    const n = Number(v); return Number.isFinite(n) ? n : NaN; };
+  const move = feld(r.movePct);
+  const gap = feld(r.gapPct);
+  const pulse = feld(r.volPulsePct);
+  const spread = feld(r.spreadPct);
+  const pos = feld(r.rangePosition);
+
+  if (!r.ignition && r.lifecycle !== 'IGNITION') fail.push('kein frischer Zustandswechsel');
+  if (!(pulse >= RIDE.MIN_VOL_PULSE)) fail.push(`Umsatzstoss ${Number.isFinite(pulse) ? r2(pulse) + ' %' : 'unbekannt'} unter ${RIDE.MIN_VOL_PULSE} %`);
+
+  // Katalysator: Quartalstermin (harter Beleg) ODER Eroeffnungsluecke
+  // (Fingerabdruck). Fehlt beides, bewegt sich der Titel ohne erkennbaren
+  // Grund — dann fehlt der Antrieb, der eine groessere Position rechtfertigt.
+  const earnHit = Number.isFinite(earnDays) && Math.abs(earnDays) <= RIDE.EARN_WINDOW_DAYS;
+  const gapHit = Number.isFinite(gap) && Math.abs(gap) >= RIDE.MIN_GAP_PCT;
+  if (!earnHit && !gapHit) fail.push('kein Quartalstermin und keine Eroeffnungsluecke');
+
+  // Handelbarkeit: der Spread darf das Stopbudget nicht auffressen.
+  const spreadCap = maxStopPct * RIDE.MAX_SPREAD_SHARE;
+  if (!Number.isFinite(spread)) fail.push('Spread unbekannt');
+  else if (spread > spreadCap) fail.push(`Spread ${r2(spread)} % ueber der Grenze von ${r2(spreadCap)} %`);
+
+  // Restweg: wer schon oben steht, hat sein Ziel hinter sich.
+  if (Number.isFinite(pos)) {
+    if (pos > RIDE.MAX_RANGE_POS) fail.push(`bereits bei ${Math.round(pos * 100)} % der Tagesspanne`);
+    const runway = Number.isFinite(feld(r.rangePct)) ? feld(r.rangePct) * (1 - pos) : null;
+    if (runway != null && runway < targetPct * RIDE.MIN_RUNWAY_MULT)
+      fail.push(`Restweg zum Tageshoch ${r2(runway)} % unter der Zielweite ${r2(targetPct)} %`);
+  } else fail.push('Lage in der Tagesspanne unbekannt');
+
+  if (Number.isFinite(move) && move < 0) fail.push('Tagesbilanz negativ');
+
+  return {
+    ok: !fail.length, fail,
+    catalyst: earnHit ? 'Quartalstermin' : gapHit ? 'Eroeffnungsluecke' : null,
+    earnDays: Number.isFinite(earnDays) ? earnDays : null,
+    gapPct: Number.isFinite(gap) ? r2(gap) : null,
+    volPulsePct: Number.isFinite(pulse) ? r2(pulse) : null,
+    spreadPct: Number.isFinite(spread) ? r2(spread) : null,
+  };
+}
+
+async function rideNow(env, opts = {}) {
+  const netEur = posNum(opts.netEur, PICK.DEFAULT_NET_EUR);
+  const asset = opts.asset === 'coin' ? 'coin' : 'stock';
+  const cfg = pickCfg(asset === 'coin' ? COIN_COST : PICK_COST);
+  const targetPct = requiredMovePct(netEur, cfg);
+  const maxStopPct = targetPct / ECON_MIN_REWARD_RISK;
+  const base = {
+    configured: true, version: APP_VERSION, asset,
+    targetPct: r2(targetPct), maxStopPct: r2(maxStopPct),
+    rules: RIDE, buyWeight: 0,
+    noNewsFeed: true,
+    disclaimer: 'Diese App hat keine Nachrichtenquelle. Erkannt wird der FINGERABDRUCK eines Ausloesers (Luecke, Umsatzstoss, Zustandswechsel), nicht der Ausloeser selbst.',
+  };
+  const radar = asset === 'coin' ? await readCoinLive(env) : await readPersistedIexRadar(env);
+  if (!radar?.rows?.length)
+    return { ...base, state: 'empty', hit: null, checked: 0, near: [],
+      note: 'Kein aktueller Radar-Stand. Ohne ihn wird bewusst nichts gemeldet.' };
+
+  // Quartalstermine nur fuer Aktien und nur, wenn der Kalender etwas liefert.
+  let earnMap = new Map();
+  if (asset === 'stock') {
+    try {
+      const e = await earningsCalendar(env);
+      for (const x of [...(e?.manual || []), ...(e?.auto || [])]) {
+        const sym = String(x.symbol || '').toUpperCase();
+        const d = Date.parse(x.date || x.reportDate || '');
+        if (sym && Number.isFinite(d)) {
+          const days = Math.round((d - Date.now()) / 86_400_000);
+          if (!earnMap.has(sym) || Math.abs(days) < Math.abs(earnMap.get(sym))) earnMap.set(sym, days);
+        }
+      }
+    } catch { /* Kalender fehlt -> earnHit bleibt false, fail-closed */ }
+  }
+
+  const ctx = { targetPct, maxStopPct };
+  const scored = radar.rows.map((r) => {
+    const sym = String(r.symbol || '').toUpperCase();
+    const chk = rideCheck(r, { ...ctx, earnDays: earnMap.get(sym) });
+    return { symbol: sym, situation: r.situation || r.situationType || 'WATCH',
+      lifecycle: r.lifecycle || null, score: Number(r.situationScore ?? r.score ?? 0),
+      movePct: Number.isFinite(Number(r.movePct)) ? r2(Number(r.movePct)) : null,
+      speedPct: Number.isFinite(Number(r.speedPct)) ? r2(Number(r.speedPct)) : null,
+      rangePosition: Number.isFinite(Number(r.rangePosition)) ? r2(Number(r.rangePosition)) : null,
+      reasons: Array.isArray(r.reasons) ? r.reasons.slice(0, 3) : [], ...chk };
+  });
+
+  const passed = scored.filter((x) => x.ok).sort((a, b) => b.score - a.score);
+  const hit = passed[0] || null;
+  const size = hit ? rideSize(maxStopPct, cfg) : null;
+
+  /* Die knappsten Verfehlungen werden gezeigt. Eine Kachel, die nur schweigt,
+     laesst offen, ob sie noch arbeitet — und ob die Huerden sinnvoll stehen. */
+  const near = scored.filter((x) => !x.ok && x.fail.length <= 2)
+    .sort((a, b) => a.fail.length - b.fail.length || b.score - a.score)
+    .slice(0, 3)
+    .map((x) => ({ symbol: x.symbol, situation: x.situation, score: x.score, fail: x.fail }));
+
+  return {
+    ...base, state: 'ok', ts: radar.ts || null, checked: scored.length,
+    hit: hit ? {
+      ...hit,
+      plan: {
+        targetPct: r2(targetPct), stopPct: -r2(maxStopPct),
+        notionalEur: size?.notionalEur ?? cfg.notionalEur,
+        riskEur: size?.riskEur ?? null,
+        winEur: Math.round(netEurAtMove(targetPct, size?.cfg ?? cfg)),
+        lossEur: Math.round(lossEurAtStop(-maxStopPct, size?.cfg ?? cfg)),
+        costLoadPct: size?.costLoadPct ?? costLoadPct(targetPct, cfg),
+        capped: !!size?.capped,
+        sizedBy: `Risikobudget ${RIDE.RISK_BUDGET_PCT} % von ${eurRaw(cfg.notionalEur)}`,
+      },
+    } : null,
+    near,
+    note: hit
+      ? `${hit.symbol} erfuellt alle Huerden. Ausloeser: ${hit.catalyst}. Kein Kaufsignal — ein Grund hinzusehen.`
+      : `${scored.length} Kandidaten geprueft, keiner erfuellt alle Huerden. Das ist der Normalfall.`,
+  };
+}
+const eurRaw = (n) => `${Math.round(Number(n) || 0).toLocaleString('de-AT')} EUR`;
+
+/* ============================================================================
+   v3.27.0 · SCORE-AUDIT — was ist jeder Koeffizient wirklich wert?
+   ----------------------------------------------------------------------------
+   DER SITUATION-SCORE ist der frueheste und folgenreichste Eingriffspunkt der
+   App: er entscheidet, WELCHE Titel ueberhaupt in die Kandidatenliste kommen.
+   Alles danach — Kostenrechnung, Hitze, Erwartungswert, Rangfolge — arbeitet
+   nur noch mit dem, was er durchgelassen hat. Seine elf Terme sind bis heute
+   nie gegen ein Ergebnis geprueft worden.
+
+   WAS HIER GEMESSEN WIRD, und was ausdruecklich nicht:
+   Fuer jeden Term wird gefragt: "Wenn dieser Term Punkte vergeben hat, sind die
+   betroffenen Faelle danach haeufiger ins Ziel gelaufen als die anderen?"
+   Das ist eine Trennschaerfe (AUC), keine Ursache. Ein Term kann trennen, weil
+   er dasselbe misst wie ein anderer — deshalb wird zusaetzlich die Ueber-
+   schneidung ausgewiesen.
+
+   DREI SCHUTZMASSNAHMEN, weil hier besonders leicht Unsinn entsteht:
+   1) ELF TERME = ELF TESTS. Bei elf Vergleichen liefert reiner Zufall regel-
+      maessig einen "signifikanten" Treffer. Die Rauschgrenze wird deshalb
+      mehrfachtestkorrigiert (`aucNoiseFloor` mit tests = Anzahl Terme) —
+      dieselbe Bremse, die das Musterlabor seit v3.17.0 benutzt.
+   2) AUSSERHALB DER STICHPROBE. Gemessen wird auf dem juengeren Drittel,
+      nachdem die Terme auf dem aelteren Teil beobachtet wurden. Ein Term, der
+      nur rueckblickend trennt, faellt damit auf.
+   3) FAIL-CLOSED IM URTEIL. Wer zu wenige Faelle hat, bekommt "nicht
+      bewertbar" — nicht "neutral". Ein unbewerteter Term darf nie so aussehen
+      wie ein geprueft harmloser.
+
+   DIESES MODUL AENDERT NICHTS. Es empfiehlt, es schaltet nicht ab. Dieselbe
+   Trennung wie bei Modul 0: der Ueberanpassungswaechter darf raten, nicht
+   handeln.
+   ========================================================================== */
+const AUDIT = {
+  MIN_CASES: 40,        // je Term, sonst "nicht bewertbar"
+  MIN_PER_GROUP: 12,    // je Gruppe (Term aktiv / inaktiv)
+  OOS_FRACTION: 0.35,
+  WINDOW_MS: 28 * 24 * 60 * 60_000,
+  ROW_LIMIT: 12000,
+};
+const SITU_TERMS = [
+  ['breakout', 'Ausbruch / Triggerzone', 'Kurs ueber dem 60-Minuten-Hoch oder dicht davor'],
+  ['squeeze',  'Kompression loest sich',  'enge Vorphase, Ausbruch, Range weitet sich'],
+  ['reclaim',  'VWAP/EMA21 zurueckerobert', 'Kurs holt sich eine verlorene Marke zurueck'],
+  ['pullback', 'Pullback haelt',          'Ruecksetzer haelt die EMA21 und dreht'],
+  ['accel',    'Beschleunigung',          '5-Minuten-Momentum zieht gegen die 15-Minuten-Basis an'],
+  ['rvol',     'Relatives Volumen',       'mehr Umsatz als ueblich zu dieser Tageszeit'],
+  ['vwap',     'Lage zum VWAP',           'ueber oder unter dem volumengewichteten Schnitt'],
+  ['emaStack', 'EMA-Stapel',              'EMA9 ueber oder unter EMA21'],
+  ['vacuum',   'Liquiditaetsvakuum',      'wenig Aktivitaet oberhalb des Kurses'],
+  ['extended', 'Ueberdehnung',            'mehr als 3 ATR ueber der EMA21 — Abzugsterm'],
+];
+
+/** Urteil je Term. Bewusst als URSACHE formuliert, nicht als Note. */
+function auditVerdict({ n, nActive, nIdle, auc, floor, weight }) {
+  if (n < AUDIT.MIN_CASES || nActive < AUDIT.MIN_PER_GROUP || nIdle < AUDIT.MIN_PER_GROUP)
+    return { verdict: 'nicht bewertbar',
+      why: `${nActive} Faelle mit, ${nIdle} ohne diesen Term. Noetig sind ${AUDIT.MIN_CASES} insgesamt und ${AUDIT.MIN_PER_GROUP} je Gruppe.` };
+  if (auc == null) return { verdict: 'nicht bewertbar', why: 'Keine vergleichbaren Ergebnisse.' };
+  /* Das VORZEICHEN des Gewichts bestimmt, was "richtig" heisst.
+     Ein ABZUGSTERM wie die Ueberdehnung (-18) SOLL die schlechteren Faelle
+     treffen. Wuerde man ihn wie einen Pluspunkt bewerten, faende man ihn
+     "verkehrt herum", genau wenn er tut, wofuer er gebaut wurde — und
+     umgekehrt bliebe ein kaputter Abzugsterm unentdeckt.
+     Mein erster Entwurf hat genau diesen Fehler gemacht; er ist im Testlauf
+     aufgefallen, weil der Abzugsterm als einziger "wirkt verkehrt herum"
+     meldete, obwohl die konstruierte Wahrheit ihn korrekt gemacht hatte. */
+  const soll = weight >= 0 ? 1 : -1;
+  const edge = (auc - 0.5) * soll;
+  const band = floor - 0.5;
+  const richtung = soll > 0 ? 'haeufiger' : 'seltener';
+  const gegen = soll > 0 ? 'seltener' : 'haeufiger';
+  if (Math.abs(edge) < band)
+    return { verdict: 'kein messbarer Beitrag',
+      why: `Trennschaerfe ${(auc * 100).toFixed(0)} % liegt innerhalb der Rauschgrenze von ${(floor * 100).toFixed(0)} %. Der Term vergibt ${weight > 0 ? '+' : ''}${weight} Punkte, ohne dass sich das im Ergebnis zeigt.` };
+  if (edge < 0)
+    return { verdict: 'wirkt verkehrt herum',
+      why: soll > 0
+        ? `Faelle MIT diesem Term liefen ${gegen} ins Ziel (${(auc * 100).toFixed(0)} %). Bei +${weight} Punkten hebt er damit die falschen Titel nach oben.`
+        : `Dieser Abzugsterm trifft die BESSEREN Faelle (${(auc * 100).toFixed(0)} %). Bei ${weight} Punkten zieht er damit die richtigen Titel nach unten.` };
+  return { verdict: 'traegt',
+    why: soll > 0
+      ? `Faelle mit diesem Term liefen ${richtung} ins Ziel (${(auc * 100).toFixed(0)} % gegen ${(floor * 100).toFixed(0)} % Rauschgrenze).`
+      : `Abzugsterm arbeitet richtig: die betroffenen Faelle liefen ${richtung} ins Ziel (${(auc * 100).toFixed(0)} %, Rauschgrenze ${(floor * 100).toFixed(0)} %).` };
+}
+
+async function scoreAudit(env, opts = {}) {
+  const netEur = posNum(opts.netEur, PICK.DEFAULT_NET_EUR);
+  const cfg = pickCfg(opts.cost);
+  const targetPct = requiredMovePct(netEur, cfg);
+  const stopPct = -(targetPct / ECON_MIN_REWARD_RISK);
+  const base = {
+    configured: true, version: APP_VERSION,
+    targetPct: r2(targetPct), stopPct: r2(stopPct),
+    weights: SITU_W, terms: SITU_TERMS.map(([k, label, help]) => ({ key: k, label, help })),
+    minCases: AUDIT.MIN_CASES, oosFraction: AUDIT.OOS_FRACTION,
+    windowDays: Math.round(AUDIT.WINDOW_MS / 86_400_000),
+    changesNothing: true,
+  };
+  if (!env?.DB) return { ...base, state: 'nodb', rows: [], note: 'Ohne D1 gibt es keine Aufzeichnungen. Es wird bewusst nichts geschaetzt.' };
+  await ensureD1Schema(env);
+
+  const raw = (await env.DB.prepare(
+    `SELECT symbol,ts,bucket5,max_pct,min_pct,mae_pre,payload
+       FROM market_snapshots
+      WHERE resolved_ts IS NOT NULL AND asset_type='stock' AND ts>=?
+      ORDER BY ts DESC LIMIT ?`).bind(Date.now() - AUDIT.WINDOW_MS, AUDIT.ROW_LIMIT).all()).results || [];
+  const episodes = collapseEpisodes(raw);
+
+  // Nur Episoden, die die Beitraege wirklich mitgebracht haben.
+  const cases = [];
+  for (const e of episodes) {
+    let p = null;
+    try { p = JSON.parse(e.payload || '{}'); } catch { continue; }
+    if (!p?.situParts || typeof p.situParts !== 'object') continue;
+    const o = pickOutcome([e], targetPct, stopPct);
+    cases.push({ ts: Number(e.ts), parts: p.situParts, score: Number(p.situScore),
+      win: o.hit === 1, maxPct: Number(e.max_pct) });
+  }
+  cases.sort((a, b) => a.ts - b.ts);
+  const splitAt = Math.floor(cases.length * (1 - AUDIT.OOS_FRACTION));
+  const oos = cases.slice(splitAt);
+
+  const rows = SITU_TERMS.map(([key, label, help]) => {
+    // "Aktiv" heisst: der Term hat ueberhaupt einen Beitrag geliefert.
+    const active = oos.filter((c) => Math.abs(Number(c.parts[key]) || 0) > 0.05);
+    const idle = oos.filter((c) => Math.abs(Number(c.parts[key]) || 0) <= 0.05);
+    const auc = aucSeparation(active.map((c) => (c.win ? 1 : 0)), idle.map((c) => (c.win ? 1 : 0)));
+    const floor = aucNoiseFloor(active.length, idle.length, SITU_TERMS.length);
+    const weight = Math.round((active.reduce((a, c) => a + (Number(c.parts[key]) || 0), 0) /
+      Math.max(1, active.length)) * 10) / 10;
+    const v = auditVerdict({ n: oos.length, nActive: active.length, nIdle: idle.length, auc, floor, weight });
+    return {
+      key, label, help, weight,
+      nActive: active.length, nIdle: idle.length,
+      hitActive: active.length ? Math.round(active.filter((c) => c.win).length / active.length * 100) : null,
+      hitIdle: idle.length ? Math.round(idle.filter((c) => c.win).length / idle.length * 100) : null,
+      auc: auc == null ? null : Math.round(auc * 100), floor: Math.round(floor * 100),
+      ...v,
+    };
+  });
+
+  // Der Score als Ganzes: trennt er ueberhaupt?
+  const hi = oos.filter((c) => Number.isFinite(c.score) && c.score >= 60);
+  const lo = oos.filter((c) => Number.isFinite(c.score) && c.score < 60);
+  const wholeAuc = aucSeparation(hi.map((c) => (c.win ? 1 : 0)), lo.map((c) => (c.win ? 1 : 0)));
+  const wholeFloor = aucNoiseFloor(hi.length, lo.length, 1);
+
+  const bewertbar = rows.filter((r) => r.verdict !== 'nicht bewertbar');
+  const traegt = rows.filter((r) => r.verdict === 'traegt');
+  const verkehrt = rows.filter((r) => r.verdict === 'wirkt verkehrt herum');
+  const note = !episodes.length
+    ? 'Noch keine aufgeloesten Aufzeichnungen im Fenster.'
+    : !cases.length
+    ? 'Aufzeichnungen vorhanden, aber ohne die Einzelbeitraege des Score. Sie werden erst seit v3.27.0 mitgeschrieben — rueckwirkend ist das nicht zu heilen.'
+    : !bewertbar.length
+    ? `${cases.length} Faelle aufgezeichnet, davon ${oos.length} im Nachweisteil. Kein Term hat bisher genug Faelle fuer ein Urteil.`
+    : `${bewertbar.length} von ${rows.length} Termen sind bewertbar: ${traegt.length} tragen, ${verkehrt.length} wirken verkehrt herum.`;
+
+  return {
+    ...base, state: cases.length ? 'ok' : 'empty',
+    episodes: episodes.length, cases: cases.length, oosCases: oos.length,
+    rows,
+    whole: {
+      auc: wholeAuc == null ? null : Math.round(wholeAuc * 100),
+      floor: Math.round(wholeFloor * 100),
+      nHigh: hi.length, nLow: lo.length,
+      verdict: (wholeAuc == null || hi.length < AUDIT.MIN_PER_GROUP || lo.length < AUDIT.MIN_PER_GROUP)
+        ? 'nicht bewertbar'
+        : (wholeAuc - 0.5) < (wholeFloor - 0.5) ? 'kein messbarer Beitrag'
+        : wholeAuc < 0.5 ? 'wirkt verkehrt herum' : 'traegt',
+    },
+    note,
   };
 }
 
@@ -5108,6 +5731,25 @@ export default {
     if (url.pathname === '/api/experimental') {
       try { return json(await experimentalPulse(url.searchParams.get('force') === '1'), 200, { 'cache-control':'no-store' }); }
       catch (e) { return json({state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/journal') {
+      try {
+        if (!env?.DB) return json({configured:true,state:'nodb',rows:[],summary:null,
+          note:'Ohne D1 laesst sich nichts aufzeichnen.'},200,{ 'cache-control':'no-store' });
+        if (request.method === 'POST') return json(await journalWrite(env, await request.json()),200,{ 'cache-control':'no-store' });
+        return json(await journalList(env),200,{ 'cache-control':'no-store' });
+      } catch(e){ return json({configured:true,state:'error',error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/ride') {
+      try { return json(await rideNow(env,{asset:url.searchParams.get('asset'),netEur:url.searchParams.get('netEur')}),200,{ 'cache-control':'no-store' }); }
+      catch(e){ return json({configured:true,state:'error',error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    if (url.pathname === '/api/scoreaudit') {
+      try { return json(await scoreAudit(env,{netEur:url.searchParams.get('netEur')}),200,{ 'cache-control':'no-store' }); }
+      catch(e){ return json({configured:true,state:'error',error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
     }
 
     if (url.pathname === '/api/toppicks') {

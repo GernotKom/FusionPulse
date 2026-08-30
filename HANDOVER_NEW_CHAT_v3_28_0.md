@@ -1,19 +1,112 @@
-# FusionPulse – Übergabe für neuen Chat · v3.18.0 (Claude/Opus-Strang)
+# FusionPulse – Übergabe für neuen Chat · v3.28.0 (Claude/Opus-Strang)
 
 > ZUERST vollständig lesen, DANN den Code auditieren, DANN erst bauen.
-> Ersetzt alle früheren HANDOVER-Dateien. Die Abschnitte „Der große Befund" und
-> „Was der Nutzer WIRKLICH will" sind die wichtigsten — ohne sie baut man an der
-> Sache vorbei, so wie ich es zehn Versionen lang getan habe.
->
-> **Zwei Regeln, die den letzten Strang fünf Versionen gekostet haben — Abschnitt 8l:**
-> 1. Bei jedem gemeldeten Anzeige- oder Scrollfehler **zuerst die Kopfzeile lesen**
->    (`v3.18.0 · Worker 3.18.0`). Erst wenn beide Nummern übereinstimmen, ist eine
->    Aussage über den Code belastbar.
-> 2. Wenn ein Fix rechnerisch stimmt und trotzdem nichts bewirkt, ist die **Annahme über
->    den Mechanismus** falsch, nicht die Zahl. Nicht nachjustieren — nachsehen.
->
-> **Und eine Formatregel (Abschnitt 13):** Jede Release-Notes-Datei endet mit
-> „Was jetzt funktioniert" und „Was noch offen ist", beides in Laiensprache.
+> Ersetzt alle früheren HANDOVER-Dateien.
+
+## ⚠ WIE DIESE DATEI ZU LESEN IST
+
+Sie ist über zehn Versionen gewachsen. Die Abschnitte 1–13 stammen aus der Zeit
+von v3.18.0 und beschreiben die Grundlagen — **Rechenwerte und Suitenzahlen dort
+sind veraltet**, die Denkweise nicht. Was seither passiert ist, steht in den
+Abschnitten **8p bis 8y** am Ende. Bei Widerspruch gilt der spätere Abschnitt.
+
+**Aktueller Stand:** v3.28.0 · `npm run check` → **48 Prüfungen grün**
+(`tests/safety-regression.mjs` plus `tests/sw-fault.mjs`, letzterer FÜHRT den
+Service Worker unter Störungen AUS).
+
+## DIE VIER REGELN, DIE ALLES ANDERE ÜBERWIEGEN
+
+**1 · „Effizienz" heißt in diesem Projekt EURO, nicht Rechenzeit.**
+Ich habe das einmal verwechselt und eine ganze Version an der Frage vorbeigebaut
+(8p gegen 8q). Bei jedem unscharfen Wort des Nutzers zuerst nachfragen, welche
+Größe gemeint ist.
+
+**2 · `Number(null)` ist 0, nicht NaN.** Fünf Mal derselbe Fehler in fünf
+Versionen (8t, 8u, 8y): eine fehlende Angabe ging als „gültige Null" durch —
+einmal wurden Kryptokosten verdoppelt, einmal fiel das Mindestziel von 2,04 %
+auf 0,38 %, einmal wäre ein fehlender Spread als bestmöglicher Wert
+durchgegangen. **Jede Zahl von außen läuft über `posNum` bzw. `feld()`.**
+`Number.isFinite` allein reicht NICHT.
+
+**3 · Ein `respondWith` darf niemals ablehnen** (8v). Ein Service Worker sitzt
+zwischen der App und allem, was sie braucht; ein unbehandelter Fehler nimmt
+nicht eine Datei aus dem Verkehr, sondern die ganze Anwendung. Das hat die App
+einen halben Tag lang komplett stillgelegt.
+
+**4 · Fehlende Daten dürfen NIE etwas verbessern.** Gilt überall: in den Kosten,
+in der Rangfolge, im Urteil, in den Hürden. Fail-closed ist kein Stil, sondern
+die tragende Regel dieser App.
+
+## WAS TESTS IN DIESEM PROJEKT LEISTEN MÜSSEN
+
+Abschnitt 11 listet sechs Fälle, in denen ein Test durchlief ohne etwas zu
+sagen. Seither gilt:
+
+- **Jede neue Prüfung braucht eine Negativkontrolle** — Code absichtlich kaputt
+  machen, Fehlschlag beobachten, zurücksetzen. Protokoll in den Release Notes.
+- **Regex sieht, was da ist — nie, was fehlt.** Ein fehlendes `.catch()` ist per
+  Textprüfung unsichtbar. Alles, was zwischen App und Daten sitzt, muss unter
+  Störung AUSGEFÜHRT werden (8v).
+- **Unit-Tests der reinen Funktionen reichen nicht.** Drei Fehler saßen in der
+  NAHT zwischen Parameterschicht und Rechnung. Jeder Endpunkt braucht einen
+  Aufruf ohne jeden Parameter, der die dokumentierten Standardwerte bestätigt
+  (8u).
+- **Für jeden Schutzmechanismus einen Datensatz suchen, auf dem NUR er greift.**
+  Zwei Schutzmechanismen, die dasselbe Ergebnis erzeugen, werden sonst nur als
+  Vereinigung geprüft (8q).
+- **Tests dürfen nicht von der Reihenfolge der Datei abhängen.** `sliceFn()`
+  statt Schnitten bis zu entfernten Ankern (8x).
+- **Für den Erfolgspfad zu testen findet die teuerste Fehlerklasse nie.** Der
+  fünfte `Number(null)`-Fall wurde nur gefunden, weil „unbekannter Wert darf
+  nicht durchgehen" für JEDES Feld einzeln geschrieben war (8y).
+
+## DAS WIEDERKEHRENDE MUSTER — vier Mal derselbe Befund
+
+Die App maß etwas anderes, als der Nutzer wollte:
+v3.8.0 falsches Universum · v3.16.0 falsches Gate · v3.20.0 falsche
+Erfolgsschwelle (5 % statt 2,04 %) · v3.22.0 Ertrag je Trade statt je Zeit.
+
+Und vier Mal: **was nicht aufgezeichnet wird, kann nie kalibriert werden** —
+Situationstyp (v3.17.0), Dollarumsatz (v3.18.0), Spread (v3.23.0),
+Score-Beiträge (v3.27.0).
+
+**Bei jeder Kennzahl, die über Erfolg entscheidet, zuerst prüfen: misst sie
+dasselbe wie das erklärte Ziel des Nutzers?** Nicht, ob sie plausibel gewählt
+ist.
+
+## WORAUF DIE APP GERADE WARTET
+
+Fast alles seit v3.20.0 braucht Laufzeit. `situParts` (v3.27.0) und `mae_pre`
+(v3.21.0) sammeln sich erst; **rückwirkend ist nichts davon zu heilen**. Rechne
+mit sechs bis acht Wochen bis zum ersten belastbaren Urteil. Das darf nicht
+durch weichere Schwellen beschleunigt werden.
+
+**Die einzige Ausnahme:** Auswertungen auf TAGESBALKEN. Historische Tagesdaten
+sind abrufbar, also sofort rückwirkend prüfbar — und sie sind der Teil, den der
+kostenlose Zugang in guter Qualität liefert (die IEX-Beschränkung trifft
+Intraday-Quotes hart, Tages-OHLCV kaum).
+
+## NÄCHSTER SCHRITT, mit dem Nutzer besprochen
+
+**Die Vorabend-Liste.** Die App sucht Okkasionen zum falschen Zeitpunkt: ihr
+längster Zeitrahmen sind 60-Minuten-Balken, sie sieht nur die Zündung. Eine
+Okkasion entsteht aber am Vortag — mehrtägige Kompression, versiegender Umsatz,
+Nähe zu einem mehrtägigen Widerstand, Termin voraus. Wer bei 2,04 % Zielweite
+erst einsteigt, wenn die Bewegung sichtbar ist, hat oft ein Drittel davon
+verloren.
+
+Zu bauen: ein Lauf nach US-Handelsschluss gegen Tagesbalken der letzten 60 Tage,
+Ergebnis 5–15 Namen für den nächsten Tag mit Trigger, Stop und Zielweite. Das
+entscheidende Kriterium, das übliche Screener nicht haben: **der strukturelle
+Stop muss innerhalb der erlaubten Stopweite liegen** — sonst ist der Kandidat
+für diesen Nutzer unhandelbar, egal wie gut er aussieht.
+Dazu eine rückwirkende Ereignisstudie: wie sahen die stärksten Bewegungen der
+letzten Monate am Vortag aus?
+
+Zweitens fehlt eine ganze Klasse: die App ist zu 100 % Momentum. Rückkehr-
+bewegungen laufen oft schneller und mit engerem Stop — genau die Geometrie, die
+die Kostenrechnung dieses Nutzers braucht. Getrennt aufzeichnen, getrennt
+bewerten.
 
 ---
 
