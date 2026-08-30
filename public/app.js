@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.28.0 — Frontend
+   FusionPulse v3.29.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -678,6 +678,13 @@ const GLOSS = {
   overfit:'Overfitting (Überanpassung): Eine Regel, die die Vergangenheit perfekt erklärt und in der Zukunft versagt — weil sie Zufall auswendig gelernt hat statt einen echten Zusammenhang. Der Wächter sucht gezielt nach diesem Muster: gut im Rückblick, schwach auf frischen Daten.',
   multiTest:'Mehrfachtest-Korrektur: Wer zehn Setups gleichzeitig prüft, findet auch dann ein „gutes", wenn alle wertlos sind — reiner Zufall. Deshalb wird die Messlatte höher gelegt, je mehr Setups gleichzeitig im Rennen sind.',
   mute:'Stummschalten heißt hier NICHT löschen. Das Setup erzeugt keine Kauf-Freigabe mehr, wird im Hintergrund aber weiter ausgewertet. So kann sich ein zu Unrecht abgeschaltetes Muster wieder rehabilitieren, statt für immer zu verschwinden.',
+  /* v3.29.0 · Vorabend-Liste. Jeder Eintrag sagt: was ist es, wozu dient es,
+     was heisst es ausdruecklich NICHT. */
+  eveTrigger:'Trigger (Auslösemarke): der Kurs, ab dem der Plan überhaupt beginnt. Er liegt knapp ÜBER der Oberkante der letzten Tage — und wenn dort ein mehrtägiger Widerstand sitzt, knapp über diesem. Erst wenn der Kurs ihn erreicht, gibt es einen Einstieg; wird er am nächsten Tag nicht erreicht, ist das kein Verlust, sondern ein Tag ohne Trade. Der Trigger ist ausdrücklich KEIN Kaufsignal und keine Prognose, dass er erreicht wird — er ist die Bedingung, unter der der Rest des Plans gilt.',
+  eveStructStop:'Struktureller Stop: der Kurs, unter dem die Annahme des Setups nachweislich falsch ist — das Tief der Kompression beim Ausbruch, das Umkehrtief bei einer Rückkehr. Er kommt aus dem CHARTBILD, nicht aus deinem Budget. Er wird NIE enger gerechnet, damit das Chance-Risiko-Verhältnis passt; passt er nicht in dein Stopbudget, wandert der Titel stattdessen in die Gruppe „strukturell zu breit". Ein enger gerechneter Stop wäre kein Schutz, sondern nur ein früherer Ausstieg aus einem intakten Setup.',
+  eveRunway:'Restweg: der Abstand vom Trigger bis zum nächsten mehrtägigen Widerstand darüber. Er beantwortet die Frage, ob überhaupt Platz für die Zielweite ist. Steht ein altes Hoch dichter als dein Ziel, läuft die Bewegung mit hoher Wahrscheinlichkeit vorher in fremdes Angebot. „Restweg frei" heißt, dass im betrachteten Fenster kein Widerstand über dem Trigger liegt — es heißt NICHT, dass der Kurs dorthin läuft.',
+  eveKompression:'Kompression (Vorabend-Art 1): die Spanne der letzten acht Tage ist deutlich kleiner als die der zwanzig davor, und der Umsatz versiegt dabei. Das ist der Zustand, in dem ein Titel Energie speichert — und der einzige, in dem ein Stop von rund einem Prozent strukturell gerechtfertigt ist statt reines Rauschen. Gehandelt wird der Ausbruch aus dieser Enge. Eine Kompression ist KEINE Vorhersage der Richtung; sie sagt nur, dass die nächste Bewegung größer ausfallen dürfte als die letzten.',
+  eveRueckkehr:'Rückkehr (Vorabend-Art 2): ein scharfer Rückschlag im intakten längeren Aufwärtstrend, gefolgt von einem Balken, der im oberen Teil seiner eigenen Spanne schließt. Gehandelt wird die Rückeroberung dieses Balkens, mit dem Umkehrtief als Stop. Der Reiz liegt in der Geometrie: der Stop sitzt oft enger als beim Ausbruch, und ein engerer Stop erlaubt bei gleichem Euro-Risiko eine größere Position. Dieselbe Form UNTERHALB des längeren Trends ist ausdrücklich kein Kandidat, sondern ein fallendes Messer.',
   brokerAvail:'Handelbarkeit bei flatex: Ob ein Titel im Handelsangebot deines Brokers ueberhaupt vorkommt. Die Anzeige leitet das aus dem Primaerlisting ab (NYSE/NASDAQ/AMEX = in der Regel ueber US-Direkthandel verfuegbar; OTC/Pink Sheets = meist nicht oder nur mit sehr schlechten Spreads). Sie ist ausdruecklich KEINE bestaetigte Verfuegbarkeit und keine Preisauskunft — bestaetigt ist erst, was die Ordermaske zeigt. Sie veraendert weder Score noch Kauf-Freigabe.',
   hysterese:'Hysterese: Die Hürde zum Wiedereinschalten liegt bewusst höher als die zum Abschalten. Ohne diesen Abstand würde reines Zufallsrauschen das System dauernd zwischen an und aus springen lassen.',
 
@@ -1079,6 +1086,8 @@ const TINTABLE_TILES=[
   ['topPicks','Top Picks · Aktien'],
   ['topPicksCoin','Top Picks · Krypto'],
   ['scoreAudit','Score-Audit'],
+  ['evening','Vorabend-Liste · Aktien'],
+  ['eveStudy','Ereignisstudie Vorabend'],
   ['ride','Fahrt-Meldung'],
   ['journal','Handelstagebuch'],
   ['gainers','Momentum-Mover'],
@@ -2003,6 +2012,7 @@ const GLOSS_GROUPS = [
   {title:'Positionsgröße und Handelsmodus (v3.9.0)',          keys:['sizeModeRisk','sizeModeFixed','maxLoss','tradeModeA','consolidation','quoteAge']},
   {title:'Selbstauswertung (Modul 0)',                        keys:['sampleN','inSample','oos','wilson','overfit','multiTest','mute','hysterese']},
   {title:'Handelbarkeit beim Broker (v3.9.1)',                keys:['brokerAvail']},
+  {title:'Vorabend-Liste (v3.29.0)',                          keys:['eveTrigger','eveStructStop','eveRunway','eveKompression','eveRueckkehr']},
   {title:'Quartalstermine (v3.16.0)',                         keys:['earnManual']},
   {title:'Kandidat statt Freigabe (v3.16.0)',                 keys:['modeANoRelease']},
   {title:'Portfolio-Risiko (Modul 2)',                        keys:['riskPerTrade','portfolioBudget','cluster','diversify','stopReal']},
@@ -2034,6 +2044,9 @@ const GLOSS_LABEL = {
   sit_squeeze:'SQUEEZE RELEASE', sit_breakoutStart:'BREAKOUT START', sit_breakoutPressure:'BREAKOUT PRESSURE',
   sit_reclaim:'RECLAIM', sit_pullbackHold:'PULLBACK HOLD', sit_acceleration:'ACCELERATION',
   sit_nearHigh:'NEAR HIGH', sit_openingDrive:'OPENING DRIVE', sit_watch:'WATCH',
+  eveTrigger:'Trigger / Auslösemarke', eveStructStop:'Struktureller Stop',
+  eveRunway:'Restweg bis zum Widerstand', eveKompression:'Kompression (Vorabend-Art 1)',
+  eveRueckkehr:'Rückkehr (Vorabend-Art 2)',
 };
 let glossQuery='';
 function renderGlossary(){
@@ -2288,7 +2301,11 @@ function setLearningPoll(){clearInterval(learningTimer);learningTimer=setInterva
   clearInterval(pickTimer);pickTimer=setInterval(()=>{if(document.visibilityState==='visible')loadAllTopPicks();},5*60_000);
   /* Die Fahrt-Meldung ist die einzige zeitkritische Kachel: ein Ausbruch, den
      man erst in fuenf Minuten sieht, hat sein Ziel schon hinter sich. */
-  clearInterval(rideTimer);rideTimer=setInterval(()=>{if(document.visibilityState==='visible')loadRide();},60_000);}
+  clearInterval(rideTimer);rideTimer=setInterval(()=>{if(document.visibilityState==='visible')loadRide();},60_000);
+  /* Die Vorabend-Liste rechnet gegen Tagesbalken. Sie aendert sich hoechstens
+     einmal je Handelsschluss — ein Minutentakt waere reine Kontingent-
+     verschwendung. */
+  clearInterval(eveTimer);eveTimer=setInterval(()=>{if(document.visibilityState==='visible')loadEvening();},30*60_000);}
 
 /* Modul 1 UI: Aladdin-Style Market Recommendation oberhalb des Radars.
    Reine Anzeige der serverseitigen Marktmeinung; kein Score-Eingriff. */
@@ -4280,9 +4297,12 @@ function renderJournal() {
   const pf = journalPrefill || {};
   const form = `<div class="j-form">`
     + `<input id="jSym" placeholder="Symbol" value="${esc(pf.symbol || '')}" title="Kürzel des Titels, z. B. SOFI oder BTC-EUR.">`
-    + `<input id="jEntry" type="number" step="0.01" placeholder="Plan-Einstieg" title="Kurs, zu dem du laut Plan einsteigen wolltest.">`
-    + `<input id="jTarget" type="number" step="0.01" placeholder="Ziel" title="Geplanter Ausstiegskurs.">`
-    + `<input id="jStop" type="number" step="0.01" placeholder="Stop" title="Geplanter Stopkurs.">`
+    /* v3.29.0: die Vorabend-Liste kennt Trigger, Stop und Ziel exakt. Sie hier
+       abtippen zu lassen waere die sicherste Art, den Plan zu verfaelschen —
+       und das Tagebuch misst genau den Abstand zwischen Plan und Ausfuehrung. */
+    + `<input id="jEntry" type="number" step="0.01" placeholder="Plan-Einstieg" value="${esc(String(pf.planEntry ?? ''))}" title="Kurs, zu dem du laut Plan einsteigen wolltest.">`
+    + `<input id="jTarget" type="number" step="0.01" placeholder="Ziel" value="${esc(String(pf.planTarget ?? ''))}" title="Geplanter Ausstiegskurs.">`
+    + `<input id="jStop" type="number" step="0.01" placeholder="Stop" value="${esc(String(pf.planStop ?? ''))}" title="Geplanter Stopkurs.">`
     + `<input id="jNotional" type="number" step="100" placeholder="Einsatz €" value="${esc(String(pf.notional || ''))}" title="Positionsgröße in Euro.">`
     + `<button type="button" id="jAdd" title="Legt den Trade als GEPLANT an. Die Ist-Werte trägst du später nach — genau dieser Abstand ist der Punkt.">Plan anlegen</button>`
     + `</div>`;
@@ -4326,6 +4346,176 @@ function renderJournal() {
    waren nie gegen ein Ergebnis geprueft. Diese Kachel holt das nach.
    Sie empfiehlt, sie schaltet nicht ab: 0 % Gewicht in Score, Ampel, Freigabe. */
 let auditData=null;
+/* ==== v3.29.0 · VORABEND-LISTE ==============================================
+   Die App suchte Okkasionen zum falschen Zeitpunkt: ihr laengster Zeitrahmen
+   waren 60-Minuten-Balken, sie sah nur die Zuendung. Diese Kachel beantwortet
+   die Frage des Vorabends: WELCHE Titel koennten morgen laufen, und ist ihr
+   struktureller Stop schmal genug, dass ich sie ueberhaupt handeln kann?
+
+   Der NAME und die drei Marken (Trigger / Stop / Ziel) sind die Botschaft.
+   Alles andere ist Begruendung.                                             */
+let eveData = null, eveTimer = null, eveShowWide = false;
+
+async function loadEvening(force) {
+  const q = new URLSearchParams();
+  if (S.token) q.set('t', S.token);
+  q.set('netEur', String(Math.max(20, Number(S.minNetProfitStock) || 120)));
+  const fav = (S.favoriteStocks || []).join(",");
+  if (fav) q.set('favorites', fav);
+  if (force) q.set('force', '1');
+  try { eveData = await (await fetch('/api/evening?' + q, { cache: 'no-store' })).json(); }
+  catch (e) { eveData = { state: 'error', error: String(e.message || e) }; }
+  renderEvening(); renderEveStudy();
+}
+
+const EVE_KIND_ICON = { momentum: '🧨', rueckkehr: '↩️' };
+const EVE_KIND_NAME = { momentum: 'Kompression', rueckkehr: 'Rückkehr' };
+
+function eveCandCard(c, wide) {
+  const g = c.geometry || {}, p = c.plan || {};
+  const kindHelp = c.kind === 'rueckkehr'
+    ? gloss('eveRueckkehr') : gloss('eveKompression');
+  return `<div class="eve-card${wide ? ' eve-wide' : ''}" data-kind="${esc(c.kind)}">`
+    + `<div class="eve-head"><b>${esc(c.symbol)}</b>`
+    + `<span class="eve-kind" title="${esc(kindHelp)}">${EVE_KIND_ICON[c.kind] || ''} ${esc(EVE_KIND_NAME[c.kind] || c.kind)}</span>`
+    + `<span class="eve-src" title="Herkunft des Kandidaten. „Katalog“ heißt: er stand nicht im Radar des Tages, sondern kommt aus der Suchliste — das ist keine Nominierung, nur eine Auffüllung.">${esc(c.source || '')}</span></div>`
+    + `<div class="eve-marks">`
+    + `<div title="${esc(gloss('eveTrigger'))}"><span>Trigger</span><b>${num(p.trigger, 2)}</b></div>`
+    + `<div title="${esc(gloss('eveStructStop'))}"><span>Stop</span><b class="bad">${num(p.stop, 2)}</b></div>`
+    + `<div title="Zielkurs. Die Zielweite folgt aus dem Schlechteren von beidem: deinem wirtschaftlichen Minimum und dem Zweifachen des tatsächlichen Stops."><span>Ziel</span><b class="good">${num(p.targetPrice, 2)}</b></div>`
+    + `</div>`
+    + `<div class="eve-plan" title="${esc(`Die Position folgt aus dem RISIKO: enger Stop, mehr Stück, gleicher Euro-Verlust. Am Stop stehen ${p.riskEur} € auf dem Spiel — unabhängig von der Positionsgröße.${p.capped ? ' Gedeckelt bei der doppelten Grundposition.' : ''}`)}">`
+    + `<div><span>Position</span><b>${eur(p.notionalEur, 0)}</b></div>`
+    + `<div><span>Ziel ${num(p.targetPct, 2)} %</span><b class="good">+${eur(p.winEur, 0)}</b></div>`
+    + `<div><span>Stop ${num(p.stopPct, 2)} %</span><b class="bad">−${eur(p.lossEur, 0)}</b></div>`
+    + `<div title="Trefferquote, ab der sich dieser Trade nach Kosten und Steuer gerade eben rechnet. Alles darunter ist ein teures Hobby."><span>Break-even</span><b>${p.breakEvenPct} %</b></div>`
+    + `</div>`
+    + `<div class="eve-facts">`
+    + `<span title="Chance-Risiko-Verhältnis dieses Plans: Zielweite geteilt durch Stopweite.">CRV ${num(p.rewardRisk, 2)}</span>`
+    + `<span title="${esc(gloss('eveRunway'))}">${g.runwayPct == null ? 'Restweg frei' : 'Restweg ' + num(g.runwayPct, 1) + ' %'}</span>`
+    + `<span title="Durchschnittliche Tagesspanne der letzten 14 Tage, in Prozent des Kurses.">ATR ${num(g.atrPct, 2)} %</span>`
+    + (c.kind === 'momentum'
+      ? `<span title="Spanne der letzten 8 Tage im Verhältnis zu den 20 Tagen davor. Klein heißt: der Titel ist zusammengelaufen — daher der enge Stop.">Kompression ${Math.round((g.contraction ?? 0) * 100)} %</span>`
+      + `<span title="Umsatz der letzten 8 Tage im Verhältnis zu den 20 davor. Versiegender Umsatz vor einem Ausbruch ist der Teil, den man am Vortag sieht und während der Bewegung nicht mehr.">Umsatz ${Math.round((g.volRatio ?? 0) * 100)} %</span>`
+      : `<span title="Tiefe des Rückschlags, gemessen vom lokalen Hoch.">Rückgang ${num(g.dropPct, 1)} %</span>`
+      + `<span title="Weg zurück zum 20-Tage-Durchschnitt. Das ist die Bewegung, von der eine Rückkehr lebt.">Zur Mitte ${num(g.meanPct, 1)} %</span>`)
+    + (g.mergedResist ? `<span title="Der Trigger liegt auf einem mehrtägigen Widerstand, nicht darunter. Genau diese Lage macht die Okkasion aus — der Ausbruch geht DURCH das fremde Angebot, nicht hinein.">durch Widerstand</span>` : '')
+    + `</div>`
+    + (c.evidence ? `<small class="eve-ev" title="Ergebnis der rückwirkenden Ereignisstudie für DIESE Art, nicht für diesen Titel. Ein Urteil über einen einzelnen Namen gäbe es aus Tagesbalken nie mit genug Fällen.">Beleglage: ${esc(c.evidence.verdict)} · ${c.evidence.n} Fälle${c.evEur != null ? ` · Erwartung ${eur(c.evEur, 0)}` : ''}</small>` : '')
+    + (wide ? `<small class="eve-warn">Struktureller Stop ${num(g.stopPct, 2)} % — breiter als dein Budget von ${num(eveData?.maxStopPct, 2)} %. Der Stop wird NICHT enger gerechnet; die Position ist stattdessen kleiner. Zur Einordnung, nicht als Empfehlung.</small>` : '')
+    + `<div class="eve-actions"><button type="button" data-eve-open="${esc(c.symbol)}">Im Fokus öffnen</button>`
+    + `<button type="button" data-eve-log="${esc(c.symbol)}" data-eve-kind="${esc(c.kind)}">In Tagebuch notieren</button></div>`
+    + `</div>`;
+}
+
+function renderEvening() {
+  const el = $('#eveningList'); if (!el) return;
+  const d = eveData;
+  const head = `<div class="ophead"><b>🌙 Vorabend-Liste · Kandidaten für morgen</b>`
+    + `<span title="Lauf gegen TAGESBALKEN der letzten Monate. Eine Okkasion entsteht am Vortag: mehrtägige Kompression, versiegender Umsatz, ein mehrtägiger Widerstand direkt darüber. Wer erst einsteigt, wenn die Bewegung sichtbar ist, hat bei 2 % Zielweite oft ein Drittel davon verloren.">Trigger · Stop · Ziel für den nächsten Handelstag</span>`
+    + `<small>0 % Gewicht in Score, Ampel und Freigabe · keine Kauf-Freigabe</small></div>`;
+  if (!d) { paintPanel(el, head + '<span class="hint">Wird geladen.</span>'); return; }
+  if (d.state === 'nokey') { paintPanel(el, head + `<span class="hint">${esc(d.note || '')}</span>`); return; }
+  if (d.state === 'error') { paintPanel(el, head + `<span class="hint">Nicht erreichbar: ${esc(String(d.error || ''))}</span>`); return; }
+
+  const rows = d.rows || [], wide = d.wide || [];
+  const bar = `<div class="eve-bar" title="Das Stopbudget folgt aus deinem Ziel: ${num(d.econTargetPct, 2)} % Zielweite bei einem Chance-Risiko-Verhältnis von 2,0 lassen höchstens ${num(d.maxStopPct, 2)} % Stopweite zu. Ein Kandidat, dessen strukturelle Ungültigkeit weiter entfernt liegt, ist für dich unhandelbar — egal wie gut er aussieht.">`
+    + `<span>Zielweite <b>${num(d.econTargetPct, 2)} %</b></span>`
+    + `<span>Stopbudget <b>${num(d.maxStopPct, 2)} %</b></span>`
+    + `<span>${d.withBars || 0} von ${d.checked || 0} Titeln mit Tagesbalken</span>`
+    + `<button type="button" id="eveReload" title="Neu rechnen. Ein Lauf kostet einen Tiingo-Abruf je Titel; das Ergebnis wird sechs Stunden zwischengespeichert.">neu rechnen</button></div>`;
+
+  if (!rows.length) {
+    const near = (d.near || []).slice(0, 3).map((n) =>
+      `<li>${esc(n.symbol)} <em>${esc(EVE_KIND_NAME[n.kind] || n.kind)}</em> — ${esc(n.fail.join(' · '))}</li>`).join('');
+    paintPanel(el, head + bar
+      + `<div class="eve-quiet"><b>Kein Kandidat für morgen.</b>`
+      + `<span>${esc(d.note || '')}</span>`
+      + (near ? `<small>Am knappsten gescheitert:</small><ul class="eve-near">${near}</ul>` : '')
+      + `</div>`
+      + (wide.length ? eveWideBlock(wide) : ''));
+    eveBind(el); return;
+  }
+
+  const list = rows.map((c) => eveCandCard(c, false)).join('');
+  paintPanel(el, head + bar
+    + `<div class="eve-counts" title="Getrennt gezählt, weil beide Arten getrennt bewertet werden. Zusammengelegt würde ein gutes Ergebnis der einen ein schlechtes der anderen verdecken.">`
+    + `${EVE_KIND_ICON.momentum} ${d.counts?.momentum || 0} Kompression · ${EVE_KIND_ICON.rueckkehr} ${d.counts?.rueckkehr || 0} Rückkehr</div>`
+    + `<div class="eve-grid">${list}</div>`
+    + (wide.length ? eveWideBlock(wide) : '')
+    + `<small class="hint">${esc(d.disclaimer || '')}</small>`);
+  eveBind(el);
+}
+
+/* Kandidaten, die NUR an der Budgetgrenze scheitern, verschwinden nicht — sie
+   bekommen eine eigene, eingeklappte Gruppe. Ein still gestrichenes Ergebnis
+   ist ein verlorenes Ergebnis (Invariante 6). */
+function eveWideBlock(wide) {
+  return `<details class="eve-widebox"${eveShowWide ? ' open' : ''}>`
+    + `<summary title="Diese Titel erfüllen alle Hürden AUSSER einer: ihre strukturelle Ungültigkeit liegt weiter entfernt als dein Stopbudget. Sie sind nicht schlecht, sie passen nur nicht zu 10.000 € bei 2 % Zielweite. Der Stop wird bewusst nicht enger gerechnet.">`
+    + `${wide.length} Titel strukturell zu breit für dein Stopbudget</summary>`
+    + `<div class="eve-grid">${wide.map((c) => eveCandCard(c, true)).join('')}</div></details>`;
+}
+
+function eveBind(el) {
+  el.querySelector('#eveReload')?.addEventListener('click', (e) => {
+    e.currentTarget.disabled = true; e.currentTarget.textContent = 'rechnet …';
+    loadEvening(true);
+  });
+  el.querySelector('.eve-widebox')?.addEventListener('toggle', (e) => { eveShowWide = e.currentTarget.open; });
+  el.querySelectorAll('[data-eve-open]').forEach((b) => b.addEventListener('click', () => {
+    focusStock = b.dataset.eveOpen; renderStocks();
+    document.querySelector('.stockstage')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }));
+  el.querySelectorAll('[data-eve-log]').forEach((b) => b.addEventListener('click', () => {
+    const c = [...(eveData?.rows || []), ...(eveData?.wide || [])]
+      .find((x) => x.symbol === b.dataset.eveLog && x.kind === b.dataset.eveKind);
+    if (!c?.plan) return;
+    journalPrefill = { symbol: c.symbol, asset: 'stock', origin: `Vorabend · ${EVE_KIND_NAME[c.kind] || c.kind}`,
+      planEntry: c.plan.trigger, planTarget: c.plan.targetPrice, planStop: c.plan.stop,
+      notional: c.plan.notionalEur, planNet: c.plan.winEur };
+    renderJournal();
+    $('#tradeJournal')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }));
+}
+
+/* ---- Die rueckwirkende Ereignisstudie ------------------------------------
+   Sie laeuft ueber DIESELBEN Funktionen wie die Liste. Eine Studie mit eigenen,
+   aehnlichen Regeln misst etwas anderes, als die App tut — genau dieser Fehler
+   ist in diesem Projekt vier Mal passiert.                                  */
+const EVE_VERDICT_CLS = { 'traegt': 'a-good', 'knapp': 'a-flat', 'traegt nicht': 'a-bad', 'nicht bewertbar': 'a-none' };
+const EVE_VERDICT_ICON = { 'traegt': '✅', 'knapp': '⚠️', 'traegt nicht': '🔻', 'nicht bewertbar': '…' };
+
+function renderEveStudy() {
+  const el = $('#eveStudy'); if (!el) return;
+  const d = eveData;
+  const head = `<div class="ophead"><b>🕯️ Ereignisstudie · wie sah der Vortag aus?</b>`
+    + `<span title="Dieselben Regeln wie die Vorabend-Liste, rückwirkend über rund ein Handelsjahr Tagesbalken gefahren. Das ist die einzige Schicht dieser App, die sich sofort prüfen lässt — alles Intraday muss erst auflaufen.">rückwirkend, mit denselben Hürden wie die Liste</span>`
+    + `<small>0 % Gewicht in Score, Ampel und Freigabe</small></div>`;
+  if (!d || !d.study) { paintPanel(el, head + `<span class="hint">${esc(d?.note || 'Wird geladen.')}</span>`); return; }
+
+  const cards = (d.kinds || []).map((k) => {
+    const s = d.study[k]; if (!s) return '';
+    return `<div class="eve-study ${esc(EVE_VERDICT_CLS[s.verdict] || 'a-none')}" title="${esc(s.why)}">`
+      + `<b>${EVE_KIND_ICON[k] || ''} ${esc(EVE_KIND_NAME[k] || k)}: ${EVE_VERDICT_ICON[s.verdict] || ''} ${esc(s.verdict)}</b>`
+      + `<div class="eve-study-num">`
+      + `<span title="Fälle, in denen der Trigger am Folgetag tatsächlich erreicht wurde. Nicht ausgelöste Kandidaten sind KEIN Verlust — es wurde nicht gehandelt.">${s.n} ausgelöst</span>`
+      + `<span title="Anteil, der das Ziel vor dem Stop erreicht hat. Beurteilt wird die untere Schranke, nicht die Punktschätzung: 3 von 4 sind keine 75 %.">${s.hitPct != null ? s.hitPct + ' % Treffer' : '—'}${s.hitPctLower != null ? ` (unten ${s.hitPctLower} %)` : ''}</span>`
+      + `<span title="Trefferquote, ab der sich diese Art nach Kosten und Steuer rechnet.">Break-even ${s.breakEvenPct} %</span>`
+      + `<span title="Median über die ausgelösten Fälle.">Ziel ${num(s.medianTargetPct, 2)} % · Stop ${num(s.medianStopPct, 2)} %</span>`
+      + (s.medianHoldDays != null ? `<span title="Median der Handelstage bis zum Ziel.">${s.medianHoldDays} Tag(e) bis Ziel</span>` : '')
+      + `<span title="Kandidaten, deren Trigger am Folgetag nie erreicht wurde.">${s.notTriggered} nicht ausgelöst</span>`
+      + `<span title="Fälle, in denen der Folgetag so weit über dem Trigger eröffnete, dass die Stopweite das Budget gesprengt hätte. Sie zählen ausdrücklich NICHT als Gewinn.">${s.notTradable} nicht handelbar</span>`
+      + `</div>`
+      + `<small>${esc(s.why)}</small>`
+      + (s.ambiguousNote ? `<small class="eve-warn">${esc(s.ambiguousNote)}</small>` : '')
+      + `</div>`;
+  }).join('');
+
+  paintPanel(el, head + `<div class="eve-study-grid">${cards}</div>`
+    + `<small class="hint" title="Tagesbalken kennen die Reihenfolge innerhalb eines Tages nicht. Wird an einem Tag sowohl Ziel als auch Stop berührt, zählt der Fall als ausgestoppt — dieselbe Regel wie in der Episodenauswertung. Eine Lücke über dem Trigger wird bezahlt, nicht wegdefiniert.">Tagesbalken kennen die Reihenfolge innerhalb des Tages nicht. Beides berührt heißt ausgestoppt; eine Eröffnungslücke wird zum Eröffnungskurs bezahlt.</small>`);
+}
+
 async function loadScoreAudit(){
   try{
     const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
@@ -5103,6 +5293,7 @@ const VIEW_SECTIONS = {
     ['#bandStock',        'Aktien',       'Anfang des Aktienbereichs.'],
     ['.stockstage',       'Fokus',        'Aktien-Fokusfenster mit Heatmap.'],
     ['#topPicks',         'Top Picks',    'Rangfolge nach erwartetem Netto-Euro je Handelstag, aus aufgezeichneten Fällen.'],
+    ['#eveningList',      'Vorabend',     'Kandidaten für den nächsten Handelstag aus Tagesbalken: Trigger, Stop und Ziel.'],
     ['#marketGainers',    'Momentum',     'Bewegung während der laufenden US-Handelszeit.'],
     ['#openingPanel',     'Premarket',    'Gaps vor der Eröffnung (Alpaca).'],
     ['#extendedWatch',    'Nachbörse',    'Bewegung nach Handelsschluss.'],
@@ -5119,6 +5310,7 @@ const VIEW_SECTIONS = {
     ['#learningReport',     'Learning',       'Was im Hintergrund gespeichert und ausgewertet wurde.'],
     ['#patternLab',         'Musterlabor',    'Was war VOR einer Bewegung messbar? Ereignisstudie über die Aufzeichnungen.'],
     ['#scoreAudit',         'Score-Audit',    'Was ist jeder Term des Situation-Score wirklich wert?'],
+    ['#eveStudy',           'Ereignisstudie', 'Dieselben Vorabend-Regeln rückwirkend über ein Handelsjahr Tagesbalken.'],
     ['#attributionReport',  'Selbstauswertung','Modul 0: ehrliche Out-of-Sample-Bilanz je Setup.'],
     ['#experimentalPanel',  'Lab',            'Experimentelle Einflussgrößen, 0 % BUY-Gewicht.'],
     ['#aladdinCard',        'Marktmeinung',   'Hierarchische Marktmeinung aus Regime, Rotation, Breadth und Stress.'],
@@ -5303,6 +5495,7 @@ loadAllTopPicks();
 loadScoreAudit();
 loadRide();
 loadJournal();
+loadEvening();
 loadLearning();
 loadAttribution();
 loadAladdin();

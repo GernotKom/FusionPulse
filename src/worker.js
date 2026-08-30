@@ -4191,6 +4191,616 @@ async function scoreAudit(env, opts = {}) {
 }
 
 /* ============================================================================
+   v3.29.0 · DIE VORABEND-LISTE — eine Okkasion entsteht am VORTAG
+   ----------------------------------------------------------------------------
+   DER BEFUND, der diese Version ausgeloest hat (Handover, "NAECHSTER SCHRITT"):
+   der laengste Zeitrahmen der App sind 60-Minuten-Balken. Sie sieht damit die
+   ZUENDUNG, nicht die Ladung. Eine Okkasion entsteht aber am Vortag —
+   mehrtaegige Kompression, versiegender Umsatz, ein mehrtaegiger Widerstand
+   direkt darueber. Wer bei 2,04 % Zielweite erst einsteigt, wenn die Bewegung
+   sichtbar ist, hat oft ein Drittel davon schon verloren.
+
+   WARUM DAS SOFORT GEHT, waehrend fast alles seit v3.20.0 auf Laufzeit wartet:
+   historische TAGESBALKEN sind abrufbar. Die IEX-Beschraenkung des kostenlosen
+   Zugangs trifft Intraday-Quotes hart, Tages-OHLCV kaum. Diese Schicht ist
+   deshalb die einzige, die sich RUECKWIRKEND pruefen laesst — und genau das
+   tut `eveStudy()`.
+
+   DIE GEOMETRIE, und warum sie so und nicht anders ist
+   ----------------------------------------------------------------------------
+   Dieser Nutzer braucht bei 10.000 EUR Einsatz rund 2,04 % Zielweite fuer
+   120 EUR netto, und bei einem Chance-Risiko-Verhaeltnis von 2,0 damit einen
+   Stop von hoechstens 1,02 %. Das ist ein VIERTEL einer normalen Tagesspanne.
+   Ein solcher Stop ist bei fast jedem Setup reines Rauschen — mit EINER
+   Ausnahme: wenn der Titel gerade eng laeuft. Dann liegt die strukturelle
+   Ungueltigkeit tatsaechlich einen Prozentpunkt entfernt.
+
+   Daraus folgt der ganze Aufbau:
+     - Die KOMPRESSION liefert den engen Stop (Box der letzten 8 Tage).
+     - Die Zielweite muss trotzdem erreichbar sein. Gemessen wird sie NICHT an
+       der Schwankungsbreite der Kompression — die ist per Definition klein und
+       wuerde jeden Kandidaten aussortieren — sondern an der Schwankungsbreite
+       der Zeit DAVOR (`baseAtrPct`). Das ist die Bewegung, zu der der Titel
+       faehig ist, wenn er sich wieder bewegt. Ein Kandidat, dessen Basisspanne
+       zu klein ist, kann die 2,04 % nicht liefern; das ist derselbe Befund wie
+       v3.8.0 (eine Mega-Cap laeuft 0,8 % am Tag und kann nie freigegeben
+       werden), nur diesmal als messbare Huerde statt als Namensliste.
+     - Der RESTWEG zum naechsten mehrtaegigen Widerstand muss die Zielweite
+       hergeben. Sonst steht das Ziel hinter fremdem Angebot.
+
+   ZWEI ARTEN, GETRENNT AUFGEZEICHNET UND GETRENNT BEWERTET
+   ----------------------------------------------------------------------------
+   Die App war bis hierher zu 100 % Momentum. Rueckkehrbewegungen laufen oft
+   schneller und mit engerem Stop — genau die Geometrie, die die Kostenrechnung
+   dieses Nutzers braucht. Sie bekommen deshalb eine eigene Art (`rueckkehr`),
+   eine eigene Auswertung und eine eigene Trefferquote. Zusammengelegt waeren
+   beide unbeurteilbar: ein gutes Momentum-Ergebnis wuerde eine schlechte
+   Rueckkehr-Quote verdecken und umgekehrt.
+
+   WAS NICHT VERSCHOBEN WIRD
+   ----------------------------------------------------------------------------
+   Der Stop ist STRUKTURELL (Sicherheits-Invariante 4). Er wird nie enger
+   gerechnet, damit das Chance-Risiko-Verhaeltnis passt. Passt er nicht ins
+   Budget, faellt der Kandidat in die getrennte Gruppe "strukturell zu breit" —
+   sichtbar, mit ehrlichem Plan, aber ausserhalb der Liste. Ein stilles
+   Streichen waere ein Verstoss gegen Invariante 6.
+
+   0 % GEWICHT. Diese Schicht liefert eine Kandidatenliste, keinen Score, keine
+   Ampel, keine Freigabe. Wie Modul 0, Modul 1 und Modul 2.
+   ========================================================================== */
+const EVE = {
+  HISTORY_DAYS: 420,        // Kalendertage Tagesbalken je Titel (ein Abruf deckt Liste UND Studie)
+  MIN_BARS: 45,             // darunter ist nichts bewertbar — und nichts wird gemeldet
+  LOOK_DAYS: 60,            // Fenster fuer Widerstaende (Handover: "mehrtaegiger Widerstand")
+  BOX_DAYS: 8,              // die Kompression, aus der der enge Stop kommt
+  BASE_DAYS: 20,            // Vergleichszeitraum davor: Spanne, Umsatz, Bewegungsfaehigkeit
+  ATR_N: 14,
+  MAX_CONTRACTION: 0.75,    // Boxspanne <= 75 % der Basisspanne  == "Kompression"
+  MAX_VOL_RATIO: 0.85,      // Boxumsatz <= 85 % des Basisumsatzes == "versiegender Umsatz"
+  TRIGGER_BUFFER_ATR: 0.10, // Aufschlag ueber die Box: ein Ausbruch ist kein Antippen
+  STOP_BUFFER_ATR: 0.05,    // Abschlag unter das Tief: exakt am Tief steht das Rauschen
+  MAX_TRIGGER_REACH_ATR: 1.20, // Trigger weiter als 1,2 Tagesspannen weg -> passiert morgen nicht
+  /* Ein Widerstand innerhalb einer Tagesspanne ueber der Box gehoert ZUM
+     Ausbruch: der Trigger wandert auf ihn hinauf. Alles darueber steht dem
+     Ziel im Weg und zaehlt als Restweg-Grenze. */
+  RESIST_MERGE_ATR: 1.0,
+  /* Die Zielweite muss zur Bewegungsfaehigkeit des Titels passen. Gemessen an
+     der Spanne VOR der Kompression, nicht an der Kompression selbst. 2,0 heisst:
+     das Ziel darf hoechstens zwei normale Tagesspannen entfernt liegen. */
+  MAX_TARGET_BASE_ATR: 2.0,
+  MIN_PRICE_USD: 5,
+  MIN_DOLLARVOL: 3_000_000, // Tagesumsatz in USD, Mittel ueber BASE_DAYS
+  REV_DAYS: 3,              // Rueckkehr: Fenster des Rueckgangs
+  REV_MIN_DROP_PCT: 5,      // ... und seine Mindesttiefe
+  REV_MIN_CLOSE_POS: 0.55,  // Stabilisierungsbalken: Schluss im oberen Teil der eigenen Spanne
+  REV_TREND_TOL_PCT: 3,     // Rueckkehr nur im intakten laengeren Aufwaertstrend
+  TREND_SMA: 50,
+  MAX_SYMBOLS: 40,          // Obergrenze je Lauf (1 Tiingo-Abruf je Titel)
+  MAX_ROWS: 15,             // Handover: "Ergebnis 5-15 Namen"
+  STUDY_DAYS: 260,          // rund ein Handelsjahr fuer die Ereignisstudie
+  STUDY_HOLD_DAYS: 3,       // Haltefenster: Vorabend-Setups sind keine Wochenpositionen
+  STUDY_MIN_N: 25,          // darunter: "nicht bewertbar" — NICHT "neutral"
+  CACHE_MS: 6 * 60 * 60_000,
+};
+const EVE_KINDS = ['momentum', 'rueckkehr'];
+const EVE_KIND_LABEL = { momentum: 'Kompression', rueckkehr: 'Rueckkehr' };
+
+/* Zahlen aus Tagesbalken sind Zahlen von aussen. `Number(null)` ist 0, nicht
+   NaN — fuenf Mal derselbe Fehler in fuenf Versionen (8t, 8u, 8y). Ein Kurs
+   von 0 waere hier der bestmoegliche Wert an jeder Abstandsrechnung. */
+const evePos = (v) => { if (v === null || v === undefined || v === '') return NaN;
+  const n = Number(v); return Number.isFinite(n) && n > 0 ? n : NaN; };
+const eveMean = (a) => a.length ? a.reduce((s, x) => s + x, 0) / a.length : NaN;
+
+/** Tagesbalken vereinheitlichen. Unplausible Balken werden VERWORFEN, nicht
+ *  repariert: ein Balken mit Hoch unter Tief ist keine Beobachtung. */
+function eveBars(raw) {
+  const out = [];
+  for (const x of (Array.isArray(raw) ? raw : [])) {
+    if (!x) continue;
+    const d = String(x.date ?? x.d ?? '').slice(0, 10);
+    const o = evePos(x.open ?? x.o), h = evePos(x.high ?? x.h),
+          l = evePos(x.low ?? x.l), c = evePos(x.close ?? x.c);
+    const v = evePos(x.volume ?? x.v);   // Umsatz 0 heisst "keine Angabe", nicht "kein Handel"
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+    if (![o, h, l, c].every(Number.isFinite)) continue;
+    if (h < l || h < c || h < o || l > c || l > o) continue;
+    out.push({ d, o, h, l, c, v });
+  }
+  out.sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
+  // Doppelte Tage (Anbieter liefern gelegentlich Korrekturzeilen): der spaetere gewinnt.
+  return out.filter((b, i) => i === out.length - 1 || b.d !== out[i + 1].d);
+}
+
+/** Durchschnittliche echte Tagesspanne. Gleiche Formel wie `atr()` fuer
+ *  Minutenkerzen — hier bewusst eigenstaendig, damit der Block als Ganzes
+ *  pruefbar bleibt (Lehre aus 8x: Testschnitte duerfen nicht an entfernten
+ *  Ankern haengen). */
+function eveAtr(bars, n = EVE.ATR_N) {
+  if (!Array.isArray(bars) || bars.length < n + 1) return NaN;
+  const tr = [];
+  for (let i = 1; i < bars.length; i++) {
+    const p = bars[i - 1].c;
+    tr.push(Math.max(bars[i].h - bars[i].l, Math.abs(bars[i].h - p), Math.abs(bars[i].l - p)));
+  }
+  let a = eveMean(tr.slice(0, n));
+  for (let i = n; i < tr.length; i++) a = (a * (n - 1) + tr[i]) / n;
+  return Number.isFinite(a) && a > 0 ? a : NaN;
+}
+
+/** Wendepunkt-Hochs: ein Hoch, das die `k` Balken davor UND danach ueberragt.
+ *  Ein einzelner Docht ist kein Widerstand; ein Wendepunkt ist einer. */
+function evePivotHighs(bars, k = 2) {
+  const out = [];
+  for (let i = k; i < bars.length - k; i++) {
+    let top = true;
+    for (let j = i - k; j <= i + k; j++) if (j !== i && bars[j].h >= bars[i].h) { top = false; break; }
+    if (top) out.push(bars[i].h);
+  }
+  return out;
+}
+
+/** Die vollstaendige Geometrie EINES Kandidaten am Abend des letzten Balkens.
+ *  Gibt `null` zurueck, wenn zu wenig Material da ist — nicht etwa
+ *  Standardwerte. Fehlende Daten duerfen nie etwas verbessern (Regel 4). */
+function eveGeometry(bars, kind) {
+  const b = Array.isArray(bars) ? bars : [];
+  const need = Math.max(EVE.MIN_BARS, EVE.BOX_DAYS + EVE.BASE_DAYS + EVE.ATR_N + 1);
+  if (b.length < need) return null;
+  const n = b.length, last = b[n - 1];
+  const win = b.slice(Math.max(0, n - EVE.LOOK_DAYS));
+  const box = b.slice(n - EVE.BOX_DAYS);
+  const base = b.slice(n - EVE.BOX_DAYS - EVE.BASE_DAYS, n - EVE.BOX_DAYS);
+
+  /* Die AKTUELLE Schwankungsbreite — sie skaliert die Puffer. Wer hier ein
+     breiteres Fenster nimmt, misst die Zeit VOR der Kompression mit und macht
+     die Puffer genau dort zu gross, wo es eng werden soll. */
+  const atrAbs = eveAtr(b.slice(-(EVE.ATR_N + 1)));
+  /* Die Bewegungsfaehigkeit VOR der Kompression. Genau hier steckt der
+     Unterschied zwischen "eng, weil ausgetrocknet" und "eng, weil geladen". */
+  const baseAtrAbs = eveAtr(b.slice(n - EVE.BOX_DAYS - EVE.BASE_DAYS - EVE.ATR_N - 1, n - EVE.BOX_DAYS));
+  if (!Number.isFinite(atrAbs) || !Number.isFinite(baseAtrAbs)) return null;
+
+  const boxHigh = Math.max(...box.map((x) => x.h)), boxLow = Math.min(...box.map((x) => x.l));
+  const baseHigh = Math.max(...base.map((x) => x.h)), baseLow = Math.min(...base.map((x) => x.l));
+  const boxRangePct = (boxHigh - boxLow) / last.c * 100;
+  const baseRangePct = (baseHigh - baseLow) / last.c * 100;
+  const contraction = baseRangePct > 0 ? boxRangePct / baseRangePct : NaN;
+
+  const boxVols = box.map((x) => x.v).filter(Number.isFinite);
+  const baseVols = base.map((x) => x.v).filter(Number.isFinite);
+  // Fehlende Umsaetze machen die Aussage nicht besser, sondern unmoeglich.
+  const boxVol = boxVols.length === box.length ? eveMean(boxVols) : NaN;
+  const baseVol = baseVols.length === base.length ? eveMean(baseVols) : NaN;
+  const volRatio = (baseVol > 0) ? boxVol / baseVol : NaN;
+  const dvBars = b.slice(-EVE.BASE_DAYS);
+  const dollarVol = dvBars.every((x) => Number.isFinite(x.v))
+    ? eveMean(dvBars.map((x) => x.c * x.v)) : NaN;
+
+  const sma20 = eveMean(b.slice(-20).map((x) => x.c));
+  const sma50 = b.length >= EVE.TREND_SMA ? eveMean(b.slice(-EVE.TREND_SMA).map((x) => x.c)) : NaN;
+
+  /* Widerstaende aus der Zeit VOR der Box. Die Box-Hochs sind der Ausbruchs-
+     punkt selbst und koennen ihm nicht im Weg stehen. k=3, damit ein einzelner
+     Docht nicht als Widerstand durchgeht. */
+  const priorPivots = evePivotHighs(win.slice(0, Math.max(0, win.length - EVE.BOX_DAYS)), 3)
+    .sort((a, x) => a - x);
+
+  let trigger, stop, deepStop, dropPct = NaN, closePos = NaN, mergedResist = 0;
+  if (kind === 'rueckkehr') {
+    /* Rueckeroberung: der Einstieg ist das Hoch des Stabilisierungstages, die
+       Ungueltigkeit sein Tief. Beides steht fest, bevor der Trade beginnt. */
+    const revLow = Math.min(...b.slice(-2).map((x) => x.l));
+    trigger = last.h + EVE.TRIGGER_BUFFER_ATR * atrAbs;
+    stop = revLow - EVE.STOP_BUFFER_ATR * atrAbs;
+    deepStop = Math.min(...b.slice(-(EVE.REV_DAYS + 2)).map((x) => x.l));
+    /* Die Tiefe des Rueckschlags wird vom LOKALEN HOCH gemessen, nicht von
+       einem festen Balken. Ein fester Rueckblick misst je nach Verlauf mal die
+       ganze Bewegung und mal ihr letztes Drittel — derselbe Rueckschlag
+       bekaeme zwei verschiedene Zahlen. */
+    const swingHigh = Math.max(...b.slice(-(EVE.REV_DAYS + 2)).map((x) => x.h));
+    dropPct = swingHigh > 0 ? (last.c - swingHigh) / swingHigh * 100 : NaN;
+    closePos = (last.h > last.l) ? (last.c - last.l) / (last.h - last.l) : NaN;
+  } else {
+    /* Ausbruch aus der Box: Einstieg knapp ueber der Boxoberkante, Ungueltigkeit
+       am Boxtief. Das ist die einzige Stelle, an der die Kompression zaehlt —
+       sie macht diesen Abstand klein genug fuer das Budget dieses Nutzers.
+
+       ABER: liegt ein mehrtaegiger Widerstand DICHT ueber der Box, ist nicht
+       die Boxoberkante der Ausbruchspunkt, sondern er. Genau diese Lage meint
+       der Befund "Naehe zu einem mehrtaegigen Widerstand" — sie ist das
+       Kennzeichen der Okkasion, nicht ihr Hindernis. Wer den Trigger unter dem
+       Widerstand laesst, kauft in fremdes Angebot hinein und wird an einer
+       Stelle ausgestoppt, die vorher sichtbar war. */
+    const capHigh = boxHigh + EVE.RESIST_MERGE_ATR * atrAbs;
+    const nearby = priorPivots.filter((h) => h > boxHigh && h <= capHigh);
+    mergedResist = nearby.length;
+    trigger = (nearby.length ? Math.max(...nearby) : boxHigh) + EVE.TRIGGER_BUFFER_ATR * atrAbs;
+    stop = boxLow - EVE.STOP_BUFFER_ATR * atrAbs;
+    deepStop = baseLow;
+  }
+  if (!(trigger > 0) || !(stop > 0) || !(trigger > stop)) return null;
+
+  const stopPct = (trigger - stop) / trigger * 100;
+  const deepStopPct = (deepStop > 0 && deepStop < trigger) ? (trigger - deepStop) / trigger * 100 : NaN;
+  /* Der naechste Widerstand OBERHALB des Triggers. Nur er steht dem Ziel im
+     Weg — alles darunter gehoert zum Ausbruch. */
+  const resist = priorPivots.filter((h) => h > trigger).sort((a, b2) => a - b2)[0] ?? null;
+  const runwayPct = resist != null ? (resist - trigger) / trigger * 100 : null;
+
+  return {
+    kind, date: last.d, price: last.c, bars: n,
+    trigger: Math.round(trigger * 1000) / 1000,
+    stop: Math.round(stop * 1000) / 1000,
+    stopPct: r2(stopPct),
+    deepStopPct: Number.isFinite(deepStopPct) ? r2(deepStopPct) : null,
+    resist, runwayPct: runwayPct != null ? r2(runwayPct) : null,
+    mergedResist,
+    atrPct: r2(atrAbs / last.c * 100),
+    baseAtrPct: r2(baseAtrAbs / last.c * 100),
+    boxRangePct: r2(boxRangePct), contraction: Number.isFinite(contraction) ? r2(contraction) : null,
+    volRatio: Number.isFinite(volRatio) ? r2(volRatio) : null,
+    dollarVol: Number.isFinite(dollarVol) ? Math.round(dollarVol) : null,
+    triggerReachAtr: r2((trigger - last.c) / atrAbs),
+    aboveSma50: Number.isFinite(sma50) ? last.c >= sma50 : null,
+    sma20, sma50,
+    meanPct: Number.isFinite(sma20) && sma20 > trigger ? r2((sma20 - trigger) / trigger * 100) : null,
+    dropPct: Number.isFinite(dropPct) ? r2(dropPct) : null,
+    closePos: Number.isFinite(closePos) ? r2(closePos) : null,
+  };
+}
+
+/** Alle Huerden, jede einzeln benannt. Genau wie bei `rideCheck`: die Gruende
+ *  auszuweisen ist kein Beiwerk — eine Liste, die nur leer bleibt, laesst
+ *  offen, ob sie ueberhaupt arbeitet.
+ *  `budgetFail` wird GETRENNT gefuehrt: ein Kandidat, dessen struktureller Stop
+ *  breiter ist als das Budget, ist nicht schlecht, sondern fuer DIESEN Nutzer
+ *  unhandelbar. Er verschwindet nicht, er wandert in eine eigene Gruppe. */
+function eveCheck(g, ctx) {
+  if (!g) return { ok: false, fail: ['zu wenige Tagesbalken'], budgetOnly: false, targetPct: null };
+  const { econTargetPct, maxStopPct } = ctx;
+  const f = (v) => { if (v === null || v === undefined || v === '') return NaN;
+    const x = Number(v); return Number.isFinite(x) ? x : NaN; };
+  const fail = [], budgetFail = [];
+
+  const stopPct = f(g.stopPct);
+  /* Die Zielweite folgt aus dem SCHLECHTEREN von beidem: dem wirtschaftlichen
+     Minimum und dem Zweifachen des tatsaechlichen Stops. Nie darunter. */
+  const targetPct = Number.isFinite(stopPct)
+    ? Math.max(econTargetPct, stopPct * ECON_MIN_REWARD_RISK) : NaN;
+
+  // ---- 1. DIE ENTSCHEIDENDE HUERDE, die uebliche Screener nicht haben ----
+  if (!Number.isFinite(stopPct)) fail.push('struktureller Stop unbekannt');
+  else if (stopPct > maxStopPct)
+    budgetFail.push(`struktureller Stop ${r2(stopPct)} % ueber dem Stopbudget von ${r2(maxStopPct)} %`);
+
+  // ---- 2. Erreichbarkeit: kann der Titel die Zielweite ueberhaupt liefern? --
+  const baseAtr = f(g.baseAtrPct);
+  if (!Number.isFinite(baseAtr)) fail.push('Bewegungsfaehigkeit unbekannt');
+  else if (Number.isFinite(targetPct) && targetPct > baseAtr * EVE.MAX_TARGET_BASE_ATR)
+    fail.push(`Zielweite ${r2(targetPct)} % ueber ${EVE.MAX_TARGET_BASE_ATR} Basisspannen (${r2(baseAtr)} %)`);
+
+  // ---- 3. Restweg: das Ziel darf nicht hinter fremdem Angebot liegen -------
+  const runway = g.runwayPct == null ? null : f(g.runwayPct);
+  if (runway != null && Number.isFinite(targetPct) && runway < targetPct)
+    fail.push(`Restweg zum Widerstand ${r2(runway)} % unter der Zielweite ${r2(targetPct)} %`);
+
+  // ---- 4. Handelbarkeit -----------------------------------------------------
+  const price = f(g.price), dv = f(g.dollarVol);
+  if (!(price >= EVE.MIN_PRICE_USD)) fail.push(`Kurs unter ${EVE.MIN_PRICE_USD} USD`);
+  if (!Number.isFinite(dv)) fail.push('Dollarumsatz unbekannt');
+  else if (dv < EVE.MIN_DOLLARVOL) fail.push(`Dollarumsatz ${Math.round(dv / 1e6)} Mio. unter ${EVE.MIN_DOLLARVOL / 1e6} Mio.`);
+
+  // ---- 5. Der Trigger muss morgen erreichbar sein --------------------------
+  const reach = f(g.triggerReachAtr);
+  if (!Number.isFinite(reach)) fail.push('Abstand zum Trigger unbekannt');
+  else if (reach < 0) fail.push('Trigger liegt bereits unter dem Schlusskurs');
+  else if (reach > EVE.MAX_TRIGGER_REACH_ATR)
+    fail.push(`Trigger ${r2(reach)} Tagesspannen entfernt`);
+
+  // ---- 6. Art-spezifisch ----------------------------------------------------
+  if (g.kind === 'rueckkehr') {
+    const drop = f(g.dropPct), pos = f(g.closePos);
+    if (!Number.isFinite(drop)) fail.push('Rueckgang nicht messbar');
+    else if (drop > -EVE.REV_MIN_DROP_PCT) fail.push(`Rueckgang ${r2(drop)} % zu flach fuer eine Rueckkehr`);
+    if (!Number.isFinite(pos)) fail.push('Stabilisierung nicht messbar');
+    else if (pos < EVE.REV_MIN_CLOSE_POS) fail.push(`Schluss bei ${Math.round(pos * 100)} % der Tagesspanne — keine Stabilisierung`);
+    if (g.meanPct == null) fail.push('kein Weg zurueck zur Mitte');
+    /* Eine Rueckkehr im intakten Aufwaertstrend ist ein Rueckschlag; dieselbe
+       Geometrie im Abwaertstrend ist ein fallendes Messer. */
+    if (g.aboveSma50 === null) fail.push('laengerer Trend unbekannt');
+    else if (!g.aboveSma50 && !(Number.isFinite(f(g.sma50)) && price >= f(g.sma50) * (1 - EVE.REV_TREND_TOL_PCT / 100)))
+      fail.push('unter dem laengeren Trend — fallendes Messer');
+  } else {
+    const con = f(g.contraction), vr = f(g.volRatio);
+    if (!Number.isFinite(con)) fail.push('Kompression nicht messbar');
+    else if (con > EVE.MAX_CONTRACTION) fail.push(`keine Kompression (Boxspanne ${Math.round(con * 100)} % der Basisspanne)`);
+    if (!Number.isFinite(vr)) fail.push('Umsatzverlauf unbekannt');
+    else if (vr > EVE.MAX_VOL_RATIO) fail.push(`Umsatz versiegt nicht (${Math.round(vr * 100)} % der Basis)`);
+    if (g.aboveSma50 === null) fail.push('laengerer Trend unbekannt');
+    else if (!g.aboveSma50) fail.push('unter dem laengeren Trend');
+  }
+
+  return {
+    ok: !fail.length && !budgetFail.length,
+    /* Nur an der Budgetgrenze gescheitert: alles andere passt, der Titel ist
+       fuer diesen Nutzer nur zu breit. Das ist eine andere Aussage als
+       "schlechtes Setup" und wird getrennt gezeigt. */
+    budgetOnly: !fail.length && budgetFail.length > 0,
+    fail: [...fail, ...budgetFail],
+    targetPct: Number.isFinite(targetPct) ? r2(targetPct) : null,
+  };
+}
+
+/** Kandidat + Plan in Euro. Die Positionsgroesse kommt aus `rideSize()` und
+ *  damit aus dem RISIKO: ein engerer Stop erlaubt mehr Stueck, der Euro-Verlust
+ *  bleibt gleich. Genau das ist der Grund, warum Rueckkehrbewegungen fuer die
+ *  Kostenrechnung dieses Nutzers interessanter sind als Ausbrueche. */
+function eveCandidate(symbol, bars, kind, ctx) {
+  const g = eveGeometry(bars, kind);
+  const chk = eveCheck(g, ctx);
+  if (!g) return { symbol, kind, ...chk, geometry: null, plan: null };
+  const size = rideSize(g.stopPct, ctx.cfg);
+  const cfg = size?.cfg ?? ctx.cfg;
+  const t = chk.targetPct;
+  const plan = (t != null && size) ? {
+    trigger: g.trigger, stop: g.stop,
+    targetPrice: Math.round(g.trigger * (1 + t / 100) * 1000) / 1000,
+    targetPct: t, stopPct: -g.stopPct,
+    rewardRisk: r2(t / g.stopPct),
+    notionalEur: size.notionalEur,
+    riskEur: size.riskEur,
+    winEur: Math.round(netEurAtMove(t, cfg)),
+    lossEur: Math.round(lossEurAtStop(-g.stopPct, cfg)),
+    costLoadPct: costLoadPct(t, cfg),
+    capped: !!size.capped,
+    breakEvenPct: Math.round(breakEvenHitRate(t, -g.stopPct, cfg) * 100),
+  } : null;
+  return { symbol, kind, ...chk, geometry: g, plan };
+}
+
+/* ----------------------------------------------------------------------------
+   DIE RUECKWIRKENDE EREIGNISSTUDIE
+   ----------------------------------------------------------------------------
+   Sie laeuft ueber DIESELBEN Funktionen wie die Liste. Das ist der Punkt: eine
+   Studie mit eigenen, aehnlichen Regeln misst etwas anderes als die App tut —
+   das ist der Fehler, der in diesem Projekt vier Mal passiert ist (v3.8.0,
+   v3.16.0, v3.20.0, v3.22.0).
+
+   DREI EHRLICHKEITSREGELN, weil Tagesbalken weniger wissen als sie scheinen:
+   1) Wird an einem Tag SOWOHL das Ziel als auch der Stop beruehrt, gilt der
+      Fall als AUSGESTOPPT. Tagesbalken kennen die Reihenfolge innerhalb des
+      Tages nicht. Dieselbe Regel wie in `pickOutcome`.
+   2) Eroeffnet der Ausloesungstag ueber dem Trigger, wird zur EROEFFNUNG
+      gekauft, nicht zum Trigger. Wer die Luecke wegrechnet, misst einen
+      Einstieg, den es nicht gab. Wird der Stopabstand dadurch groesser als das
+      Budget, zaehlt der Fall als "nicht handelbar" — nicht als Gewinn.
+   3) Ein nicht ausgeloester Kandidat ist KEIN Verlust. Er ist ein Fall, in dem
+      nicht gehandelt wurde, und wird getrennt gezaehlt.
+   -------------------------------------------------------------------------- */
+function eveStudyOne(bars, kind, ctx) {
+  const cases = [];
+  const b = Array.isArray(bars) ? bars : [];
+  const need = Math.max(EVE.MIN_BARS, EVE.BOX_DAYS + EVE.BASE_DAYS + EVE.ATR_N + 1);
+  const from = Math.max(need, b.length - EVE.STUDY_DAYS);
+  for (let i = from; i < b.length - 1; i++) {
+    const g = eveGeometry(b.slice(0, i + 1), kind);
+    const chk = eveCheck(g, ctx);
+    if (!chk.ok) continue;
+    const next = b[i + 1];
+    if (next.h < g.trigger) { cases.push({ d: g.date, outcome: 'nicht ausgeloest' }); continue; }
+    // Regel 2: die Luecke wird bezahlt, nicht wegdefiniert.
+    const entry = Math.max(g.trigger, next.o);
+    const stopPct = (entry - g.stop) / entry * 100;
+    if (stopPct > ctx.maxStopPct) { cases.push({ d: g.date, outcome: 'nicht handelbar' }); continue; }
+    const targetPct = Math.max(ctx.econTargetPct, stopPct * ECON_MIN_REWARD_RISK);
+    const targetPrice = entry * (1 + targetPct / 100);
+    let outcome = 'offen', held = 0, ambiguous = false;
+    for (let j = i + 1; j <= Math.min(b.length - 1, i + EVE.STUDY_HOLD_DAYS); j++) {
+      held = j - i;
+      const bar = b[j];
+      const reached = bar.h >= targetPrice, breached = bar.l <= g.stop;
+      if (breached) { outcome = 'ausgestoppt'; ambiguous = reached; break; }  // Regel 1
+      if (reached) { outcome = 'Ziel'; break; }
+    }
+    if (outcome === 'offen') outcome = 'ausgelaufen';
+    cases.push({ d: g.date, outcome, held, ambiguous, targetPct: r2(targetPct), stopPct: r2(stopPct) });
+  }
+  return cases;
+}
+
+/** Zusammenfassung ueber alle Titel EINER Art. Getrennt je Art — zusammengelegt
+ *  waere keine der beiden mehr beurteilbar. */
+function eveStudySummary(cases, kind, ctx) {
+  const all = cases || [];
+  const triggered = all.filter((c) => c.outcome !== 'nicht ausgeloest' && c.outcome !== 'nicht handelbar');
+  const n = triggered.length;
+  const hit = triggered.filter((c) => c.outcome === 'Ziel').length;
+  const stopped = triggered.filter((c) => c.outcome === 'ausgestoppt').length;
+  const ambiguous = triggered.filter((c) => c.ambiguous).length;
+  const flat = n - hit - stopped;
+  const holds = triggered.filter((c) => c.outcome === 'Ziel').map((c) => c.held).sort((a, b) => a - b);
+  const targets = triggered.map((c) => c.targetPct).filter(Number.isFinite).sort((a, b) => a - b);
+  const stops = triggered.map((c) => c.stopPct).filter(Number.isFinite).sort((a, b) => a - b);
+  const med = (a) => a.length ? a[Math.floor(a.length / 2)] : null;
+  const targetPct = med(targets) ?? ctx.econTargetPct;
+  const stopPct = med(stops) ?? ctx.maxStopPct;
+  const breakEven = Math.round(breakEvenHitRate(targetPct, -stopPct, ctx.cfg) * 100);
+
+  /* FAIL-CLOSED IM URTEIL. Zu wenige Faelle heissen "nicht bewertbar", nicht
+     "neutral" und schon gar nicht "traegt". Beurteilt wird ausserdem die
+     UNTERE Wilson-Schranke, nicht die Punktschaetzung: eine Quote von 3 aus 4
+     ist keine 75-%-Trefferquote. */
+  const pLower = n > 0 ? Math.round(wilsonLower(hit, n) * 100) : null;
+  let verdict, why;
+  if (n < EVE.STUDY_MIN_N) {
+    verdict = 'nicht bewertbar';
+    why = `${n} ausgeloeste Faelle, noetig sind ${EVE.STUDY_MIN_N}. Das ist keine Aussage ueber die Art, sondern ueber die Datenlage.`;
+  } else if (pLower >= breakEven) {
+    verdict = 'traegt';
+    why = `Auch am unteren Rand der Schaetzung (${pLower} %) liegt die Trefferquote ueber der Schwelle, ab der sich der Trade nach Kosten und Steuer rechnet (${breakEven} %).`;
+  } else if (Math.round(hit / n * 100) >= breakEven) {
+    verdict = 'knapp';
+    why = `Die gemessene Quote (${Math.round(hit / n * 100)} %) liegt ueber der Schwelle von ${breakEven} %, die untere Schranke (${pLower} %) aber darunter. Zu wenig, um sich darauf zu verlassen.`;
+  } else {
+    verdict = 'traegt nicht';
+    why = `Die Trefferquote bleibt unter den ${breakEven} %, die es nach Kosten und Steuer braucht.`;
+  }
+
+  return {
+    kind, label: EVE_KIND_LABEL[kind],
+    cases: all.length,
+    notTriggered: all.filter((c) => c.outcome === 'nicht ausgeloest').length,
+    notTradable: all.filter((c) => c.outcome === 'nicht handelbar').length,
+    n, hit, stopped, flat, ambiguous,
+    hitPct: n ? Math.round(hit / n * 100) : null,
+    hitPctLower: pLower,
+    breakEvenPct: breakEven,
+    medianTargetPct: targetPct != null ? r2(targetPct) : null,
+    medianStopPct: stopPct != null ? r2(stopPct) : null,
+    medianHoldDays: med(holds),
+    verdict, why,
+    ambiguousNote: ambiguous > 0
+      ? `${ambiguous} von ${n} Faellen haben Ziel UND Stop am selben Tag beruehrt. Tagesbalken kennen die Reihenfolge nicht; sie zaehlen als ausgestoppt.`
+      : null,
+  };
+}
+
+/* Universum: die Titel, die heute schon auffaellig waren, plus die Favoriten,
+   plus der Suchkatalog als Auffuellung. Der Katalog ist ausdruecklich
+   gekennzeichnet — ein Katalogtitel ist keine Nominierung des Radars. */
+function eveUniverse(radarRows, favorites) {
+  const seen = new Map();
+  const add = (sym, src) => {
+    const s = safeRadarSymbol(sym);
+    if (s && !seen.has(s)) seen.set(s, src);
+  };
+  for (const f of (favorites || [])) add(f, 'Favorit');
+  for (const r of (radarRows || [])) add(r?.symbol, 'Radar');
+  for (const [, sym] of STOCK_SEARCH_CATALOG) add(sym, 'Katalog');
+  return [...seen.entries()].slice(0, EVE.MAX_SYMBOLS).map(([symbol, source]) => ({ symbol, source }));
+}
+
+async function eveDailyBars(env, symbol) {
+  const start = new Date(Date.now() - EVE.HISTORY_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const d = await tiingoFetch(env,
+    `/tiingo/daily/${encodeURIComponent(symbol)}/prices?startDate=${start}&columns=open,high,low,close,volume`);
+  return eveBars(d);
+}
+
+async function eveningList(env, opts = {}) {
+  const netEur = posNum(opts.netEur, PICK.DEFAULT_NET_EUR);
+  const cfg = pickCfg(PICK_COST);
+  const econTargetPct = requiredMovePct(netEur, cfg);
+  const maxStopPct = econTargetPct / ECON_MIN_REWARD_RISK;
+  const ctx = { econTargetPct, maxStopPct, cfg };
+  const phase = usMarketPhase();
+  const base = {
+    configured: !!env?.TIINGO_API_TOKEN, version: APP_VERSION, asset: 'stock',
+    buyWeight: 0, changesNothing: true,
+    econTargetPct: r2(econTargetPct), maxStopPct: r2(maxStopPct),
+    rules: EVE, kinds: EVE_KINDS, phaseLabel: phase.label,
+    source: 'Tiingo EOD · Tagesbalken',
+    disclaimer: 'Kandidatenliste fuer den naechsten Handelstag, keine Kauf-Freigabe. '
+      + 'Der Stop ist STRUKTURELL und wird nie enger gerechnet, damit das Chance-Risiko-Verhaeltnis passt. '
+      + 'Gepruefte Titel sind nur die, die heute schon auffaellig waren, plus Favoriten und Katalog — kein Vollmarkt-Screening.',
+  };
+  if (!env?.TIINGO_API_TOKEN)
+    return { ...base, state: 'nokey', rows: [], wide: [], study: null,
+      note: 'Ohne TIINGO_API_TOKEN gibt es keine Tagesbalken. Es wird bewusst nichts geschaetzt.' };
+
+  const force = opts.force === true || opts.force === '1';
+  if (!force && env?.DB) {
+    const cached = await eveReadCache(env);
+    if (cached && Date.now() - cached.ts < EVE.CACHE_MS && cached.netEur === netEur)
+      return { ...cached.payload, cached: true, ts: cached.ts };
+  }
+
+  const radar = await readPersistedIexRadar(env);
+  const favorites = String(opts.favorites || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const universe = eveUniverse(radar?.rows || [], favorites);
+  if (!universe.length)
+    return { ...base, state: 'empty', rows: [], wide: [], study: null, checked: 0,
+      note: 'Kein Universum. Ohne Kandidaten wird nichts gemeldet.' };
+
+  const results = await pool(universe, 4, async ({ symbol, source }) => {
+    try {
+      const bars = await eveDailyBars(env, symbol);
+      return { symbol, source, bars, error: null };
+    } catch (e) { return { symbol, source, bars: [], error: String(e?.message || e) }; }
+  });
+
+  const rows = [], wide = [], nearMiss = [];
+  const studyCases = { momentum: [], rueckkehr: [] };
+  let barsOk = 0, failedFetch = 0;
+  for (const res of results) {
+    if (res.error || res.bars.length < EVE.MIN_BARS) { if (res.error) failedFetch++; continue; }
+    barsOk++;
+    for (const kind of EVE_KINDS) {
+      const cand = eveCandidate(res.symbol, res.bars, kind, ctx);
+      cand.source = res.source;
+      if (cand.ok && cand.plan) rows.push(cand);
+      else if (cand.budgetOnly && cand.plan) wide.push(cand);
+      else if (cand.geometry && cand.fail.length <= 2) nearMiss.push({ symbol: res.symbol, kind, fail: cand.fail });
+      studyCases[kind].push(...eveStudyOne(res.bars, kind, ctx));
+    }
+  }
+
+  const study = Object.fromEntries(EVE_KINDS.map((k) => [k, eveStudySummary(studyCases[k], k, ctx)]));
+  /* Die Rangfolge kommt aus der EURO-Erwartung, nicht aus dem Setup-Gefuehl:
+     die Trefferquote der eigenen Art (untere Schranke, ausserhalb der
+     Stichprobe gibt es hier nichts zu schoenen) trifft auf die tatsaechliche
+     Geometrie des Kandidaten. Eine Art ohne belastbares Urteil liefert KEINEN
+     Erwartungswert — und ihre Kandidaten koennen belegte nie ueberholen. */
+  for (const c of [...rows, ...wide]) {
+    const s = study[c.kind];
+    const p = (s && s.verdict !== 'nicht bewertbar' && s.hitPctLower != null) ? s.hitPctLower / 100 : null;
+    c.evidence = s ? { n: s.n, verdict: s.verdict, hitPctLower: s.hitPctLower } : null;
+    c.evEur = (p != null && c.plan)
+      ? Math.round(p * c.plan.winEur - (1 - p) * c.plan.lossEur) : null;
+    c.rank = pickTier(s && s.n >= EVE.STUDY_MIN_N ? 'belegt' : 'unbelegt', c.evEur);
+    c.liveScore = (c.geometry?.contraction != null ? (1 - c.geometry.contraction) * 50 : 0)
+      + (c.geometry?.volRatio != null ? (1 - c.geometry.volRatio) * 30 : 0)
+      + (c.plan ? Math.min(20, c.plan.rewardRisk * 5) : 0);
+  }
+  const ranked = rankPicks(rows).slice(0, EVE.MAX_ROWS);
+  const rankedWide = rankPicks(wide).slice(0, 6);
+
+  const payload = {
+    ...base, state: 'ok', ts: Date.now(), cached: false,
+    checked: universe.length, withBars: barsOk, failedFetch,
+    rows: ranked, wide: rankedWide,
+    near: nearMiss.sort((a, b) => a.fail.length - b.fail.length).slice(0, 4),
+    study,
+    counts: Object.fromEntries(EVE_KINDS.map((k) => [k, ranked.filter((r) => r.kind === k).length])),
+    note: ranked.length
+      ? `${ranked.length} Kandidat${ranked.length === 1 ? '' : 'en'} fuer den naechsten Handelstag aus ${barsOk} geprueften Titeln.`
+      : `${barsOk} Titel gepruefte Tagesbalken, kein Kandidat erfuellt alle Huerden. Bei einem Stopbudget von ${r2(maxStopPct)} % ist das der Normalfall.`,
+  };
+  if (env?.DB) await eveWriteCache(env, payload, netEur).catch(() => {});
+  return payload;
+}
+
+async function eveReadCache(env) {
+  if (!env?.DB) return null;
+  try {
+    await ensureD1Schema(env);
+    const r = await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind('evening:last').first();
+    if (!r?.value) return null;
+    const p = JSON.parse(r.value);
+    return p?.payload ? { ts: Number(p.ts || r.updated_ts || 0), netEur: Number(p.netEur), payload: p.payload } : null;
+  } catch { return null; }
+}
+async function eveWriteCache(env, payload, netEur) {
+  if (!env?.DB) return;
+  await ensureD1Schema(env);
+  const ts = Date.now(), value = safeJson({ ts, netEur, payload });
+  if (!value) return;
+  await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts')
+    .bind('evening:last', value, ts).run();
+}
+
+/* ============================================================================
    v3.17.0 · MUSTERLABOR — was ging einem Anstieg voraus, was einem Abfall?
    ----------------------------------------------------------------------------
    DIE UR-IDEE: Der Cron zeichnet seit v3.0 jede Minute Snapshots in D1 auf.
@@ -5745,6 +6355,17 @@ export default {
     if (url.pathname === '/api/ride') {
       try { return json(await rideNow(env,{asset:url.searchParams.get('asset'),netEur:url.searchParams.get('netEur')}),200,{ 'cache-control':'no-store' }); }
       catch(e){ return json({configured:true,state:'error',error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    // v3.29.0 · Vorabend-Liste. Laeuft gegen TAGESBALKEN und ist damit die
+    // einzige Schicht, die sich rueckwirkend pruefen laesst. 0 % Gewicht.
+    if (url.pathname === '/api/evening') {
+      try { return json(await eveningList(env,{
+        netEur: url.searchParams.get('netEur'),
+        favorites: url.searchParams.get('favorites'),
+        force: url.searchParams.get('force'),
+      }),200,{ 'cache-control':'no-store' }); }
+      catch(e){ return json({configured:!!env.TIINGO_API_TOKEN,state:'error',rows:[],wide:[],study:null,error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
     }
 
     if (url.pathname === '/api/scoreaudit') {

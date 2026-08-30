@@ -3877,11 +3877,25 @@ console.log('✓ FusionPulse v3.21.0 heat/verdict/grid regressions: OK');
   // im HTML. Fehlt eines, ist die Einstellung wirkungslos — genau der Zustand,
   // den der Nutzer als "wurde nie umgesetzt" erlebt hat.
   const tintKeys = [...app.matchAll(/^\s*\['([a-zA-Z]+)','[^']*'\],?$/gm)].map((m) => m[1]);
+  /* Frueher lief diese Schleife ueber eine HANDGEPFLEGTE Liste, waehrend
+     `tintKeys` berechnet und nie benutzt wurde. Jede spaeter hinzugefuegte
+     Kachel war damit ungeprueft — v3.29.0 hat genau so zwei Kacheln ohne eine
+     einzige CSS-Regel in die App bekommen. Geprueft wird jetzt, was
+     REGISTRIERT ist, nicht was jemand daran gedacht hat einzutragen. */
+  assert.ok(tintKeys.length >= 12,
+    `Die Kachelliste muss gefunden werden, sonst prueft die Schleife nichts. Gefunden: ${tintKeys.length}`);
   for (const key of ['topPicks', 'gainers', 'opening', 'extended', 'laggards',
-                     'earnings', 'cryptoMovers', 'sentiment', 'gate', 'portfolio']) {
-    assert.ok(app.includes(`['${key}',`), `Kachelton "${key}" muss in TINTABLE_TILES stehen`);
-    assert.ok(idx.includes(`data-tile="${key}"`), `Kachel "${key}" muss im HTML markiert sein`);
-    assert.ok(css.includes(`[data-tile="${key}"]`), `Kachel "${key}" braucht eine CSS-Regel`);
+                     'earnings', 'cryptoMovers', 'sentiment', 'gate', 'portfolio'])
+    assert.ok(tintKeys.includes(key), `Kachelton "${key}" muss in TINTABLE_TILES stehen`);
+  for (const key of tintKeys) {
+    /* Manche Kacheln haengen an `data-tile`, andere an einer Klasse
+       (`.learning-report`, `.sf-grid`). Beides ist zulaessig — die Frage ist
+       nicht WIE, sondern OB die Einstellung ueberhaupt irgendwo ankommt.
+       Deshalb wird geprueft, dass die Farbvariable von einer Regel VERBRAUCHT
+       wird. Ein Kachelton, den kein `var(--tint-…)` liest, ist ein Regler
+       ohne Draht. */
+    assert.ok(css.includes(`--tint-${key}`),
+      `Kachelton "${key}" ist registriert, wird aber von keiner CSS-Regel gelesen — der Regler haette keine Wirkung`);
   }
   // Ampelfarben bleiben gesperrt (der Fehler aus v3.14.6 darf nicht per
   // Einstellung wiederherstellbar sein).
@@ -4583,3 +4597,133 @@ console.log('✓ FusionPulse v3.27.0 score-audit regressions: OK');
 }
 
 console.log('✓ FusionPulse v3.28.0 ride/journal regressions: OK');
+
+// ---------------------------------------------------------------------------
+// v3.29.0 · DIE VORABEND-LISTE
+// Bis hierher pruefte die Suite die neue Schicht nur ueber das Glossar und die
+// Erreichbarkeit — also ob Begriffe erklaert sind und Container existieren.
+// Beides war rot und ist behoben, aber beides sagt NICHTS ueber die Geometrie.
+// Ein Setup-Filter, dessen Huerden nie an einem Gegenbeispiel gemessen wurden,
+// ist eine Liste, die immer etwas ausgibt. Deshalb hat jede Huerde hier ein
+// Paar: einen Fall, der durchgeht, und einen, der genau an ihr scheitert.
+{
+  const { loadEve } = await import('./eve-harness.mjs');
+  const { compressionBars, reversalBars } = await import('./eve-fixtures.mjs');
+  const E = loadEve();
+  const ctx = { econTargetPct: 2.04, maxStopPct: 1.02,
+    cfg: { equity: 10000, riskPct: 1, feeEur: 5.9, spreadPct: 0.05 } };
+  const geo = (raw, kind) => E.eveGeometry(E.eveBars(raw), kind);
+  const chk = (raw, kind) => E.eveCheck(geo(raw, kind), ctx);
+
+  // -- POSITIVKONTROLLE. Ohne sie ist jede Ablehnung unten wertlos: ein Filter,
+  //    der alles aussortiert, besteht jeden Negativtest.
+  const okBox = chk(compressionBars({}), 'momentum');
+  assert.ok(okBox.ok, `Eine saubere Kompression muss durchkommen, scheitert an: ${okBox.fail.join(' | ')}`);
+  const okRev = chk(reversalBars({ hammer: true, tightPct: 0.05, barRangePct: 0.5, dropPct: 5.5 }), 'rueckkehr');
+  assert.ok(okRev.ok, `Eine saubere Rueckkehr muss durchkommen, scheitert an: ${okRev.fail.join(' | ')}`);
+
+  // -- DER STOP WIRD NIE ENGER GERECHNET (Sicherheits-Invariante 4).
+  //    Der teuerste denkbare Fehler dieser Schicht waere, den Stop ins Budget
+  //    zu biegen, damit das CRV passt. Der Kandidat muss stattdessen sichtbar
+  //    in die getrennte Gruppe wandern — verschwinden darf er nicht (Inv. 6).
+  const wideRaw = reversalBars({ hammer: true, tightPct: 0.05, barRangePct: 0.9, dropPct: 5.5 });
+  const wideG = geo(wideRaw, 'rueckkehr');
+  const wideC = E.eveCheck(wideG, ctx);
+  assert.ok(wideG.stopPct > ctx.maxStopPct,
+    'Der Aufbau des Falls stimmt nicht — er soll das Stopbudget ueberschreiten');
+  assert.equal(wideC.ok, false, 'Ein Stop ueber Budget darf nicht als handelbar gelten');
+  assert.equal(wideC.budgetOnly, true,
+    `Nur am Budget gescheitert muss getrennt ausgewiesen sein, Gruende: ${wideC.fail.join(' | ')}`);
+  assert.ok(wideC.fail.some((f) => /Stopbudget/.test(f)),
+    'Der Grund muss benannt sein, nicht bloss die Ablehnung');
+  const wideCand = E.eveCandidate('WIDE', E.eveBars(wideRaw), 'rueckkehr', ctx);
+  assert.equal(wideCand.geometry.stop, wideG.stop,
+    'Der Stop im Plan muss exakt der strukturelle Stop sein — kein enger gerechneter');
+  assert.ok(wideCand.plan, 'Ein zu breiter Kandidat behaelt seinen Plan, er wird nur nicht empfohlen');
+
+  // -- FEHLENDE DATEN DUERFEN NIE ETWAS VERBESSERN (Regel 4, `Number(null)`).
+  //    Ein Kurs oder Umsatz von 0 waere an jeder Abstandsrechnung der
+  //    bestmoegliche Wert. Fuenf Versionen lang derselbe Fehler.
+  const nulled = compressionBars({}).map((b, i) => (i > 60 ? { ...b, close: null } : b));
+  assert.ok(E.eveBars(nulled).length < E.eveBars(compressionBars({})).length,
+    'Balken ohne Schlusskurs muessen verworfen werden, nicht auf 0 gesetzt');
+  const noVol = compressionBars({}).map((b) => ({ ...b, volume: 0 }));
+  const noVolC = chk(noVol, 'momentum');
+  assert.equal(noVolC.ok, false, 'Ohne Umsatzangabe darf kein Kandidat entstehen');
+  assert.ok(noVolC.fail.some((f) => /unbekannt/.test(f)),
+    `Fehlende Daten muessen als unbekannt gemeldet werden, nicht als erfuellt: ${noVolC.fail.join(' | ')}`);
+  /* Der Unterschied, an dem diese Fehlerklasse fuenf Versionen lang haengen
+     geblieben ist: eine 0 ist KEINE Beobachtung. Wuerde sie als Zahl
+     durchgehen, waere sie an jeder Abstandsrechnung der beste Wert und der
+     Umsatzverlauf sagte "versiegt" statt "unbekannt". Ein `null` faengt schon
+     der `??`-Operator ab — nur die 0 prueft die eigentliche Abwehr. */
+  const zeroG = geo(noVol, 'momentum');
+  assert.equal(zeroG.dollarVol, null, 'Ein Umsatz von 0 darf nicht als Dollarumsatz gelten');
+  assert.equal(zeroG.volRatio, null, 'Ein Umsatz von 0 darf nicht als "Umsatz versiegt" gelesen werden');
+  assert.ok(noVolC.fail.some((f) => /Umsatzverlauf unbekannt/.test(f)),
+    'Der versiegende Umsatz ist eine Bedingung — unbekannt darf sie nie erfuellen');
+
+  // -- RESTWEG. Ein altes Hoch dichter als die Zielweite heisst: die Bewegung
+  //    laeuft vorher in fremdes Angebot. Der Fall unterscheidet sich vom
+  //    Positivfall NUR durch dieses eine Hoch.
+  const capped = chk(compressionBars({ capPct: 1.2 }), 'momentum');
+  assert.equal(capped.ok, false, 'Ein Widerstand innerhalb der Zielweite muss den Kandidaten stoppen');
+  assert.ok(capped.fail.some((f) => /Restweg/.test(f)),
+    `Der Restweg muss der genannte Grund sein: ${capped.fail.join(' | ')}`);
+
+  // -- BEWEGUNGSFAEHIGKEIT. Der Befund aus v3.8.0 als messbare Huerde statt als
+  //    Namensliste: ein Titel, der 0,5 % am Tag laeuft, kann 2,04 % nicht
+  //    liefern — auch wenn seine Kompression mustergueltig aussieht.
+  const sleepy = chk(compressionBars({ baseRangePct: 0.5, boxRangePct: 0.2 }), 'momentum');
+  assert.equal(sleepy.ok, false, 'Ein bewegungsunfaehiger Titel darf nicht auf der Liste stehen');
+  assert.ok(sleepy.fail.some((f) => /Basisspannen/.test(f)),
+    `Die Bewegungsfaehigkeit muss der Grund sein: ${sleepy.fail.join(' | ')}`);
+
+  // -- FALLENDES MESSER. Dieselbe Geometrie unterhalb des laengeren Trends ist
+  //    ausdruecklich KEIN Kandidat. Die Form allein genuegt nicht.
+  const knife = chk(reversalBars({ hammer: true, tightPct: 0.05, barRangePct: 0.5,
+    dropPct: 5.5, downtrend: true }), 'rueckkehr');
+  assert.equal(knife.ok, false, 'Eine Rueckkehr im Abwaertstrend darf nicht durchgehen');
+  assert.ok(knife.fail.some((f) => /Messer|laengeren Trend/.test(f)),
+    `Der Trend muss der genannte Grund sein: ${knife.fail.join(' | ')}`);
+
+  // -- KOMPRESSION IST BEDINGUNG, NICHT SCHMUCK. Ohne Enge und ohne
+  //    versiegenden Umsatz ist der enge Stop nicht gerechtfertigt.
+  const loose = chk(compressionBars({ boxRangePct: 2.6, volFactor: 1.4 }), 'momentum');
+  assert.equal(loose.ok, false, 'Ohne Kompression darf kein Ausbruchskandidat entstehen');
+
+  // -- DIE BEIDEN ARTEN BLEIBEN GETRENNT. Zusammengelegt wuerde eine gute Quote
+  //    der einen die schlechte der anderen verdecken — dann ist keine von
+  //    beiden mehr beurteilbar.
+  const mk = (n, outcome) => Array.from({ length: n }, () => ({ outcome, held: 2, targetPct: 2.04, stopPct: 1.0, ambiguous: false }));
+  const sMom = E.eveStudySummary([...mk(20, 'Ziel'), ...mk(20, 'ausgestoppt')], 'momentum', ctx);
+  const sRev = E.eveStudySummary([...mk(20, 'Ziel'), ...mk(20, 'ausgestoppt')], 'rueckkehr', ctx);
+  assert.equal(sMom.kind, 'momentum');
+  assert.equal(sRev.kind, 'rueckkehr');
+  assert.notEqual(sMom.label, sRev.label, 'Beide Arten brauchen eine eigene, lesbare Bezeichnung');
+
+  // -- FAIL-CLOSED IM URTEIL. Zu wenige Faelle heissen "nicht bewertbar" —
+  //    nicht "neutral" und schon gar nicht "traegt".
+  const thin = E.eveStudySummary(mk(5, 'Ziel'), 'momentum', ctx);
+  assert.equal(thin.verdict, 'nicht bewertbar',
+    `Unter ${E.EVE.STUDY_MIN_N} Faellen darf kein Urteil entstehen, war: ${thin.verdict}`);
+  assert.match(thin.why, /Datenlage/,
+    'Die Begruendung muss klarstellen, dass es an den Daten liegt und nicht an der Art');
+  const perfect = E.eveStudySummary(mk(30, 'Ziel'), 'momentum', ctx);
+  assert.ok(perfect.hitPctLower < 100,
+    'Beurteilt wird die untere Schranke — 30 aus 30 sind keine 100 % Trefferquote');
+
+  // -- NICHT AUSGELOEST IST KEIN VERLUST. Ein Trigger, der nicht erreicht wird,
+  //    ist ein Tag ohne Trade und darf die Quote nicht verwaessern.
+  const withMisses = E.eveStudySummary([...mk(30, 'Ziel'), ...mk(50, 'nicht ausgeloest')], 'momentum', ctx);
+  assert.equal(withMisses.n, 30, 'Nicht ausgeloeste Faelle gehoeren nicht in den Nenner');
+  assert.equal(withMisses.notTriggered, 50, 'Sie muessen aber sichtbar bleiben');
+
+  // -- 0 % GEWICHT. Diese Schicht liefert Kandidaten, kein Urteil. Taucht hier
+  //    je ein Score oder eine Ampel auf, ist die Trennung gebrochen.
+  const cand = E.eveCandidate('OK', E.eveBars(compressionBars({})), 'momentum', ctx);
+  for (const k of ['score', 'verdict', 'gate', 'release', 'ampel', 'buy'])
+    assert.ok(!(k in cand), `Der Vorabend-Kandidat darf kein Feld "${k}" tragen`);
+}
+
+console.log('✓ FusionPulse v3.29.0 evening-list geometry/study regressions: OK');
