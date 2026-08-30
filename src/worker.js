@@ -4275,7 +4275,16 @@ const EVE = {
   REV_MIN_CLOSE_POS: 0.55,  // Stabilisierungsbalken: Schluss im oberen Teil der eigenen Spanne
   REV_TREND_TOL_PCT: 3,     // Rueckkehr nur im intakten laengeren Aufwaertstrend
   TREND_SMA: 50,
-  MAX_SYMBOLS: 40,          // Obergrenze je Lauf (1 Tiingo-Abruf je Titel)
+  MAX_SYMBOLS: 40,          // Obergrenze des Universums
+  /* ABRUFBUDGET JE LAUF. Der kostenlose Tiingo-Zugang erlaubt rund 50 Symbole
+     pro Stunde — geteilt mit allem anderen, was die App ohnehin abfragt.
+     40 Titel auf einen Schlag sprengen das Fenster garantiert; genau das ist
+     beim ersten echten Lauf passiert (40 von 40 Abrufen mit 429).
+     Deshalb holt ein Lauf nur wenige NEUE Titel; der Rest kommt aus dem
+     Zwischenspeicher oder beim naechsten Lauf. Die Liste baut sich auf,
+     statt in einem Zug zu scheitern. */
+  FETCH_BUDGET: 6,
+  BARS_TTL_MS: 20 * 60 * 60_000,  // Tagesbalken aendern sich einmal taeglich
   MAX_ROWS: 15,             // Handover: "Ergebnis 5-15 Namen"
   STUDY_DAYS: 260,          // rund ein Handelsjahr fuer die Ereignisstudie
   STUDY_HOLD_DAYS: 3,       // Haltefenster: Vorabend-Setups sind keine Wochenpositionen
@@ -4728,17 +4737,42 @@ async function eveningList(env, opts = {}) {
     return { ...base, state: 'empty', rows: [], wide: [], study: null, checked: 0,
       note: 'Kein Universum. Ohne Kandidaten wird nichts gemeldet.' };
 
-  const results = await pool(universe, 4, async ({ symbol, source }) => {
+  /* Zuerst der Zwischenspeicher, DANN das Abrufbudget. Ein Titel, dessen
+     Tagesbalken von heute frueh stammen, braucht keinen zweiten Abruf. */
+  const cachedBars = await eveReadBars(env, universe.map((u) => u.symbol));
+  const needFetch = universe.filter((u) => !cachedBars[u.symbol]);
+  const toFetch = needFetch.slice(0, EVE.FETCH_BUDGET);
+  const deferred = needFetch.length - toFetch.length;
+
+  let rateLimited = false;
+  const fetched = await pool(toFetch, 2, async ({ symbol, source }) => {
+    /* Nach einem 429 wird NICHT weitergefragt. Jeder weitere Abruf verlaengert
+       nur das gesperrte Zeitfenster und liefert garantiert nichts. */
+    if (rateLimited) return { symbol, source, bars: [], error: 'uebersprungen nach Rate-Limit' };
     try {
       const bars = await eveDailyBars(env, symbol);
       return { symbol, source, bars, error: null };
-    } catch (e) { return { symbol, source, bars: [], error: String(e?.message || e) }; }
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (/429|rate.?limit/i.test(msg)) rateLimited = true;
+      return { symbol, source, bars: [], error: msg };
+    }
+  });
+  await eveWriteBars(env, fetched.filter((f) => !f.error && f.bars.length >= EVE.MIN_BARS));
+
+  const results = universe.map((u) => {
+    const got = fetched.find((f) => f.symbol === u.symbol);
+    if (got) return got;
+    const c = cachedBars[u.symbol];
+    if (c) return { symbol: u.symbol, source: u.source, bars: c, error: null, fromCache: true };
+    return { symbol: u.symbol, source: u.source, bars: [], error: null, pending: true };
   });
 
   const rows = [], wide = [], nearMiss = [];
   const studyCases = { momentum: [], rueckkehr: [] };
   let barsOk = 0, failedFetch = 0, thinBars = 0, firstError = null;
   for (const res of results) {
+    if (res.pending) continue;   // noch nicht an der Reihe, kein Befund
     if (res.error || res.bars.length < EVE.MIN_BARS) {
       if (res.error) { failedFetch++; if (!firstError) firstError = res.error; }
       else thinBars++;
@@ -4780,7 +4814,7 @@ async function eveningList(env, opts = {}) {
     checked: universe.length, withBars: barsOk, failedFetch, thinBars, firstError,
     /* Ein Lauf ohne einen einzigen verwertbaren Titel ist KEIN Ergebnis. Ihn
        als solches zu melden, war der eigentliche Fehler dieser Version. */
-    dataOk: barsOk > 0,
+    dataOk: barsOk > 0 || (deferred > 0 && !failedFetch),
     rows: ranked, wide: rankedWide,
     near: nearMiss.sort((a, b) => a.fail.length - b.fail.length).slice(0, 4),
     study,
@@ -4790,17 +4824,62 @@ async function eveningList(env, opts = {}) {
        und muss auch so heissen. Die alte Fassung sagte in beiden Faellen
        "ist das der Normalfall" und hat einen Totalausfall beruhigend
        verpackt. */
-    note: barsOk === 0
+    deferred, rateLimited,
+    note: barsOk === 0 && deferred > 0 && !failedFetch
+      ? `Noch keine Tagesbalken im Speicher. Je Lauf werden hoechstens ${EVE.FETCH_BUDGET} neue Titel geholt, `
+        + `damit das Stundenlimit nicht reisst — ${deferred} stehen noch aus. Nach einigen Laeufen ist die Liste vollstaendig.`
+      : barsOk === 0
       ? `AUSFALL: von ${universe.length} Titeln lieferte KEINER verwertbare Tagesbalken`
         + `${failedFetch ? ` (${failedFetch} Abrufe mit Fehler` + (firstError ? `, erster: ${firstError}` : '') + ')' : ''}`
         + `${thinBars ? ` (${thinBars} Abrufe ohne Fehler, aber mit zu wenigen Balken — typisch, wenn die Antwort kein Datumsfeld enthaelt)` : ''}`
         + `. Das ist kein Ergebnis, sondern ein Datenproblem. Es wird bewusst nichts geschaetzt.`
       : ranked.length
       ? `${ranked.length} Kandidat${ranked.length === 1 ? '' : 'en'} fuer den naechsten Handelstag aus ${barsOk} geprueften Titeln.`
-      : `${barsOk} Titel mit geprueften Tagesbalken, kein Kandidat erfuellt alle Huerden. Bei einem Stopbudget von ${r2(maxStopPct)} % ist das der Normalfall.`,
+      : `${barsOk} Titel mit geprueften Tagesbalken, kein Kandidat erfuellt alle Huerden. Bei einem Stopbudget von ${r2(maxStopPct)} % ist das der Normalfall.`
+        + (deferred ? ` ${deferred} Titel stehen noch aus (Abrufbudget).` : ''),
   };
   if (env?.DB) await eveWriteCache(env, payload, netEur).catch(() => {});
   return payload;
+}
+
+/* Tagesbalken je Titel, getrennt vom Gesamtergebnis zwischengespeichert.
+   Der Sinn: das Ergebnis veraltet nach sechs Stunden, die BALKEN aber erst am
+   naechsten Handelstag. Ohne diese Trennung kostet jeder erneute Lauf wieder
+   40 Abrufe — und genau das hat das Stundenlimit gesprengt. */
+async function eveReadBars(env, symbols) {
+  const out = {};
+  if (!env?.DB || !symbols?.length) return out;
+  try {
+    await ensureD1Schema(env);
+    const cutoff = Date.now() - EVE.BARS_TTL_MS;
+    const marks = symbols.map(() => '?').join(',');
+    const rs = await env.DB.prepare(
+      `SELECT key,value,updated_ts FROM fp_meta WHERE key IN (${marks})`)
+      .bind(...symbols.map((x) => `evebars:${x}`)).all();
+    for (const r of (rs?.results || [])) {
+      if (Number(r.updated_ts || 0) < cutoff) continue;
+      const sym = String(r.key).slice('evebars:'.length);
+      try {
+        const bars = JSON.parse(r.value);
+        if (Array.isArray(bars) && bars.length >= EVE.MIN_BARS) out[sym] = bars;
+      } catch { /* unlesbar heisst nicht vorhanden — nie geraten */ }
+    }
+  } catch { /* ohne Zwischenspeicher wird normal abgerufen */ }
+  return out;
+}
+
+async function eveWriteBars(env, items) {
+  if (!env?.DB || !items?.length) return;
+  try {
+    await ensureD1Schema(env);
+    const ts = Date.now();
+    for (const it of items) {
+      const value = safeJson(it.bars);
+      if (!value) continue;
+      await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts')
+        .bind(`evebars:${it.symbol}`, value, ts).run();
+    }
+  } catch { /* Schreibfehler darf den Lauf nicht kippen */ }
 }
 
 async function eveReadCache(env) {

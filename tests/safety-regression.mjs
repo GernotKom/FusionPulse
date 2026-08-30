@@ -4759,6 +4759,43 @@ console.log('✓ FusionPulse v3.28.0 ride/journal regressions: OK');
       'Die Anzeige muss einen Ausfall als Ausfall kennzeichnen');
   }
 
+  // -- DAS ABRUFBUDGET. Der erste echte Lauf holte 40 Titel auf einen Schlag
+  //    und bekam 40 mal 429. Der kostenlose Zugang erlaubt rund 50 Symbole je
+  //    Stunde, geteilt mit allem anderen. Ein Lauf darf das nie ausreizen.
+  {
+    const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+    assert.ok(E.EVE.FETCH_BUDGET > 0 && E.EVE.FETCH_BUDGET <= 10,
+      `Das Abrufbudget je Lauf muss klein bleiben, ist ${E.EVE.FETCH_BUDGET}`);
+    assert.ok(E.EVE.FETCH_BUDGET < E.EVE.MAX_SYMBOLS,
+      'Ein Lauf darf nie das ganze Universum abrufen');
+    const fn = worker.slice(worker.indexOf('async function eveningList('),
+                            worker.indexOf('/* Tagesbalken je Titel'));
+    assert.match(fn, /slice\(0, EVE\.FETCH_BUDGET\)/,
+      'Die Abrufliste muss am Budget abgeschnitten werden');
+    assert.match(fn, /if \(rateLimited\) return/,
+      'Nach einem 429 darf kein weiterer Abruf mehr rausgehen');
+    assert.match(fn, /rateLimited = true/,
+      'Ein 429 muss den Lauf umschalten, nicht nur gezaehlt werden');
+    // Tagesbalken werden laenger gehalten als das Gesamtergebnis — sonst
+    // kostet jeder erneute Lauf wieder das volle Kontingent.
+    assert.ok(E.EVE.BARS_TTL_MS > E.EVE.CACHE_MS,
+      'Balken muessen laenger vorgehalten werden als das Ergebnis');
+    assert.match(worker, /async function eveReadBars\(/, 'Balken-Zwischenspeicher fehlt');
+    assert.match(worker, /async function eveWriteBars\(/, 'Balken werden nie geschrieben');
+  }
+
+  // -- AUFBAUPHASE IST KEIN AUSFALL. Solange nur das Budget fehlt, ist die
+  //    leere Liste ein Zwischenstand — und darf nicht rot als Fehler stehen.
+  {
+    const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+    const fn = worker.slice(worker.indexOf('async function eveningList('),
+                            worker.indexOf('/* Tagesbalken je Titel'));
+    assert.match(fn, /barsOk === 0 && deferred > 0 && !failedFetch/,
+      'Ein Zwischenstand ohne Fehler muss von einem echten Ausfall getrennt sein');
+    assert.match(fn, /dataOk: barsOk > 0 \|\| \(deferred > 0 && !failedFetch\)/,
+      'Die Aufbauphase darf nicht als Datenausfall gemeldet werden');
+  }
+
   // -- DIE KENNZAHLENZEILE IST KEIN FORTSCHRITTSBALKEN.
   //    `.eve-bar` bekam `height:6px;overflow:hidden`, weil ich die Klasse am
   //    NAMEN gelesen habe statt im Markup. Damit waren die Kennzahlen UND der
