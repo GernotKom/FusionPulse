@@ -95,6 +95,31 @@ header{
 .factions button{font-size:12px;padding:8px 11px}
 .fwarn{margin:8px 0 0;font-size:11px;color:var(--yellow)}
 
+/* ══════════════════════════════════ v3.30.0 · R1 · Coin-Skope im Fokus ═══
+   Die Klassen unten stammen NICHT aus dem Namen dieser Karte, sondern sind
+   aus dem erzeugten Markup ausgelesen (Lehre aus 8aa: `.eve-bar` klang nach
+   Fortschrittsbalken, enthielt aber die Kennzahlenzeile UND den Knopf, und
+   wurde deshalb auf sechs Pixel gestutzt). Erzeugt werden hier: .coinscope,
+   .cscope-head sowie — aus `coinScopeBlocks` — h3, .intraday-chart
+   .coin-intraday, .factor/.fbar, .metrics/.metric und .hint. Die fuenf
+   letztgenannten haben bereits Regeln (Zeilen 221-228) und werden hier NICHT
+   ueberschrieben, nur eingebettet.
+   `.focus` ist ein zweispaltiges Raster (Text | Preisleiter). Der Skope-Block
+   ist ein DRITTES Kind und muss beide Spalten ueberspannen — ohne
+   `grid-column` landete er unter dem Text und wuerde die Preisleiter, die
+   `height:100%` hat, mit in die Laenge ziehen. Ihre Marken sind prozentual
+   positioniert; sie waere damit unlesbar. */
+.coinscope{grid-column:1/-1;margin-top:14px;padding-top:12px;border-top:1px solid var(--line2);min-width:0}
+.cscope-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;margin-bottom:6px}
+.cscope-head b{font-size:13px;letter-spacing:-.2px}
+.cscope-head small{font-size:10px;color:var(--dim);line-height:1.4}
+.coinscope h3{margin:12px 0 6px;font-size:11px;font-weight:700;color:var(--dim);
+  text-transform:uppercase;letter-spacing:.6px}
+.coinscope h3:first-of-type{margin-top:4px}
+.coinscope .intraday-chart{margin:0}
+.coinscope .hint{margin:4px 0 0;line-height:1.5}
+@media(max-width:520px){.cscope-head small{flex-basis:100%}}
+
 /* ─────────────────────────────────────────────────────── Preisleiter ─── */
 .ladder{position:relative;height:100%;min-height:200px;border-left:2px solid var(--line2);margin-left:4px}
 .lzone{position:absolute;left:-4px;right:0;background:#5b8cff2e;border-top:1px dashed #5b8cff99;
@@ -693,7 +718,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"3.29.2";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"3.31.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.

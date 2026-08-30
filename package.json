@@ -1,6 +1,6 @@
 {
   "name": "fusionpulse",
-  "version": "3.29.2",
+  "version": "3.31.0",
   "private": true,
   "type": "module",
   "scripts": {

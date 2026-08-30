@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.29.2 — Frontend
+   FusionPulse v3.31.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2242,7 +2242,90 @@ function learningBadge(){
    waehrend die Ampel wegen Alpaca rot war. Das ist derselbe Widerspruch
    zwischen Kopf und Kleingedrucktem wie bei SOFI in v3.5.8, nur eine Zeile
    hoeher. Die Bewertung bleibt unveraendert — es kommt nur der Name dazu. */
-const RESOURCE_LABEL={crypto:'Krypto (Bitpanda)',stocks:'Aktien (Twelve Data)',alpaca:'Premarket/Opening (Alpaca)'};
+/* v3.31.0: stand hier als 'Aktien (Twelve Data)'. Twelve Data ist seit
+   TIINGO_STOCKS_MODE=primary nur noch der zweite Rueckfall; primaer liefert
+   Tiingo. Derselbe Fehler wie in der Quellenzeile — ein fest verdrahteter
+   Anbietername, der den tatsaechlichen Zustand falsch benennt. */
+const RESOURCE_LABEL={crypto:'Krypto (Bitpanda)',stocks:'Aktien (Tiingo, Fallback Twelve Data)',alpaca:'Premarket/Opening (Alpaca)'};
+/* ══════════════════════════ v3.31.0 · §28 · PROVIDER UND MARKTBREITE ═══
+   ANLASS: das ChatGPT-Bandbreiten-Audit vom 30.08. Dessen §28 verlangt, dass
+   die App bei einem Provider-Wechsel eindeutig ausweist, WER gerade liefert
+   und ob die Marktbreite eingeschraenkt ist — „die App darf bei Fallback
+   niemals so aussehen, als laufe die gleiche Marktbreite wie bei Tiingo".
+
+   BEFUND BEIM PRUEFEN: genau das tat sie. Die alte Zeile lautete
+     textContent = String(source).includes('Tiingo')
+       ? 'Tiingo IEX, US-Markt (Primary)' : 'Twelve Data, US-Markt (Fallback)'
+   Eine binaere Behauptung ueber ein offenes Feld. Jede Nicht-Tiingo-Quelle
+   wurde als **Twelve Data** ausgewiesen — auch Alpaca, auch ein leeres Feld,
+   auch ein unbekannter Wert. Sobald der im Audit geplante Alpaca-Failover
+   greift, haette die Kopfzeile den falschen Anbieter genannt. Das ist keine
+   Kosmetik: an dieser Zeile haengt die Frage, wie breit der Markt gerade
+   ueberhaupt gesehen wird.
+
+   ZWEITER BEFUND, unabhaengig davon: die App hat NIRGENDS ausgewiesen, dass
+   der Tiingo-IEX-Feed nur rund 2-3 % des US-Volumens sieht. Diese Zahl steht
+   seit v3.8.1 in den Notizen (MOM_MIN_DOLLARVOL musste deswegen von 20 auf
+   2 Mio. $ korrigiert werden) und war fuer den Nutzer nie sichtbar.
+
+   REGEL HIER: fail-closed in BEIDE Richtungen. Ein unbekannter Anbieter wird
+   nie als `primary` und nie als `full` ausgewiesen, und es wird kein Name
+   erfunden. „nicht bestimmbar" ist eine gueltige Antwort, ein geratener
+   Anbietername nicht. */
+const FEED_BREADTH = {
+  full:    { label: 'US-Gesamtmarkt',        tone: 'ok',
+             detail: 'Konsolidierter Feed über alle US-Handelsplätze (SIP/CTA/UTP) — rund 100 % des Marktvolumens.' },
+  partial: { label: 'eingeschränkte Marktbreite', tone: 'warn',
+             detail: 'Nur IEX. Diese Börse trägt rund 2–3 % des US-Volumens. Umsatzzahlen sind deshalb ein Bruchteil des echten Umsatzes, und dünne Titel können ganz fehlen. Für die Discovery reicht es, für eine Umsatzaussage nicht.' },
+  unknown: { label: 'Marktbreite nicht bestimmbar', tone: 'warn',
+             detail: 'Der Server hat nicht mitgeteilt, welcher Feed geliefert hat. Nicht bestimmbar ist NICHT dasselbe wie vollständig — die Anzeige nimmt hier bewusst den vorsichtigen Fall an.' },
+};
+
+function feedInfo(meta, opening) {
+  const m = meta || {};
+  const raw = String(m.provider || m.source || '').trim();
+  const feedRaw = String((opening || {}).feed || m.feed || '').trim();
+  const sip = /sip/i.test(feedRaw);
+  const iex = /iex/i.test(feedRaw) || /iex/i.test(raw);
+
+  let provider = null, role = 'unknown', breadth = 'unknown';
+  if (/tiingo/i.test(raw))          { provider = 'Tiingo';      role = 'primary';  breadth = iex || !feedRaw ? 'partial' : 'unknown'; }
+  else if (/alpaca/i.test(raw))     { provider = 'Alpaca';      role = 'fallback'; breadth = sip ? 'full' : iex ? 'partial' : 'unknown'; }
+  else if (/twelve/i.test(raw))     { provider = 'Twelve Data'; role = 'fallback'; breadth = 'partial'; }
+  /* Kein `else`, der einen Namen setzt. Ein unbekanntes Feld bleibt unbekannt. */
+
+  const b = FEED_BREADTH[breadth];
+  const roleLabel = role === 'primary' ? 'Primary' : role === 'fallback' ? 'Fallback' : 'Rolle unbekannt';
+  const label = provider ? `${provider} · ${roleLabel} · ${b.label}` : `Datenquelle nicht bestimmbar · ${b.label}`;
+  const tone = !provider ? 'warn' : role === 'fallback' ? 'warn' : b.tone;
+  const detail = (provider
+      ? `Aktuell liefert ${provider}${feedRaw ? ` (Feed: ${feedRaw})` : ''}. ${role === 'fallback'
+          ? 'Das ist NICHT die Primärquelle — Tiingo war nicht verfügbar oder hat abgelehnt.'
+          : 'Das ist die Primärquelle.'}`
+      : 'Der Server hat keinen Anbieter genannt. Die Anzeige erfindet keinen.')
+    + ' ' + b.detail
+    + ' Diese Zeile beschreibt nur die Herkunft der Daten — sie verändert weder Score noch Ampel noch Kauf-Freigabe.';
+  return { provider, role, breadth, label, detail, tone, feed: feedRaw || null };
+}
+
+/* Bandbreite: reine Beobachtung (§10 D des Audits). Der Worker liefert diese
+   Zahlen HEUTE NOCH NICHT — der zweite Strang baut sie. Deshalb gilt hier die
+   Lehre aus 8f (`sectorLag`): eine UI, die einen dauerhaft leeren Wert
+   auswertet, sieht aus wie eine Messung und ist keine. Fehlt das Feld, sagt
+   die Anzeige das ausdruecklich, statt eine 0 zu zeigen. */
+function bandwidthNote(meta) {
+  const bw = (meta || {}).bandwidth;
+  const used = bw && Number.isFinite(Number(bw.usedGb)) && Number(bw.usedGb) >= 0 ? Number(bw.usedGb) : null;
+  const cap  = bw && Number.isFinite(Number(bw.capGb))  && Number(bw.capGb)  >  0 ? Number(bw.capGb)  : null;
+  if (used == null || cap == null) {
+    return { measured: false, label: 'Bandbreite: nicht gemessen',
+      detail: 'Der Server meldet noch keine Bandbreitenzahlen je Datenpfad. Das ist eine fehlende Messung, kein niedriger Verbrauch — aus dieser Anzeige lässt sich NICHT schließen, dass Reserve vorhanden ist.', tone: 'warn' };
+  }
+  const pct = Math.min(999, Math.round((used / cap) * 100));
+  return { measured: true, pct, label: `Bandbreite: ${num(used, 2)} von ${num(cap, 0)} GB (${pct} %)`,
+    detail: `Monatsbandbreite des Aktien-Datenanbieters. Bei 100 % antwortet der Anbieter mit HTTP 429, unabhängig davon, wie viele Abfragen noch offen wären — genau dieser Zustand hat am 30.08. den Nachrichtentest blockiert.`,
+    tone: pct >= 95 ? 'err' : pct >= 80 ? 'warn' : 'ok' };
+}
 function renderResourceStrip(){
   const box=$('#resourceStrip'), out=$('#resourceText'); if(!box||!out)return;
   const hs=health?.status||{}; const states=[hs.crypto?.state,hs.stocks?.state,hs.alpaca?.state].filter(Boolean);
@@ -2257,10 +2340,19 @@ function renderResourceStrip(){
         :['ratelimit','stale','warn','unknown'].includes(st);})
     .map(k=>`${RESOURCE_LABEL[k]}: ${STATE_TEXT[hs[k].state]||hs[k].state}`);
   const who=bad.length?' · '+bad.join(' · '):'';
+  /* v3.31.0 · Lehre aus 8aa: „Ein Satz, der bei einem Ausfall dasselbe sagt wie
+     bei einem leeren Ergebnis, ist eine Falschaussage." Am 30.08. hat der
+     Tiingo-Zugang mit HTTP 429 abgelehnt, weil die MONATSBANDBREITE (40/40 GB)
+     erschoepft war — nicht, weil zu viele Abfragen liefen. Die Leiste sagte
+     dazu nur „Rate-Limit", was den Nutzer auf die falsche Faehrte schickt
+     (warten hilft bei Bandbreite naemlich bis zum Monatswechsel nicht). */
+  const rateHit=['stocks','alpaca'].some(k=>hs[k]?.state==='ratelimit');
+  const rateNote=rateHit?' · Achtung: bei Aktien kann „Rate-Limit" auch die aufgebrauchte MONATSBANDBREITE des Anbieters sein — die löst sich nicht durch Warten':'';
   const text=(level==='green'?'App läuft einwandfrei · Datenserver stabil · kein Handlungsbedarf':level==='yellow'?'App funktioniert · einzelne Datenquelle eingeschränkt · kein unmittelbarer Handlungsbedarf':level==='orange'?'App eingeschränkt · Ressourcen/Limit beobachten':'Handlungsbedarf · Datenquelle fehlerhaft')+who;
-  out.textContent=text;
+  out.textContent=text+rateNote;
   box.classList.remove('warn','orange','err','ok'); box.classList.add(level==='green'?'ok':level==='yellow'?'warn':level==='orange'?'orange':'err');
-  box.dataset.tip=`${text}. Krypto: ${hs.crypto?.state||'n.v.'}; Aktien: ${hs.stocks?.state||'n.v.'}; Opening: ${hs.alpaca?.state||'n.v.'}; Tiingo: ${health?.tiingoConfigured?'aktiv':'n.v.'}. Grün = alles stabil, Gelb = funktioniert mit kleiner Einschränkung, Orange = beobachten/zeitnah prüfen, Rot = konkreter Handlungsbedarf.`;
+  const fiSys=feedInfo(stockMeta,openingMeta), bwSys=bandwidthNote(stockMeta);
+  box.dataset.tip=`${text}${rateNote}. Datenquelle Aktien: ${fiSys.label}. ${bwSys.label}. Krypto: ${hs.crypto?.state||'n.v.'}; Aktien: ${hs.stocks?.state||'n.v.'}; Opening: ${hs.alpaca?.state||'n.v.'}; Tiingo: ${health?.tiingoConfigured?'aktiv':'n.v.'}. Grün = alles stabil, Gelb = funktioniert mit kleiner Einschränkung, Orange = beobachten/zeitnah prüfen, Rot = konkreter Handlungsbedarf.`;
 }
 
 function renderLearningReport(){
@@ -3119,7 +3211,17 @@ function renderStocks() {
     +`\n\nAußerhalb der regulären US-Börsenzeit sind Analysen Vorbereitung und keine Live-BUY-Freigabe. Angezeigte Kurse stammen dann aus der letzten Sitzung — der Zeitstempel der Abfrage sagt nur, wann zuletzt nachgesehen wurde.`;
   trackRefresh(stockMeta?.refreshedSymbols||[]); // v3.6.1: Frequenz je Titel mitzaehlen
   if(counts){const rc=stockMeta.discovery?.radar?.candidates?.length||0,bc=stockMeta.discovery?.boats?.candidates?.length||0;counts.textContent=`${stockMeta.updatedThisCycle!=null?stockMeta.updatedThisCycle+' aktualisiert · ':''}${scanned} geladen / ${universeLabel} Universum · ${shown.length} angezeigt · ${rc?'RADAR '+rc+' · ':''}${bc?'BOATS '+bc+' · ':''}★ ${(S.favoriteStocks||[]).length} · Abfrage ${clock(stockMeta.ts)}`;}
-  const srcLabel=$('#stockSourceLabel'); if(srcLabel)srcLabel.textContent=String(stockMeta.source||stockMeta.provider||'US-Aktienfeed').includes('Tiingo')?'Tiingo IEX, US-Markt (Primary)':'Twelve Data, US-Markt (Fallback)';
+  /* v3.31.0 · §28: die alte Zeile behauptete bei JEDER Nicht-Tiingo-Quelle
+     „Twelve Data" — auch bei Alpaca, auch bei leerem Feld. Jetzt eine Quelle
+     der Wahrheit, fail-closed, ohne geratenen Anbieternamen. */
+  const fi=feedInfo(stockMeta,openingMeta);
+  const srcLabel=$('#stockSourceLabel'); if(srcLabel){srcLabel.textContent=fi.label;srcLabel.title=fi.detail;}
+  const feedBadge=$('#stockFeed'); if(feedBadge){
+    const bw=bandwidthNote(stockMeta);
+    feedBadge.textContent=`${fi.provider?'🛰 '+fi.label:'🛰 '+fi.label} · ${bw.label}`;
+    feedBadge.className='badge '+(fi.tone==='err'||bw.tone==='err'?'err':fi.tone==='ok'&&bw.tone==='ok'?'ok':'warn');
+    feedBadge.title=fi.detail+'\n\n'+bw.detail;
+  }
   stockHeatmap(shown);
   // v3.3.9 P0: Das Fokusfenster ist unabhängig vom aktuell sichtbaren/
   // gefilterten Listen-Slice. Ein aus Radar/Momentum angeklickter Titel darf
@@ -3539,7 +3641,14 @@ function renderFocus() {
       </div>
       ${capNotice(s)}
     </div>
-    ${ladder(r)}`;
+    ${ladder(r)}
+    <div class="coinscope" title="Alles, was FusionPulse über diesen Coin gemessen hat: Kursverlauf, die neun Analysefaktoren, die Mikrostruktur des Orderbuchs und die Herkunft des Kursziels. Bis v3.29.2 lag dieser Teil ausschließlich im Detailfenster hinter dem letzten Knopf dieser Karte — im Aktienbereich steht er seit jeher direkt im Fokusfenster.">
+      <div class="cscope-head">
+        <b>🔬 Alles zu ${sym(r.pair)}</b>
+        <small>Analyse-Skope · dieselben Werte wie im Detailfenster · 0 % zusätzliches BUY-Gewicht</small>
+      </div>
+      ${coinScopeBlocks(r)}
+    </div>`;
 
   $('#fcopy').onclick = (e) => copy(orderPlan(r), e.target);
   $('#fentry').onclick = (e) => copy(String(r.entry), e.target);
@@ -4840,16 +4949,35 @@ function factor(label, v, invert = false, active = true, tip = '') {
     <div class="fbar"><i style="width:${active && ok ? n * 10 : 0}%;background:hsl(${8 + good * 12} 78% 52%)"></i></div><b>${active && ok ? n.toFixed(1) : '–'}</b></div>`;
 }
 
-function refreshDetail() {
-  const r = rows.find((x) => x.pair === detailPair);
-  if (!r) return;
+/* ═══════════════════════════════════════════ v3.30.0 · R1 · COIN-SKOPE ═══
+   BEFUND, der R1 zwanzig Versionen lang unauffindbar gemacht hat: Alle
+   Beteiligten — ich eingeschlossen — haben die Meldung „das Fenster mit allem
+   ueber einen Coin steht zuletzt" als REIHENFOLGE-Frage gelesen und im Markup
+   nachgesehen. Dort stimmte die Reihenfolge seit v3.9.1: `.stage` ist das
+   erste Element des Kryptobereichs. v3.9.1 hat den Punkt deshalb als erledigt
+   verbucht, der Nutzer hat ihn danach fuenfmal erneut gemeldet.
+
+   Die Meldung war richtig und die Pruefung hat am falschen Ort gesucht.
+   Nicht die POSITION war falsch, sondern der INHALT: Das Fenster an erster
+   Stelle enthielt den Plan (Zone, CRV, Kosten, TP1/TP2) — die eigentliche
+   Analyse eines Coins (Kursverlauf, die neun Faktoren, Mikrostruktur,
+   Ziel-Herkunft) lag ausschliesslich im Modal hinter dem LETZTEN Knopf der
+   Karte. Bei Aktien steht genau dieser Inhalt seit jeher IM Fokusfenster.
+   Das ist die Asymmetrie, die der Nutzer beschrieben hat.
+
+   Sechster Fall der Klasse „korrekt gebaut, aber nicht dort, wo der Nutzer
+   hinsieht" (nach Modul-0-Schalter, Fussleiste, Systemampel, Waechter-Spalte,
+   Vorabend-Kachel). Und die Verallgemeinerung, die in Abschnitt 11 gehoert:
+   **Wenn eine Meldung nach mehrfacher Korrektur wiederkehrt, ist meist die
+   FRAGE falsch verstanden, nicht die Antwort falsch gebaut.**
+
+   EINE Quelle fuer beide Anzeigen. Ein zweiter Textbaustein waere die Sorte
+   Fehler, die in 8i/8f schon zweimal aufgetreten ist (dieselbe Kennzahl auf
+   zwei Pfaden, einer davon still veraltet). Ein Test verbietet deshalb, dass
+   die Faktorzeilen ein zweites Mal im Quelltext stehen. */
+function coinScopeBlocks(r) {
   const on = new Set(r.components || S.components);
-  $('#detail').innerHTML = `
-    <header class="dhead ${r.light}">
-      <div><h2>${sym(r.pair)}</h2><p>${esc(r.regime)} · ${esc(r.setup)} · seit ${mins(r._age)} (${r._streak || 1} Bestätigungen)</p></div>
-      <div class="dscore"><b>${r.quality}</b><span>Qualität</span></div>
-      <div class="dscore"><b>${r.executability}</b><span>Handelbarkeit</span></div>
-    </header>
+  return `
     <h3>Intraday-Kurs</h3><div class="intraday-chart coin-intraday"><span>Kurzfristiger Verlauf</span>${spark(r.spark,520,92)}</div>
     <h3>Faktoren (abgeschaltete Verfahren gehen nicht in den Score ein)</h3>
     ${factor('Multi-Timeframe', r.mtf, false, on.has('mtf'), 'Übereinstimmung von 5-Minuten-, 15-Minuten- und Stundenbild.')}
@@ -4867,13 +4995,25 @@ function refreshDetail() {
       <div class="metric">Slippage 2k€<b>${r.slipBps != null ? r.slipBps + ' bps' : '–'}</b></div>
       <div class="metric">Kauftiefe ≤0,15 %<b>${r.buyCapacity != null ? eur(r.buyCapacity, 0) : '–'}</b></div>
       <div class="metric">Ausstiegstiefe<b>${r.sellCapacity != null ? eur(r.sellCapacity, 0) : '–'}</b></div>
-      <div class="metric">Imbalance<b>${r.imbalance > 0 ? '+' : ''}${(r.imbalance * 100).toFixed(0)} %</b></div>
-      <div class="metric">VWAP-Abstand<b>${r.vwapDev} ATR</b></div>
-      <div class="metric">RSI(14)<b>${r.rsi}</b></div>
-      <div class="metric">ATR<b>${r.atrPct} %</b></div>
+      <div class="metric">Imbalance<b>${r.imbalance != null && Number.isFinite(Number(r.imbalance)) ? (Number(r.imbalance) > 0 ? '+' : '') + (Number(r.imbalance) * 100).toFixed(0) + ' %' : '–'}</b></div>
+      <div class="metric">VWAP-Abstand<b>${r.vwapDev != null ? r.vwapDev + ' ATR' : '–'}</b></div>
+      <div class="metric">RSI(14)<b>${r.rsi != null ? r.rsi : '–'}</b></div>
+      <div class="metric">ATR<b>${r.atrPct != null ? r.atrPct + ' %' : '–'}</b></div>
     </div>
     <h3>Ziel-Herkunft</h3>
-    <p class="hint">TP2 aus: <b>${esc(r.tp2Source)}</b> · Stop/Kosten-Deckung <b>${r.costRatio}×</b> · aktive Verfahren <b>${[...on].join(', ')}</b></p>
+    <p class="hint">TP2 aus: <b>${esc(r.tp2Source ?? 'nicht angegeben')}</b> · Stop/Kosten-Deckung <b>${r.costRatio != null ? r.costRatio + '×' : '–'}</b> · aktive Verfahren <b>${esc([...on].join(', '))}</b></p>`;
+}
+
+function refreshDetail() {
+  const r = rows.find((x) => x.pair === detailPair);
+  if (!r) return;
+  $('#detail').innerHTML = `
+    <header class="dhead ${r.light}">
+      <div><h2>${sym(r.pair)}</h2><p>${esc(r.regime)} · ${esc(r.setup)} · seit ${mins(r._age)} (${r._streak || 1} Bestätigungen)</p></div>
+      <div class="dscore"><b>${r.quality}</b><span>Qualität</span></div>
+      <div class="dscore"><b>${r.executability}</b><span>Handelbarkeit</span></div>
+    </header>
+    ${coinScopeBlocks(r)}
     <div class="journalbox">
       <button id="jlog">In Journal eintragen</button>
       <small>Lokal im Browser. Kein Auto-Trading — die Order setzt du in Bitpanda selbst.</small>
