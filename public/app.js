@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.31.0 — Frontend
+   FusionPulse v3.32.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -295,6 +295,7 @@ let pinned = false;         // vom Nutzer gewählt → nicht automatisch wegspri
 let showRest = false;
 let ac = null;
 let health = {};
+let authDenied = false;   // v3.32.0: /api/ antwortet mit 401 — Token fehlt auf diesem Geraet
 let quotaShownFor = '';     // verhindert Dauer-Popups für dieselbe Lage
 let stockSearchBusy = false;
 let stockSearchLastTs = 0;
@@ -1527,13 +1528,21 @@ async function scan(force = false) {
     $('#status').textContent = `${sourceLabel} · ${data.deepCount} gescannt / ${shown} angezeigt von ${data.universe} · ${data.requests ?? data.subrequests ?? '–'} API-Unterabfragen · ${Math.round(performance.now() - t0)} ms`;
     $('#status').title = 'Live/Cache = Datenquelle des letzten Scans · „gescannt“ = tief analysierte Coins, „angezeigt“ = Zeilen in dieser Liste (Einstellungen) · API-Unterabfragen = Bitpanda-Unterabfragen innerhalb dieses Scans, NICHT dein Cloudflare-Tagesverbrauch (Eigenzählung je Worker-Instanz) · ms = Dauer des Scans.';
     $('#status').dataset.state = 'ok';
-    lastSuccessfulScanTs = Date.now(); reconnectAttempt = 0;
+    lastSuccessfulScanTs = Date.now(); reconnectAttempt = 0; authDenied = false;
     $('#stamp').textContent = new Date(data.ts).toLocaleTimeString('de-AT');
   } catch (e) {
     if (e.name === 'AbortError' && localController.signal.aborted && req !== scanReqSeq) return;
     const msg = String(e.message || e);
     if(e.name==='TimeoutError'){ showReconnectState(msg); setMiniStatus('#miniCrypto','warn','Krypto: Zeitüberschreitung · automatischer Reconnect läuft'); setTimeout(()=>{if(document.visibilityState==='visible')scan(false);},1200); }
     else { $('#status').textContent = `Fehler: ${msg}`; $('#status').dataset.state = 'err'; }
+    /* v3.32.0: „Nicht autorisiert" ist KEIN Datenproblem, sondern ein
+       fehlender Zugriffs-Token auf DIESEM Geraet. Der Token liegt im
+       localStorage und ist damit geraetegebunden — wer die App auf dem PC
+       eingerichtet hat und sie am Handy oeffnet, sieht ohne diesen Hinweis
+       drei gelbe Warnungen ueber Datenquelle, Marktbreite und Bandbreite und
+       sucht den Fehler beim Anbieter. Lehre 8aa: ein Ausfall darf nicht wie
+       ein Normalzustand aussehen. */
+    if(/nicht autorisiert|unauthorized|\b401\b/i.test(msg)) authDenied = true;
     if (/cpu|exceeded|resource|1102/i.test(msg)) showQuotaWarning('cpu', msg);
     else if (/429|too many|limit/i.test(msg)) showQuotaWarning('requests', msg);
   } finally {
@@ -2282,6 +2291,15 @@ const FEED_BREADTH = {
 };
 
 function feedInfo(meta, opening) {
+  /* v3.32.0: Erst die Ursache, dann die Diagnose. Ohne Zugriffs-Token liefert
+     KEINE /api/-Route Daten — dann ist die Quelle nicht „nicht bestimmbar",
+     sondern schlicht nicht abgefragt worden. Das ist derselbe Fehler wie in
+     8aa: der Satz war bei Ausfall und bei leerem Ergebnis identisch. */
+  if (authDenied) {
+    return { provider: null, role: 'unknown', breadth: 'unknown', feed: null, tone: 'warn',
+      label: 'Zugriffs-Token fehlt auf diesem Gerät',
+      detail: 'Die App hat sich geladen, aber alle Datenabfragen werden mit „Nicht autorisiert" abgewiesen. Der Zugriffs-Token wird pro Gerät und pro Browser im lokalen Speicher gehalten — er wandert nicht mit. Einstellungen (Zahnrad) → „Zugriffs-Token" eintragen und speichern. Das ist KEIN Problem des Datenanbieters und keine Aussage über die Marktbreite.' };
+  }
   const m = meta || {};
   const raw = String(m.provider || m.source || '').trim();
   const feedRaw = String((opening || {}).feed || m.feed || '').trim();
@@ -2314,7 +2332,19 @@ function feedInfo(meta, opening) {
    auswertet, sieht aus wie eine Messung und ist keine. Fehlt das Feld, sagt
    die Anzeige das ausdruecklich, statt eine 0 zu zeigen. */
 function bandwidthNote(meta) {
+  if (authDenied) {
+    return { measured: false, tone: 'warn', label: 'Bandbreite: nicht abrufbar',
+      detail: 'Ohne Zugriffs-Token beantwortet der Server keine Statusabfrage. Erst Token eintragen, dann steht hier der gemessene Verbrauch.' };
+  }
   const bw = (meta || {}).bandwidth;
+  /* v3.32.0: Der Worker meldet seit dieser Version ausdruecklich `measured`.
+     Steht es auf false, wird NICHT gerechnet — auch dann nicht, wenn zufaellig
+     Zahlen danebenstehen. Ein ausdrueckliches „nicht gemessen" schlaegt jede
+     Herleitung aus Restfeldern. */
+  if (bw && bw.measured === false) {
+    return { measured: false, label: 'Bandbreite: nicht gemessen',
+      detail: (bw.note ? bw.note + ' ' : '') + 'Das ist eine fehlende Messung, kein niedriger Verbrauch — aus dieser Anzeige lässt sich NICHT schließen, dass Reserve vorhanden ist.', tone: 'warn' };
+  }
   const used = bw && Number.isFinite(Number(bw.usedGb)) && Number(bw.usedGb) >= 0 ? Number(bw.usedGb) : null;
   const cap  = bw && Number.isFinite(Number(bw.capGb))  && Number(bw.capGb)  >  0 ? Number(bw.capGb)  : null;
   if (used == null || cap == null) {
@@ -2351,7 +2381,7 @@ function renderResourceStrip(){
   const text=(level==='green'?'App läuft einwandfrei · Datenserver stabil · kein Handlungsbedarf':level==='yellow'?'App funktioniert · einzelne Datenquelle eingeschränkt · kein unmittelbarer Handlungsbedarf':level==='orange'?'App eingeschränkt · Ressourcen/Limit beobachten':'Handlungsbedarf · Datenquelle fehlerhaft')+who;
   out.textContent=text+rateNote;
   box.classList.remove('warn','orange','err','ok'); box.classList.add(level==='green'?'ok':level==='yellow'?'warn':level==='orange'?'orange':'err');
-  const fiSys=feedInfo(stockMeta,openingMeta), bwSys=bandwidthNote(stockMeta);
+  const fiSys=feedInfo(stockMeta,openingMeta), bwSys=bandwidthNote(health);
   box.dataset.tip=`${text}${rateNote}. Datenquelle Aktien: ${fiSys.label}. ${bwSys.label}. Krypto: ${hs.crypto?.state||'n.v.'}; Aktien: ${hs.stocks?.state||'n.v.'}; Opening: ${hs.alpaca?.state||'n.v.'}; Tiingo: ${health?.tiingoConfigured?'aktiv':'n.v.'}. Grün = alles stabil, Gelb = funktioniert mit kleiner Einschränkung, Orange = beobachten/zeitnah prüfen, Rot = konkreter Handlungsbedarf.`;
 }
 
@@ -3217,7 +3247,7 @@ function renderStocks() {
   const fi=feedInfo(stockMeta,openingMeta);
   const srcLabel=$('#stockSourceLabel'); if(srcLabel){srcLabel.textContent=fi.label;srcLabel.title=fi.detail;}
   const feedBadge=$('#stockFeed'); if(feedBadge){
-    const bw=bandwidthNote(stockMeta);
+    const bw=bandwidthNote(health);
     feedBadge.textContent=`${fi.provider?'🛰 '+fi.label:'🛰 '+fi.label} · ${bw.label}`;
     feedBadge.className='badge '+(fi.tone==='err'||bw.tone==='err'?'err':fi.tone==='ok'&&bw.tone==='ok'?'ok':'warn');
     feedBadge.title=fi.detail+'\n\n'+bw.detail;

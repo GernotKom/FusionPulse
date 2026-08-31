@@ -1059,6 +1059,58 @@ const MOM_MIN_PRICE_USD   = 5;        // unter 5 $ beginnt das Penny-Stock-Gebie
    Spread-Kriterium ab. Nach dem ersten Live-Lauf anhand der Zaehler in
    `radarGateStats` nachkalibrieren statt weiter zu schaetzen.            */
 const MOM_MIN_DOLLARVOL   = 2_000_000; // IEX-Anteil, entspricht grob 60–100 Mio. $ gesamt
+
+/* ═══════════ v3.32.0 · R11 · DIE SCHWELLE HAENGT AN DER MARKTBREITE ════════
+   DAS PROBLEM, das im Bandbreiten-Audit fehlt und das mich am Alpaca-Upgrade
+   am meisten stoert:
+
+   `MOM_MIN_DOLLARVOL = 2 Mio. $` ist KEINE absolute Groesse. Der Wert ist auf
+   den IEX-ANTEIL kalibriert — auf einen Feed, der rund 2–3 % des US-Volumens
+   sieht. Die Herleitung steht direkt darueber: 20 Mio. $ (erster Entwurf)
+   haetten fast alles ausgesperrt, weil die Zahl im Nenner ein Bruchteil ist.
+
+   Wechselt der Feed auf SIP — was das Audit in §22–§34 empfiehlt und was ein
+   Alpaca-Upgrade nahelegt — liefert derselbe Titel plotzlich das 30- bis
+   50-fache Volumen. Dieselbe Schwelle waere dann trivial erfuellbar und das
+   Einlassgitter faktisch AUS. Das ist exakt der Fehler „Schwelle am falschen
+   Massstab" aus v3.8.1, nur in die andere Richtung, und er verstoesst gegen
+   Regel 4: ein Feed-Wechsel darf nichts erleichtern.
+
+   Er wuerde auch nicht auffallen. Die Liste wuerde nicht leer, sondern LAENGER
+   — und eine laengere Kandidatenliste sieht nach Erfolg aus. Die schlimmste
+   Sorte Fehler in diesem Projekt.
+
+   LOESUNG: Die Schwelle wird an die tatsaechliche Marktbreite gekoppelt. Nicht
+   an einen Tarifnamen (§33.8), sondern an den Feed, den die App gerade
+   benutzt. Fail-closed: ein unbekannter Feed bekommt den STRENGEN
+   Gesamtmarkt-Faktor, nicht den milden IEX-Faktor — wer nicht weiss, wie breit
+   er sieht, darf nicht die grosszuegige Schwelle bekommen.
+
+   Der Faktor 35 ist die Mitte der 2–3-%-Spanne (1/0,028 ≈ 35). Er ist
+   ausdruecklich eine HERLEITUNG, keine Messung, und gehoert nach dem ersten
+   Lauf mit konsolidiertem Feed anhand von `radarGateStats` nachkalibriert —
+   dieselbe Auflage, die schon fuer den IEX-Wert gilt. Bis dahin ist er die
+   ehrlichere Naeherung als ein Wert, der nachweislich fuer den falschen Feed
+   gilt. */
+const BREADTH_FACTOR = { iex: 1, sip: 35, unknown: 35 };
+
+function marketBreadthKey(env){
+  /* Der Aktien-Radar laeuft ueber Tiingo IEX. Solange das so ist, ist die
+     Marktbreite IEX — unabhaengig davon, was Alpaca fuer die Live-Quotes
+     macht. Erst wenn der Radar selbst auf einen konsolidierten Feed umgestellt
+     wird, aendert sich der Massstab.
+     Die Umstellung wird ueber RADAR_FEED gesteuert. Fehlt die Variable,
+     gilt IEX — das ist der Ist-Zustand und der einzige, der belegt ist. */
+  const raw=String(env?.RADAR_FEED||'').toLowerCase();
+  if(raw==='sip'||raw==='consolidated') return 'sip';
+  if(raw==='iex'||raw==='') return 'iex';
+  return 'unknown';
+}
+function momMinDollarVol(env){
+  const key=marketBreadthKey(env);
+  const f=BREADTH_FACTOR[key];
+  return MOM_MIN_DOLLARVOL * (Number.isFinite(f)?f:BREADTH_FACTOR.unknown);
+}
 /* v3.9.0 · Hoechstalter des juengsten Bars fuer eine Modus-A-Freigabe.
    Begruendung: Bei 10–15 % Tagesbewegung laeuft ein Titel in 10 Minuten leicht
    1–2 % weiter. Ein Plan auf Basis eines solchen Kurses hat einen Stop, der real
@@ -1075,22 +1127,23 @@ const MOM_MIN_MOVE_PCT    = 3.0;      // darunter ist es kein Mover
    waere hier der wahrscheinlichste Fehler. */
 let radarGateStats={ts:0,seen:0,largeCap:0,momentum:0,failPrice:0,failVolume:0,failSpread:0,failMove:0};
 function resetRadarGateStats(){ radarGateStats={ts:Date.now(),seen:0,largeCap:0,momentum:0,failPrice:0,failVolume:0,failSpread:0,failMove:0}; }
-function momentumRadarAllowed(r,count=false){
+function momentumRadarAllowed(r,count=false,env=null){
   const price=Number(r?.last);
   const vol=Number(r?.volume);
   const spread=Number(r?.spreadPct);
   const move=Math.abs(Number(r?.movePct));
   if(!(price>=MOM_MIN_PRICE_USD)){ if(count)radarGateStats.failPrice++; return false; }   // fail-closed
-  if(!(vol>0) || !(price*vol>=MOM_MIN_DOLLARVOL)){ if(count)radarGateStats.failVolume++; return false; }
+  // v3.32.0 · R11: Schwelle am Massstab des tatsaechlich benutzten Feeds.
+  if(!(vol>0) || !(price*vol>=momMinDollarVol(env))){ if(count)radarGateStats.failVolume++; return false; }
   if(Number.isFinite(spread) && spread>MOM_MAX_SPREAD_PCT){ if(count)radarGateStats.failSpread++; return false; }
   if(!(move>=MOM_MIN_MOVE_PCT)){ if(count)radarGateStats.failMove++; return false; }
   return true;
 }
 /** Einlass in den Radar: Large-Cap-Liste ODER messbar handelbarer Mover. */
-function radarCandidateAllowed(r,count=false){
+function radarCandidateAllowed(r,count=false,env=null){
   if(count) radarGateStats.seen++;
   if(largeCapRadarAllowed(r?.symbol)){ if(count)radarGateStats.largeCap++; return true; }
-  const ok=momentumRadarAllowed(r,count);
+  const ok=momentumRadarAllowed(r,count,env);
   if(ok&&count) radarGateStats.momentum++;
   return ok;
 }
@@ -5571,17 +5624,143 @@ function authed(req, url, env) {
 
 
 /* ------------------------------------------------ Tiingo v3.1.0 isolated layer */
+/* ═══════════════════ v3.32.0 · §10 D · BANDBREITE JE PFAD MESSEN ═══════════
+   ANLASS: Am 30.08. lehnte Tiingo mit HTTP 429 ab — nicht wegen der Abrufzahl
+   (10.000/h frei), sondern weil die MONATSBANDBREITE erschoepft war: 0,00 von
+   40,00 GB uebrig. Das Audit hat den Hauptverdaechtigen benannt (der
+   vollstaendige `/iex`-Marktsnapshot) und ueberschlagen: ~48 Downloads je
+   Stunde, ~34.000 im Monat. Das waeren rund 1,2 MB je Antwort.
+
+   Plausibel — aber GESCHAETZT. Das Audit sagt in §20 Schritt 1 selbst „nur
+   auditieren und messen" und leitet in §14–§18 trotzdem schon die ganze
+   Zielarchitektur ab. Genau die Reihenfolge, die sich dieses Projekt in
+   zwanzig Versionen abgewoehnt hat (8y: „Der Test hat nicht geprueft, ob die
+   Zahl STIMMT, sondern nur, ob eine da ist").
+
+   Deshalb zuerst: zaehlen. Jede Antwort wird gewogen und einem Pfad
+   zugeordnet. Danach laesst sich belegen statt vermuten, welcher Pfad die
+   40 GB verbraucht — und die spaetere Einsparung ist messbar, nicht behauptet.
+
+   EHRLICHKEIT DER MESSUNG: `content-length` ist die exakte Zahl der
+   uebertragenen Bytes, wird aber bei komprimierten Antworten nicht immer
+   gesetzt. Fehlt der Header, wird die Textlaenge genommen und die Quelle als
+   `approx` gekennzeichnet — eine Naeherung wird als Naeherung ausgewiesen und
+   nicht als Messung ausgegeben. Regel 4 gilt auch fuer Messwerte ueber uns
+   selbst.
+
+   NULL WIRKUNG AUF DIE BEWERTUNG. Reine Beobachtung. */
+const TIINGO_BW_CAP_GB = 40;   // Tarif „Power", Stand 30.08.2026. Siehe /api/health.
+let tiingoBw = { monthKey:'', paths:{}, exact:0, approx:0, loadedFromD1:false };
+let tiingoBwLimitHit = 0;   // Zeitpunkt des letzten Bandbreiten-429, 0 = nie
+
+function tiingoMonthKeyUTC(){ return new Date().toISOString().slice(0,7); }
+
+/* Pfad -> Kategorie. Bewusst grob: es geht um „welcher DATENPFAD frisst die
+   Bandbreite", nicht um einzelne URLs. Die Namen sind dieselben, die das
+   Audit in §10 D vorschlaegt, damit beide Straenge dieselbe Sprache sprechen. */
+function tiingoBwBucket(path){
+  const p=String(path||'');
+  if(/^\/iex\/[^/]+\/prices/.test(p))      return 'iex-chart';
+  if(/^\/iex\?tickers=/.test(p))           return 'iex-symbols';
+  if(/^\/iex(\?|$)/.test(p))               return 'iex-wholemarket';
+  if(/^\/boats\/[^/]/.test(p))             return 'boats-symbol';
+  if(/^\/boats(\?|$)/.test(p))             return 'boats-bulk';
+  if(/^\/tiingo\/daily\/[^/]+\/prices/.test(p)) return 'daily-bars';
+  if(/^\/tiingo\/news/.test(p))            return 'news';
+  if(/^\/tiingo\/fundamentals/.test(p))    return 'fundamentals';
+  return 'other';
+}
+
+let tiingoBwPersistTimer=0;
+function noteTiingoBytes(env, path, bytes, exact){
+  const n=Number(bytes);
+  if(!Number.isFinite(n)||n<0) return;          // Regel 2: nichts erfinden
+  const mk=tiingoMonthKeyUTC();
+  if(tiingoBw.monthKey!==mk){ tiingoBw={monthKey:mk,paths:{},exact:0,approx:0,loadedFromD1:tiingoBw.loadedFromD1}; }
+  const b=tiingoBwBucket(path);
+  const cur=tiingoBw.paths[b]||{calls:0,bytes:0};
+  cur.calls++; cur.bytes+=n; tiingoBw.paths[b]=cur;
+  if(exact) tiingoBw.exact++; else tiingoBw.approx++;
+  if(env?.DB && Date.now()-tiingoBwPersistTimer>30_000){
+    tiingoBwPersistTimer=Date.now();
+    const payload=JSON.stringify(tiingoBw);
+    ensureD1Schema(env).then(()=>env.DB.prepare(
+      'INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts'
+    ).bind('tiingo_bandwidth',payload,Date.now()).run()).catch(e=>console.warn(JSON.stringify({event:'tiingo_bw_persist_failed',message:String(e?.message||e),ts:Date.now()})));
+  }
+}
+
+async function loadTiingoBwOnce(env){
+  if(tiingoBw.loadedFromD1 || !env?.DB) return;
+  try{
+    await ensureD1Schema(env);
+    const r=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=?').bind('tiingo_bandwidth').first();
+    const v=r?.value?JSON.parse(r.value):null;
+    if(v && v.monthKey===tiingoMonthKeyUTC() && v.paths && typeof v.paths==='object'){
+      tiingoBw={monthKey:v.monthKey,paths:v.paths,exact:Number(v.exact)||0,approx:Number(v.approx)||0,loadedFromD1:true};
+    } else { tiingoBw.monthKey=tiingoMonthKeyUTC(); tiingoBw.loadedFromD1=true; }
+  }catch(e){ tiingoBw.loadedFromD1=true; console.warn(JSON.stringify({event:'tiingo_bw_load_failed',message:String(e?.message||e),ts:Date.now()})); }
+}
+
+/* Sichtbare Auswertung. WICHTIG (Lehre 8f): Solange nichts gemessen wurde,
+   wird KEINE Null gemeldet, sondern `measured:false`. Der Client zeigt dann
+   „nicht gemessen" — eine fehlende Messung darf nie wie freie Reserve
+   aussehen. Der Monatswert dieses Workers ist ausserdem NICHT der
+   Kontostand bei Tiingo: andere Clients, frueherer Verbrauch im selben Monat
+   und der Zeitraum vor dieser Version fehlen darin. Das steht als `note` dabei
+   und nicht nur in dieser Quelltextzeile. */
+function tiingoBandwidthView(){
+  const mk=tiingoMonthKeyUTC();
+  if(tiingoBw.monthKey!==mk || !Object.keys(tiingoBw.paths).length){
+    return { measured:false, monthKey:mk, capGb:TIINGO_BW_CAP_GB,
+      note:'Seit dem Start dieser Worker-Instanz wurde in diesem Monat noch kein Tiingo-Abruf gewogen. Das ist eine fehlende Messung, KEIN niedriger Verbrauch.' };
+  }
+  const rows=Object.entries(tiingoBw.paths)
+    .map(([path,v])=>({path,calls:v.calls,bytes:v.bytes,
+      avgKb:v.calls?+((v.bytes/v.calls)/1024).toFixed(1):null,
+      gb:+(v.bytes/1073741824).toFixed(4)}))
+    .sort((a,b)=>b.bytes-a.bytes);
+  const total=rows.reduce((s,r)=>s+r.bytes,0);
+  const usedGb=+(total/1073741824).toFixed(4);
+  return {
+    measured:true, monthKey:mk, usedGb, capGb:TIINGO_BW_CAP_GB,
+    pct:+Math.min(999,(usedGb/TIINGO_BW_CAP_GB)*100).toFixed(1),
+    paths:rows,
+    exactSamples:tiingoBw.exact, approxSamples:tiingoBw.approx,
+    note:'Eigenmessung DIESES Workers ab v3.32.0. Nicht der Kontostand bei Tiingo — frueherer Verbrauch im selben Monat und andere Clients fehlen. Als untere Schranke lesen.',
+  };
+}
+
 async function tiingoFetch(env, path) {
   if (!env.TIINGO_API_TOKEN) throw new Error('TIINGO_API_TOKEN fehlt');
   await loadTiingoQuotaOnce(env);
+  await loadTiingoBwOnce(env);
   noteTiingoCall(env);
   const res = await fetch(`https://api.tiingo.com${path}`, {
     headers: { accept: 'application/json', authorization: `Token ${env.TIINGO_API_TOKEN}` },
     signal: AbortSignal.timeout(20_000),
   });
-  if (res.status === 429) throw new Error('Tiingo Rate-Limit (429)');
+  if (res.status === 429) {
+    /* v3.32.0: 429 heisst bei Tiingo BEIDES — Abrufrate oder Monatsbandbreite.
+       Der Text unterscheidet das, die alte Meldung tat es nicht und hat den
+       Nutzer am 30.08. auf die falsche Faehrte geschickt (warten hilft gegen
+       Bandbreite bis zum Monatswechsel nicht). Lehre 8aa. */
+    const body=(await res.text().catch(()=>'')).slice(0,300);
+    const bandwidth=/bandwidth/i.test(body);
+    tiingoBwLimitHit = bandwidth ? Date.now() : tiingoBwLimitHit;
+    throw new Error(bandwidth
+      ? 'Tiingo 429: MONATSBANDBREITE erschoepft — loest sich erst zum Monatswechsel, nicht durch Warten'
+      : 'Tiingo Rate-Limit (429)');
+  }
   if (!res.ok) throw new Error(`Tiingo ${res.status}: ${(await res.text()).slice(0,180)}`);
-  return res.json();
+  const cl = Number(res.headers.get('content-length'));
+  if (Number.isFinite(cl) && cl > 0) {
+    noteTiingoBytes(env, path, cl, true);
+    return res.json();
+  }
+  const text = await res.text();
+  noteTiingoBytes(env, path, text.length, false);   // Naeherung, als solche gezaehlt
+  return JSON.parse(text);
 }
 async function tiingoStockChart(env,symbol,range='120'){
   const sym=safeRadarSymbol(symbol);if(!sym)throw new Error('Ungültiger Ticker');
@@ -5662,12 +5841,133 @@ async function getTiingoFx(env){
   }catch(e){ console.warn(JSON.stringify({event:'tiingo_fx_failed',message:String(e?.message||e),ts:Date.now()})); }
   return tiingoFxMemo.usdPerEur;
 }
+/* ═════════ v3.32.0 · §10 A / §14.2 · SYMBOLBEGRENZTER IEX-ABRUF ════════════
+   BEFUND, bestaetigt im Code: `tiingoIexSnapshot(env, symbols)` nahm zwar eine
+   Symbolliste entgegen, holte intern aber `/iex` fuer den GESAMTEN Markt und
+   filterte erst danach lokal. Fuer 20 Titel wurden also ~12.000 uebertragen.
+   Das Audit hat damit recht — und das ist der groesste Hebel im ganzen
+   Dokument, weil dieser Pfad laut Audit-Schaetzung zweimal je Aktienzyklus
+   laeuft (`freshestStockQuotesBatch` und `tiingoIexMarketRadar`).
+
+   DAS PROBLEM MIT DEM FIX: Das Audit sagt „Pruefen, ob Tiingo einen
+   symbolbegrenzten Abruf unterstuetzt" — es weiss es nicht. Ich auch nicht,
+   und ich kann es hier nicht pruefen: kein Tiingo-Token, und der Zugang
+   antwortet ohnehin mit 429, bis die Monatsbandbreite zurueckgesetzt wird.
+
+   Blind auf `?tickers=` umstellen waere geraten. Ein Vorab-Test von Hand
+   verschiebt die Loesung auf den 1. September. Deshalb: die App probiert es
+   EINMAL selbst und merkt sich das Ergebnis.
+
+     unbekannt -> `?tickers=` versuchen
+                    |- Antwort enthaelt die angefragten Symbole -> „geht",
+                    |  ab jetzt immer schmal
+                    `- Fehler ODER verdaechtig grosse/leere Antwort -> „geht
+                       nicht", ab jetzt wieder Whole-Market
+
+   ENTSCHEIDEND FUER REGEL 4: Der Rueckfall ist der ALTE, funktionierende Weg —
+   nicht ein leeres Ergebnis. Ein misslungener Sparversuch darf die Quote
+   nicht verschlechtern, sondern nur die Ersparnis kosten. Und die Erkennung
+   ist bewusst STRENG: nur wenn mindestens ein angefragtes Symbol wirklich
+   zurueckkommt, gilt der schmale Weg als tauglich. Eine leere Antwort koennte
+   auch bedeuten, dass Tiingo den Parameter ignoriert und ausserhalb der
+   Handelszeit nichts liefert — das darf nicht als Erfolg zaehlen.
+
+   Der Zustand ist sichtbar (`/api/health` -> `iexSubset`) und wird in D1
+   gehalten, damit nicht jede neue Isolate-Instanz erneut probiert. */
+let iexSubsetMode = { state:'unknown', ts:0, evidence:null, loadedFromD1:false };
+
+async function loadIexSubsetModeOnce(env){
+  if(iexSubsetMode.loadedFromD1 || !env?.DB) return;
+  try{
+    await ensureD1Schema(env);
+    const r=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=?').bind('iex_subset_mode').first();
+    const v=r?.value?JSON.parse(r.value):null;
+    /* Ein „geht nicht" laeuft nach 7 Tagen ab: Tiingo kann den Parameter
+       nachruesten, und ein einmaliger Fehlschlag soll die Ersparnis nicht
+       fuer immer verbauen. Ein „geht" bleibt stehen. */
+    if(v && (v.state==='ok' || (v.state==='unsupported' && Date.now()-Number(v.ts||0) < 7*86400_000))){
+      iexSubsetMode={...v,loadedFromD1:true};
+    } else iexSubsetMode.loadedFromD1=true;
+  }catch(e){ iexSubsetMode.loadedFromD1=true; }
+}
+function saveIexSubsetMode(env,state,evidence){
+  iexSubsetMode={state,ts:Date.now(),evidence,loadedFromD1:true};
+  console.warn(JSON.stringify({event:'iex_subset_mode',state,evidence,ts:Date.now()}));
+  if(env?.DB){
+    const payload=JSON.stringify({state,ts:iexSubsetMode.ts,evidence});
+    ensureD1Schema(env).then(()=>env.DB.prepare(
+      'INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts'
+    ).bind('iex_subset_mode',payload,Date.now()).run()).catch(()=>{});
+  }
+}
+
+/* ═══════ v3.32.0 · DER ZWEITE WHOLE-MARKET-DOWNLOAD FAELLT WEG ════════════
+   BEFUND beim Nachrechnen, ob die Massnahmen reichen: Der Cron laedt den
+   ganzen Markt ZWEIMAL je Doppelminute — einmal fuer den Radar
+   (`stockMinute%2===1`) und einmal fuer den Deep-Scan, der ueber
+   `freshestStockQuotesBatch` -> `tiingoIexSnapshot` frische Kurse fuer ~20
+   Titel holt und dafuer ebenfalls `/iex` zieht. Rund 1.440 Downloads am Tag,
+   nicht 720. Die Radar-Taktung allein haette also nur die HAELFTE gedeckelt.
+
+   Der Deep-Scan braucht 20 Zeilen, die der Radar Sekunden vorher schon
+   heruntergeladen hat. Also wiederverwenden statt neu laden.
+
+   REGEL 4, und hier ist sie scharf: Wiederverwendung darf keine veralteten
+   Kurse als frisch ausgeben. Zwei Sicherungen:
+   · Der Vorrat wird nur benutzt, solange er juenger ist als das
+     Frischefenster der aktuellen Marktphase (120 s im Handel, 900 s sonst) —
+     dasselbe Fenster, gegen das `classifyQuoteFreshness` ohnehin prueft.
+   · Die ZEITSTEMPEL der Zeilen bleiben unveraendert. Es wird nichts auf
+     „jetzt" gesetzt. Ein zu alter Kurs faellt weiterhin durch dieselbe
+     Pruefung wie vorher.
+   Damit kann diese Optimierung nichts frischer erscheinen lassen, als es ist.
+   Sie spart einen Download, sie faelscht keinen Wert. */
+let iexRawMemo={ts:0,bySymbol:null};
+function iexRawFreshMs(){
+  const k=usMarketPhase(new Date(),'iex').key;
+  return ['premarket-early','premarket','opening','regular','after'].includes(k) ? 120_000 : 900_000;
+}
+
 async function tiingoIexSnapshot(env, rawSymbols){
   const symbols=[...new Set(String(rawSymbols||'').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,50);
   if(!symbols.length) return [];
-  const d=await tiingoFetch(env,'/iex');
   const wanted=new Set(symbols);
-  return (Array.isArray(d)?d:[]).filter(x=>wanted.has(String(x.ticker||x.symbol||'').toUpperCase()));
+  const pick=(d)=>(Array.isArray(d)?d:[]).filter(x=>wanted.has(String(x.ticker||x.symbol||'').toUpperCase()));
+
+  /* Vorrat aus dem Radar-Abruf — kein Netzverkehr, keine Bandbreite. */
+  if(iexRawMemo.bySymbol && Date.now()-iexRawMemo.ts < iexRawFreshMs()){
+    const hits=symbols.map(sy=>iexRawMemo.bySymbol.get(sy)).filter(Boolean);
+    /* Nur wenn WIRKLICH etwas dabei ist. Ein leerer Treffer koennte auch
+       heissen, dass die Symbole gar nicht im Vorrat stehen — dann muss
+       regulaer geladen werden, statt eine leere Liste zurueckzugeben. */
+    if(hits.length) return hits;
+  }
+
+  await loadIexSubsetModeOnce(env);
+
+  if(iexSubsetMode.state!=='unsupported'){
+    try{
+      const d=await tiingoFetch(env,`/iex?tickers=${symbols.map(encodeURIComponent).join(',')}`);
+      const rows=pick(d);
+      const all=Array.isArray(d)?d.length:0;
+      /* Streng: mindestens ein angefragtes Symbol muss dabei sein UND die
+         Antwort darf nicht offensichtlich der ganze Markt sein (dann haette
+         Tiingo den Parameter ignoriert und wir haetten nichts gespart). */
+      if(rows.length>0 && all<=Math.max(symbols.length*3,60)){
+        if(iexSubsetMode.state!=='ok') saveIexSubsetMode(env,'ok',`${rows.length}/${symbols.length} Symbole in einer ${all}-Zeilen-Antwort`);
+        return rows;
+      }
+      saveIexSubsetMode(env,'unsupported',all>0
+        ? `Parameter wirkungslos: ${all} Zeilen fuer ${symbols.length} angefragte Symbole`
+        : 'leere Antwort auf ?tickers=');
+      if(rows.length>0) return rows;   // brauchbar, aber nicht sparsam
+    }catch(e){
+      saveIexSubsetMode(env,'unsupported',String(e?.message||e).slice(0,160));
+    }
+  }
+  // Rueckfall: der alte, funktionierende Weg. Teuer, aber vollstaendig.
+  const d=await tiingoFetch(env,'/iex');
+  return pick(d);
 }
 
 /* v3.2.1 Whole-Market Radar -------------------------------------------------
@@ -5895,7 +6195,7 @@ async function filterRadarToCommonStocks(env,rows,limit){
   // next common stocks. Metadata checks are cached for seven days.
   const source=(rows||[]).map(r=>({...r,symbol:safeRadarSymbol(r?.symbol)})).filter(r=>r.symbol).slice(0,24);
   const checked=await pool(source,4,async r=>{try{return {r,m:await radarEquityMeta(env,r.symbol)};}catch(e){return {r,m:{tradableStock:false,reason:String(e?.message||e)}};}});
-  return checked.filter(x=>x?.m?.tradableStock && radarCandidateAllowed(x?.r)).map(x=>({...x.r,securityName:x.m.name,companyDescription:x.m.description||'',exchange:x.m.exchange||'',assetType:'stock',securityVerified:true,largeCapRadar:largeCapRadarAllowed(x?.r?.symbol),momentumRadar:!largeCapRadarAllowed(x?.r?.symbol)&&momentumRadarAllowed(x?.r)})).slice(0,limit);
+  return checked.filter(x=>x?.m?.tradableStock && radarCandidateAllowed(x?.r,false,env)).map(x=>({...x.r,securityName:x.m.name,companyDescription:x.m.description||'',exchange:x.m.exchange||'',assetType:'stock',securityVerified:true,largeCapRadar:largeCapRadarAllowed(x?.r?.symbol),momentumRadar:!largeCapRadarAllowed(x?.r?.symbol)&&momentumRadarAllowed(x?.r,false,env)})).slice(0,limit);
 }
 
 function verifiedCommonOnly(rows){
@@ -5914,24 +6214,81 @@ function openingGainers(rows,limit=12){
   return verifiedCommonOnly(rows).filter(r=>Number(r.movePct)>=2).sort((a,b)=>(Number(b.movePct)||0)-(Number(a.movePct)||0)).slice(0,limit);
 }
 
+/* ═════════════ v3.32.0 · §10 B / §15 · SESSIONABHAENGIGE RADAR-TAKTUNG ═════
+   BEFUND: Der Radar-Cache lag pauschal bei 50 Sekunden. Bei minuetlichem Cron
+   heisst das rund 1.440 Whole-Market-Downloads am Tag — auch nachts um drei,
+   auch samstags, auch an Feiertagen, wenn IEX ueberhaupt nicht handelt. Genau
+   das meint das Audit mit „unnoetige Bytes" (§21).
+
+   Die Staffelung folgt der Marktphase, die `usMarketPhase()` ohnehin schon
+   kennt. Sie ist bewusst NICHT aggressiv im Opening: dort zaehlt jede Sekunde,
+   und die Ersparnis holt man in den 16 handelsfreien Stunden, nicht in den
+   90 Minuten, auf die es ankommt.
+
+   REGEL 4 IST GEWAHRT, und das ist hier nicht selbstverstaendlich — eine
+   laengere Zwischenspeicherung macht Daten AELTER, und aeltere Daten duerfen
+   nichts verbessern:
+   · Der Radar hat 0 % BUY-Gewicht. Er nominiert Kandidaten, er bewertet nicht.
+   · Der bestehende Filter `r.ageMin <= maxAge` bleibt unveraendert. Bei
+     geschlossenem Markt sind 90 Minuten erlaubt; eine Zwischenspeicherung von
+     15 Minuten liegt darunter. Zu alte Zeilen fallen weiterhin raus, statt
+     stillschweigend weiterverwendet zu werden.
+   · Das Alter ist ablesbar (`radar.ts` in `/api/stocks`).
+   Damit kostet die Drosselung Aktualitaet in Phasen, in denen es keine
+   Bewegung gibt — und keine Freigabe, keinen Score, keine Rangfolge.
+
+   BOATS bleibt unangetastet: die Overnight-Session laeuft 20:00–03:59 ET, also
+   genau dann, wenn der IEX-Radar schweigt. Wer beides zusammen drosselt,
+   nimmt der Vorabend-Liste ihre Grundlage. */
+const RADAR_TTL_MS = {
+  'opening':          50_000,   // Prioritaetsfenster — unveraendert
+  'regular':          50_000,
+  'premarket':       120_000,
+  'premarket-early': 180_000,
+  'after':           180_000,
+  'after-limited':   300_000,
+  'closed':          900_000,   // Nacht, Wochenende, Feiertag: IEX handelt nicht
+};
+function radarTtlMs(phaseKey){
+  const t = RADAR_TTL_MS[phaseKey];
+  /* Unbekannte Phase -> der SPARSAME Wert, nicht der schnelle. Eine Phase, die
+     wir nicht kennen, ist kein Grund, oefter zu laden. */
+  return Number.isFinite(t) ? t : 300_000;
+}
+
 async function tiingoIexMarketRadar(env,limit=80,force=false){
   const now=Date.now();
-  if(!force&&tiingoIexRadarMemo.rows.length&&now-tiingoIexRadarMemo.ts<50_000)return tiingoIexRadarMemo;
+  const phaseNow=usMarketPhase(new Date(now),'iex');
+  const ttl=radarTtlMs(phaseNow.key);
+  if(!force&&tiingoIexRadarMemo.rows.length&&now-tiingoIexRadarMemo.ts<ttl)return tiingoIexRadarMemo;
+  /* Auch der persistierte Stand zaehlt: nach einem Isolate-Neustart mitten in
+     der Nacht soll nicht sofort neu geladen werden, nur weil das Memo leer
+     ist. Genau dieser Fall macht bei Cloudflare Workers den Unterschied. */
   const persisted=tiingoIexRadarMemo.rows.length?tiingoIexRadarMemo:await readPersistedIexRadar(env);
+  if(!force&&persisted?.rows?.length&&Number.isFinite(Number(persisted.ts))&&now-Number(persisted.ts)<ttl){
+    tiingoIexRadarMemo=persisted;
+    return tiingoIexRadarMemo;
+  }
   const prevMap=new Map((persisted?.rows||[]).map(r=>[r.symbol,r]));
   const d=await tiingoFetch(env,'/iex'), all=Array.isArray(d)?d:[];
-  const phase=usMarketPhase(new Date(now),'iex');
+  /* v3.32.0: Die Rohzeilen kurz aufbewahren. Der Deep-Scan braucht gleich
+     Kurse fuer ~20 Titel und hat sie hier bereits vor sich liegen — ein
+     zweiter Download desselben Marktes waere reine Verschwendung. Siehe
+     `iexRawMemo` unten. Kein zusaetzlicher Speicher: es sind dieselben
+     Objekte, sie leben nur laenger. */
+  iexRawMemo={ts:now,bySymbol:new Map(all.map(x=>[String(x?.ticker||x?.symbol||'').toUpperCase(),x]))};
+  const phase=phaseNow;
   const maxAge=['opening','regular'].includes(phase.key)?12:['premarket','after'].includes(phase.key)?30:90;
   resetRadarGateStats();
   const ranked=all.map(x=>iexRadarQuote(x,prevMap.get(String(x?.ticker||x?.symbol||'').toUpperCase()))).filter(Boolean)
-    .filter(r=>radarCandidateAllowed(r,true))
+    .filter(r=>radarCandidateAllowed(r,true,env))
     .filter(r=>r.ageMin==null||r.ageMin<=maxAge)
     .sort((a,b)=>b.score-a.score);
   // Instrument-Metadaten bewusst NICHT hier prüfen: Der Bulk-Radar soll CPU-arm
   // bleiben. ETF/ETP/Common-Stock-Verifikation erfolgt erst im getrennten Deep-
   // Scan-Cron auf den wenigen Top-Kandidaten.
   const rows=ranked.slice(0,Math.max(24,Math.min(120,limit)));
-  tiingoIexRadarMemo={ts:now,rows,universe:all.length,phase:phase.key,source:'Tiingo IEX Large-Cap Radar · prefiltered',buyWeight:0};
+  tiingoIexRadarMemo={ts:now,rows,universe:all.length,phase:phase.key,ttlMs:ttl,source:'Tiingo IEX Large-Cap Radar · prefiltered',buyWeight:0};
   await persistIexRadar(env,tiingoIexRadarMemo);
   return tiingoIexRadarMemo;
 }
@@ -6340,6 +6697,10 @@ export default {
 
     if (url.pathname === '/api/health') {
       if (env.APP_TOKEN && !authed(request, url, env)) return json({ok:true,version:APP_VERSION,protected:true},200,{ 'cache-control':'no-store' });
+      /* v3.32.0: aus D1 nachladen, sonst meldet eine frisch gestartete
+         Worker-Instanz „nichts gemessen", obwohl im selben Monat schon
+         gemessen wurde. Isolate-Neustarts sind bei Workers der Normalfall. */
+      await loadTiingoBwOnce(env);
       // Version kommt aus dem DEPLOYTEN Code, nicht aus einer CF-Variable.
       // Weicht env.APP_VERSION ab, ist die Variable veraltet – das wird gemeldet.
       const [cryptoHealth,stocksHealth,alpacaHealth] = await Promise.all([
@@ -6360,6 +6721,12 @@ export default {
         alpacaConfigured: !!(env.ALPACA_API_KEY_ID && env.ALPACA_API_SECRET_KEY),
         crowdConfigured: !!env.SERPAPI_KEY,
         tiingoConfigured: !!env.TIINGO_API_TOKEN,
+        /* v3.32.0 · Audit §10 D: gemessene Bandbreite je Datenpfad. Der Client
+           liest daraus `bandwidth.usedGb` / `bandwidth.capGb`; fehlt die
+           Messung, meldet `measured:false` und die Anzeige schreibt „nicht
+           gemessen" statt einer beruhigenden Null. */
+        bandwidth: tiingoBandwidthView(),
+        bandwidthLimitHitTs: tiingoBwLimitHit || null,
         kv: !!env.SNAP,
         d1: !!env.DB,
         cacheAgeMs: memo.ts ? Date.now() - memo.ts : null,

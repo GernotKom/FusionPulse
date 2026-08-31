@@ -184,15 +184,20 @@ assert.match(app,/Tages-Bar\/Fallback/,'Daily Alpaca fallback must be visibly la
    statt sie ueber Bekanntheit zu schaetzen — und es veraltet nicht.
    Die Large-Cap-Liste bleibt als zusaetzlicher Einlasspfad bestehen.        */
 assert.match(workerText,/const LARGE_CAP_RADAR_SYMBOLS = new Set/,'Die kuratierte Large-Cap-Liste muss als Einlasspfad erhalten bleiben');
-assert.match(workerText,/\.filter\(r=>radarCandidateAllowed\(r,true\)\)/,'Der Whole-Market-Radar muss vor Ranking/Anzeige gefiltert werden — mit Zaehlung, damit eine leere Liste erklaerbar bleibt');
-assert.match(workerText,/x=>x\?\.m\?\.tradableStock && radarCandidateAllowed\(x\?\.r\)/,'Verifizierte Kandidaten muessen das Handelbarkeitsgitter passieren');
+/* v3.32.0: Regex geweitet. Die Funktion nimmt seit R11 ein drittes Argument
+   (env), damit die Umsatzschwelle am Massstab des tatsaechlich benutzten Feeds
+   prueft. Der ZWECK dieses Tests ist unveraendert — gefiltert wird, und mit
+   Zaehlung. Ein Test, der an der Argumentzahl klebt, prueft die Schreibweise
+   statt der Sache. */
+assert.match(workerText,/\.filter\(r=>radarCandidateAllowed\(r,true[,)]/,'Der Whole-Market-Radar muss vor Ranking/Anzeige gefiltert werden — mit Zaehlung, damit eine leere Liste erklaerbar bleibt');
+assert.match(workerText,/x=>x\?\.m\?\.tradableStock && radarCandidateAllowed\(x\?\.r[,)]/,'Verifizierte Kandidaten muessen das Handelbarkeitsgitter passieren');
 assert.match(workerText,/if\(largeCapRadarAllowed\(r\?\.symbol\)\)\{ if\(count\)radarGateStats\.largeCap\+\+; return true; \}/,
   'Einlasspfad 1: kuratierte Large-Cap-Liste');
-assert.match(workerText,/const ok=momentumRadarAllowed\(r,count\);/,'Einlasspfad 2: messbares Momentum-Gitter');
+assert.match(workerText,/const ok=momentumRadarAllowed\(r,count[,)]/,'Einlasspfad 2: messbares Momentum-Gitter');
 assert.doesNotMatch(workerText,/return true;\s*\}\s*function radarCandidateAllowed/,'Kein dritter, ungeprueffter Einlassweg');
 // Das Gitter muss fail-closed sein: fehlende Werte duerfen NICHT durchlassen.
 assert.match(workerText,/if\(!\(price>=MOM_MIN_PRICE_USD\)\)\{ if\(count\)radarGateStats\.failPrice\+\+; return false; \}/,'Ohne bekannten Kurs kein Einlass');
-assert.match(workerText,/if\(!\(vol>0\) \|\| !\(price\*vol>=MOM_MIN_DOLLARVOL\)\)\{ if\(count\)radarGateStats\.failVolume\+\+; return false; \}/,'Ohne bekannten Dollarumsatz kein Einlass');
+assert.match(workerText,/if\(!\(vol>0\) \|\| !\(price\*vol>=momMinDollarVol\(env\)\)\)\{ if\(count\)radarGateStats\.failVolume\+\+; return false; \}/,'Ohne bekannten Dollarumsatz kein Einlass');
 // Und die Schwellen muessen nennenswert bleiben, sonst ist das Gitter Dekoration.
 {
   const num=(k)=>Number((new RegExp(k+"\\s*=\\s*([0-9_\\.]+)").exec(workerText)||[])[1]?.replace(/_/g,''));
@@ -1136,11 +1141,16 @@ console.log('✓ FusionPulse v3.7.0 crypto-sentiment regressions: OK');
   assert.ok(C.DEFAULTS.orderFeeEur >= 10, 'Der Standard muss die realen US-Direkthandelskosten abbilden, nicht den guenstigsten Fall');
 
   // -- Das Momentum-Gitter: messbar, fail-closed, und es laesst echte Mover durch.
-  const grid = w.slice(w.indexOf('function momentumRadarAllowed(r,count=false){'), w.indexOf('function radarCandidateAllowed'));
+  const grid = w.slice(w.indexOf('function momentumRadarAllowed(r,count=false,env=null){'), w.indexOf('function radarCandidateAllowed'));
   assert.ok(grid.length > 200 && grid.length < 3000, 'Der Gitter-Ausschnitt muss plausibel begrenzt sein');
-  assert.ok(grid.includes('MOM_MIN_PRICE_USD') && grid.includes('MOM_MIN_DOLLARVOL')
+  /* v3.32.0 · R11: die Umsatzschwelle heisst hier jetzt momMinDollarVol(env),
+     weil sie am Massstab des benutzten Feeds prueft. Die Konstante bleibt die
+     Grundlage — geprueft wird beides. */
+  assert.ok(grid.includes('MOM_MIN_PRICE_USD') && grid.includes('momMinDollarVol(env)')
     && grid.includes('MOM_MAX_SPREAD_PCT') && grid.includes('MOM_MIN_MOVE_PCT'),
     'Das Gitter muss alle vier messbaren Kriterien pruefen');
+  assert.match(w, /const MOM_MIN_DOLLARVOL\s*=\s*2_000_000;/,
+    'Die IEX-Grundschwelle muss als benannte Konstante erhalten bleiben');
   // Nachbau der Gitterlogik gegen konkrete Faelle — so faellt der Test auf,
   // wenn jemand eine Schwelle aufweicht, ohne es zu merken.
   const th = (k)=>Number((new RegExp(k+"\\s*=\\s*([0-9_\\.]+)").exec(w)||[])[1]?.replace(/_/g,''));

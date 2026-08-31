@@ -15,15 +15,12 @@ von v3.18.0 und beschreiben die Grundlagen — **Rechenwerte und Suitenzahlen do
 sind veraltet**, die Denkweise nicht. Was seither passiert ist, steht in den
 Abschnitten **8p bis 8z** am Ende. Bei Widerspruch gilt der spätere Abschnitt.
 
-**Aktueller Stand:** v3.31.0 · `npm run check` → **47 Suiten grün** in zwei
+**Aktueller Stand:** v3.32.0 · `npm run check` → **52 Prüfläufe grün** in zwei
 Zeitzonen, plus Service-Worker-Prüfstand und Erreichbarkeits-Audit.
-**Dazu ZWEI Suiten in EIGENEN Dateien**, beide noch NICHT in `npm run check`
-eingehängt (R9, je eine Zeile in `package.json`):
-`node tests/coin-scope.mjs` (Suite 48, R1) und
-`node tests/provider-breadth.mjs` (Suite 50, Audit §28/§29).
-Wer sie vergisst, verliert beide Schutzwirkungen unbemerkt.
-Was seit v3.28.0 passiert ist, steht in **Abschnitt 8z** ganz am Ende, die
-jüngsten Läufe in **8ac** (R1) und **8ad** (Bandbreiten-Audit).
+R9 ist erledigt: Suite 48 (`coin-scope`), 50 (`provider-breadth`) und 51
+(`bandwidth-feed`) laufen jetzt mit `npm run check` mit.
+Was seit v3.28.0 passiert ist, steht in **Abschnitt 8z**, die jüngsten Läufe in
+**8ac** (R1), **8ad** (Audit, Client-Seite) und **8ae** (Audit, Worker-Seite).
 (`tests/safety-regression.mjs` plus `tests/sw-fault.mjs`, letzterer FÜHRT den
 Service Worker unter Störungen AUS, plus `tests/reachability-audit.mjs`.)
 
@@ -1958,9 +1955,11 @@ Was hier steht, ueberlebt jeden neuen Chat. Was nur im Chat gesagt wurde, ist we
 |----|-------|-------|
 | R1 | **Skope-Fenster im Coins-Bereich zuerst zeigen** | **ERLEDIGT in v3.30.0** — siehe 8ac. Die Position stimmte seit v3.9.1; falsch war der INHALT. Wartet nur noch auf die Bestaetigung des Nutzers am Bildschirm. |
 | R8 | **Coin-Suchleiste steht unter dem Fokusfenster, bei Aktien darueber.** Beim Bearbeiten von R1 aufgefallen, bewusst NICHT mitgeaendert (nicht gefragt). Kleiner Handgriff, braucht eine Ja/Nein-Entscheidung. | offen, Entscheidung Nutzer |
-| R9 | **Suite 48 und Suite 50 in `npm run check` einhaengen** (`tests/coin-scope.mjs`, `tests/provider-breadth.mjs`) — je eine Zeile in `package.json`. Bewusst nicht gemacht, solange der zweite Strang laeuft. | offen, zwei Handgriffe |
+| R9 | Suiten 48/50/51 in `npm run check` einhaengen | **ERLEDIGT in v3.32.0** |
 | R10 | **Client-Takt haengt am Anbieternamen.** `setStockPoll()` prueft `provider==='tiingo'` und faellt bei jedem anderen Anbieter auf 5 Minuten. Sobald der Alpaca-Failover greift, wird der Client traege. Reparatur erst, wenn Bandbreitenzahlen vorliegen — sonst ist jede Beschleunigung geraten. | offen, wartet auf Messung |
-| R11 | **Kalibrierungsbruch bei einem Feed-Wechsel auf SIP.** `MOM_MIN_DOLLARVOL = 2 Mio. $` ist auf den IEX-Anteil (2-3 % des Volumens) kalibriert. Ein Umschalten auf einen konsolidierten Feed macht dieselbe Zahl um Groessenordnungen leichter erfuellbar — das Gitter waere faktisch aus. Siehe 8ad. **Vor jedem Feed-Wechsel pruefen.** | offen, VORRANG bei Feed-Wechsel |
+| R11 | Kalibrierungsbruch bei Feed-Wechsel auf SIP | **ENTSCHAERFT in v3.32.0** — die Schwelle haengt jetzt an `RADAR_FEED`. Der Faktor 35 ist HERGELEITET, nicht gemessen: nach dem ersten Lauf mit konsolidiertem Feed anhand `radarGateStats` nachkalibrieren. |
+| R12 | **Bandbreitenzahlen auswerten.** Ab v3.32.0 misst die App je Datenpfad. Nach ein bis zwei Tagen Laufzeit `/api/health` → `bandwidth.paths` ansehen: stimmt die Audit-Schaetzung (~1,2 MB je `/iex`-Antwort)? Reichen Taktung und Subset-Abruf? Erst DANN weitere Eingriffe. | offen, wartet auf Laufzeit |
+| R13 | **BOATS-Pfad (§10 C, §17 des Audits)** ist unangetastet. Erst nach R12 bewerten — ohne Messung waere jeder Eingriff geraten. | offen, nach R12 |
 | R2 | **Farbpinsel je Kachel** — kleiner Knopf IN jeder Kachel statt zentraler Liste. Braucht Knopf-Injektion in `paintPanel()`, Popover, Persistenz ueber `--tint-…`. | offen, eigene Version |
 | R3 | 90-Sekunden-Frischesperre | Entscheidung Nutzer offen |
 | R4 | Nachrichtenzeile — Testaufruf gegen Tiingo-Schluessel noetig | offen |
@@ -2268,3 +2267,104 @@ sehr wohl **eine Cloudflare-Variable und die Neuherleitung dieser Schwelle**.
 Zeitzonen · Erreichbarkeits-Audit sauber · SHA-256 der vier Claude-Blöcke
 unabhängig nachgerechnet und identisch · `src/worker.js` nachweislich unberührt
 (`git diff --name-only` enthält sie nicht).
+
+---
+
+## 8ae · v3.32.0 — das Bandbreiten-Audit im Worker
+
+**Vor jedem weiteren Eingriff am Datenverbrauch lesen. Insbesondere R12.**
+
+### Die Reihenfolge, und warum sie so ist
+
+Das Audit hat den Kernbefund richtig: der Engpass ist die **Monatsbandbreite**,
+nicht die Abrufzahl. 10.000 Requests/h frei, 0,00 von 40 GB übrig — eindeutig.
+
+Aber die Ursache ist **geschätzt, nicht gemessen**: ~48 Downloads/h, ~34.000
+im Monat, also rund 1,2 MB je Antwort. Plausibel, nirgends nachgewiesen. Das
+Audit sagt in §20 Schritt 1 selbst „nur auditieren und messen" und leitet in
+§14–§18 trotzdem schon die Zielarchitektur ab. Genau die Reihenfolge, die sich
+dieses Projekt abgewöhnt hat.
+
+Deshalb hier: **erst zählen, dann sparen** — aber die beiden Maßnahmen, die
+auch ohne Zahlen sicher richtig sind, gleich mit.
+
+### Was gebaut wurde
+
+**1 · Bandbreite je Pfad (§10 D).** `tiingoFetch` wiegt jede Antwort und bucht
+sie auf `iex-wholemarket` / `iex-symbols` / `iex-chart` / `boats-bulk` /
+`daily-bars` / … `content-length` ist exakt, Textlänge eine **Näherung** und
+wird getrennt gezählt. Ausgabe in `/api/health` → `bandwidth`.
+→ **Wer hier etwas ändert:** Ohne Messung wird `measured:false` gemeldet, NICHT
+0 GB. Das ist Lehre 8f — eine UI, die einen dauerhaft leeren Wert auswertet,
+sieht aus wie eine Messung und ist keine. Der Wert ist eine **untere Schranke**:
+er kennt weder frühere Monate noch andere Clients. Steht als `note` dabei.
+
+**2 · Symbolbegrenzter IEX-Abruf (§10 A / §14.2).** Befund bestätigt:
+`tiingoIexSnapshot` nahm eine Symbolliste, lud aber den ganzen Markt und
+filterte lokal. Für 20 Titel ~12.000 Zeilen.
+Ob Tiingo `?tickers=` unterstützt, weiß weder das Audit noch ich — und es ist
+hier nicht prüfbar (kein Token; der Zugang antwortet mit 429). Also probiert die
+App es **einmal selbst** und merkt sich das Ergebnis in D1 (`iex_subset_mode`).
+→ **Zwei Dinge nicht anfassen:** Der Rückfall ist der ALTE, vollständige Weg —
+ein misslungener Sparversuch darf die Quote nicht verschlechtern, nur die
+Ersparnis kosten. Und die Erkennung ist streng: eine LEERE Antwort zählt nicht
+als Erfolg. Sonst hätte ein Versuch außerhalb der Handelszeit „funktioniert"
+gemeldet und danach dauerhaft nichts mehr gefunden.
+
+**3 · Sessionabhängige Taktung (§10 B / §15).** Der Radar-Cache lag pauschal bei
+50 s — bei minütlichem Cron ~1.440 Whole-Market-Downloads am Tag, auch nachts.
+Jetzt nach Marktphase gestaffelt; Opening und regulärer Handel **unverändert**.
+→ **Regel 4 war hier nicht selbstverständlich**, weil längeres Cachen Daten
+ÄLTER macht: Der Radar hat 0 % BUY-Gewicht, der Alterungsfilter
+`ageMin <= maxAge` bleibt unangetastet, und eine **unbekannte Phase bekommt den
+sparsamen Wert, nicht den schnellen**. BOATS ist bewusst ausgenommen — die
+Overnight-Session läuft genau dann, wenn der IEX-Radar schweigt.
+
+**4 · R11 entschärft.** Die Umsatzschwelle hängt jetzt an `RADAR_FEED` statt an
+einer festen Zahl. Fail-closed in beide Richtungen: **unbekannter** Feed →
+strenger Gesamtmarkt-Faktor; **fehlender** Eintrag → IEX, weil das der belegte
+Ist-Zustand ist und eine Verschärfung ins Blaue die Liste geleert hätte (was
+seinerseits wie ein Defekt aussieht — der Fehler aus v3.8.1).
+→ **Der Faktor 35 ist HERGELEITET, nicht gemessen** (Mitte der 2–3-%-Spanne).
+Nach dem ersten Lauf mit konsolidiertem Feed anhand `radarGateStats`
+nachkalibrieren. Dieselbe Auflage wie beim IEX-Wert seit v3.8.1.
+
+### Die Negativkontrolle, auf die es ankam
+
+Zwölf Sabotageproben, Protokoll in `RELEASE_NOTES.md`. **NK8 lief durch.**
+
+Die Suite prüfte `momMinDollarVol` in Isolation. Eine Sabotage, die im GITTER
+zur festen Konstante zurückkehrt, ließ sie unberührt — die Schwellenfunktion
+blieb ja korrekt. Der Nutzer trifft aber `momentumRadarAllowed`. Die Suite führt
+das Gitter jetzt selbst aus und prüft die Wirkung.
+
+> **Vierte Wiederholung derselben Lehre (nach 8z, 8ac, 8ad):** Prüfen, was den
+> Nutzer trifft, nicht was leicht zu prüfen ist. Wenn eine Hilfsfunktion korrekt
+> bleibt, während der Aufrufer falsch wird, ist ein Test auf die Hilfsfunktion
+> wertlos. Für jeden Schutz eine Sabotage suchen, die NUR er sehen kann.
+
+NK12 sichert die Gegenrichtung: ein zu hoher Faktor leert die Liste.
+
+### Vier bestehende Tests angepasst — bewusst
+
+Vier Prüfungen in `safety-regression.mjs` klebten an der Schreibweise
+(`radarCandidateAllowed(r,true)`, `MOM_MIN_DOLLARVOL`). Der ZWECK ist
+unverändert geprüft; die Regexe hingen an der Argumentzahl.
+→ **Merksatz:** Ein Test, der die Schreibweise statt der Sache prüft, blockiert
+richtige Änderungen und schützt vor nichts. Beim Weiten eines Regex immer
+fragen, ob die Sabotage, für die er da war, noch auffällt — hier: ja, dafür
+sorgt zusätzlich Suite 51.
+
+### NÄCHSTER SCHRITT — R12, und bitte nichts überspringen
+
+**Erst ein bis zwei Tage laufen lassen, dann `/api/health` → `bandwidth.paths`
+ansehen.** Dort steht, welcher Pfad wie viele Bytes verbraucht und wie groß eine
+`/iex`-Antwort wirklich ist. Erst damit lässt sich sagen, ob die Schätzung des
+Audits stimmt und ob Taktung plus Subset-Abruf reichen.
+
+Ebenfalls im Log nachsehen: `iex_subset_mode` sagt, ob Tiingo den schmalen
+Abruf beherrscht. Steht dort `ok`, ist der größte Posten um etwa den Faktor 600
+gesunken und alles Weitere (BOATS, §17) erübrigt sich vermutlich.
+
+**Kein weiterer Eingriff am Datenverbrauch ohne diese Zahlen.** Das ist der
+ganze Punkt dieser Version.

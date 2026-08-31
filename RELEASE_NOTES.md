@@ -11,6 +11,231 @@ Die *Begründungen* und die daraus gezogenen Lehren stehen nicht hier, sondern i
 
 ---
 
+# v3.32.0 — Das Bandbreiten-Audit im Worker umgesetzt
+
+**Bewertungslogik:** nicht berührt. Die vier SHA-256-Blöcke unabhängig
+nachgerechnet und unverändert.
+
+## 1. Bandbreite messen, bevor umgebaut wird (§10 D)
+
+Das Audit schätzt: ~48 Whole-Market-Downloads je Stunde, ~34.000 im Monat, also
+rund 1,2 MB je Antwort. Plausibel — aber nirgends nachgewiesen. Und §20 Schritt 1
+des Audits sagt selbst *„nur auditieren und messen"*, während §14–§18 schon die
+ganze Zielarchitektur ableiten.
+
+Jede Tiingo-Antwort wird jetzt gewogen und einem Pfad zugeordnet
+(`iex-wholemarket`, `iex-symbols`, `iex-chart`, `boats-bulk`, `daily-bars`, …).
+`content-length` ist die exakte Zahl; fehlt der Header, wird die Textlänge
+genommen und als **Näherung getrennt gezählt**. Eine Näherung wird als Näherung
+ausgewiesen — Regel 4 gilt auch für Messwerte über uns selbst.
+
+Ausgeliefert in `/api/health` unter `bandwidth`. Solange nichts gewogen wurde,
+meldet der Worker `measured:false`, und die Anzeige schreibt „nicht gemessen"
+statt einer beruhigenden Null. Der Wert ist ausdrücklich als **untere Schranke**
+gekennzeichnet: er kennt weder den Verbrauch vor dieser Version noch andere
+Clients.
+
+**Bonus:** Ein Tiingo-429 heißt jetzt nicht mehr pauschal „Rate-Limit". Enthält
+die Antwort das Wort *bandwidth*, steht im Fehlertext, dass sich das erst zum
+Monatswechsel löst und nicht durch Warten. Genau diese Verwechslung hat am 30.08.
+in die Irre geführt.
+
+## 2. Symbolbegrenzter IEX-Abruf mit Selbsterkennung (§10 A / §14.2)
+
+**Befund bestätigt:** `tiingoIexSnapshot(env, symbols)` nahm eine Symbolliste
+entgegen, holte intern aber `/iex` für den *ganzen* Markt und filterte lokal. Für
+20 Titel wurden ~12.000 übertragen.
+
+Das Audit sagt „prüfen, ob Tiingo einen symbolbegrenzten Abruf unterstützt" — es
+weiß es nicht, und ich kann es hier nicht prüfen (kein Token, und der Zugang
+antwortet mit 429). Blind umstellen wäre geraten; von Hand testen verschiebt die
+Lösung auf den 1. September.
+
+Deshalb probiert die App es **einmal selbst** und merkt sich das Ergebnis in D1:
+
+- `?tickers=` versuchen → kommen die angefragten Symbole zurück **und** ist die
+  Antwort nicht offensichtlich der ganze Markt → ab jetzt immer schmal.
+- Fehler, leere Antwort oder ignorierter Parameter → ab jetzt wieder
+  Whole-Market. Nach sieben Tagen wird erneut probiert, falls Tiingo nachrüstet.
+
+**Der Rückfall ist der alte, funktionierende Weg — nicht ein leeres Ergebnis.**
+Ein misslungener Sparversuch darf die Quote nicht verschlechtern, nur die
+Ersparnis kosten. Die Erkennung ist streng: eine leere Antwort zählt nicht als
+Erfolg, sonst hätte ein Versuch außerhalb der Handelszeit „funktioniert"
+gemeldet und danach dauerhaft nichts mehr gefunden.
+
+## 3. Sessionabhängige Radar-Taktung (§10 B / §15)
+
+Der Radar-Cache lag pauschal bei 50 Sekunden — bei minütlichem Cron rund 1.440
+Whole-Market-Downloads am Tag, auch nachts um drei, auch samstags. Neu gestaffelt
+nach Marktphase: Opening und regulärer Handel unverändert 50 s, Premarket 2–3 min,
+After-Hours 3–5 min, geschlossener Markt 15 min. Rechnerisch rund 60 % weniger
+Downloads, und die Ersparnis kommt vollständig aus den 16 handelsfreien Stunden.
+
+**Regel 4 gewahrt, und das war hier nicht selbstverständlich** — längeres Cachen
+macht Daten älter: Der Radar hat 0 % BUY-Gewicht, der bestehende
+Alterungsfilter (`ageMin <= maxAge`) bleibt unverändert, und eine **unbekannte
+Phase bekommt den sparsamen Wert, nicht den schnellen**. BOATS ist unangetastet —
+die Overnight-Session läuft genau dann, wenn der IEX-Radar schweigt.
+
+## 4. R11 — der Fallstrick, den das Audit nicht sieht
+
+`MOM_MIN_DOLLARVOL = 2 Mio. $` ist **keine absolute Größe**. Der Wert ist auf den
+IEX-Anteil kalibriert; die Herleitung steht seit v3.8.1 im Code (20 Mio. $ hätten
+fast alles ausgesperrt). Wechselt der Radar auf einen konsolidierten Feed —
+was das Audit empfiehlt und ein Alpaca-Upgrade nahelegt — liefert derselbe Titel
+das 30- bis 50-fache Volumen. **Dieselbe Schwelle wäre trivial erfüllbar und das
+Einlassgitter faktisch aus.**
+
+Es würde nicht auffallen: Die Liste würde nicht leer, sondern länger — und eine
+längere Kandidatenliste sieht nach Erfolg aus. Die schlimmste Sorte Fehler in
+diesem Projekt.
+
+Die Schwelle hängt jetzt an der Marktbreite (`RADAR_FEED`), nicht an einer festen
+Zahl. Fail-closed: ein **unbekannter** Feed bekommt den strengen
+Gesamtmarkt-Faktor. Ein **fehlender** Eintrag bekommt IEX — das ist der belegte
+Ist-Zustand, und eine Verschärfung ins Blaue hätte die Liste geleert, was
+seinerseits wie ein Defekt aussieht.
+
+Der Faktor 35 ist eine Herleitung (Mitte der 2–3-%-Spanne), keine Messung, und
+gehört nach dem ersten Lauf mit konsolidiertem Feed anhand von `radarGateStats`
+nachkalibriert.
+
+## 5. Suite 51 · `tests/bandwidth-feed.mjs` — und R9 erledigt
+
+Beide bisher eigenständigen Suiten (48, 50) und die neue 51 laufen jetzt mit
+`npm run check`. Insgesamt **52 Prüfläufe**.
+
+| # | Sabotage | Ergebnis |
+|---|---|---|
+| 1 | unbekannter Feed bekommt die milde IEX-Schwelle | fällt |
+| 2 | Opening wird mitgedrosselt | fällt |
+| 3 | unbekannte Phase lädt häufiger statt sparsamer | fällt |
+| 4 | misslungener Sparversuch liefert leere Liste | fällt |
+| 5 | unbrauchbare Größenangabe als 0 Bytes gebucht | fällt |
+| 6 | fehlende Messung als 0 GB gemeldet | fällt |
+| 7 | Alterungsfilter mit aufgeweicht | fällt |
+| 8 | Gitter ignoriert den Feed wieder | **erst blind** |
+| 9 | leere Antwort gilt als tauglicher Subset-Abruf | fällt |
+| 10 | Client rechnet trotz `measured:false` weiter | fällt |
+| 11 | Bandbreiten-429 wieder ununterscheidbar | fällt |
+| 12 | SIP-Faktor so hoch, dass die Liste leer bleibt | fällt |
+
+**NK8 lief durch.** Die Suite prüfte `momMinDollarVol` in Isolation — und die
+blieb bei der Sabotage ja korrekt. Der Nutzer trifft aber
+`momentumRadarAllowed`. Die Suite führt das Gitter jetzt selbst aus und prüft die
+Wirkung: derselbe Titel muss bei IEX durchkommen und bei SIP scheitern.
+**Vierte Wiederholung der Lehre:** prüfen, was den Nutzer trifft, nicht was
+leicht zu prüfen ist.
+
+NK12 sichert die Gegenrichtung ab — ein zu hoher Faktor würde die Liste leeren,
+und das ist der Fehler aus v3.8.1.
+
+## 6. Vier bestehende Tests angepasst
+
+Vier Prüfungen in `safety-regression.mjs` klebten an der genauen Schreibweise von
+`radarCandidateAllowed(r,true)` und `MOM_MIN_DOLLARVOL`. Der **Zweck** ist
+unverändert geprüft; die Regexe hingen an der Argumentzahl. Ein Test, der die
+Schreibweise statt der Sache prüft, blockiert richtige Änderungen.
+
+## 7. Nachtrag aus dem Bildschirmfoto vom 30.08., 23:13
+
+Das Bild zeigte v3.31.0 mit **„Fehler: Nicht autorisiert"** und darunter dreimal
+Gelb: Datenquelle nicht bestimmbar · Marktbreite nicht bestimmbar · Bandbreite
+nicht gemessen. Alle drei Zeilen waren technisch korrekt — und in der Summe
+irreführend. Die Ursache war kein Datenproblem: **auf dem Gerät fehlte der
+Zugriffs-Token.** Er liegt im lokalen Speicher des Browsers und wandert nicht
+mit; wer die App am PC eingerichtet hat und sie am Handy öffnet, bekommt auf
+jede `/api/`-Route ein 401.
+
+Das ist Lehre 8aa in Reinform: derselbe Satz bei Ausfall und bei leerem
+Ergebnis. `feedInfo` und `bandwidthNote` kennen den 401-Fall jetzt und nennen
+ihn beim Namen, samt Weg zur Lösung und dem ausdrücklichen Hinweis, dass es
+**kein Problem des Datenanbieters** ist.
+
+| # | Sabotage | Ergebnis |
+|---|---|---|
+| 13 | 401-Fall wieder als „nicht bestimmbar" gemeldet | fällt |
+| 14 | Flag wird nach erfolgreichem Scan nicht zurückgenommen | **erst blind** |
+| 15 | Bandbreite wird trotz 401 behauptet | fällt |
+
+**NK14 lief durch.** Der Regex `/authDenied = false/` traf die *Deklaration*
+und war damit immer erfüllt. Geprüft werden muss die Rücknahme im
+**Erfolgspfad** — sonst bliebe der Token-Hinweis stehen, nachdem der Nutzer ihn
+eingetragen hat, und die App würde einen behobenen Fehler weitermelden. Fünfte
+Wiederholung derselben Lehre: der Test muss die Stelle treffen, die den Nutzer
+trifft.
+
+## 8. Nachtrag: der ZWEITE Whole-Market-Download
+
+Beim Nachrechnen, ob die Maßnahmen reichen, kam heraus: **der Cron lädt den
+ganzen Markt zweimal je Doppelminute**, nicht einmal. Einmal für den Radar
+(`stockMinute%2===1`), einmal für den Deep-Scan, der über
+`freshestStockQuotesBatch` → `tiingoIexSnapshot` frische Kurse für ~20 Titel
+holt und dafür ebenfalls `/iex` zieht. Rund 1.440 Downloads am Tag, nicht 720 —
+die Radar-Taktung allein hätte also nur die Hälfte gedeckelt.
+
+Der Deep-Scan braucht 20 Zeilen, die der Radar Sekunden vorher heruntergeladen
+hat. Der Radar hält seinen Rohabruf jetzt kurz vor (`iexRawMemo`), der Deep-Scan
+bedient sich daraus. Ein Download statt zwei — **unabhängig davon, ob
+`?tickers=` funktioniert.**
+
+**Regel 4 ist hier scharf**, weil Wiederverwendung leicht alte Kurse frisch
+aussehen lässt. Zwei Sicherungen: Der Vorrat wird nur innerhalb des
+Frischefensters der aktuellen Marktphase benutzt (120 s im Handel, 900 s sonst
+— dieselben Fenster, gegen die `classifyQuoteFreshness` ohnehin prüft), und die
+**Zeitstempel der Zeilen bleiben unverändert**. Es wird nichts auf „jetzt"
+gesetzt; ein zu alter Kurs fällt durch dieselbe Prüfung wie vorher. Die
+Optimierung spart einen Download, sie fälscht keinen Wert.
+
+| # | Sabotage | Ergebnis |
+|---|---|---|
+| 16 | Wiederverwendung entfernt, zweiter Download kehrt zurück | fällt |
+| 17 | Vorrat ohne Altersgrenze benutzt | fällt |
+| 18 | leerer Treffer liefert leere Liste statt Abruf | fällt |
+| 19 | Frischefenster im Handel auf 15 Minuten aufgeweicht | fällt |
+
+### Hochrechnung — mit den tatsächlichen Werten aus dem Code
+
+Downloads je Monat: **~103.700 → ~15.200.**
+
+| Antwortgröße | vorher | nachher |
+|---|---|---|
+| 0,6 MB | 61 GB | **8,9 GB** |
+| 1,2 MB (Audit-Schätzung) | 122 GB | **17,8 GB** |
+| 2,0 MB | 203 GB | **29,6 GB** |
+
+Das sind Hochrechnungen aus den Taktwerten, **keine Messung** — die
+Antwortgröße ist weiterhin die unbekannte Größe. Genau sie zählt die App ab
+diesem Deploy mit.
+
+## Was jetzt funktioniert
+
+Ab dem nächsten Deploy zählt die App mit, **wie viele Bytes jeder Datenpfad
+verbraucht**. Nach ein bis zwei Tagen steht schwarz auf weiß, was die 40 GB
+frisst — statt der Schätzung aus dem Audit. Bis dahin steht ehrlich „nicht
+gemessen" da.
+
+Nachts, am Wochenende und an Feiertagen lädt der Radar alle 15 Minuten statt
+jede Minute. Im Opening ändert sich nichts.
+
+Und die App probiert selbstständig, ob Tiingo den schmalen Abruf beherrscht.
+Wenn ja, sinkt der größte Posten sofort um etwa den Faktor 600 (20 Symbole statt
+12.000). Wenn nein, läuft alles wie bisher weiter. Das Ergebnis steht im Log
+unter `iex_subset_mode`.
+
+## Was noch offen ist
+
+- **Die Zahlen fehlen noch.** Erst nach ein, zwei Tagen Laufzeit lässt sich
+  sagen, ob die Schätzung des Audits stimmt und ob die Maßnahmen reichen.
+- **R10** (Client-Takt hängt am Anbieternamen) bleibt offen — jetzt aber mit
+  Messgrundlage in Sicht.
+- **Der Faktor 35 für SIP ist hergeleitet, nicht gemessen.**
+- **BOATS** (§10 C, §17) ist unangetastet. Der Pfad ist derzeit nicht der
+  Hauptverdächtige; die Messung wird das zeigen.
+
+---
+
 # v3.31.0 — Datenquelle und Marktbreite werden ehrlich
 
 **Anlass:** Bandbreiten-Audit des ChatGPT-Strangs vom 30.08.2026.

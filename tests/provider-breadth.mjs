@@ -82,7 +82,7 @@ function ladeClient() {
   ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
   ctx.Notification.permission = 'denied'; ctx.Notification.requestPermission = async () => 'denied';
   vm.createContext(ctx);
-  vm.runInContext(app + '\n;globalThis.__fp={ feedInfo, bandwidthNote, FEED_BREADTH, el:__elFor };', ctx, { filename: 'app.js' });
+  vm.runInContext(app + '\n;globalThis.__fp={ feedInfo, bandwidthNote, FEED_BREADTH, el:__elFor, setAuthDenied:(v)=>{authDenied=v;} };', ctx, { filename: 'app.js' });
   return ctx.__fp;
 }
 
@@ -190,4 +190,36 @@ function ladeClient() {
     'Die Anzeige muss ihre Wirkungslosigkeit selbst aussprechen');
 }
 
-console.log('✓ FusionPulse v3.31.0 provider/breadth (Audit §28/§29) regressions: OK');
+/* ─── 5 · v3.32.0 · Der 401-Fall darf nicht wie ein Datenproblem aussehen ── */
+{
+  const C = ladeClient();
+  /* Ohne Token liefert KEINE /api/-Route Daten. Vorher stand dann dreimal
+     gelb „nicht bestimmbar" da, und der Nutzer suchte den Fehler beim
+     Anbieter. Lehre 8aa in Reinform. */
+  const code2 = app.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(/if\s*\(authDenied\)/.test(code2), 'feedInfo/bandwidthNote muessen den 401-Fall kennen');
+  assert.ok(/authDenied\s*=\s*true/.test(code2), 'Ein 401 muss das Flag setzen');
+  /* NK14 hat die erste Fassung dieser Zeile als blind entlarvt: der Regex
+     /authDenied = false/ traf die DEKLARATION und war damit immer erfuellt.
+     Geprueft werden muss die Ruecknahme im ERFOLGSPFAD — sonst bliebe der
+     Token-Hinweis stehen, nachdem der Nutzer ihn eingetragen hat, und die App
+     wuerde einen behobenen Fehler weitermelden. */
+  assert.match(code2, /lastSuccessfulScanTs = Date\.now\(\);[^\n]*authDenied = false/,
+    'Ein erfolgreicher Scan muss das Flag zuruecknehmen, sonst bleibt der Hinweis nach dem Eintragen stehen');
+
+  const fi = C.feedInfo({ provider: 'Tiingo' }, {});
+  assert.equal(fi.provider, 'Tiingo', 'Ohne 401 bleibt alles wie gehabt');
+
+  /* Und mit 401: die Ursache muss dastehen, nicht die Diagnose. */
+  C.setAuthDenied(true);
+  const fi2 = C.feedInfo({ provider: 'Tiingo' }, {});
+  assert.match(fi2.label, /Token/, 'Bei 401 muss der fehlende Token genannt werden, nicht „nicht bestimmbar"');
+  assert.match(fi2.detail, /Einstellungen/, 'Der Weg zur Loesung muss dabeistehen');
+  assert.match(fi2.detail, /KEIN Problem des Datenanbieters/, 'Die Fehldeutung muss ausdruecklich ausgeschlossen werden');
+  assert.notEqual(fi2.breadth, 'full', 'Auch im 401-Fall keine volle Marktbreite behaupten');
+  const bw2 = C.bandwidthNote({ bandwidth: { measured: true, usedGb: 5, capGb: 40 } });
+  assert.equal(bw2.measured, false, 'Bei 401 darf keine Bandbreitenzahl behauptet werden — sie kann gar nicht abgerufen worden sein');
+  C.setAuthDenied(false);
+}
+
+console.log('✓ FusionPulse v3.32.0 provider/breadth (Audit §28/§29) regressions: OK');

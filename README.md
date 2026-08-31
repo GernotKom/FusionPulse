@@ -1,4 +1,4 @@
-# FusionPulse v3.31.0
+# FusionPulse v3.32.0
 
 Autonomer Momentum- und Opportunity-Wächter für Krypto (Bitpanda Fusion) und
 liquide US-Aktien, betrieben als Cloudflare Worker mit PWA-Oberfläche.
@@ -33,17 +33,14 @@ Ab v3.31.0 gilt: **eine neue Version legt keine neue Markdown-Datei an.**
 
 ```bash
 npm install
-npm run check      # Syntaxprüfung + 47 Suiten + Service-Worker-Prüfstand
+npm run check      # Syntaxprüfung + 52 Prüfläufe + Service-Worker-Prüfstand
 npm run dev        # wrangler dev (synchronisiert vorher die Version)
 npm run deploy     # wrangler deploy (synchronisiert vorher die Version)
 ```
 
-Zwei weitere Suiten liegen bewusst in eigenen Dateien und laufen noch **nicht**
-mit `npm run check` (Rückstandspunkt R9):
+Seit v3.32.0 laufen alle Suiten mit `npm run check`. Zusätzlich:
 
 ```bash
-node tests/coin-scope.mjs        # Suite 48 · Coin-Skope im Fokusfenster
-node tests/provider-breadth.mjs  # Suite 50 · Datenquelle und Marktbreite
 npm run audit:reach              # sucht Bedienelemente hinter unsichtbaren Scrollbereichen
 ```
 
@@ -80,14 +77,15 @@ Keine Schlüssel im Frontend oder im Repository.
 
 | Variable | Werte | Wirkung |
 |---|---|---|
-| `ALPACA_FEED` | `iex` (Vorgabe) \| `sip` | `sip` erfordert ein Alpaca-Abo mit konsolidiertem Feed |
+| `ALPACA_FEED` | `iex` (Vorgabe) \| `sip` | Feed für Alpaca-Live-Quotes; `sip` erfordert ein entsprechendes Abo |
+| `RADAR_FEED` | `iex` (Vorgabe) \| `sip` | **Maßstab der Umsatzschwelle.** Muss mitgezogen werden, wenn der Radar je auf einen konsolidierten Feed wechselt — sonst ist das Einlassgitter faktisch aus (R11) |
 | `TIINGO_STOCKS_MODE` | `primary` | Tiingo als primäre Aktienquelle |
 | `SERPAPI_MONTHLY_BUDGET` | Zahl, Vorgabe 90 | hartes Monatsbudget des Crowd-Sensors |
 
-**Vor einem Wechsel auf `sip` unbedingt `HANDOVER.md`, Punkt R11 lesen.**
-`MOM_MIN_DOLLARVOL` ist auf den IEX-Anteil (2–3 % des Volumens) kalibriert; ein
-konsolidierter Feed macht dieselbe Schwelle um Größenordnungen leichter
-erfüllbar, das Einlassgitter wäre faktisch aus.
+Seit v3.32.0 hängt `MOM_MIN_DOLLARVOL` an `RADAR_FEED` statt an einer festen
+Zahl. Der Umrechnungsfaktor ist **hergeleitet, nicht gemessen** — nach dem
+ersten Lauf mit konsolidiertem Feed anhand von `radarGateStats`
+nachkalibrieren. Siehe `HANDOVER.md`, R11.
 
 ### D1
 
