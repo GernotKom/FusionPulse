@@ -18,7 +18,19 @@ function stubEl() {
       setProperty(k,v){ m.set(k,String(v)); },
       removeProperty(k){ const v=m.get(k)??''; m.delete(k); return v; },
       getPropertyValue(k){ return m.get(k)??''; },
-    };})(), dataset: {}, classList: { add(){}, remove(){}, toggle(){}, contains(){return false;} },
+    };})(), dataset: {},
+    /* v3.32.7: `classList` verwarf bisher alles. Damit liess sich die FARBE
+       einer Anzeige nie pruefen — nur ihr Text. Die Klassen werden jetzt
+       mitgeschrieben (`_classes`), OHNE `contains()` zu aendern: das gab
+       bisher immer `false` zurueck, und Code, der sich darauf verlaesst,
+       soll sich nicht unbemerkt anders verhalten. Nur Beobachtung. */
+    classList: (()=>{ const c=new Set(); return {
+      _classes:c,
+      add(...k){ k.forEach(x=>c.add(x)); },
+      remove(...k){ k.forEach(x=>c.delete(x)); },
+      toggle(k,on){ if(on===undefined){ c.has(k)?c.delete(k):c.add(k); } else if(on){ c.add(k); } else { c.delete(k); } },
+      contains(){ return false; },
+    };})(),
     children: [], value: '', textContent: '', innerHTML: '', checked: false, hidden: false,
     addEventListener(){}, removeEventListener(){}, appendChild(){}, remove(){}, insertAdjacentHTML(){},
     setAttribute(){}, removeAttribute(){}, getAttribute(){return null;}, focus(){}, click(){}, scrollIntoView(){},
@@ -126,7 +138,15 @@ export function loadClient(overrides = {}) {
   stockOrderPlan, orderPlan,
   momentumOverlayRow, momentumModeOn, applyTradeModeView, sizeModeFixed, fixedTradeEur,
   MOMENTUM_VIEW_FIELDS, MIN_REWARD_RISK_FIXED,
-  get focusStock(){return focusStock;}, set focusStock(v){focusStock=v;}
+  get focusStock(){return focusStock;}, set focusStock(v){focusStock=v;},
+  /* v3.32.7: Die Systemleiste war bisher nur per Regex pruefbar. Drei
+     Fehlversionen hintereinander (3.32.2 / 3.32.3 / 3.32.6) sind genau daran
+     vorbeigelaufen: Der Quelltext sah jedes Mal richtig aus, das Verhalten war
+     es nicht. Ausgefuehrt wird der Unterschied sichtbar. */
+  renderResourceStrip,
+  get health(){return health;}, set health(v){health=v;},
+  get authDenied(){return authDenied;}, set authDenied(v){authDenied=v;},
+  get lastHttpStatus(){return lastHttpStatus;}, set lastHttpStatus(v){lastHttpStatus=v;}
 };`;
   const src = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   vm.createContext(ctx);

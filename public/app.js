@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.32.6 — Frontend
+   FusionPulse v3.32.7 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2459,7 +2459,31 @@ function renderResourceStrip(){
     || (health && Array.isArray(health.components))
     || (lastSuccessfulScanTs && Date.now()-lastSuccessfulScanTs < 300_000);
   if(bedientUns && authDenied){ authDenied=false; authHintText=''; if(lastHttpStatus===401) lastHttpStatus=0; }
-  if(authDenied || health?.protected===true){
+  /* ═══════ v3.32.7 · EIN FELD UEBER DIE INSTALLATION ALS URTEIL UEBER DAS
+     GERAET GELESEN ════════════════════════════════════════════════════════
+     Hier stand `health?.protected===true`. `/api/health` liefert dieses Feld
+     als `protected: !!env.APP_TOKEN` — es sagt „diese Installation verlangt
+     einen Token" und ist WAHR, sobald in Cloudflare ueberhaupt ein APP_TOKEN
+     gesetzt ist. Auch bei einer voll autorisierten Antwort mit komplettem
+     Statusblock.
+
+     Die Folge, gemeldet am 01.09.: Der Nutzer traegt den richtigen Token ein,
+     die Daten laufen, alle Einzelampeln gruen — und die Systemleiste sagt
+     „Zugriffs-Token fehlt auf diesem Geraet, es werden KEINE Daten geladen".
+     Vorher war sie gruen, weil noch gar kein APP_TOKEN gesetzt war. Die Meldung
+     erschien also GENAU DANN, als der Schutz zu wirken begann.
+
+     Das ist derselbe Fehlertyp wie in 3.32.2/3.32.3/3.32.6, eine Ebene hoeher:
+     nicht mehr ein klebriger Merker, sondern ein Feld mit der falschen
+     Bedeutung. `protected` beschreibt die INSTALLATION, `authenticated` den
+     ANRUFER. Nur die zweite Frage darf die Leiste rot faerben.
+
+     Merksatz: Ein Feld, das eine Eigenschaft des Servers beschreibt, darf nie
+     als Urteil ueber den Client gelesen werden.
+
+     `=== false` und nicht `!== true`: ein Worker vor v3.32.7 sendet das Feld
+     nicht, und „nicht gesagt" ist nicht „verneint". */
+  if(authDenied || health?.authenticated===false){
     out.textContent='Kein Zugriff · Zugriffs-Token fehlt auf diesem Gerät — es werden KEINE Daten geladen, weder Aktien noch Krypto'+(authHintText?' · '+authHintText:'');
     box.classList.remove('warn','orange','ok'); box.classList.add('err');
     box.dataset.tip='Die App ist geladen, aber jede Datenabfrage wird vom eigenen Server mit „Nicht autorisiert" abgewiesen. Das betrifft ALLE Bereiche: Krypto läuft über dieselbe geschützte Route wie Aktien. Zahnrad → „Zugriffs-Token" eintragen und speichern. Kein Problem der Datenanbieter.'+(authHintText?' — '+authHintText:'');

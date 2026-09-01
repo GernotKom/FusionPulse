@@ -272,7 +272,7 @@ function ladeClient() {
   assert.ok(strip.length > 500, 'Schnitt renderResourceStrip ist leer — Anker pruefen');
 
   /* Der gemeldete Fall: 401, keine Statusauskunft, Ampel stand auf gruen. */
-  assert.match(strip, /if\(authDenied \|\| health\?\.protected===true\)/,
+  assert.match(strip, /if\(authDenied \|\| health\?\.authenticated===false\)/,
     'Bei fehlendem Token muss die Ampel VOR der Levelberechnung abbiegen');
   assert.ok(/authDenied[\s\S]{0,600}?classList\.add\('err'\)/.test(strip),
     'Der 401-Fall muss ROT sein, nicht gruen');
@@ -397,4 +397,35 @@ function ladeClient() {
     'Ein fehlender Mittelwert darf nicht als 0 KB erscheinen');
 }
 
-console.log('✓ FusionPulse v3.32.5 provider/breadth (Audit §28/§29) regressions: OK');
+/* ─── 9 · v3.32.7 · `protected` ist keine Aussage ueber dieses Geraet ────── */
+{
+  const acode = app.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const wcode = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  /* Der gemeldete Fall vom 01.09.: Der richtige Token ist eingetragen, die
+     Daten laufen, alle Einzelampeln gruen — und die Systemleiste meldet
+     „Zugriffs-Token fehlt auf diesem Geraet". Ursache: `/api/health` liefert
+     `protected: !!env.APP_TOKEN` — eine Eigenschaft der INSTALLATION, wahr
+     sobald ueberhaupt ein APP_TOKEN gesetzt ist. Der Client las das als
+     Urteil ueber den Anrufer. */
+  assert.ok(!/health\?\.protected===true/.test(acode),
+    '`protected` beschreibt die Installation und darf die Systemleiste NIE rot faerben');
+  assert.match(acode, /if\(authDenied \|\| health\?\.authenticated===false\)/,
+    'Nur eine Aussage ueber DIESE Anfrage (`authenticated`) darf rot faerben');
+
+  /* `=== false`, nicht `!== true`: ein Worker vor v3.32.7 sendet das Feld gar
+     nicht, und „nicht gesagt" ist nicht „verneint". Sonst waere jede aeltere
+     Installation ab dem Update dauerhaft rot — derselbe Fehler in neuer Form. */
+  assert.ok(!/health\?\.authenticated!==true/.test(acode),
+    'Ein fehlendes Feld darf nicht als Verneinung gelten — sonst faerbt das Update alte Worker rot');
+
+  /* Und die Gegenseite: der Worker muss das Feld ueberhaupt liefern, in BEIDEN
+     Antworten. Fehlte es in der autorisierten, bliebe die Leiste stumm; fehlte
+     es in der abgewiesenen, meldete sie einen echten 401 nicht mehr. */
+  assert.match(wcode, /protected:true,authenticated:false/,
+    'Die abgewiesene Health-Antwort muss `authenticated:false` sagen');
+  assert.match(wcode, /protected: !!env\.APP_TOKEN,[\s\S]{0,200}?authenticated: true,/,
+    'Die autorisierte Health-Antwort muss `authenticated:true` sagen');
+}
+
+console.log('✓ FusionPulse v3.32.7 provider/breadth (Audit §28/§29) regressions: OK');

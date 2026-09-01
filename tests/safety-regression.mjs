@@ -4842,4 +4842,58 @@ console.log('✓ FusionPulse v3.28.0 ride/journal regressions: OK');
   }
 }
 
+/* ═══ v3.32.7 · Die Systemleiste, AUSGEFUEHRT statt gelesen ══════════════════
+   Drei Fassungen hintereinander (3.32.2, 3.32.3, 3.32.6) haben denselben
+   Fehler nicht beseitigt, sondern verschoben — und alle drei hatten gruene
+   Regex-Tests. Der Grund ist immer derselbe: Ein Muster im Quelltext beweist,
+   dass etwas DASTEHT, nicht dass es das Richtige TUT.
+
+   Gemeldet am 01.09.: richtiger Token eingetragen, Daten laufen, alle
+   Einzelampeln gruen — Systemleiste rot mit „Zugriffs-Token fehlt auf diesem
+   Geraet". Ursache: `/api/health` liefert `protected: !!env.APP_TOKEN`. Das
+   beschreibt die INSTALLATION („hier ist ein Token noetig") und ist wahr,
+   sobald ueberhaupt einer gesetzt ist. Der Client las es als Urteil ueber den
+   ANRUFER. Die Meldung erschien also genau dann, als der Schutz zu wirken
+   begann. */
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const strip = (health) => {
+    const C = loadClient();
+    C.health = health;
+    C.renderResourceStrip();
+    return { text: C.el('#resourceText').textContent,
+             cls: [...C.el('#resourceStrip').classList._classes] };
+  };
+  const OK_STATUS = { crypto:{state:'ok'}, stocks:{state:'ok'}, alpaca:{state:'ok'} };
+
+  /* 1 · Der gemeldete Fall. Geschuetzte Installation, autorisierter Anrufer. */
+  const a = strip({ ok:true, protected:true, authenticated:true, status:OK_STATUS });
+  assert.ok(!/Zugriffs-Token fehlt/.test(a.text),
+    'Eine geschuetzte Installation mit gueltigem Token darf NICHT „Token fehlt" melden');
+  assert.ok(!a.cls.includes('err'),
+    'Und sie darf dabei nicht rot sein — genau das war der Befund vom 01.09.');
+
+  /* 2 · Die Gegenprobe: ein echt abgewiesener Anrufer MUSS rot bleiben. Ohne
+     diesen Fall waere der Fix ein Rueckbau von v3.32.2. */
+  const b = strip({ ok:true, protected:true, authenticated:false });
+  assert.match(b.text, /Zugriffs-Token fehlt/,
+    'Ein abgewiesener Anrufer muss weiterhin klar gemeldet werden');
+  assert.ok(b.cls.includes('err'), 'Und zwar rot, nicht gelb oder orange');
+  assert.match(b.text, /weder Aktien noch Krypto/,
+    'Es muss dastehen, dass AUCH Krypto betroffen ist — dieselbe geschuetzte Route');
+
+  /* 3 · Ein Worker vor v3.32.7 sendet `authenticated` gar nicht. „Nicht
+     gesagt" ist nicht „verneint" — sonst faerbt allein das Client-Update
+     jede aeltere Installation dauerhaft rot. */
+  const c = strip({ ok:true, protected:true, status:OK_STATUS });
+  assert.ok(!c.cls.includes('err'),
+    'Ein fehlendes `authenticated` darf nicht als Verneinung gelten');
+
+  /* 4 · Und der ungeschuetzte Fall bleibt, wie er war. */
+  const d = strip({ ok:true, protected:false, authenticated:true, status:OK_STATUS });
+  assert.ok(!d.cls.includes('err'), 'Ohne APP_TOKEN war und bleibt die Leiste nicht rot');
+}
+
+console.log('✓ FusionPulse v3.32.7 Systemleiste (ausgefuehrt): OK');
+
 console.log('✓ FusionPulse v3.29.0 evening-list geometry/study regressions: OK');

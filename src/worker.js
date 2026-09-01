@@ -6770,7 +6770,18 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/api/health') {
-      if (env.APP_TOKEN && !authed(request, url, env)) return json({ok:true,version:APP_VERSION,protected:true},200,{ 'cache-control':'no-store' });
+      /* ═══ v3.32.7 · `protected` BESCHREIBT DIE INSTALLATION, NICHT DEN ANRUFER ═══
+         `protected: !!env.APP_TOKEN` heisst „diese Instanz verlangt einen
+         Token" — das ist eine Eigenschaft des Deployments und bleibt wahr,
+         auch wenn der Anrufer sauber autorisiert ist. Der Client hat dieses
+         Feld bis v3.32.6 als „auf diesem Geraet fehlt der Token" gelesen und
+         war deshalb ab dem Moment dauerhaft rot, in dem ueberhaupt ein
+         APP_TOKEN gesetzt war.
+         Neu ist `authenticated`: eine Aussage ueber DIESE Anfrage. Nur sie
+         darf die Systemleiste rot faerben. Alte Clients ignorieren das Feld,
+         alte Worker liefern es nicht — die Pruefung im Client ist deshalb
+         ausdruecklich `=== false` und nicht `!== true`. */
+      if (env.APP_TOKEN && !authed(request, url, env)) return json({ok:true,version:APP_VERSION,protected:true,authenticated:false},200,{ 'cache-control':'no-store' });
       /* v3.32.0: aus D1 nachladen, sonst meldet eine frisch gestartete
          Worker-Instanz „nichts gemessen", obwohl im selben Monat schon
          gemessen wurde. Isolate-Neustarts sind bei Workers der Normalfall. */
@@ -6788,7 +6799,8 @@ export default {
         varVersion: env.APP_VERSION || null,
         versionVarInSync: !env.APP_VERSION || env.APP_VERSION === APP_VERSION,
         configured: !!env.FUSION_API_KEY,
-        protected: !!env.APP_TOKEN,
+        protected: !!env.APP_TOKEN,   // Eigenschaft der INSTALLATION
+        authenticated: true,          // v3.32.7: Aussage ueber DIESE Anfrage — bis hierher kommt nur, wer autorisiert ist
         stocksConfigured: tiingoStocksMode(env)==='primary' ? !!env.TIINGO_API_TOKEN : !!env.TWELVE_API_KEY,
         stocksProvider: tiingoStocksMode(env)==='primary' ? 'Tiingo IEX' : 'Twelve Data',
         tiingoStocksMode: tiingoStocksMode(env),
