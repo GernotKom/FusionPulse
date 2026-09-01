@@ -321,4 +321,61 @@ function ladeClient() {
     'Die Widerspruchsregel muss VOR der roten Abbiegung greifen, sonst wirkt sie nie');
 }
 
-console.log('✓ FusionPulse v3.32.3 provider/breadth (Audit §28/§29) regressions: OK');
+/* ─── 9 · v3.32.4 · Die Diagnose muss LESBAR sein ───────────────────────── */
+{
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  const ccode = css.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  /* Die Grundregel bleibt: schmal und einzeilig im Normalfall. */
+  assert.match(ccode, /\.resource-strip span\{[^}]*white-space:nowrap/,
+    'Im Normalfall bleibt die Leiste einzeilig — sonst faellt die Kopfzeile auseinander');
+
+  /* Aber im Fehlerfall darf sie nicht kuerzen. Sonst ist die dreiteilige
+     Diagnose aus v3.32.1 unsichtbar — der Fehler aus 8aa. */
+  assert.match(ccode, /\.resource-strip\.err span[^{]*\{[^}]*white-space:normal/,
+    'Im Fehlerfall muss der Text umbrechen duerfen, nicht abgeschnitten werden');
+  assert.match(ccode, /\.resource-strip\.err span[^{]*\{[^}]*overflow:visible/,
+    'overflow:hidden wuerde die Diagnose weiterhin verschlucken');
+  assert.match(ccode, /\.resource-strip\.err[^{]*\{[^}]*max-width:none/,
+    'Die 190-px-Grenze muss im Fehlerfall entfallen');
+  /* Und der orange Fall („Zustand nicht abrufbar") genauso — er traegt
+     ebenfalls einen erklaerenden Satz. */
+  assert.match(ccode, /\.resource-strip\.orange span[^{]*\{[^}]*white-space:normal/,
+    'Auch die orange Meldung muss vollstaendig lesbar sein');
+}
+
+/* ─── 10 · v3.32.5 · Die Aufschluesselung muss IN der App stehen ─────────── */
+{
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  const acode = app.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  assert.ok(idx.includes('id="bwTable"'), 'Es braucht einen Platz fuer die Aufschluesselung im Aktienkopf');
+  assert.match(acode, /function renderBandwidthTable/, 'Die Tabelle muss gerendert werden');
+  /* NK38 hat die erste Fassung dieser Zeile als blind entlarvt: `/\.bwtab\{/`
+     traf auch die Regel INNERHALB des `@media`-Blocks. Die Basisregel konnte
+     also entfernt werden, ohne dass der Test es merkte — die Tabelle waere auf
+     dem Desktop unformatiert gewesen. Geprueft wird jetzt die Basisregel mit
+     ihrem Inhalt, ausserhalb jedes Media-Query. */
+  const cssBase = css.replace(/@media[^{]*\{(?:[^{}]|\{[^{}]*\})*\}/g, '');
+  assert.match(cssBase, /\.bwtab\{width:100%;border-collapse:collapse/,
+    'Die Basisregel der Tabelle muss ausserhalb jedes Media-Query stehen');
+  assert.match(cssBase, /\.bwtab th\{/, 'Auch die Kopfzeile braucht eine Regel');
+  assert.match(cssBase, /\.bwtable\{/, 'Der Behaelter braucht eine Regel');
+
+  /* Sie darf nur erscheinen, wenn wirklich gemessen wurde — sonst behauptet
+     eine leere Tabelle eine Messung, die es nicht gibt (Lehre 8f). */
+  const fn = acode.slice(acode.indexOf('function renderBandwidthTable'),
+                         acode.indexOf('function bandwidthNote'));
+  assert.ok(fn.length > 300, 'Schnitt renderBandwidthTable ist leer — Anker pruefen');
+  assert.match(fn, /bw\.measured!==true/, 'Ohne echte Messung darf keine Tabelle erscheinen');
+  assert.match(fn, /!Array\.isArray\(bw\.paths\) \|\| !bw\.paths\.length/,
+    'Auch eine leere Pfadliste darf keine Tabelle erzeugen');
+  assert.match(fn, /host\.hidden=true/, 'Im Zweifel bleibt sie verborgen');
+  /* Die mittlere Antwortgroesse ist die entscheidende Zahl — an ihr laesst
+     sich ablesen, welcher Pfad die Bandbreite frisst. */
+  assert.match(fn, /r\.avgKb!=null\?/, 'Die mittlere Antwortgroesse muss dastehen, fail-closed bei fehlendem Wert');
+  assert.ok(!/avgKb\)\|\|0|Number\(r\.avgKb\)\|\|0/.test(fn),
+    'Ein fehlender Mittelwert darf nicht als 0 KB erscheinen');
+}
+
+console.log('✓ FusionPulse v3.32.5 provider/breadth (Audit §28/§29) regressions: OK');

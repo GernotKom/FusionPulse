@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.32.3 — Frontend
+   FusionPulse v3.32.5 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2361,6 +2361,33 @@ function feedInfo(meta, opening) {
    Lehre aus 8f (`sectorLag`): eine UI, die einen dauerhaft leeren Wert
    auswertet, sieht aus wie eine Messung und ist keine. Fehlt das Feld, sagt
    die Anzeige das ausdruecklich, statt eine 0 zu zeigen. */
+let bwOpen=false;
+/* Tabelle der gemessenen Bandbreite je Pfad. Reine Anzeige: kein Score, keine
+   Ampel, keine Freigabe. Sie erscheint direkt unter dem Abzeichen, damit die
+   Zahl und ihre Herkunft nebeneinanderstehen. */
+function renderBandwidthTable(){
+  const host=$('#bwTable'); if(!host) return;
+  const bw=health?.bandwidth;
+  if(!bwOpen || !bw || bw.measured!==true || !Array.isArray(bw.paths) || !bw.paths.length){
+    host.innerHTML=''; host.hidden=true; return;
+  }
+  const total=bw.paths.reduce((s,r)=>s+(Number(r.bytes)||0),0)||1;
+  const NAMES={'iex-wholemarket':'Gesamtmarkt-Abruf (Radar)','iex-symbols':'Einzelabruf nach Symbolen',
+    'iex-chart':'Kursverläufe','boats-bulk':'Nachtsitzung (Sammelabruf)','boats-symbol':'Nachtsitzung (einzeln)',
+    'daily-bars':'Tagesbalken','news':'Nachrichten','fundamentals':'Kennzahlen','other':'Sonstiges'};
+  host.hidden=false;
+  host.innerHTML=`<table class="bwtab"><thead><tr>
+      <th>Datenpfad</th><th>Abrufe</th><th>Ø Antwort</th><th>Verbrauch</th><th>Anteil</th></tr></thead><tbody>`
+    + bw.paths.map(r=>`<tr>
+        <td>${esc(NAMES[r.path]||r.path)}<small>${esc(r.path)}</small></td>
+        <td>${num(r.calls,0)}</td>
+        <td>${r.avgKb!=null?num(r.avgKb,1)+' KB':'–'}</td>
+        <td>${num(r.gb,3)} GB</td>
+        <td>${Math.round((Number(r.bytes)||0)/total*100)} %</td></tr>`).join('')
+    + `</tbody></table>
+      <small class="hint">${esc(bw.note||'')} Gemessen seit dem Start dieser Worker-Version; ${num(bw.exactSamples,0)} exakte und ${num(bw.approxSamples,0)} geschätzte Messungen.</small>`;
+}
+
 function bandwidthNote(meta) {
   if (authDenied) {
     return { measured: false, tone: 'warn', label: 'Bandbreite: nicht abrufbar',
@@ -3332,9 +3359,24 @@ function renderStocks() {
   const srcLabel=$('#stockSourceLabel'); if(srcLabel){srcLabel.textContent=fi.label;srcLabel.title=fi.detail;}
   const feedBadge=$('#stockFeed'); if(feedBadge){
     const bw=bandwidthNote(health);
-    feedBadge.textContent=`${fi.provider?'🛰 '+fi.label:'🛰 '+fi.label} · ${bw.label}`;
+    /* ══════ v3.32.5 · DIE AUFSCHLUESSELUNG GEHOERT IN DIE APP ══════════════
+       Ich habe den Nutzer gebeten, `/api/health?t=…` von Hand in die
+       Adresszeile zu tippen, um die Bandbreite je Pfad zu sehen. Das war ein
+       schlechter Rat: enthaelt der Token ein `+`, `&`, `#`, `/` oder `%`,
+       zerlegt der Browser die Adresse falsch, der Server lehnt ab und es sieht
+       aus, als waere der Token kaputt. Die App verpackt den Wert korrekt — von
+       Hand getippt geht es schief. Der Test hat also einen Fehler vorgetaeuscht,
+       den es nicht gab.
+       Wer Zahlen zum Diagnostizieren braucht, soll sie dort finden, wo er
+       ohnehin hinsieht. Ein Klick auf das Feed-Abzeichen klappt die Tabelle
+       auf: Pfad, Abrufe, mittlere Antwortgroesse, Anteil. Genau die vier
+       Angaben, aus denen sich ablesen laesst, welcher Pfad die 40 GB frisst. */
+    feedBadge.textContent=`🛰 ${fi.label} · ${bw.label}${bw.measured?' ▾':''}`;
     feedBadge.className='badge '+(fi.tone==='err'||bw.tone==='err'?'err':fi.tone==='ok'&&bw.tone==='ok'?'ok':'warn');
-    feedBadge.title=fi.detail+'\n\n'+bw.detail;
+    feedBadge.title=fi.detail+'\n\n'+bw.detail+(bw.measured?'\n\nKlicken für die Aufschlüsselung je Datenpfad.':'');
+    feedBadge.style.cursor=bw.measured?'pointer':'';
+    feedBadge.onclick=bw.measured?()=>{bwOpen=!bwOpen;renderBandwidthTable();}:null;
+    renderBandwidthTable();
   }
   stockHeatmap(shown);
   // v3.3.9 P0: Das Fokusfenster ist unabhängig vom aktuell sichtbaren/

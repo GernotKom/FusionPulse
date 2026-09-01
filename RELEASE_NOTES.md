@@ -11,6 +11,84 @@ Die *Begründungen* und die daraus gezogenen Lehren stehen nicht hier, sondern i
 
 ---
 
+# v3.32.5 — Die Bandbreiten-Aufschlüsselung steht jetzt in der App
+
+**Mein schlechter Rat.** Ich hatte gebeten, `/api/health?t=…` von Hand in die
+Adresszeile zu tippen, um die Bandbreite je Datenpfad zu sehen. Das Ergebnis war
+`{"ok":true,"protected":true}` — und sah aus, als sei der Token kaputt.
+
+Er ist es nicht. Enthält ein Token Zeichen wie `+`, `&`, `#`, `/` oder `%`,
+zerlegt der Browser die Adresse falsch: `#` schneidet den Rest ab, `&` beendet
+den Parameter, `+` wird als Leerzeichen gelesen. Die App verpackt den Wert
+korrekt (`URLSearchParams`), von Hand getippt geht es schief. **Mein
+Diagnoseweg hat einen Fehler vorgetäuscht, den es nicht gab** — und der Beweis
+stand die ganze Zeit auf dem Schirm: „Bandbreite: 3,20 von 40 GB (8 %)" gibt
+der Server nur bei gültigem Token heraus.
+
+> **Merksatz:** Ein Diagnoseweg, der über eine von Hand getippte URL mit
+> Geheimnis führt, ist selbst eine Fehlerquelle. Zahlen zum Diagnostizieren
+> gehören dorthin, wo der Nutzer ohnehin hinsieht.
+
+**Gebaut:** Ein Klick auf das Feed-Abzeichen im Aktienkopf klappt eine Tabelle
+auf — Datenpfad, Abrufe, **mittlere Antwortgröße**, Verbrauch, Anteil. Die
+mittlere Antwortgröße ist die entscheidende Zahl: an ihr lässt sich ablesen,
+welcher Pfad die 40 GB frisst. Die Tabelle erscheint nur bei echter Messung;
+ohne Daten bleibt sie verborgen, statt eine Messung vorzutäuschen.
+
+| # | Sabotage | Ergebnis |
+|---|---|---|
+| 36 | Tabelle erscheint auch ohne echte Messung | fällt |
+| 37 | fehlender Mittelwert wird als 0 KB gezeigt | fällt |
+| 38 | CSS-Basisregel entfernt | **erst blind** |
+| 39 | Container aus dem Markup entfernt | fällt |
+
+**NK38 lief durch.** Der Prüfausdruck `/\.bwtab\{/` traf auch die Regel
+*innerhalb* des `@media`-Blocks. Die Basisregel ließ sich also entfernen, ohne
+dass der Test es merkte — auf dem Desktop wäre die Tabelle unformatiert
+gewesen. Geprüft wird jetzt gegen einen CSS-Text, aus dem alle Media-Queries
+entfernt sind. Sechste Wiederholung derselben Lehre: der Test muss die Stelle
+treffen, die der Nutzer trifft.
+
+**Erreichbarkeits-Audit:** Die Tabelle wird als horizontaler Scrollbereich
+gemeldet. Geprüft und festgehalten: sie enthält ausschließlich Text, kein
+Bedienelement — es kann nichts hinter dem Rand verschwinden, was man anklicken
+müsste. Genau das war der Fehler beim Modul-0-Schalter.
+
+---
+
+# v3.32.4 — Die Diagnose war da und unlesbar
+
+Gemeldet: Token auf einem dritten Gerät eingetragen, sichtbar, bleibt nach
+Neustart des Tabs gespeichert — trotzdem keine Daten. Beim Nachsehen fiel auf,
+warum die Fehlersuche nicht vorankam.
+
+In v3.32.1 habe ich eine Diagnose gebaut, die drei Fälle unterscheidet: nichts
+angekommen · falsche Länge · falscher Wert. Sie landet in `#resourceText` — und
+das ist ein `span` mit `white-space:nowrap`, `overflow:hidden`,
+`text-overflow:ellipsis` in einer **190 Pixel breiten** Leiste. Sichtbar war:
+
+> Kein Zugriff · Zugriffs-Token fehlt auf …
+
+Genau der Teil dahinter, der sagt, **welcher** Fall vorliegt, wurde
+abgeschnitten. Dritter Fall derselben Klasse nach `.eve-bar` (8aa, auf 6 px
+gestutzt) und der Fußleiste (8k): Die Information wird korrekt erzeugt und von
+der Darstellung vernichtet.
+
+> **Merksatz:** Eine Diagnose, die man nicht lesen kann, ist keine. Wer einen
+> neuen Meldetext einbaut, muss prüfen, wieviel Platz das Element hat, in das er
+> geschrieben wird — nicht nur, dass er erzeugt wird.
+
+Im Fehlerfall (rot) und im Zustand „nicht abrufbar" (orange) darf die Leiste
+jetzt über die volle Breite laufen und umbrechen. Im Normalfall bleibt sie
+schmal und einzeilig, damit die Kopfzeile nicht auseinanderfällt.
+
+| # | Sabotage | Ergebnis |
+|---|---|---|
+| 34 | Fehlermeldung wird wieder abgeschnitten | fällt |
+| 35 | Breitenbegrenzung bleibt im Fehlerfall | fällt |
+
+---
+
 # v3.32.3 — Korrektur eines eigenen Fehlers aus v3.32.0
 
 Am 01.09. um 06:08 stand in der Systemleiste rot **„Kein Zugriff ·

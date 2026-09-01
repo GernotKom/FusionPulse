@@ -718,7 +718,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"3.32.3";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"3.32.5";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -732,6 +732,42 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 .resource-strip{display:flex;flex-direction:column;min-width:122px;max-width:190px;padding:4px 7px;border:1px solid var(--line);border-radius:8px;background:var(--panel);font-size:9px;line-height:1.2}
 .resource-strip b{font-size:9px!important}.resource-strip span{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .resource-strip.err{border-color:color-mix(in srgb,var(--red) 80%,var(--line))}
+
+/* v3.32.5 · Bandbreiten-Aufschluesselung. Klassen aus dem erzeugten Markup
+   ausgelesen: .bwtable (Behaelter), .bwtab (Tabelle), .hint (Fussnote, hat
+   bereits eine Regel und wird hier nicht ueberschrieben). */
+/* `overflow-x:auto` ist hier bewusst und vom Erreichbarkeits-Audit gemeldet.
+   Geprueft: die Tabelle enthaelt AUSSCHLIESSLICH Text, kein Bedienelement —
+   es kann also nichts hinter dem Rand verschwinden, was man anklicken muesste.
+   Genau das war der Fehler beim Modul-0-Schalter (8j). Auf schmalen Schirmen
+   bricht die erste Spalte um, damit im Regelfall gar nicht gescrollt wird. */
+.bwtable{margin-top:8px;overflow-x:auto}
+.bwtab{width:100%;border-collapse:collapse;font-size:11px}
+.bwtab th{text-align:left;padding:4px 8px 4px 0;color:var(--dim);font-weight:600;
+  border-bottom:1px solid var(--line);white-space:nowrap}
+.bwtab td{padding:4px 8px 4px 0;border-bottom:1px solid var(--line2);vertical-align:top;white-space:nowrap}
+.bwtab td:first-child{white-space:normal}
+.bwtab td small{display:block;color:var(--dim);font-size:9px;font-family:ui-monospace,monospace}
+.bwtab tbody tr:first-child td{font-weight:600}
+@media(max-width:520px){.bwtab{font-size:10px}.bwtab td,.bwtab th{padding-right:5px}}
+
+/* ═══════ v3.32.4 · DIE DIAGNOSE WURDE ABGESCHNITTEN ANGEZEIGT ════════════
+   In v3.32.1 habe ich eine Fehlerdiagnose gebaut, die drei Faelle
+   unterscheidet (nichts angekommen / falsche Laenge / falscher Wert). Sie
+   landet in `#resourceText` — und das ist ein `span` mit `white-space:nowrap`,
+   `overflow:hidden`, `text-overflow:ellipsis` in einer 190 px breiten Leiste.
+   Der Nutzer sah „Kein Zugriff · Zugriffs-Token fehlt auf …" und NIE den Teil
+   dahinter, der sagt, WELCHER Fall vorliegt.
+
+   Dritter Fall derselben Klasse nach `.eve-bar` (8aa, auf 6 px gestutzt) und
+   der Fussleiste (8k): Die Information wird korrekt erzeugt und von der
+   Darstellung vernichtet. Eine Diagnose, die man nicht lesen kann, ist keine.
+
+   Im Fehlerfall darf diese Leiste deshalb wachsen und umbrechen. Im
+   Normalfall bleibt sie schmal — dort steht ein kurzer Satz, und die
+   Kopfzeile soll nicht auseinanderfallen. */
+.resource-strip.err,.resource-strip.orange{max-width:none;flex-basis:100%;order:-1}
+.resource-strip.err span,.resource-strip.orange span{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.35}
 .learning-report{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:10px;min-height:90px}
 .learning-report .lr-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:7px}
 .learning-report .lr-grid span{padding:6px;border:1px solid var(--line);border-radius:8px;font-size:9px;color:var(--dim)}
