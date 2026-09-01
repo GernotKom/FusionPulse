@@ -144,6 +144,11 @@ export function loadClient(overrides = {}) {
      vorbeigelaufen: Der Quelltext sah jedes Mal richtig aus, das Verhalten war
      es nicht. Ausgefuehrt wird der Unterschied sichtbar. */
   renderResourceStrip,
+  /* v3.32.8: R1.3/R1.4 muessen AUSGEFUEHRT prueffbar sein, nicht per Regex.
+     Genau diese Luecke hat drei Fehlversionen durchgelassen. Ein Muster im
+     Quelltext beweist, dass etwas dasteht — nicht, dass es das Richtige tut. */
+  crvGeometry, crvGeometryRow,
+  CRV_INFLATION_WARN, CRV_COST_SHARE_WARN, CRV_STRUCT_CONFLICT_FACTOR,
   get health(){return health;}, set health(v){health=v;},
   get authDenied(){return authDenied;}, set authDenied(v){authDenied=v;},
   get lastHttpStatus(){return lastHttpStatus;}, set lastHttpStatus(v){lastHttpStatus=v;}

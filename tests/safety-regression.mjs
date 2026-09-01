@@ -4896,4 +4896,95 @@ console.log('✓ FusionPulse v3.28.0 ride/journal regressions: OK');
 
 console.log('✓ FusionPulse v3.32.7 Systemleiste (ausgefuehrt): OK');
 
+/* ═══ v3.32.8 · R1.3/R1.4 — CRV-Geometrie, AUSGEFUEHRT ══════════════════════
+   Befund MRNA 01.09.: Plan-CRV 14,3 : 1 bei 0,268 % Stopweite; der Nenner
+   bestand zu 59 % aus Gebuehren. Zaehler und Nenner messen verschiedene
+   Zeitraeume — beruhigt sich ein Titel nach einem Impuls, explodiert das
+   Verhaeltnis rein mechanisch.
+
+   Diese Suite prueft AUSSCHLIESSLICH Diagnose. Sie darf nie gruen werden,
+   weil eine Bedingung nicht bewertbar ist (Invariante 5), und die letzten
+   zwei Faelle sichern ab, dass die Freigabelogik unberuehrt bleibt.        */
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const G = C.crvGeometry;
+
+  /* Der reale Fall, nachgerechnet: 26,78 EUR Kursrisiko + 38,00 EUR Kosten
+     = 64,78 EUR Nenner, davon 58,66 % Gebuehren. */
+  const MRNA_SZ = { stopDistancePct: 0.268, stopLossAfterCosts: 64.78, stopCosts: 38.00 };
+  const MRNA_TR = { netCrv: 14.29, tp2Pct: 12.3 };
+  const MRNA_R  = { structurePct: 3.4 };
+
+  // NK41 · Der Kostenanteil muss ueberhaupt erscheinen und die 59 % treffen.
+  const g = G(MRNA_R, MRNA_SZ, MRNA_TR);
+  assert.ok(g.costSharePct > 58 && g.costSharePct < 59,
+    `Kostenanteil am Nenner muss ~58,7 % sein, ist ${g.costSharePct}`);
+  assert.strictEqual(g.costHeavy, true,
+    'NK41: Ein Nenner, der mehrheitlich aus Gebuehren besteht, muss angezeigt werden');
+
+  // NK42 · Die Stopweite ist die Zahl, die im Screenshot gefehlt hat.
+  assert.strictEqual(g.stopPct, 0.268, 'NK42: Die Stopweite muss unveraendert durchgereicht werden');
+
+  // NK43 · CRV ueber der Schwelle wird als pruefbeduerftig markiert.
+  assert.strictEqual(g.crvInflated, true,
+    `NK43: ${MRNA_TR.netCrv} : 1 liegt ueber ${C.CRV_INFLATION_WARN} und muss markiert werden`);
+
+  // NK44 · Der Widerspruch aus R1.3: 12,3 % Weg gegen 3,4 % Struktur = Faktor 3,6.
+  assert.ok(g.structFactor > 3.5 && g.structFactor < 3.7,
+    `Faktor muss ~3,6 sein, ist ${g.structFactor}`);
+  assert.strictEqual(g.conflict, true, 'NK44: Faktor 3,6 muss als Widerspruch gelten');
+
+  /* NK45 · FAIL-CLOSED, der wichtigste Fall. Fehlende Daten duerfen nie
+     etwas verbessern (Regel 4). Ohne Sizing ist NICHTS bewertbar — und
+     „nicht bewertbar" ist nicht „in Ordnung" (Regel 5). Deshalb `null`,
+     niemals `false`. Genau hier wuerde `Number(null) === 0` (Regel 2) einen
+     Kostenanteil von 0 % erfinden und Entwarnung geben. */
+  const empty = G({}, null, null);
+  assert.strictEqual(empty.costHeavy, null, 'NK45: Ohne Sizing darf der Kostenanteil nicht als unauffaellig gelten');
+  assert.strictEqual(empty.crvInflated, null, 'NK45: Ohne CRV darf nicht Entwarnung gegeben werden');
+  assert.strictEqual(empty.conflict, null, 'NK45: Ohne Struktur darf kein Widerspruch VERNEINT werden');
+  assert.strictEqual(empty.stopPct, null, 'NK45: Eine fehlende Stopweite ist nicht 0 %');
+  assert.strictEqual(empty.costSharePct, null, 'NK45: Ein fehlender Kostenanteil ist nicht 0 %');
+
+  // NK46 · Ein Nenner von 0 darf keine Division ergeben, sondern „nicht bewertbar".
+  const zero = G({ structurePct: 0 }, { stopDistancePct: 0, stopLossAfterCosts: 0, stopCosts: 12 }, { netCrv: 0, tp2Pct: 0 });
+  assert.strictEqual(zero.costSharePct, null, 'NK46: Nenner 0 darf keinen Kostenanteil erzeugen');
+  assert.strictEqual(zero.conflict, null, 'NK46: Strukturpotenzial 0 ist nicht bewertbar, nicht widerspruchsfrei');
+
+  // NK47 · Der unauffaellige Fall muss auch wirklich unauffaellig sein, sonst
+  //        warnt die Anzeige immer und niemand liest sie mehr.
+  const ok = G({ structurePct: 6.0 }, { stopDistancePct: 1.8, stopLossAfterCosts: 180, stopCosts: 20 }, { netCrv: 3.1, tp2Pct: 7.0 });
+  assert.strictEqual(ok.costHeavy, false, 'NK47: 11 % Kostenanteil ist unauffaellig');
+  assert.strictEqual(ok.crvInflated, false, 'NK47: 3,1 : 1 ist unauffaellig');
+  assert.strictEqual(ok.conflict, false, 'NK47: Faktor 1,17 ist kein Widerspruch');
+  assert.strictEqual(crvRowText(C, ok), '', 'NK47: Ohne Befund darf keine Zeile erscheinen');
+
+  /* NK48 · Die Zeile muss den Befund WIRKLICH ausgeben — Text, nicht nur ein
+     Muster im Quelltext. Und „nicht bewertbar" muss sichtbar sein, statt
+     stillschweigend zu fehlen. */
+  const shown = crvRowText(C, g);
+  assert.match(shown, /Widerspruch/, 'NK48: Der Widerspruch muss in der Karte stehen');
+  assert.match(shown, /Nenner/, 'NK48: Der Hinweis auf den Nenner muss in der Karte stehen');
+  assert.match(shown, /Kostenanteil/, 'NK48: Der Kostenanteil muss in der Karte stehen');
+  const thin = crvRowText(C, G({}, MRNA_SZ, { netCrv: 3.0, tp2Pct: null }));
+  assert.match(thin, /nicht bewertbar/,
+    'NK48: Ein nicht bewertbarer Strukturabgleich muss dastehen, nicht verschwinden');
+
+  /* Die Grenze zur Handelslogik. R1.1 und R1.2 sind NICHT freigegeben —
+     diese Version darf die Freigabe nachweislich nicht beruehrt haben. */
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const gate = app.slice(app.indexOf('function stockTradeability('), app.indexOf('const GLOSS = {'));
+  assert.ok(!/crvGeometry|crvInflated|costHeavy|conflict/.test(gate),
+    'Die Freigabelogik darf die Diagnose nicht lesen — sonst waere R1.1/R1.2 durch die Hintertuer gebaut');
+  const lvl = app.slice(app.indexOf('function stockLevel('), app.indexOf('function stockLevel(') + 1400);
+  assert.ok(!/crvGeometry/.test(lvl), 'stockLevel() bleibt unveraendert');
+}
+
+function crvRowText(C, g) {
+  return String(C.crvGeometryRow(g)).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+console.log('✓ FusionPulse v3.32.8 CRV-Geometrie R1.3/R1.4 (ausgefuehrt): OK');
+
 console.log('✓ FusionPulse v3.29.0 evening-list geometry/study regressions: OK');

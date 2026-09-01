@@ -718,7 +718,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"3.32.7";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"3.32.8";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1622,3 +1622,13 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 /* Ein Datenausfall muss anders aussehen als ein ruhiges "nichts gefunden". */
 .eve-quiet.eve-fail{opacity:1}
 .eve-quiet.eve-fail>b{color:#ef4f57}
+
+/* v3.32.8 · R1.3/R1.4 — Geometriezeile der Fokuskarte.
+   Rein diagnostisch: legt offen, woraus ein CRV entsteht. Verändert keine
+   Freigabe. Die Zeile darf NIE eine feste Höhe bekommen — sie trägt Text
+   variabler Länge (Lehre aus .eve-bar in v3.29.0). */
+.sf-geo{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 2px}
+.sf-geo-item{font-size:11px;line-height:1.35;padding:3px 8px;border-radius:6px;
+  border:1px solid var(--line,#2a3140);background:var(--card2,#141a24);cursor:help}
+.sf-geo-item.bad{border-color:#a33;background:rgba(170,51,51,.14);color:#ffb3b3}
+.sf-geo-item.thin{border-style:dashed;opacity:.85}
