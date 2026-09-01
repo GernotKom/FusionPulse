@@ -910,6 +910,23 @@ console.log('✓ FusionPulse v3.6.3 focus-metrics/situation glossary regressions
   const stale = C.dataSession({ updated: iso(y,19,55) });
   assert.equal(stale.known, true, 'Der Zeitstempel muss lesbar sein');
   assert.equal(stale.sameDay, false, 'Ein Kurs vom Vortag darf nicht als heutig gelten');
+  /* v3.32.3: Diese Pruefung war 47 Versionen lang latent kaputt. `sameDay`
+     verglich die BROWSER-Ortszeit, waehrend die Frage den US-Handelstag
+     betrifft. Am 01.09. um 04:11 UTC fiel sie erstmals auf: in
+     `America/Chicago` liegt „vor 24 Stunden" um 23:11 Ortszeit noch auf
+     demselben Kalendertag. Zwei ausdrueckliche Faelle, die den Unterschied
+     festnageln — ohne sie kaeme derselbe Fehler beim naechsten Umbau zurueck. */
+  const etDayOf=(ms)=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',
+    year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(ms));
+  const heuteEt=etDayOf(Date.now());
+  // Ein Kurs aus der LAUFENDEN ET-Sitzung gilt als heutig, egal wo der Nutzer sitzt.
+  let probe=Date.now(); while(etDayOf(probe)!==heuteEt) probe-=3600_000;
+  assert.equal(C.dataSession({updated:new Date(probe).toISOString()}).sameDay, true,
+    'Ein Kurs vom heutigen ET-Handelstag muss als heutig gelten — unabhaengig von der Zeitzone des Nutzers');
+  // Und einer von einem anderen ET-Tag nicht, auch wenn er lokal „heute" waere.
+  let vortag=Date.now(); while(etDayOf(vortag)===heuteEt) vortag-=3600_000;
+  assert.equal(C.dataSession({updated:new Date(vortag).toISOString()}).sameDay, false,
+    'Ein Kurs von einem anderen ET-Handelstag darf nie als heutig gelten');
   assert.match(stale.label, /^Kurs vom /, 'Das Datum muss im Label stehen, wenn die Daten nicht von heute sind');
   assert.match(stale.detail, /NICHT von heute/, 'Es muss ausdruecklich dastehen, dass die Daten nicht von heute sind');
   assert.match(stale.detail, /wann FusionPulse zuletzt nachgesehen/, 'Der Unterschied Abfrage vs. Kursalter muss erklaert sein');

@@ -292,4 +292,33 @@ function ladeClient() {
     'Der konkrete 401-Grund muss vor der allgemeinen Meldung kommen');
 }
 
-console.log('✓ FusionPulse v3.32.2 provider/breadth (Audit §28/§29) regressions: OK');
+/* ─── 8 · v3.32.3 · Ein klebriger Merker darf die Anzeige nicht kapern ───── */
+{
+  const acode = app.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  /* Der Fehler aus v3.32.0: Das Flag kam aus einem TEXTMUSTER ueber beliebige
+     Fehlermeldungen. Jede Meldung, in der zufaellig „401" vorkommt, loeste es
+     aus — und zurueckgenommen wurde es nur an einer Stelle. */
+  assert.ok(!/nicht autorisiert\|unauthorized/.test(acode),
+    'authDenied darf NICHT aus einem Textmuster ueber Fehlermeldungen kommen — nur aus dem HTTP-Status');
+  assert.match(acode, /if\(lastHttpStatus === 401\)\s*\{\s*authDenied = true/,
+    'Nur ein echter HTTP-401 darf das Flag setzen');
+  assert.match(acode, /lastHttpStatus = res\.status;/, 'Der Status muss ueberhaupt festgehalten werden');
+
+  /* Setzer und Ruecknahme muessen gleich breit sein. Die Ruecknahme gehoert
+     in den regelmaessigen Health-Abruf, nicht in einen einzelnen Erfolgspfad. */
+  const lh = acode.slice(acode.indexOf('async function loadHealth'), acode.indexOf('async function loadHealth') + 900);
+  assert.ok(lh.length > 200, 'Schnitt loadHealth ist leer — Anker pruefen');
+  assert.match(lh, /health\.status && Object\.keys\(health\.status\)\.length[\s\S]{0,120}authDenied = false/,
+    'Eine gelieferte Statusauskunft muss den Merker zuruecknehmen — sonst bleibt er kleben');
+
+  /* Und die Widerspruchsregel: was messbar da ist, schlaegt was gemerkt wurde. */
+  const strip = acode.slice(acode.indexOf('function renderResourceStrip'),
+                            acode.indexOf('function renderResourceStrip') + 2800);
+  assert.match(strip, /if\(states\.length && authDenied\)\{ authDenied=false/,
+    'Liegt eine Statusauskunft vor, darf ein alter Merker die Leiste nicht rot faerben');
+  assert.ok(strip.indexOf('if(states.length && authDenied)') < strip.indexOf('if(authDenied || health'),
+    'Die Widerspruchsregel muss VOR der roten Abbiegung greifen, sonst wirkt sie nie');
+}
+
+console.log('✓ FusionPulse v3.32.3 provider/breadth (Audit §28/§29) regressions: OK');

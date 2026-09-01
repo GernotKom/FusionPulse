@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.32.2 — Frontend
+   FusionPulse v3.32.3 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -298,6 +298,7 @@ let health = {};
 let authDenied = false;   // v3.32.0: /api/ antwortet mit 401 — Token fehlt auf diesem Geraet
 let authHintText = '';    // v3.32.1: Diagnose des Servers, WORAN es scheitert
 let lastAuthHint = '';
+let lastHttpStatus = 0;   // v3.32.3: der letzte HTTP-Status einer /api/-Antwort
 let quotaShownFor = '';     // verhindert Dauer-Popups für dieselbe Lage
 let stockSearchBusy = false;
 let stockSearchLastTs = 0;
@@ -1376,6 +1377,15 @@ async function loadHealth() {
     const p = new URLSearchParams(); if (S.token) p.set('t', S.token);
     const r = await fetchWithTimeout('/api/health?' + p, { cache: 'no-store' }, 8_000);
     health = await r.json();
+    /* v3.32.3: Die verlaessliche Ruecknahme. Liefert /api/health einen
+       `status`-Block, dann hat der Server uns authentifiziert — anders gibt er
+       ihn nicht heraus. Damit kann der Zugang nicht fehlen, egal was ein
+       frueherer Merker behauptet. `loadHealth` laeuft regelmaessig; die
+       Ruecknahme ist damit selbstheilend statt an einen einzelnen Pfad
+       gebunden. */
+    if (health && health.status && Object.keys(health.status).length) {
+      authDenied = false; authHintText = ''; lastHttpStatus = r.status;
+    }
     if (health.version) {
       /* v3.14.3: Hier stand `'v' + health.version` — die Kopfzeile zeigte also die
          Version des WORKERS, nicht die des Codes im Browser. Sie wurde wenige
@@ -1505,6 +1515,7 @@ async function scan(force = false) {
       /* v3.32.1: Der Server sagt bei 401, WORAN es scheitert (nichts angekommen /
          falsche Laenge / falscher Wert). Ohne dieses Durchreichen bliebe der
          Hinweis im JSON stehen und der Nutzer sieht nur „Nicht autorisiert". */
+      lastHttpStatus = res.status;
       if (res.status === 401 && data.hint) lastAuthHint = String(data.hint);
       throw new Error(data.error || `HTTP ${res.status}`);
     }
@@ -1548,7 +1559,20 @@ async function scan(force = false) {
        drei gelbe Warnungen ueber Datenquelle, Marktbreite und Bandbreite und
        sucht den Fehler beim Anbieter. Lehre 8aa: ein Ausfall darf nicht wie
        ein Normalzustand aussehen. */
-    if(/nicht autorisiert|unauthorized|\b401\b/i.test(msg)) { authDenied = true; authHintText = lastAuthHint || ''; }
+    /* v3.32.3 · KORREKTUR EINES EIGENEN FEHLERS AUS v3.32.0.
+       Hier stand ein Textmuster: /nicht autorisiert|unauthorized|\b401\b/.
+       Das ist ein Fehlalarmgenerator — es greift bei JEDER Fehlermeldung, in
+       der zufaellig „401" vorkommt, und es setzte einen KLEBRIGEN Zustand, der
+       nur an EINER Stelle zurueckgenommen wurde (im Erfolgspfad des
+       Krypto-Scans). Setzer breit, Ruecknahme schmal — das laeuft immer in
+       eine Richtung.
+       Am 01.09. um 06:08 stand deshalb „Kein Zugriff · Zugriffs-Token fehlt"
+       in Rot, waehrend die App danebenmeldete: 20 gescannt, 5 angezeigt von
+       216, 32 API-Unterabfragen, 753 ms. Alle vier Ampeln gruen. Die Anzeige
+       hat einem eigenen Merker mehr geglaubt als den Daten, die vor ihr lagen.
+       Jetzt nur noch der HTTP-Status. Ein Statuscode ist eine Tatsache, ein
+       Textmuster ueber fremde Fehlermeldungen eine Vermutung. */
+    if(lastHttpStatus === 401) { authDenied = true; authHintText = lastAuthHint || ''; }
     if (/cpu|exceeded|resource|1102/i.test(msg)) showQuotaWarning('cpu', msg);
     else if (/429|too many|limit/i.test(msg)) showQuotaWarning('requests', msg);
   } finally {
@@ -2383,6 +2407,10 @@ function renderResourceStrip(){
 
      Fail-closed: Kommt keine Statusauskunft, ist die Ampel nicht gruen. */
   const hs=health?.status||{}; const states=[hs.crypto?.state,hs.stocks?.state,hs.alpaca?.state].filter(Boolean);
+  /* v3.32.3: Widerspruchsregel. Liegt eine Statusauskunft vor, sind wir
+     autorisiert — dann darf ein alter Merker die Leiste nicht rot faerben.
+     Was messbar da ist, schlaegt was gemerkt wurde. */
+  if(states.length && authDenied){ authDenied=false; authHintText=''; }
   if(authDenied || health?.protected===true){
     out.textContent='Kein Zugriff · Zugriffs-Token fehlt auf diesem Gerät — es werden KEINE Daten geladen, weder Aktien noch Krypto'+(authHintText?' · '+authHintText:'');
     box.classList.remove('warn','orange','ok'); box.classList.add('err');
@@ -3166,7 +3194,27 @@ function dataSession(r){
   const localClock=new Intl.DateTimeFormat('de-DE',{hour:'2-digit',minute:'2-digit',hour12:false}).format(d);
   const localDate=new Intl.DateTimeFormat('de-DE',{day:'2-digit',month:'2-digit'}).format(d);
   const ageMin=Math.max(0,Math.round((Date.now()-t)/60_000));
-  const sameDay=new Intl.DateTimeFormat('de-DE',{day:'2-digit',month:'2-digit'}).format(new Date())===localDate;
+  /* ═══════ v3.32.3 · sameDay MUSS den ET-HANDELSTAG vergleichen ═══════════
+     Hier stand ein Vergleich der BROWSER-ORTSZEIT (`de-DE`, also die Zone des
+     Nutzers) — waehrend alles andere in dieser Funktion in ET rechnet.
+
+     Aufgefallen ist es am 01.09. um 04:11 UTC: derselbe Test war in
+     `Europe/Vienna` gruen und in `America/Chicago` rot. Grund: Eine Fixture
+     „vor 24 Stunden" liegt in Chicago um 23:11 Ortszeit noch auf DEMSELBEN
+     Kalendertag. Der Test hat 47 Versionen lang bestanden, weil er nie zu
+     dieser Tageszeit lief — er war latent kaputt, nicht neu kaputt.
+
+     Der Anwendungsfehler dahinter ist der wichtigere: Die Frage lautet „ist
+     das die HEUTIGE US-Sitzung?". Massgeblich ist dafuer der Handelstag in
+     New York, nicht der Kalendertag am Wohnort des Nutzers. Ein Wiener, der
+     um 01:00 MESZ nachsieht, hatte einen Kurs aus der noch laufenden
+     ET-Sitzung als „nicht von heute" ausgewiesen bekommen — und umgekehrt
+     galt in Chicago ein 24 Stunden alter Kurs als heutig.
+
+     `localDate` bleibt unveraendert: im Label liest der Nutzer sein eigenes
+     Datum. Nur die BEWERTUNG richtet sich jetzt nach der Boerse. */
+  const etDay=(dt)=>new Intl.DateTimeFormat('en-CA',{timeZone:NY_TZ,year:'numeric',month:'2-digit',day:'2-digit'}).format(dt);
+  const sameDay=etDay(new Date())===etDay(d);
   const ageTxt = ageMin<90 ? `${ageMin} Min. alt`
     : ageMin<48*60 ? `${(ageMin/60).toFixed(1).replace('.',',')} Std. alt`
     : `${Math.round(ageMin/1440)} Tage alt`;

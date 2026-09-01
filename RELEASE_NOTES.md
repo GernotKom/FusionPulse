@@ -11,6 +11,82 @@ Die *Begründungen* und die daraus gezogenen Lehren stehen nicht hier, sondern i
 
 ---
 
+# v3.32.3 — Korrektur eines eigenen Fehlers aus v3.32.0
+
+Am 01.09. um 06:08 stand in der Systemleiste rot **„Kein Zugriff ·
+Zugriffs-Token fehlt"** — während die App danebenmeldete: *20 gescannt, 5
+angezeigt von 216, 32 API-Unterabfragen, 753 ms*, alle vier Ampeln grün, Kurse
+auf dem Schirm. Die Anzeige hat einem eigenen Merker mehr geglaubt als den
+Daten, die vor ihr lagen.
+
+**Der Konstruktionsfehler, den ich in v3.32.0 eingebaut habe:**
+
+```js
+if (/nicht autorisiert|unauthorized|\b401\b/i.test(msg)) authDenied = true;
+```
+
+Zwei Fehler in einer Zeile. Erstens ein **Textmuster über fremde
+Fehlermeldungen** statt des HTTP-Status — das greift bei jeder Meldung, in der
+zufällig „401" vorkommt. Zweitens: **Setzer breit, Rücknahme schmal.** Gesetzt
+wurde bei jedem beliebigen Fehler, zurückgenommen nur an einer einzigen Stelle,
+im Erfolgspfad des Krypto-Scans. Ein solcher Zustand läuft immer in eine
+Richtung und bleibt dann kleben.
+
+> **Merksatz:** Ein klebriges Flag braucht eine Rücknahme, die mindestens so
+> breit ist wie der Setzer — sonst ist es keine Statusanzeige, sondern ein
+> Einwegschalter. Und: ein Statuscode ist eine Tatsache, ein Textmuster über
+> fremde Fehlermeldungen eine Vermutung.
+
+**Behoben, dreifach:**
+
+1. Das Flag wird nur noch durch einen **echten HTTP-401** gesetzt.
+2. Die Rücknahme sitzt im regelmäßigen `/api/health`-Abruf: Liefert der Server
+   einen `status`-Block, hat er uns authentifiziert — anders gibt er ihn nicht
+   heraus. Selbstheilend statt an einen Pfad gebunden.
+3. **Widerspruchsregel** in der Systemleiste: Liegt eine Statusauskunft vor,
+   wird ein alter Merker verworfen. Was messbar da ist, schlägt was gemerkt
+   wurde. Ein Test prüft, dass diese Regel *vor* der roten Abbiegung greift.
+
+| # | Sabotage | Ergebnis |
+|---|---|---|
+| 29 | Textmuster kehrt zurück | fällt |
+| 30 | Rücknahme im Health-Abruf entfernt | fällt |
+| 31 | Widerspruchsregel entfernt | fällt |
+| 32 | Widerspruchsregel steht nach der roten Abbiegung | fällt |
+
+## Nachtrag: ein latenter Zeitzonenfehler, den der Monatswechsel aufgedeckt hat
+
+Beim Abschlusslauf am 01.09. um 04:11 UTC fiel eine Prüfung in
+`America/Chicago` durch, die in `Europe/Vienna` grün war: *„Ein Kurs vom Vortag
+darf nicht als heutig gelten."*
+
+`dataSession()` bestimmte `sameDay` aus der **Browser-Ortszeit**, während alles
+andere in der Funktion in ET rechnet. Eine Fixture „vor 24 Stunden" liegt in
+Chicago um 23:11 Ortszeit noch auf demselben Kalendertag — also `sameDay: true`.
+Die Prüfung war **47 Versionen lang latent kaputt** und fiel nur nie auf, weil
+sie nie zu dieser Tageszeit lief.
+
+Der Anwendungsfehler dahinter ist der wichtigere. Die Frage lautet: *Ist das die
+heutige US-Sitzung?* Maßgeblich ist der Handelstag in New York, nicht der
+Kalendertag am Wohnort. Ein Wiener, der um 01:00 MESZ nachsieht, bekam einen
+Kurs aus der noch laufenden ET-Sitzung als „nicht von heute" ausgewiesen —
+umgekehrt galt in Chicago ein 24 Stunden alter Kurs als heutig.
+
+`sameDay` vergleicht jetzt den ET-Handelstag. Das Label zeigt weiterhin das
+lokale Datum — der Nutzer liest sein eigenes; nur die **Bewertung** richtet sich
+nach der Börse. Geprüft in fünf Zeitzonen (Wien, Chicago, New York, Tokio,
+Auckland), dazu zwei ausdrückliche Fälle im Test: ein Kurs aus dem laufenden
+ET-Tag muss als heutig gelten, einer von einem anderen ET-Tag nie.
+
+**NK33:** Rückbau auf die Ortszeit → fällt in `America/Chicago`.
+
+> **Merksatz:** Ein Test, der von der realen Uhrzeit abhängt, besteht so lange,
+> bis er zufällig zur falschen Stunde läuft. Zwei Zeitzonen im Testlauf reichen
+> nicht — es braucht Fixtures, die aus der geprüften Zeitzone selbst abgeleitet
+> sind.
+
+---
+
 # v3.32.2 — Die Systemampel meldete Grün, während nichts lief
 
 Im Bildschirmfoto vom 30.08., 23:20 stand nebeneinander: rot „Fehler: Nicht
