@@ -11,6 +11,87 @@ Die *Begründungen* und die daraus gezogenen Lehren stehen nicht hier, sondern i
 
 ---
 
+# v3.32.6 — Die erste echte Messung, und was sie widerlegt hat
+
+## 1. Gemessen statt geschätzt
+
+Erste Aufschlüsselung nach 17 Stunden Laufzeit (01.09.2026, 17:04):
+
+| Datenpfad | Abrufe | Ø Antwort | Anteil |
+|---|---|---|---|
+| Gesamtmarkt-Abruf (Radar) | 198 | **10.893 KB** | 64 % |
+| Nachtsitzung (BOATS) | 184 | **6.544 KB** | 36 % |
+| Kursverläufe | 1.085 | 8 KB | 0 % |
+
+**Die Audit-Schätzung lag bei 1,2 MB je `/iex`-Antwort. Gemessen sind 10,9 MB
+— Faktor 9 daneben.** Der Grund steht in der App: das Universum umfasst 42.627
+Symbole, nicht die angenommenen ~12.000. Hochgerechnet 87 GB/Monat für den
+Radar plus 49 GB für BOATS — zusammen **136 GB bei 40 GB Limit**.
+
+Meine Taktung aus v3.32.0 war richtig gedacht und um Faktor 3–4 zu schwach.
+
+## 2. BOATS war der blinde Fleck
+
+In v3.32.0 hatte ich BOATS ausdrücklich ausgenommen, mit der Begründung, er
+laufe genau dann, wenn der IEX-Radar schweigt. Das war richtig für die Frage der
+Aktualität und **falsch für die Bandbreite**: 36 % des Verbrauchs, rund 49
+GB/Monat, bei einem Cache von 5 Minuten.
+
+> **Merksatz:** Eine Ausnahme braucht eine Zahl, keine Plausibilität. „Läuft ja
+> nur nachts" sagt nichts über die übertragene Datenmenge.
+
+Cache jetzt 20 Minuten. Die Nachtsitzung ist dünn; wer dort im
+100-Sekunden-Takt nachsieht, kauft Rauschen für 6,5 MB je Blick.
+
+## 3. Der Test hat meine erste Korrektur zurückgewiesen
+
+Neue Taktwerte (120 s Opening / 300 s Handel) ergaben 34,9 GB — die Prüfung
+fiel durch. **Richtig so.** Die Grenze ist als *„unter 40 GB mit der gemessenen
+Antwortgröße"* formuliert, nicht als prozentuale Ersparnis gegenüber vorher.
+Eine Prozentgrenze wäre grün gewesen und das Limit trotzdem gerissen.
+
+Endstand: 86 Abrufe je Handelstag, 12 je freiem Tag, **rund 20 GB/Monat**.
+Das Opening bleibt mit 120 s die engste Taktung aller Phasen — dort entsteht
+der Wert, gespart wird in den 16 handelsfreien Stunden.
+
+Dabei musste ich eine eigene Prüfung ändern: sie schrieb *„im Opening gar nicht
+drosseln (50 s)"* fest — eine Zahl, die auf der falschen Annahme beruhte. Statt
+des Absolutwerts sichert sie jetzt die **Ordnung**: Das Opening muss enger
+getaktet sein als jede andere Phase, und höchstens zwei Minuten.
+
+## 4. Das rote System — mein Fehler, eine Ebene tiefer
+
+Die Leiste meldete „Zugriffs-Token fehlt", während die App „Live · 20 gescannt /
+10 angezeigt" zeigte und die Bandbreitentabelle mit echten Zahlen danebenstand.
+
+Zwei Ursachen. Erstens: `lastHttpStatus` wurde **nur im Fehlerzweig** gesetzt
+und nie zurückgenommen — ein einziger 401 beim Start blieb für immer stehen, und
+jede spätere Zeitüberschreitung las ihn und meldete Zugriffsverlust. Ich hatte
+den klebrigen Zustand aus v3.32.0 nicht beseitigt, sondern nur eine Ebene tiefer
+verschoben. Zweitens hing die Widerspruchsregel an `states.length` — die drei
+Zustandsfelder können leer sein, obwohl der Server sauber antwortet.
+
+Jetzt: Der Statuscode wird bei **jeder** Antwort gesetzt, und **jeder**
+unabhängige Beleg für einen funktionierenden Zugang nimmt den Merker zurück —
+`bandwidth`, `components`, ein erfolgreicher Scan in den letzten fünf Minuten.
+
+| # | Sabotage | Ergebnis |
+|---|---|---|
+| 40 | Radar-Taktung auf den alten, zu schwachen Wert | fällt |
+| 41 | Opening lockerer getaktet als der laufende Handel | fällt |
+| 42 | BOATS-Drosselung entfernt | fällt |
+| 43 | `lastHttpStatus` wieder nur im Fehlerzweig | fällt |
+| 44 | Widerspruchsregel wieder nur an `states.length` | fällt |
+
+## Was offen bleibt
+
+**R14, der größte verbleibende Hebel:** Die Live-Quotes der ~20
+Deep-Scan-Titel könnten über Alpaca `/v2/stocks/snapshots?symbols=…` kommen —
+das nimmt eine Symbolliste, ist bereits implementiert und kostet **null**
+Tiingo-Bandbreite. Dann bräuchte der `/iex`-Abruf nur noch die Discovery.
+
+---
+
 # v3.32.5 — Die Bandbreiten-Aufschlüsselung steht jetzt in der App
 
 **Mein schlechter Rat.** Ich hatte gebeten, `/api/health?t=…` von Hand in die

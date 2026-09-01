@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.32.5 — Frontend
+   FusionPulse v3.32.6 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1508,6 +1508,14 @@ async function scan(force = false) {
     if (S.token) q.set('t', S.token);
     if (force) q.set('force', '1');
     const res = await fetchWithTimeout(`/api/scan?${q}`, { signal: localController.signal, cache:'no-store' }, NET_TIMEOUT_MS);
+    /* v3.32.6: HIER, nicht erst im Fehlerzweig. Bis v3.32.5 wurde
+       `lastHttpStatus` NUR bei `!res.ok` gesetzt und nie zurueckgenommen —
+       ein einziger 401 beim Start blieb also fuer immer stehen, und jeder
+       spaetere Fehler (Zeitueberschreitung, 429, Netzabbruch) las diesen alten
+       Wert und meldete „Zugriffs-Token fehlt".
+       Damit hatte ich den klebrigen Zustand aus v3.32.0 nicht beseitigt,
+       sondern nur eine Ebene tiefer verschoben. */
+    lastHttpStatus = res.status;
     const data = await res.json();
     if (!res.ok) {
       setSys('#sysCrypto', data.state || 'error', data.error);
@@ -1515,7 +1523,6 @@ async function scan(force = false) {
       /* v3.32.1: Der Server sagt bei 401, WORAN es scheitert (nichts angekommen /
          falsche Laenge / falscher Wert). Ohne dieses Durchreichen bliebe der
          Hinweis im JSON stehen und der Nutzer sieht nur „Nicht autorisiert". */
-      lastHttpStatus = res.status;
       if (res.status === 401 && data.hint) lastAuthHint = String(data.hint);
       throw new Error(data.error || `HTTP ${res.status}`);
     }
@@ -2434,10 +2441,24 @@ function renderResourceStrip(){
 
      Fail-closed: Kommt keine Statusauskunft, ist die Ampel nicht gruen. */
   const hs=health?.status||{}; const states=[hs.crypto?.state,hs.stocks?.state,hs.alpaca?.state].filter(Boolean);
-  /* v3.32.3: Widerspruchsregel. Liegt eine Statusauskunft vor, sind wir
-     autorisiert — dann darf ein alter Merker die Leiste nicht rot faerben.
-     Was messbar da ist, schlaegt was gemerkt wurde. */
-  if(states.length && authDenied){ authDenied=false; authHintText=''; }
+  /* ═══════ v3.32.6 · WIDERSPRUCHSREGEL, JETZT AN HARTEN BEWEISEN ═════════
+     Die Fassung aus v3.32.3 haengte an `states.length` — also daran, dass die
+     drei Zustandsfelder GEFUELLT sind. Am 01.09. um 17:04 stand die Leiste
+     trotzdem rot, waehrend die App „Live · 20 gescannt / 10 angezeigt" meldete
+     und die Bandbreitentabelle mit echten Zahlen danebenstand. Die drei
+     Zustandsfelder koennen leer sein, obwohl der Server sauber geantwortet hat.
+     Der Indikator war also zu schwach.
+
+     Jetzt gilt: JEDER Beweis dafuer, dass der Server uns bedient, nimmt den
+     Merker zurueck. `bandwidth` und `components` gibt `/api/health` nur an
+     Autorisierte heraus; ein erfolgreicher Scan in den letzten fuenf Minuten
+     ist ohnehin unwiderlegbar. Was messbar da ist, schlaegt was gemerkt wurde —
+     und zwar mit mehreren unabhaengigen Belegen, nicht mit einem. */
+  const bedientUns = states.length
+    || (health && health.bandwidth)
+    || (health && Array.isArray(health.components))
+    || (lastSuccessfulScanTs && Date.now()-lastSuccessfulScanTs < 300_000);
+  if(bedientUns && authDenied){ authDenied=false; authHintText=''; if(lastHttpStatus===401) lastHttpStatus=0; }
   if(authDenied || health?.protected===true){
     out.textContent='Kein Zugriff · Zugriffs-Token fehlt auf diesem Gerät — es werden KEINE Daten geladen, weder Aktien noch Krypto'+(authHintText?' · '+authHintText:'');
     box.classList.remove('warn','orange','ok'); box.classList.add('err');

@@ -315,10 +315,29 @@ function ladeClient() {
   /* Und die Widerspruchsregel: was messbar da ist, schlaegt was gemerkt wurde. */
   const strip = acode.slice(acode.indexOf('function renderResourceStrip'),
                             acode.indexOf('function renderResourceStrip') + 2800);
-  assert.match(strip, /if\(states\.length && authDenied\)\{ authDenied=false/,
-    'Liegt eine Statusauskunft vor, darf ein alter Merker die Leiste nicht rot faerben');
-  assert.ok(strip.indexOf('if(states.length && authDenied)') < strip.indexOf('if(authDenied || health'),
+  /* v3.32.6: Die Regel haengt nicht mehr an EINEM Indikator. `states.length`
+     war zu schwach — die drei Zustandsfelder koennen leer sein, obwohl der
+     Server sauber antwortet. Geprueft wird jetzt, dass mehrere unabhaengige
+     Belege den Merker zuruecknehmen. */
+  assert.match(strip, /const bedientUns = states\.length/,
+    'Es braucht mehrere unabhaengige Belege, nicht nur die drei Zustandsfelder');
+  for (const beleg of ['health.bandwidth', 'health.components', 'lastSuccessfulScanTs']) {
+    assert.ok(strip.includes(beleg),
+      `„${beleg}" muss als Beleg fuer einen funktionierenden Zugang zaehlen`);
+  }
+  assert.match(strip, /if\(bedientUns && authDenied\)\{ authDenied=false/,
+    'Liegt ein Beleg vor, darf ein alter Merker die Leiste nicht rot faerben');
+  assert.match(strip, /if\(lastHttpStatus===401\) lastHttpStatus=0/,
+    'Auch der Statuscode muss zurueckgesetzt werden — sonst setzt der naechste beliebige Fehler das Flag erneut');
+  assert.ok(strip.indexOf('const bedientUns') < strip.indexOf('if(authDenied || health'),
     'Die Widerspruchsregel muss VOR der roten Abbiegung greifen, sonst wirkt sie nie');
+
+  /* Der eigentliche Fehler von v3.32.5: `lastHttpStatus` wurde nur im
+     Fehlerzweig gesetzt und nie zurueckgenommen. Ein einziger 401 beim Start
+     blieb damit fuer immer stehen, und jede spaetere Zeitueberschreitung las
+     ihn und meldete „Zugriffs-Token fehlt". */
+  assert.match(acode, /const res = await fetchWithTimeout\(`\/api\/scan[\s\S]{0,200}?lastHttpStatus = res\.status;/,
+    'Der Statuscode muss bei JEDER Antwort gesetzt werden, nicht nur im Fehlerfall');
 }
 
 /* ─── 9 · v3.32.4 · Die Diagnose muss LESBAR sein ───────────────────────── */

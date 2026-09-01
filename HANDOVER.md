@@ -1958,8 +1958,9 @@ Was hier steht, ueberlebt jeden neuen Chat. Was nur im Chat gesagt wurde, ist we
 | R9 | Suiten 48/50/51 in `npm run check` einhaengen | **ERLEDIGT in v3.32.0** |
 | R10 | **Client-Takt haengt am Anbieternamen.** `setStockPoll()` prueft `provider==='tiingo'` und faellt bei jedem anderen Anbieter auf 5 Minuten. Sobald der Alpaca-Failover greift, wird der Client traege. Reparatur erst, wenn Bandbreitenzahlen vorliegen — sonst ist jede Beschleunigung geraten. | offen, wartet auf Messung |
 | R11 | Kalibrierungsbruch bei Feed-Wechsel auf SIP | **ENTSCHAERFT in v3.32.0** — die Schwelle haengt jetzt an `RADAR_FEED`. Der Faktor 35 ist HERGELEITET, nicht gemessen: nach dem ersten Lauf mit konsolidiertem Feed anhand `radarGateStats` nachkalibrieren. |
-| R12 | **Bandbreitenzahlen auswerten.** Ab v3.32.0 misst die App je Datenpfad. Nach ein bis zwei Tagen Laufzeit `/api/health` → `bandwidth.paths` ansehen: stimmt die Audit-Schaetzung (~1,2 MB je `/iex`-Antwort)? Reichen Taktung und Subset-Abruf? Erst DANN weitere Eingriffe. | offen, wartet auf Laufzeit |
-| R13 | **BOATS-Pfad (§10 C, §17 des Audits)** ist unangetastet. Erst nach R12 bewerten — ohne Messung waere jeder Eingriff geraten. | offen, nach R12 |
+| R12 | Bandbreitenzahlen auswerten | **ERLEDIGT in v3.32.6** — gemessen: 10,9 MB je `/iex`-Antwort statt der geschaetzten 1,2. Taktung nachkalibriert. |
+| R13 | BOATS-Pfad drosseln | **ERLEDIGT in v3.32.6** — Messung zeigte 36 % des Verbrauchs. Cache 5 min → 20 min. |
+| R14 | **Live-Quotes der Deep-Scan-Titel ueber Alpaca statt Tiingo.** `/v2/stocks/snapshots?symbols=…` nimmt eine Symbolliste, ist bereits implementiert und kostet NULL Tiingo-Bandbreite. Dann braucht der `/iex`-Abruf nur noch die Discovery und kann weiter gedrosselt werden. Groesster verbleibender Hebel. | offen, naechster grosser Schritt |
 | R2 | **Farbpinsel je Kachel** — kleiner Knopf IN jeder Kachel statt zentraler Liste. Braucht Knopf-Injektion in `paintPanel()`, Popover, Persistenz ueber `--tint-…`. | offen, eigene Version |
 | R3 | 90-Sekunden-Frischesperre | Entscheidung Nutzer offen |
 | R4 | Nachrichtenzeile — Testaufruf gegen Tiingo-Schluessel noetig | offen |

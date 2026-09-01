@@ -102,11 +102,47 @@ const W = ladeWorkerTeile();
 
 /* ═══ 2 · Taktung — sparsamer bei geschlossenem Markt, unveraendert im Opening */
 {
-  assert.equal(W.radarTtlMs('opening'), 50_000, 'Im Opening darf NICHT gedrosselt werden — dort zaehlt jede Sekunde');
-  assert.equal(W.radarTtlMs('regular'), 50_000, 'Im laufenden Handel ebenfalls nicht');
+  /* v3.32.6: Die erste Fassung verlangte „im Opening gar nicht drosseln"
+     (50 s, wie vorher). Die erste echte Messung hat das widerlegt: bei
+     10,9 MB je Abruf — nicht 1,2 MB wie geschaetzt — kostet der 50-s-Takt
+     allein im Opening 1,2 GB am Tag. Ein Test, der eine Zahl festschreibt,
+     die auf einer falschen Annahme beruht, verteidigt den Fehler.
+     Was geschuetzt bleiben MUSS, ist die Ordnung, nicht der Absolutwert:
+     das Opening bleibt die engste Taktung aller Phasen, und eine Obergrenze
+     verhindert, dass „sparen" die Eroeffnung unbrauchbar macht. */
+  assert.ok(W.radarTtlMs('opening') <= 120_000,
+    'Das Opening muss eng getaktet bleiben — hoechstens zwei Minuten, dort entsteht der Wert');
+  for (const p of ['regular','premarket','premarket-early','after','after-limited','closed']) {
+    assert.ok(W.radarTtlMs('opening') < W.radarTtlMs(p),
+      `Das Opening muss enger getaktet sein als „${p}" — sonst wird am falschen Ende gespart`);
+  }
   assert.ok(W.radarTtlMs('closed') >= 600_000, 'Bei geschlossenem Markt muss deutlich gedrosselt werden');
   assert.ok(W.radarTtlMs('closed') > W.radarTtlMs('after'), 'Nachts sparsamer als im After-Hours');
   assert.ok(W.radarTtlMs('after') > W.radarTtlMs('regular'), 'After-Hours sparsamer als der Handel');
+
+  /* Die harte Grenze: mit der GEMESSENEN Antwortgroesse muss der Monat unter
+     40 GB bleiben. Das ist die eigentliche Anforderung — die einzelnen
+     Taktwerte sind nur ein Weg dorthin. Vorher stand hier ein prozentualer
+     Vergleich mit dem alten Zustand; der konnte gruen sein und das Limit
+     trotzdem reissen. */
+  const GEMESSEN_MB = 10.9;   // /iex-Antwort, gemessen 01.09.2026
+  const proTag = (h, key) => Math.floor((h * 3600_000) / W.radarTtlMs(key));
+  const tagHandel = proTag(1.5,'opening') + proTag(5,'regular') + proTag(4,'premarket-early')
+                  + proTag(1.5,'premarket') + proTag(1,'after') + proTag(3,'after-limited')
+                  + proTag(8,'closed');
+  const tagFrei = proTag(24,'closed');
+  const gbMonat = (21*tagHandel + 9*tagFrei) * GEMESSEN_MB / 1024;
+  assert.ok(gbMonat < 25,
+    `Der Radar allein muss mit der gemessenen Antwortgroesse deutlich unter dem 40-GB-Limit bleiben (ist: ${gbMonat.toFixed(1)} GB)`);
+
+  /* BOATS war in v3.32.0 ausdruecklich ausgenommen — und ist laut Messung
+     36 % des Verbrauchs. Ausnahmen brauchen Zahlen, nicht Plausibilitaet. */
+  assert.match(code, /const BOATS_TTL_MS = 20\*60_000;/,
+    'Die Nachtsitzung muss gedrosselt sein — 184 Abrufe zu je 6,5 MB waren 36 % des Verbrauchs');
+  assert.match(code, /now-tiingoDiscoveryMemo\.ts<BOATS_TTL_MS/,
+    'Der BOATS-Cache muss den gedrosselten Wert benutzen');
+  const boatsGb = (8*3600_000/20/60_000) * 30 * 6.5 / 1024;
+  assert.ok(boatsGb < 6, `Auch BOATS muss klein bleiben (ist: ${boatsGb.toFixed(1)} GB/Monat)`);
 
   /* FAIL-CLOSED in die richtige Richtung: eine unbekannte Phase darf nicht
      HAEUFIGER laden. Das ist der Punkt, an dem so ein Umbau sonst kippt. */
@@ -115,16 +151,6 @@ const W = ladeWorkerTeile();
     assert.ok(t >= 300_000,
       `Unbekannte Phase „${p}" muss den sparsamen Wert bekommen, nicht den schnellen (ist: ${t})`);
   }
-
-  /* Die Ersparnis muss real sein, nicht kosmetisch: bei minuetlichem Cron
-     waren es ~1.440 Whole-Market-Downloads am Tag. */
-  const proTag = (h, key) => Math.floor((h * 3600_000) / W.radarTtlMs(key));
-  const alt = 1440;
-  const neu = proTag(1.5, 'opening') + proTag(5, 'regular') + proTag(4, 'premarket-early')
-            + proTag(1.5, 'premarket') + proTag(1, 'after') + proTag(3, 'after-limited')
-            + proTag(8, 'closed');
-  assert.ok(neu < alt * 0.6,
-    `Die Taktung muss die Downloads spuerbar senken (alt ~${alt}/Tag, neu ~${neu}/Tag)`);
 
   /* Der Alterungsfilter darf NICHT mitgelockert worden sein — sonst wuerde die
      Drosselung alte Daten durchreichen, statt sie zu verwerfen (Regel 4). */

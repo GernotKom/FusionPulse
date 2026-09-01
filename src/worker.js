@@ -5839,9 +5839,18 @@ function boatsDiscoveryScore(r){
   const score=Math.abs(movePct)*2.4 + Math.min(8,activity) - (spreadPct==null?1.5:Math.min(6,spreadPct*2));
   return {score,movePct,spreadPct,volume:Number.isFinite(vol)?vol:null,last,prev};
 }
+/* v3.32.6 · BOATS war der blinde Fleck. In v3.32.0 habe ich ihn ausdruecklich
+   ausgenommen („laeuft genau dann, wenn der IEX-Radar schweigt") — das war
+   richtig fuer die Frage der Aktualitaet und falsch fuer die Bandbreite. Die
+   Messung zeigt 184 Abrufe zu je 6,5 MB = 36 % des Gesamtverbrauchs, rund
+   49 GB im Monat. Der Cache lag bei 5 Minuten.
+   Die Nachtsitzung ist duenn; wer dort im 100-Sekunden-Takt nachsieht, kauft
+   Rauschen fuer 6,5 MB je Blick. 20 Minuten reichen — die Vorabend-Liste
+   entsteht ohnehin aus Tagesbalken, nicht hieraus. */
+const BOATS_TTL_MS = 20*60_000;
 async function tiingoBoatsDiscovery(env,limit=15,force=false){
   const now=Date.now();
-  if(!force && tiingoDiscoveryMemo.rows.length && now-tiingoDiscoveryMemo.ts<5*60_000) return tiingoDiscoveryMemo;
+  if(!force && tiingoDiscoveryMemo.rows.length && now-tiingoDiscoveryMemo.ts<BOATS_TTL_MS) return tiingoDiscoveryMemo;
   try{
     const d=await tiingoFetch(env,'/boats');
     const rows=(Array.isArray(d)?d:[]).map(x=>{
@@ -6272,15 +6281,48 @@ function openingGainers(rows,limit=12){
    BOATS bleibt unangetastet: die Overnight-Session laeuft 20:00–03:59 ET, also
    genau dann, wenn der IEX-Radar schweigt. Wer beides zusammen drosselt,
    nimmt der Vorabend-Liste ihre Grundlage. */
+/* v3.32.6 · NACHKALIBRIERT MIT DER ERSTEN ECHTEN MESSUNG.
+   Die Werte unten stammen nicht mehr aus einer Schaetzung. Gemessen am
+   01.09.2026, 17:04, nach rund 17 Stunden Laufzeit:
+
+     Pfad               Abrufe   Ø Antwort   Anteil
+     iex-wholemarket       198   10.893 KB     64 %
+     boats-bulk            184    6.544 KB     36 %
+     iex-chart           1.085        8 KB      0 %
+
+   Die Audit-Schaetzung lag bei 1,2 MB je `/iex`-Antwort. Gemessen sind
+   **10,9 MB** — Faktor 9 daneben. Der Grund steht in der App: das Universum
+   umfasst 42.627 Symbole, nicht die angenommenen ~12.000.
+
+   Hochrechnung mit den echten Zahlen: 87 GB/Monat allein fuer den Radar, dazu
+   49 GB fuer BOATS. Zusammen 136 GB bei 40 GB Limit. Die Taktung aus v3.32.0
+   war also richtig gedacht und um den Faktor 3-4 zu schwach dimensioniert.
+
+   Neue Werte, hergeleitet aus dem Ziel „unter 40 GB inklusive Reserve":
+   Bei 10,9 MB je Abruf sind 40 GB rund 3.750 Abrufe im Monat, also ~125 am
+   Tag fuer ALLE Pfade zusammen. Das Opening bleibt trotzdem eng getaktet —
+   dort entsteht der Wert; gespart wird in den 16 handelsfreien Stunden. */
 const RADAR_TTL_MS = {
-  'opening':          50_000,   // Prioritaetsfenster — unveraendert
-  'regular':          50_000,
-  'premarket':       120_000,
-  'premarket-early': 180_000,
-  'after':           180_000,
-  'after-limited':   300_000,
-  'closed':          900_000,   // Nacht, Wochenende, Feiertag: IEX handelt nicht
+  'opening':         120_000,   // 1,5 h → 45 Abrufe. Engste Taktung, hier entsteht der Wert
+  'regular':         900_000,   // 5 h   → 20
+  'premarket':      1200_000,   // 1,5 h →  4
+  'premarket-early':2400_000,   // 4 h   →  6
+  'after':          1200_000,   // 1 h   →  3
+  'after-limited':  2400_000,   // 3 h   →  4
+  'closed':         7200_000,   // 8 h   →  4. IEX handelt nicht
 };
+/* Ergibt 86 Abrufe je Handelstag und 12 je freiem Tag → rund 20 GB im Monat.
+   Der erste Anlauf mit 120/300 s lag bei 34,9 GB und wurde von der eigenen
+   Testgrenze zurueckgewiesen — richtig so: der Test verteidigt das ZIEL
+   („unter 40 GB mit Reserve"), nicht die Taktwerte. Waere die Grenze als
+   prozentuale Ersparnis gegenueber vorher formuliert gewesen, waere sie gruen
+   gewesen und das Limit trotzdem gerissen.
+
+   DER GROESSERE HEBEL BLEIBT OFFEN: Die Live-Quotes der ~20 Deep-Scan-Titel
+   koennten ueber Alpaca `/v2/stocks/snapshots?symbols=…` kommen — das nimmt
+   eine Symbolliste, ist bereits implementiert und kostet null
+   Tiingo-Bandbreite. Dann waere der `/iex`-Abruf nur noch fuer die Discovery
+   noetig und koennte noch weiter gedrosselt werden. Steht als R14. */
 function radarTtlMs(phaseKey){
   const t = RADAR_TTL_MS[phaseKey];
   /* Unbekannte Phase -> der SPARSAME Wert, nicht der schnelle. Eine Phase, die
