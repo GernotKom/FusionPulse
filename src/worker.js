@@ -5616,10 +5616,42 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
   }
 }
 
+/* ═══════════════ v3.32.1 · AUTH: DIE ZWEI HAEUFIGSTEN STOLPERSTEINE ════════
+   Befund aus dem Betrieb: Token im Feld eingetragen, trotzdem 401.
+
+   URSACHE 1 — unsichtbare Zeichen im Secret. `echo "xyz" | wrangler secret put
+   APP_TOKEN` haengt ein `\n` an. Der strikte Vergleich `t === env.APP_TOKEN`
+   trifft dann NIE, und niemand sieht warum: beide Seiten sehen im Klartext
+   identisch aus. Dasselbe bei einem kopierten Leerzeichen am Ende.
+   Beide Seiten werden jetzt getrimmt. Das schwaecht nichts ab — ein Geheimnis,
+   dessen Sicherheit an einem fuehrenden Leerzeichen haengt, ist keines.
+
+   URSACHE 2 — der Nutzer sieht nicht, WORAN es scheitert. Bisher kam nur
+   „Nicht autorisiert." zurueck. Ob ueberhaupt ein Token ankam, ob er zu kurz
+   oder schlicht falsch war, blieb offen. Das ist Lehre 8aa: derselbe Satz fuer
+   drei verschiedene Zustaende.
+
+   Was der Hinweis NICHT verraet: weder das Geheimnis noch seine Laenge.
+   Gemeldet wird nur, ob etwas ankam und ob die Laenge passt — zwei Ja/Nein.
+   Das reicht zur Unterscheidung „nichts angekommen" (Token nicht gespeichert)
+   von „falscher Wert" (Tippfehler oder Autofill) und gibt einem Angreifer
+   nichts, was er nicht durch Probieren ohnehin haette. */
 function authed(req, url, env) {
   if (!env.APP_TOKEN) return true;                      // kein Token gesetzt → offen
-  const t = req.headers.get('x-fp-token') || url.searchParams.get('t');
-  return t === env.APP_TOKEN;
+  const want = String(env.APP_TOKEN).trim();
+  const got  = String(req.headers.get('x-fp-token') || url.searchParams.get('t') || '').trim();
+  return !!got && got === want;
+}
+
+/** Diagnose fuer die 401-Antwort. Verraet weder Wert noch Laenge. */
+function authHint(req, url, env) {
+  if (!env.APP_TOKEN) return null;
+  const want = String(env.APP_TOKEN).trim();
+  const raw  = req.headers.get('x-fp-token') || url.searchParams.get('t') || '';
+  const got  = String(raw).trim();
+  if (!got) return 'Es kam gar kein Zugriffs-Token an. In der App: Zahnrad → „Zugriffs-Token" eintragen UND unten auf Speichern tippen — ohne Speichern bleibt das Feld nur beschriftet.';
+  if (got.length !== want.length) return 'Ein Token kam an, hat aber die falsche Länge. Häufigste Ursache auf dem iPhone: die Passwortverwaltung hat das Feld selbst ausgefüllt. Feld leeren, Vorschlag ablehnen, Wert von Hand einsetzen.';
+  return 'Ein Token korrekter Länge kam an, stimmt aber nicht überein. Zeichenweise vergleichen — bei Groß-/Kleinschreibung und bei 0/O, 1/l/I passiert das am ehesten.';
 }
 
 
@@ -6741,7 +6773,7 @@ export default {
     }
 
     if (url.pathname.startsWith('/api/')) {
-      if (!authed(request, url, env)) return json({ error: 'Nicht autorisiert.' }, 401);
+      if (!authed(request, url, env)) return json({ error: 'Nicht autorisiert.', hint: authHint(request, url, env) }, 401);
       // Der Fusion-Key wird nur für die Krypto-Routen gebraucht. Der Aktienradar
       // soll auch dann laufen, wenn nur TWELVE_API_KEY gesetzt ist.
       const needsFusion = url.pathname === '/api/scan' || url.pathname.startsWith('/api/pair/');

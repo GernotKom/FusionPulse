@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.32.0 — Frontend
+   FusionPulse v3.32.2 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -296,6 +296,8 @@ let showRest = false;
 let ac = null;
 let health = {};
 let authDenied = false;   // v3.32.0: /api/ antwortet mit 401 — Token fehlt auf diesem Geraet
+let authHintText = '';    // v3.32.1: Diagnose des Servers, WORAN es scheitert
+let lastAuthHint = '';
 let quotaShownFor = '';     // verhindert Dauer-Popups für dieselbe Lage
 let stockSearchBusy = false;
 let stockSearchLastTs = 0;
@@ -1500,6 +1502,10 @@ async function scan(force = false) {
     if (!res.ok) {
       setSys('#sysCrypto', data.state || 'error', data.error);
       if (res.status === 429) showQuotaWarning('requests', data.error);
+      /* v3.32.1: Der Server sagt bei 401, WORAN es scheitert (nichts angekommen /
+         falsche Laenge / falscher Wert). Ohne dieses Durchreichen bliebe der
+         Hinweis im JSON stehen und der Nutzer sieht nur „Nicht autorisiert". */
+      if (res.status === 401 && data.hint) lastAuthHint = String(data.hint);
       throw new Error(data.error || `HTTP ${res.status}`);
     }
 
@@ -1542,7 +1548,7 @@ async function scan(force = false) {
        drei gelbe Warnungen ueber Datenquelle, Marktbreite und Bandbreite und
        sucht den Fehler beim Anbieter. Lehre 8aa: ein Ausfall darf nicht wie
        ein Normalzustand aussehen. */
-    if(/nicht autorisiert|unauthorized|\b401\b/i.test(msg)) authDenied = true;
+    if(/nicht autorisiert|unauthorized|\b401\b/i.test(msg)) { authDenied = true; authHintText = lastAuthHint || ''; }
     if (/cpu|exceeded|resource|1102/i.test(msg)) showQuotaWarning('cpu', msg);
     else if (/429|too many|limit/i.test(msg)) showQuotaWarning('requests', msg);
   } finally {
@@ -2298,7 +2304,7 @@ function feedInfo(meta, opening) {
   if (authDenied) {
     return { provider: null, role: 'unknown', breadth: 'unknown', feed: null, tone: 'warn',
       label: 'Zugriffs-Token fehlt auf diesem Gerät',
-      detail: 'Die App hat sich geladen, aber alle Datenabfragen werden mit „Nicht autorisiert" abgewiesen. Der Zugriffs-Token wird pro Gerät und pro Browser im lokalen Speicher gehalten — er wandert nicht mit. Einstellungen (Zahnrad) → „Zugriffs-Token" eintragen und speichern. Das ist KEIN Problem des Datenanbieters und keine Aussage über die Marktbreite.' };
+      detail: (authHintText ? authHintText + ' ' : '') + 'Die App hat sich geladen, aber alle Datenabfragen werden mit „Nicht autorisiert" abgewiesen. Der Zugriffs-Token wird pro Gerät und pro Browser im lokalen Speicher gehalten — er wandert nicht mit. Einstellungen (Zahnrad) → „Zugriffs-Token" eintragen und speichern. Das ist KEIN Problem des Datenanbieters und keine Aussage über die Marktbreite.' };
   }
   const m = meta || {};
   const raw = String(m.provider || m.source || '').trim();
@@ -2358,7 +2364,37 @@ function bandwidthNote(meta) {
 }
 function renderResourceStrip(){
   const box=$('#resourceStrip'), out=$('#resourceText'); if(!box||!out)return;
+  /* ══════════ v3.32.2 · DIE AMPEL MELDETE GRUEN, WAEHREND NICHTS LIEF ══════
+     Aus dem Betrieb, Bildschirmfoto 30.08. 23:20: rot „Fehler: Nicht
+     autorisiert", Krypto-Punkt rot, keine einzige Zahl auf dem Schirm — und
+     die Systemleiste daneben in Gruen: „App laeuft einwandfrei · Datenserver
+     stabil · kein Handlungsbedarf".
+
+     URSACHE: `/api/health` antwortet ohne gueltigen Token mit
+     `{ok:true, protected:true}` und OHNE `status`. Damit ist `states` leer,
+     keine der drei Bedingungen greift, und der Rueckfall am Ende der Kette
+     heisst `green`. Die Ampel hat also „keine Fehlermeldung" als „alles in
+     Ordnung" gelesen — ein Ausfall, der als Normalfall gemeldet wird.
+
+     Das ist der dritte Fall dieser Klasse in dieser Sitzung (nach dem
+     Bandbreiten-429 und der Quellenzeile) und gehoert zu Lehre 8x: „nicht
+     bewertbar" ist NICHT „in Ordnung". Wo eine Ampel aus dem FEHLEN von
+     Meldungen auf Gruen schliesst, ist sie im Ausfall am unauffaelligsten.
+
+     Fail-closed: Kommt keine Statusauskunft, ist die Ampel nicht gruen. */
   const hs=health?.status||{}; const states=[hs.crypto?.state,hs.stocks?.state,hs.alpaca?.state].filter(Boolean);
+  if(authDenied || health?.protected===true){
+    out.textContent='Kein Zugriff · Zugriffs-Token fehlt auf diesem Gerät — es werden KEINE Daten geladen, weder Aktien noch Krypto'+(authHintText?' · '+authHintText:'');
+    box.classList.remove('warn','orange','ok'); box.classList.add('err');
+    box.dataset.tip='Die App ist geladen, aber jede Datenabfrage wird vom eigenen Server mit „Nicht autorisiert" abgewiesen. Das betrifft ALLE Bereiche: Krypto läuft über dieselbe geschützte Route wie Aktien. Zahnrad → „Zugriffs-Token" eintragen und speichern. Kein Problem der Datenanbieter.'+(authHintText?' — '+authHintText:'');
+    return;
+  }
+  if(!states.length){
+    out.textContent='Zustand nicht abrufbar · der Server hat keine Statusauskunft geliefert';
+    box.classList.remove('warn','orange','ok'); box.classList.add('orange');
+    box.dataset.tip='Ohne Statusauskunft lässt sich nicht sagen, ob die Datenquellen laufen. Das ist ausdrücklich NICHT dasselbe wie „alles in Ordnung" — bis v3.32.1 stand hier in genau diesem Fall „App läuft einwandfrei".';
+    return;
+  }
   const red=states.some(x=>['error','nokey'].includes(x));
   const orange=states.some(x=>['cpu','daylimit'].includes(x));
   const yellow=states.some(x=>['ratelimit','stale','warn','unknown'].includes(x));

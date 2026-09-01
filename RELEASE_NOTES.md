@@ -11,6 +11,95 @@ Die *Begründungen* und die daraus gezogenen Lehren stehen nicht hier, sondern i
 
 ---
 
+# v3.32.2 — Die Systemampel meldete Grün, während nichts lief
+
+Im Bildschirmfoto vom 30.08., 23:20 stand nebeneinander: rot „Fehler: Nicht
+autorisiert", Krypto-Punkt rot, keine einzige Zahl auf dem Schirm — und daneben
+in Grün: **„App läuft einwandfrei · Datenserver stabil · kein
+Handlungsbedarf".**
+
+**Ursache.** `/api/health` antwortet ohne gültigen Token mit
+`{ok:true, protected:true}` und **ohne** `status`. Damit ist die Liste der
+Zustände leer, keine der Bedingungen für rot/orange/gelb greift, und der
+Rückfall am Ende der Kette heißt `green`. Die Ampel hat *keine Fehlermeldung*
+als *alles in Ordnung* gelesen.
+
+Das ist der dritte Fall derselben Klasse in dieser Sitzung — nach dem
+Bandbreiten-429 und der Quellenzeile — und die schärfste Ausprägung: **Wo eine
+Ampel aus dem Fehlen von Meldungen auf Grün schließt, ist sie ausgerechnet im
+Ausfall am unauffälligsten.** Lehre 8x: „nicht bewertbar" ist nicht „in
+Ordnung".
+
+**Behoben, fail-closed:**
+
+- Bei fehlendem Token: **rot**, mit dem Text, dass keine Daten geladen werden —
+  ausdrücklich **weder Aktien noch Krypto**.
+- Ohne jede Statusauskunft: **orange**, „Zustand nicht abrufbar". Nicht grün.
+- Beide Abbiegungen stehen *vor* der Levelberechnung. Ein Test prüft die
+  Reihenfolge, denn dahinter platziert würden sie nie greifen.
+
+**Klarstellung zu Krypto.** Die Krypto-Kurse hängen aus demselben Grund. Meine
+frühere Aussage, Krypto sei „davon völlig unabhängig", galt der
+Tiingo-Bandbreite und stimmt dafür — nicht aber für den Zugriffs-Token:
+`/api/scan` läuft über dieselbe geschützte Route wie alles andere. Ohne Token
+fragt der Worker Bitpanda gar nicht erst.
+
+| # | Sabotage | Ergebnis |
+|---|---|---|
+| 25 | 401-Abbiegung entfernt, Ampel wird wieder grün | fällt |
+| 26 | fehlende Auskunft fällt wieder auf grün zurück | fällt |
+| 27 | 401-Fall nur gelb statt rot | fällt |
+| 28 | Abbiegung steht nach der Levelberechnung (greift nie) | fällt |
+
+---
+
+# v3.32.1 — Zugriffs-Token: warum er trotz Eintrag nicht griff
+
+Aus dem Betrieb gemeldet: Token eingetragen, trotzdem „Nicht autorisiert".
+Drei Ursachen, zwei davon im Code behoben.
+
+**1 · Unsichtbare Zeichen im Secret.** `echo "xyz" | wrangler secret put
+APP_TOKEN` hängt ein `\n` an. Der strikte Vergleich `t === env.APP_TOKEN` trifft
+dann nie — und niemand sieht warum, weil beide Seiten im Klartext identisch
+aussehen. Beide Seiten werden jetzt getrimmt. Das schwächt nichts ab: ein
+Geheimnis, dessen Sicherheit an einem führenden Leerzeichen hängt, ist keines.
+Ein **leerer** Token gilt weiterhin nie als gültig — sonst hätte das Trimmen den
+Zugang geöffnet statt repariert.
+
+**2 · Das Feld war ein Passwortfeld.** Safari auf iOS ignoriert
+`autocomplete="off"` bei `type="password"` und bietet ungefragt die
+Passwortverwaltung an. Danach steht ein generierter Wert im Feld, der wie ein
+eingetragener Token aussieht — Punkte sind Punkte. Jetzt Klartext, mit
+`autocapitalize="none"`, `spellcheck="false"` und Sperren für gängige
+Passwortmanager. Der Token ist ein Gerätezugang, kein Kontopasswort, und er muss
+lesbar sein, um Tippfehler zu finden.
+
+**3 · Der Fehler sagte nicht, woran es liegt.** Bisher kam nur „Nicht
+autorisiert." — ob überhaupt etwas ankam, ob es zu kurz oder schlicht falsch
+war, blieb offen. Wieder derselbe Satz für drei Zustände (Lehre 8aa). Die
+401-Antwort enthält jetzt einen Hinweis, der die drei Fälle unterscheidet:
+nichts angekommen (nicht gespeichert) · falsche Länge (Autofill) · falscher Wert
+(Tippfehler, typisch 0/O und 1/l/I).
+
+**Was der Hinweis nicht verrät:** weder das Geheimnis noch seine Länge. Nur zwei
+Ja/Nein. Ein Test verbietet ausdrücklich, dass `want.length` in die Antwort
+gelangt.
+
+| # | Sabotage | Ergebnis |
+|---|---|---|
+| 20 | Trim im Vergleich entfernt | fällt |
+| 21 | leerer Token gilt nach dem Trimmen als gültig | fällt |
+| 22 | Hinweis verrät die Länge des Secrets | fällt |
+| 23 | Feld wieder als Passwortfeld | fällt |
+| 24 | Client verwirft den Server-Hinweis | fällt |
+
+**Protokollnotiz:** NK20 und NK24 meldeten zunächst „blind" — die Sabotage hatte
+ihren Anker gar nicht getroffen (`assert` schlug fehl, der Testlauf lief auf
+unverändertem Code). Eine Negativkontrolle, die nichts verändert, beweist nichts.
+Mit korrigierten Ankern fallen beide.
+
+---
+
 # v3.32.0 — Das Bandbreiten-Audit im Worker umgesetzt
 
 **Bewertungslogik:** nicht berührt. Die vier SHA-256-Blöcke unabhängig

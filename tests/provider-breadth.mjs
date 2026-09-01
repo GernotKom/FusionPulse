@@ -222,4 +222,74 @@ function ladeClient() {
   C.setAuthDenied(false);
 }
 
-console.log('✓ FusionPulse v3.32.0 provider/breadth (Audit §28/§29) regressions: OK');
+/* ─── 6 · v3.32.1 · Auth: Trim, Diagnose, kein Passwortfeld ─────────────── */
+{
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const wcode = w.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  /* Unsichtbare Zeichen im Secret sind die haeufigste Ursache fuer ein
+     „Token stimmt doch!" — `echo "x" | wrangler secret put` haengt \n an. */
+  assert.match(wcode, /const want = String\(env\.APP_TOKEN\)\.trim\(\)/,
+    'Das erwartete Secret muss getrimmt werden — ein angehaengtes \\n macht den Vergleich unmoeglich');
+  assert.match(wcode, /\.trim\(\);\s*\n\s*return !!got && got === want;/,
+    'Auch der gesendete Wert muss getrimmt werden');
+  /* Aber ein LEERER Token darf nie durchkommen — sonst haette das Trimmen den
+     Zugang geoeffnet statt repariert. */
+  assert.ok(wcode.includes('return !!got && got === want;'),
+    'Ein leerer Token darf NIEMALS als gueltig gelten');
+
+  /* Die Diagnose muss unterscheiden, aber nichts verraten. */
+  const hint = w.slice(w.indexOf('function authHint'), w.indexOf('function authHint') + 1400);
+  assert.ok(hint.length > 300, 'Schnitt authHint ist leer — Anker pruefen');
+  assert.ok(hint.includes('gar kein Zugriffs-Token an'), 'Fall 1: nichts angekommen');
+  assert.ok(hint.includes('falsche Länge'), 'Fall 2: falsche Laenge (iOS-Autofill)');
+  assert.ok(hint.includes('stimmt aber nicht überein'), 'Fall 3: falscher Wert');
+  assert.ok(!/\$\{want\}|\+ want|want\.slice|want\.length\}/.test(hint),
+    'Der Hinweis darf weder das Geheimnis noch seine Laenge ausgeben');
+  assert.ok(!/APP_TOKEN\}/.test(hint), 'Das Secret darf nirgends in die Antwort gelangen');
+
+  /* Das Feld darf kein Passwortfeld mehr sein — Safari ignoriert dort
+     autocomplete="off" und fuellt es ungefragt. */
+  assert.ok(!/id="sToken"[^>]*type="password"/.test(idx),
+    'Der Zugriffs-Token darf kein type="password" sein: iOS fuellt solche Felder selbst aus');
+  assert.match(idx, /id="sToken"[^>]*autocapitalize="none"/,
+    'Ohne autocapitalize wird das erste Zeichen auf dem iPhone grossgeschrieben');
+  assert.match(idx, /id="sToken"[^>]*spellcheck="false"/, 'Keine Autokorrektur auf einem Token');
+
+  /* Und der Server-Hinweis muss beim Nutzer ankommen. */
+  const acode = app.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  assert.match(acode, /res\.status === 401 && data\.hint/,
+    'Der Client muss den Hinweis aus der 401-Antwort uebernehmen');
+  assert.match(acode, /authHintText \? authHintText/,
+    'Und ihn anzeigen — sonst bleibt es beim nichtssagenden „Nicht autorisiert"');
+}
+
+/* ─── 7 · v3.32.2 · Die Systemampel darf im Ausfall nicht gruen sein ─────── */
+{
+  const acode = app.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const strip = acode.slice(acode.indexOf('function renderResourceStrip'),
+                            acode.indexOf('function renderResourceStrip') + 2600);
+  assert.ok(strip.length > 500, 'Schnitt renderResourceStrip ist leer — Anker pruefen');
+
+  /* Der gemeldete Fall: 401, keine Statusauskunft, Ampel stand auf gruen. */
+  assert.match(strip, /if\(authDenied \|\| health\?\.protected===true\)/,
+    'Bei fehlendem Token muss die Ampel VOR der Levelberechnung abbiegen');
+  assert.ok(/authDenied[\s\S]{0,600}?classList\.add\('err'\)/.test(strip),
+    'Der 401-Fall muss ROT sein, nicht gruen');
+  assert.ok(/weder Aktien noch Krypto/.test(strip),
+    'Es muss dastehen, dass AUCH Krypto betroffen ist — es laeuft ueber dieselbe geschuetzte Route');
+
+  /* Und der allgemeinere Fall: keine Auskunft ist nicht „in Ordnung". */
+  assert.match(strip, /if\(!states\.length\)/,
+    'Ohne Statusauskunft darf nicht auf gruen zurueckgefallen werden');
+  assert.ok(/!states\.length[\s\S]{0,500}?classList\.add\('orange'\)/.test(strip),
+    'Fehlende Auskunft muss sichtbar sein — Lehre 8x: nicht bewertbar ist nicht neutral');
+  /* Die Reihenfolge ist entscheidend: beide Abbiegungen MUESSEN vor der Zeile
+     stehen, die aus fehlenden Meldungen `green` ableitet. */
+  assert.ok(strip.indexOf("if(!states.length)") < strip.indexOf("const level=red?'red'"),
+    'Die Abbiegungen muessen vor der Levelberechnung stehen, sonst greifen sie nie');
+  assert.ok(strip.indexOf('if(authDenied') < strip.indexOf("if(!states.length)"),
+    'Der konkrete 401-Grund muss vor der allgemeinen Meldung kommen');
+}
+
+console.log('✓ FusionPulse v3.32.2 provider/breadth (Audit §28/§29) regressions: OK');
