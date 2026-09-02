@@ -5191,3 +5191,62 @@ console.log('✓ FusionPulse v3.29.0 evening-list geometry/study regressions: OK
 }
 
 console.log('✓ FusionPulse v4.0.2 Gap-Bezugstag (ausgefuehrt): OK');
+
+/* ══ v4.0.6 · PLAN AUF ALTEM KURS · BITPANDA-LINK · GLEICHE KARTEN ═════════
+   Anlass: am 02.09. um 11:05 ET zeigte die Fokuskarte BWXT mit Entry
+   161,60 $ auf einer 19,2 Stunden alten Zeile, waehrend der Titel real bei
+   156,16 $ stand. Die Zahlen sahen aus wie aus einem frischen Scan.
+   Geprueft wird AUSGEFUEHRT, nicht per Regex im Quelltext — eine Schwelle,
+   die nur im Code steht, ist keine Schwelle. */
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+
+  const iso = (msAgo) => new Date(Date.now()-msAgo).toISOString().slice(0,19).replace('T',' ');
+
+  const frisch = C.planFreshness({ symbol:'FRSH', updated: iso(60_000) });
+  const alt19h = C.planFreshness({ symbol:'BWXT', updated: iso(19.2*3600_000) });
+  const alt45m = C.planFreshness({ symbol:'MID',  updated: iso(45*60_000) });
+  const ohne   = C.planFreshness({ symbol:'NONE' });
+
+  assert.strictEqual(alt19h.stale, true, 'v4.0.6: 19 Stunden alt muss als veraltet gelten');
+  assert.match(alt19h.label, /Std\. Alter/, 'v4.0.6: Stunden werden als Stunden benannt, nicht als 1152 Minuten');
+  assert.strictEqual(alt45m.stale, true, 'v4.0.6: 45 Minuten liegen ueber der 20-Minuten-Schwelle');
+  assert.match(alt45m.label, /Min\. Alter/, 'v4.0.6: unter einer Stunde in Minuten');
+  assert.strictEqual(ohne.stale, true, 'v4.0.6: fehlender Zeitstempel ist kein Freibrief — fail-closed');
+  assert.ok(alt19h.detail.length > 60, 'v4.0.6: der Hinweis muss erklaeren, nicht nur etikettieren');
+  /* Die Gegenprobe ist der eigentliche Test: waere ALLES veraltet, waere die
+     Kennzeichnung wertlos. `stockFreshness` fuehrt eine Zeile ohne
+     `refreshedSymbols` allerdings selbst dann als GECACHED, wenn sie eine
+     Minute alt ist — deshalb wird hier die ALTERSGRENZE geprueft und nicht
+     der Gesamtzustand. */
+  assert.ok(frisch.ageMs != null && frisch.ageMs < 20*60_000,
+    'v4.0.6: eine eine Minute alte Zeile darf nicht ueber der Altersschwelle liegen');
+
+  /* Der Coin-Ausgang. Kein geratener Deeplink: Bitpanda dokumentiert keinen. */
+  const url = C.bitpandaUrl();
+  assert.match(url, /^https:\/\/web\.bitpanda\.com\/fusion$/,
+    'v4.0.6: belegter Einstiegspunkt statt geratenem Paar-Pfad');
+  assert.ok(!/BTC|EUR|trade\//.test(url),
+    'v4.0.6: kein erfundenes Paar-Schema in der Adresse');
+  const titel = C.bitpandaTitle('BTC-EUR');
+  assert.match(titel, /BTC/, 'v4.0.6: das Paar gehoert in den Titel, damit klar ist wonach zu suchen ist');
+  assert.match(titel, /keine Direktadresse/,
+    'v4.0.6: die Einschraenkung muss dastehen, nicht nur im Kommentar');
+}
+
+/* Beide Karten muessen dieselbe Geometrie tragen — sonst bedeuten gleiche
+   Punktabstaende in den zwei Feldern nicht dasselbe. */
+{
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  assert.match(css, /\.stockstage\{display:grid;grid-template-columns:1fr 250px/,
+    'v4.0.6: Aktien-Buehne muss dieselbe Spaltenaufteilung wie .stage haben');
+  assert.match(css, /\.stockmapwrap svg\{[^}]*aspect-ratio:1/,
+    'v4.0.6: die Aktienkarte muss quadratisch sein wie #map');
+  assert.ok(!/\.stockmapwrap svg\{[^}]*height:215px/.test(css),
+    'v4.0.6: die feste Hoehe war die Ursache der Stauchung und darf nicht zurueckkehren');
+  assert.match(css, /\.plan-stale-note\{/, 'v4.0.6: der Hinweis braucht eine sichtbare Auszeichnung');
+  assert.match(css, /\.sf-grid\.plan-stale\{/, 'v4.0.6: die Planzahlen muessen gedaempft werden');
+}
+
+console.log('✓ FusionPulse v4.0.6 Plan-Alter / Coin-Link / Kartengeometrie (ausgefuehrt): OK');

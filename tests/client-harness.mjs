@@ -108,6 +108,7 @@ export function loadClient(overrides = {}) {
 ;globalThis.__fp = {
   get S(){return S;},
   stockHeadline, stockOpportunity, stockLevel, stockSizing, stockTradeability, stockFreshness,
+  planFreshness, bitpandaUrl, bitpandaTitle, googleFinanceUrl,   // v4.0.6
   HEADLINE_RANK, VERDICT_ICON,
   get mutedSetupSet(){return mutedSetupSet;}, set mutedSetupSet(v){mutedSetupSet=v;},
   get stockMeta(){return stockMeta;}, set stockMeta(v){stockMeta=v;},
