@@ -2658,6 +2658,266 @@ async function ensureD1Schema(env){
 }
 const dbNum = (x) => Number.isFinite(Number(x)) ? Number(x) : null;
 function safeJson(x){ try { return JSON.stringify(x); } catch { return null; } }
+
+/* ══ v3.32.9 · R5 PUNKT 1 — ZAEHLER STATT VOLLTABELLEN-AGGREGATION ══════════
+   Befund vom 01.09., 22:26 in Produktion:
+     „D1_ERROR: Your account has exceeded D1's free tier daily ROW READ limit."
+   Nicht der Speicher, die GELESENEN ZEILEN. Der Treiber ist learningPayload():
+   COUNT(*), drei SUM(CASE …) und MAX(ts) ueber `market_snapshots` OHNE WHERE,
+   bei jedem Aufruf. Der 60-Sekunden-Memo-Cache haengt an einem Isolate, und
+   Isolate-Neustarts sind bei Workers der Normalfall.
+
+   Der eigentliche Schaden ist nicht die leere Anzeige. Solange D1 gesperrt
+   ist, kann d1UpdateOutcomes() nicht schreiben — und der Aufloesungskorridor
+   ist nur 15 Minuten breit (Minute 180 bis 195). Was dort hineinfaellt, bleibt
+   FUER IMMER unaufgeloest und zaehlt nie fuer einen Twin. Das Limit setzt um
+   Mitternacht UTC zurueck, die verlorenen Episoden nicht.
+
+   Neu: EINMAL wird gezaehlt (Baseline in fp_meta), danach schreiben die
+   Schreibpfade die Zaehler fort. Kosten je /api/learning: eine Zeile statt der
+   ganzen Tabelle, und der Verbrauch waechst nicht mehr mit der Historie.
+
+   FAIL-CLOSED. Laesst sich die Baseline nicht bilden — genau der Fall, in dem
+   D1 bereits gesperrt ist — wird NICHTS geschaetzt: `exact:false`, alle
+   Zaehler `null`. Ein fehlender Zaehler ist nicht 0 (Regel 2), und „nicht
+   bewertbar" ist nicht „in Ordnung" (Regel 5). Aus diesen Zahlen darf ein
+   Lernreife-Balken (R4) niemals gruen werden.
+
+   Nebenlaeufigkeit: mehrere Isolates schreiben gleichzeitig. Deshalb werden
+   NICHT die Absolutwerte dieses Isolates geschrieben, sondern die eigenen
+   noch nicht uebertragenen Deltas auf den gerade gelesenen Stand addiert
+   (read-modify-write). Ein verlorener Zaehlschritt wuerde `snapshots`
+   untertreiben und damit die Quote `resolved/snapshots` BESSER aussehen
+   lassen als sie ist — genau die Richtung, die Invariante 1 verbietet.     */
+const LEARN_COUNT_KEY = 'learn_counts';
+const LEARN_COUNT_FLUSH_MS = 30_000;
+
+/* ══ v3.32.9 · R5 PUNKT 2 — D1-TELEMETRIE ═══════════════════════════════════
+   „Punkte 2–4 messen statt raten — ohne Telemetrie ist jede weitere
+   Optimierung Raterei." Am 01.09. war das keine Theorie mehr: das Limit fiel,
+   und niemand konnte sagen, welcher Pfad es verbraucht hat.
+
+   D1 liefert je Abfrage `meta.rows_read` und `meta.rows_written`. Der Proxy
+   summiert das je Abfrageform. Eine Stelle, nicht dreissig Aufrufstellen.
+
+   EHRLICHE GRENZE: `.first()` gibt die Zeile direkt zurueck, ohne `meta`.
+   Diese Aufrufe sind NICHT messbar und werden separat gezaehlt, statt sie
+   stillschweigend als 0 zu verbuchen — eine Summe, die so tut, als waere sie
+   vollstaendig, ist schlimmer als eine, die ihre Luecke ausweist (Regel 5).
+   Die teuren Pfade laufen ohnehin ueber `.all()` (LIMIT 500/3000/8000); die
+   letzte grosse `.first()`-Abfrage war die Volltabellen-Aggregation, und die
+   ist mit Punkt 1 verschwunden.                                            */
+let d1Meter = null;
+function d1MeterStart(tag){
+  d1Meter = { tag, at: Date.now(), rowsRead:0, rowsWritten:0, queries:0, unmetered:0, byQuery:{} };
+  return d1Meter;
+}
+function d1QueryShape(sql){
+  const s = String(sql||'').replace(/\s+/g,' ').trim();
+  const verb = (s.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|PRAGMA)/i)||['?'])[0].toUpperCase();
+  const tbl = (s.match(/(?:FROM|INTO|UPDATE)\s+([A-Za-z_][A-Za-z0-9_]*)/i)||[null,'?'])[1];
+  return `${verb} ${tbl}`;
+}
+function d1MeterNote(sql, res){
+  const m = d1Meter; if(!m) return;
+  const list = Array.isArray(res) ? res : [res];
+  const shape = d1QueryShape(sql);
+  const b = m.byQuery[shape] || (m.byQuery[shape] = { q:0, r:0, w:0 });
+  for(const one of list){
+    const meta = one && one.meta;
+    m.queries++; b.q++;
+    if(!meta){ m.unmetered++; continue; }
+    const rr = Number(meta.rows_read), rw = Number(meta.rows_written);
+    if(Number.isFinite(rr)){ m.rowsRead += rr; b.r += rr; }
+    if(Number.isFinite(rw)){ m.rowsWritten += rw; b.w += rw; }
+  }
+}
+/** Legt einen messenden Mantel um das D1-Binding. Verhalten bleibt identisch. */
+function d1Wrap(db){
+  if(!db || db.__metered) return db;
+  const wrapStmt = (st, sql) => ({
+    __sql: sql,
+    bind: (...a) => wrapStmt(st.bind(...a), sql),
+    all: async (...a) => { const r = await st.all(...a); d1MeterNote(sql, r); return r; },
+    run: async (...a) => { const r = await st.run(...a); d1MeterNote(sql, r); return r; },
+    raw: async (...a) => { const r = await st.raw(...a); if(d1Meter){ d1Meter.queries++; d1Meter.unmetered++; } return r; },
+    /* Nicht messbar — und ausdruecklich als Luecke gezaehlt, nicht als 0. */
+    first: async (...a) => { const r = await st.first(...a); if(d1Meter){ d1Meter.queries++; d1Meter.unmetered++; } return r; },
+    __inner: st,
+  });
+  return {
+    __metered: true,
+    prepare: (sql) => wrapStmt(db.prepare(sql), sql),
+    batch: async (stmts) => {
+      const inner = (stmts||[]).map(s => s && s.__inner ? s.__inner : s);
+      const res = await db.batch(inner);
+      const sql = (stmts||[]).length ? String(stmts[0]?.__sql || 'BATCH') : 'BATCH';
+      d1MeterNote(sql, res);
+      return res;
+    },
+    exec: (...a) => db.exec(...a),
+    dump: (...a) => db.dump(...a),
+    withSession: (...a) => (typeof db.withSession === 'function' ? db.withSession(...a) : undefined),
+  };
+}
+const D1_METER_KEY = 'd1_meter';
+/** Tagesbilanz je UTC-Datum in fp_meta. Eine Zeile, ein Schreibvorgang. */
+async function d1MeterFlush(env, path){
+  const m = d1Meter; d1Meter = null;
+  if(!m || !env.DB || !m.queries) return;
+  const day = new Date(m.at).toISOString().slice(0,10);
+  const key = `${D1_METER_KEY}:${day}`;
+  try{
+    const row = await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind(key).first();
+    const acc = (row && row.value) ? (JSON.parse(row.value) || {}) : {};
+    acc.rowsRead = (Number(acc.rowsRead)||0) + m.rowsRead;
+    acc.rowsWritten = (Number(acc.rowsWritten)||0) + m.rowsWritten;
+    acc.queries = (Number(acc.queries)||0) + m.queries;
+    acc.unmetered = (Number(acc.unmetered)||0) + m.unmetered;
+    acc.byPath = acc.byPath || {};
+    const p = acc.byPath[path] || (acc.byPath[path] = { q:0, r:0, w:0 });
+    p.q += m.queries; p.r += m.rowsRead; p.w += m.rowsWritten;
+    acc.byQuery = acc.byQuery || {};
+    for(const [shape,b] of Object.entries(m.byQuery)){
+      const t = acc.byQuery[shape] || (acc.byQuery[shape] = { q:0, r:0, w:0 });
+      t.q += b.q; t.r += b.r; t.w += b.w;
+    }
+    await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts')
+      .bind(key, JSON.stringify(acc), Date.now()).run();
+  }catch{ /* Telemetrie darf niemals einen Request scheitern lassen */ }
+}
+/** Die Tagesbilanz fuer /api/health. Fail-closed: unlesbar heisst `null`. */
+async function d1MeterView(env, now=Date.now()){
+  if(!env.DB) return null;
+  const day = new Date(now).toISOString().slice(0,10);
+  try{
+    const row = await env.DB.prepare('SELECT value,updated_ts FROM fp_meta WHERE key=? LIMIT 1').bind(`${D1_METER_KEY}:${day}`).first();
+    if(!row || !row.value) return { day, measured:false, reason:'heute noch nichts gemessen' };
+    const acc = JSON.parse(row.value) || {};
+    const top = Object.entries(acc.byQuery||{}).map(([k,v])=>({ query:k, ...v })).sort((a,b)=>b.r-a.r).slice(0,8);
+    const paths = Object.entries(acc.byPath||{}).map(([k,v])=>({ path:k, ...v })).sort((a,b)=>b.r-a.r).slice(0,8);
+    return { day, measured:true, rowsRead:Number(acc.rowsRead)||0, rowsWritten:Number(acc.rowsWritten)||0,
+      queries:Number(acc.queries)||0, unmetered:Number(acc.unmetered)||0,
+      freeLimitRowsRead: 5_000_000,
+      /* Die Quote ist eine UNTERGRENZE: nicht messbare `.first()`-Abfragen
+         fehlen darin. Sie darf nie als „noch viel Luft" gelesen werden. */
+      readShareOfFreeLimit: (Number(acc.rowsRead)||0) / 5_000_000,
+      complete: (Number(acc.unmetered)||0) === 0,
+      topQueries: top, topPaths: paths, updatedTs: Number(row.updated_ts)||null };
+  }catch{ return null; }
+}
+let learnCounts = null;                                   // zuletzt bekannter persistierter Stand
+let learnPending = { s:0, r:0, e:0, ts:0, hours:{} };      // eigene, noch nicht uebertragene Deltas
+let learnFlushTs = 0;
+
+const learnHourKey = (ts) => Math.floor(ts / 3_600_000);
+function learnPrune(c, now){
+  if(!c || !c.hours) return c;
+  const min = learnHourKey(now) - 25;   // 24 Stunden Fenster plus zwei Stunden Rand
+  for(const k of Object.keys(c.hours)) if(Number(k) < min) delete c.hours[k];
+  return c;
+}
+function learnHourAdd(target, hour, d){
+  const b = target[hour] || (target[hour] = { s:0, r:0, e:0 });
+  b.s += d.s||0; b.r += d.r||0; b.e += d.e||0;
+}
+
+/** Einmalige Volltabellen-Aggregation. Die einzige, die es noch gibt. */
+async function learnCountersBaseline(env, now){
+  const q = await env.DB.prepare(`SELECT
+    COUNT(*) snapshots,
+    SUM(CASE WHEN resolved_ts IS NOT NULL THEN 1 ELSE 0 END) resolved,
+    SUM(CASE WHEN success_ts IS NOT NULL THEN 1 ELSE 0 END) expansions,
+    MAX(ts) last_ts FROM market_snapshots`).first();
+  if(!q) return null;
+  return { snapshots:Number(q.snapshots)||0, resolved:Number(q.resolved)||0,
+           expansions:Number(q.expansions)||0, lastTs:Number(q.last_ts)||null,
+           baseTs:now, hours:{} };
+}
+
+/** Liest den persistierten Stand; bildet die Baseline, wenn es noch keinen gibt. */
+async function learnCountersLoad(env, now=Date.now()){
+  if(!env.DB) return null;
+  try{
+    const row = await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind(LEARN_COUNT_KEY).first();
+    if(row && row.value){
+      const c = JSON.parse(row.value);
+      if(c && typeof c === 'object' && Number.isFinite(Number(c.snapshots))){
+        c.hours = c.hours || {};
+        return learnPrune(c, now);
+      }
+    }
+    const base = await learnCountersBaseline(env, now);
+    if(base) await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts')
+      .bind(LEARN_COUNT_KEY, JSON.stringify(base), now).run();
+    return base;
+  }catch{
+    /* D1 nicht lesbar (Limit, Ausfall). Kein Rateversuch, kein Nullwert. */
+    return null;
+  }
+}
+
+/** Fortschreiben beim Schreiben. Ohne Baseline wird NICHT gezaehlt. */
+function learnCountersBump(delta, now=Date.now()){
+  const h = String(learnHourKey(now));
+  learnPending.s += delta.snapshots||0;
+  learnPending.r += delta.resolved||0;
+  learnPending.e += delta.expansions||0;
+  if(delta.ts && delta.ts > learnPending.ts) learnPending.ts = delta.ts;
+  learnHourAdd(learnPending.hours, h, { s:delta.snapshots||0, r:delta.resolved||0, e:delta.expansions||0 });
+}
+
+/** Read-modify-write. Erst nach erfolgreichem Schreiben werden die Deltas verworfen. */
+async function learnCountersFlush(env, now=Date.now(), force=false){
+  if(!env.DB) return null;
+  const has = learnPending.s || learnPending.r || learnPending.e || learnPending.ts;
+  if(!has && !force) return learnCounts;
+  if(!force && now - learnFlushTs < LEARN_COUNT_FLUSH_MS) return learnCounts;
+  const cur = await learnCountersLoad(env, now);
+  if(!cur) return null;                       // fail-closed: nichts schreiben, Deltas bleiben stehen
+  const merged = { ...cur, hours:{ ...(cur.hours||{}) } };
+  merged.snapshots += learnPending.s;
+  merged.resolved  += learnPending.r;
+  merged.expansions+= learnPending.e;
+  if(learnPending.ts && (!merged.lastTs || learnPending.ts > merged.lastTs)) merged.lastTs = learnPending.ts;
+  for(const [h,d] of Object.entries(learnPending.hours)) learnHourAdd(merged.hours, h, d);
+  learnPrune(merged, now);
+  try{
+    await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts')
+      .bind(LEARN_COUNT_KEY, JSON.stringify(merged), now).run();
+  }catch{ return null; }                      // Deltas bleiben erhalten, naechster Versuch
+  learnPending = { s:0, r:0, e:0, ts:0, hours:{} };
+  learnCounts = merged; learnFlushTs = now;
+  return merged;
+}
+
+/** Die Zahlen fuer /api/learning. Niemals geraten. */
+async function learnCountersView(env, now=Date.now()){
+  const persisted = await learnCountersLoad(env, now);
+  if(!persisted) return { snapshots:null, resolved:null, expansions:null, lastTs:null,
+    snapshots24h:null, resolved24h:null, expansions24h:null,
+    exact:false, reason:'D1 nicht lesbar — Zaehler nicht bewertbar' };
+  /* Eigene, noch nicht uebertragene Deltas werden dazugerechnet: sonst meldet
+     die Anzeige weniger, als tatsaechlich aufgezeichnet wurde. */
+  const snapshots = persisted.snapshots + learnPending.s;
+  const resolved  = persisted.resolved  + learnPending.r;
+  const expansions= persisted.expansions+ learnPending.e;
+  const hours = { ...(persisted.hours||{}) };
+  for(const [h,d] of Object.entries(learnPending.hours)) learnHourAdd(hours, h, d);
+  const from = learnHourKey(now) - 23;
+  let s=0,r=0,e=0;
+  for(const [k,v] of Object.entries(hours)){ if(Number(k) < from) continue; s+=Number(v.s)||0; r+=Number(v.r)||0; e+=Number(v.e)||0; }
+  const baseTs = Number(persisted.baseTs)||null;
+  /* Das 24-Stunden-Fenster ist nur so alt wie die Zaehlung selbst. Solange die
+     Baseline juenger als 24 Stunden ist, sind die Fensterwerte UNVOLLSTAENDIG
+     — das gehoert dazugesagt, nicht stillschweigend als volle Tageszahl
+     ausgegeben. */
+  const windowComplete = !!baseTs && (now - baseTs) >= 24*3_600_000;
+  return { snapshots, resolved, expansions, lastTs: (learnPending.ts && (!persisted.lastTs || learnPending.ts>persisted.lastTs)) ? learnPending.ts : (persisted.lastTs||null),
+    snapshots24h:s, resolved24h:r, expansions24h:e,
+    exact:true, countedSince:baseTs, windowComplete,
+    reason: windowComplete ? null : 'Stundenfenster juenger als 24 h — Tageswerte unvollstaendig' };
+}
 function learningFeatures(row){
   return {
     score: dbNum(row.score ?? row.momentumScore),
@@ -2715,6 +2975,7 @@ async function d1UpdateOutcomes(env, symbol, price, now=Date.now(), assetType='s
   ).bind(symbol, assetType, source, now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
   if(!rows.length) return;
   const stmts=[];
+  let newlyResolved=0, newlyExpanded=0;
   for(const x of rows){
     const pct=(price/Number(x.price)-1)*100;
     const mx=Math.max(Number(x.max_pct)||0,pct), mn=Math.min(Number(x.min_pct)||0,pct);
@@ -2735,10 +2996,22 @@ async function d1UpdateOutcomes(env, symbol, price, now=Date.now(), assetType='s
     const setsNewMax = pct > (Number(x.max_pct) || 0);
     const maePre = setsNewMax ? mn : (Number.isFinite(Number(x.mae_pre)) ? Number(x.mae_pre) : mn);
     const resolved=(now-Number(x.ts)>=LEARN_HORIZON_MS) ? now : null;
+    if(resolved) newlyResolved++;
+    if(successTs && !x.success_ts) newlyExpanded++;
     stmts.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),reach_ts=COALESCE(reach_ts,?),mae_pre=?,resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
       .bind(mx,mn,successTs,reachTs,maePre,resolved,x.id));
   }
-  if(stmts.length) await env.DB.batch(stmts);
+  /* v3.32.9 · FAIL-CLOSED AN DER TEUERSTEN STELLE.
+     Wirft D1 hier (Limit erreicht, Ausfall), darf NICHTS als aufgeloest
+     gebucht werden. Der Fehler wird weitergereicht, damit der Aufrufer ihn
+     sieht — und die Zaehler werden erst NACH dem erfolgreichen Batch
+     fortgeschrieben. Wuerde vorher gezaehlt, meldete die App Auflösungen,
+     die nie in der Datenbank angekommen sind: die Lernreife saehe besser aus
+     als sie ist, und das ist genau die Richtung, die Invariante 1 verbietet. */
+  if(stmts.length){
+    await env.DB.batch(stmts);
+    if(newlyResolved || newlyExpanded) learnCountersBump({ resolved:newlyResolved, expansions:newlyExpanded }, now);
+  }
 }
 async function d1StoreSnapshotRow(env, row, {source='server',assetType='stock',now=Date.now()}={}){
   if(!env.DB || !row) return;
@@ -2750,12 +3023,20 @@ async function d1StoreSnapshotRow(env, row, {source='server',assetType='stock',n
   const crowdScore = dbNum(row.crowdScore) ?? await d1CrowdScore(env,symbol);
   const enriched={...row,crowdScore};
   const f=learningFeatures(enriched), bucket5=Math.floor(now/(5*60_000));
-  await env.DB.prepare(
+  /* v3.32.9 · `INSERT OR IGNORE` mit UNIQUE(source,asset_type,symbol,bucket5):
+     ein zweiter Scan desselben Titels im selben 5-Minuten-Takt fuegt NICHTS
+     ein. Gezaehlt wird deshalb `meta.changes`, nicht der Aufruf — sonst
+     zaehlte die App Beobachtungen, die es gar nicht gibt, und jede engere
+     Abfragefrequenz wuerde die Statistik aufblasen, ohne eine einzige neue
+     Zeile zu erzeugen. */
+  const ins = await env.DB.prepare(
     `INSERT OR IGNORE INTO market_snapshots
      (ts,bucket5,source,asset_type,symbol,sector,phase,price,score,crv,rvol,ret15,ret60,atr_pct,liquidity_vacuum,sector_lag,crowd_score,structure_pct,executability,light,payload)
      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(now,bucket5,source,assetType,symbol,row.sector||null,row.marketPhase||row.phase||null,price,
     f.score,f.crv,f.rv,f.r15,f.r60,f.atr,f.vac,f.lag,crowdScore,f.structure,dbNum(row.executability),row.light||null,snapshotPayload(row)).run();
+  const inserted = Number(ins?.meta?.changes);
+  if(Number.isFinite(inserted) && inserted > 0) learnCountersBump({ snapshots:inserted, ts:now }, now);
   const flags=serverLeadFlags(enriched);
   const ev=[];
   for(const k of LEARN_SIGNAL_LABELS){
@@ -5538,19 +5819,25 @@ async function learningPayload(env, stocks=[], coins=[]){
   const now=Date.now();
   const key=[...stocks.slice(0,16).sort(), '|', ...coins.slice(0,30).sort()].join(',');
   if(learnMemo.data && learnMemo.key===key && now-learnMemo.ts<60_000) return learnMemo.data;
-  const counts=await env.DB.prepare(`SELECT
-    COUNT(*) snapshots,
-    SUM(CASE WHEN resolved_ts IS NOT NULL THEN 1 ELSE 0 END) resolved,
-    SUM(CASE WHEN success_ts IS NOT NULL THEN 1 ELSE 0 END) expansions,
-    MAX(ts) last_ts,
-    SUM(CASE WHEN ts>=${now-24*60*60_000} THEN 1 ELSE 0 END) snapshots24h,
-    SUM(CASE WHEN ts>=${now-24*60*60_000} AND resolved_ts IS NOT NULL THEN 1 ELSE 0 END) resolved24h,
-    SUM(CASE WHEN ts>=${now-24*60*60_000} AND success_ts IS NOT NULL THEN 1 ELSE 0 END) expansions24h FROM market_snapshots`).first();
+  /* v3.32.9 · Hier stand die Volltabellen-Aggregation, die das Free-Limit
+     gerissen hat: COUNT(*), drei SUM(CASE …) und MAX(ts) ohne WHERE, bei
+     JEDEM Aufruf, wachsend mit der Historie. Ersetzt durch fortgeschriebene
+     Zaehler — eine gelesene Zeile statt der ganzen Tabelle. */
+  const counts = await learnCountersView(env, now);
   const stockOut={};
   for(const sym of stocks.slice(0,16)) stockOut[sym]={twin:await d1TwinFor(env,sym),lead:await d1LeadModel(env,sym),history:await d1History(env,sym,'stock')};
   const coinOut={};
   for(const sym of coins.slice(0,30)) coinOut[sym]={history:await d1History(env,sym,'coin')};
-  const data={configured:true,state:'ok',ts:now,stats:{snapshots:Number(counts?.snapshots)||0,resolved:Number(counts?.resolved)||0,expansions:Number(counts?.expansions)||0,snapshots24h:Number(counts?.snapshots24h)||0,resolved24h:Number(counts?.resolved24h)||0,expansions24h:Number(counts?.expansions24h)||0,lastTs:Number(counts?.last_ts)||null},stocks:stockOut,coins:coinOut,version:APP_VERSION};
+  /* Fail-closed: sind die Zaehler nicht bewertbar, stehen dort `null` und
+     `exact:false` — NICHT 0. `Number(null)` ist 0, und eine 0 im Nenner einer
+     Lernreife-Quote sieht aus wie „noch nichts aufgezeichnet", waehrend eine 0
+     im Zaehler aussieht wie „nichts aufgeloest". Beides waere erfunden. */
+  const data={configured:true,state:'ok',ts:now,stats:{
+    snapshots:counts.snapshots, resolved:counts.resolved, expansions:counts.expansions,
+    snapshots24h:counts.snapshots24h, resolved24h:counts.resolved24h, expansions24h:counts.expansions24h,
+    lastTs:counts.lastTs, exact:counts.exact, countedSince:counts.countedSince??null,
+    windowComplete:counts.windowComplete??false, countsReason:counts.reason??null
+  },stocks:stockOut,coins:coinOut,version:APP_VERSION};
   learnMemo={ts:now,key,data}; return data;
 }
 async function serverLearningCycle(env, scheduledTime=Date.now()){
@@ -6769,6 +7056,32 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    /* v3.32.9 · R5 Punkt 2: messender Mantel um D1, eine Stelle statt dreissig
+       Aufrufstellen. Das Verhalten des Bindings bleibt identisch — der Mantel
+       liest nur `meta.rows_read`/`rows_written` mit.
+       Am Ende des Requests werden Telemetrie UND die Lernzaehler ueber
+       `waitUntil` weggeschrieben, damit kein Request darauf wartet. */
+    if (env.DB && !env.DB.__metered) env.DB = d1Wrap(env.DB);
+    d1MeterStart(url.pathname);
+    const finish = () => {
+      const done = (async () => {
+        try { await learnCountersFlush(env); } catch {}
+        try { await d1MeterFlush(env, url.pathname); } catch {}
+      })();
+      try { ctx && ctx.waitUntil && ctx.waitUntil(done); } catch {}
+      return done;
+    };
+    try {
+      const res = await this.handle(request, env, ctx, url);
+      finish();
+      return res;
+    } catch (err) {
+      finish();
+      throw err;
+    }
+  },
+  async handle(request, env, ctx, url) {
+
     if (url.pathname === '/api/health') {
       /* ═══ v3.32.7 · `protected` BESCHREIBT DIE INSTALLATION, NICHT DEN ANRUFER ═══
          `protected: !!env.APP_TOKEN` heisst „diese Instanz verlangt einen
@@ -6801,6 +7114,12 @@ export default {
         configured: !!env.FUSION_API_KEY,
         protected: !!env.APP_TOKEN,   // Eigenschaft der INSTALLATION
         authenticated: true,          // v3.32.7: Aussage ueber DIESE Anfrage — bis hierher kommt nur, wer autorisiert ist
+        /* v3.32.9 · R5 Punkt 2: gemessene D1-Nutzung des laufenden UTC-Tages.
+           Am 01.09. riss das Free-Limit fuer GELESENE ZEILEN und niemand
+           konnte sagen, welcher Pfad es verbraucht. `complete:false` heisst,
+           dass nicht messbare `.first()`-Abfragen fehlen — die Summe ist dann
+           eine UNTERGRENZE und darf nie als „noch Luft" gelesen werden. */
+        d1: await d1MeterView(env),
         stocksConfigured: tiingoStocksMode(env)==='primary' ? !!env.TIINGO_API_TOKEN : !!env.TWELVE_API_KEY,
         stocksProvider: tiingoStocksMode(env)==='primary' ? 'Tiingo IEX' : 'Twelve Data',
         tiingoStocksMode: tiingoStocksMode(env),
@@ -7052,9 +7371,17 @@ export default {
 
   // v3.0: Cron sammelt unabhängig von einer geöffneten PWA Markt- und Learning-Daten.
   async scheduled(event, env, ctx) {
+    /* v3.32.9 · Der Cron ist der groesste D1-Verbraucher der App — ihn nicht
+       zu messen hiesse, genau den Pfad im Dunkeln zu lassen, der das Limit
+       reisst. Gemessen wird unter dem Pfadnamen `cron`. */
+    if (env.DB && !env.DB.__metered) env.DB = d1Wrap(env.DB);
+    d1MeterStart('cron');
     ctx.waitUntil(serverLearningCycle(env,event.scheduledTime).catch((e) => {
       cronLog('scheduler','error',e?.message,{scheduledTime:event.scheduledTime});
       return persistApiState(env,'scheduler','error',e?.message,Number(event.scheduledTime)||Date.now());
+    }).finally(async () => {
+      try { await learnCountersFlush(env, Date.now(), true); } catch {}
+      try { await d1MeterFlush(env, 'cron'); } catch {}
     }));
   },
 };

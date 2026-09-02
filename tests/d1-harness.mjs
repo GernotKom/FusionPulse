@@ -1,0 +1,76 @@
+/* Funktionale D1-Harness (v3.32.9).
+   Zweck: die Zaehler- und Telemetrielogik WIRKLICH ausfuehren, statt im
+   Quelltext nach Mustern zu suchen. Drei Fehlversionen (3.32.2/3/6) sind an
+   genau dieser Luecke vorbeigelaufen — ein Muster beweist, dass etwas dasteht,
+   nicht dass es das Richtige tut.
+
+   Das gefaelschte D1 kann drei Dinge, die das echte auch kann und die hier
+   entscheidend sind: `meta.rows_read`/`rows_written` liefern, bei
+   `INSERT OR IGNORE` ueber `meta.changes` melden, dass NICHTS eingefuegt
+   wurde, und auf Kommando denselben Fehler werfen wie am 01.09.
+   („exceeded free tier daily row read limit"). */
+import fs from 'node:fs';
+
+const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+
+export function loadD1() {
+  const from = worker.indexOf("const LEARN_COUNT_KEY = 'learn_counts';");
+  const to = worker.indexOf('function learningFeatures(row){');
+  if (from < 0 || to < 0 || to <= from) throw new Error('D1-Block nicht gefunden');
+  const src = worker.slice(from, to)
+    + '\nreturn {learnCountersLoad,learnCountersBump,learnCountersFlush,learnCountersView,'
+    + 'learnCountersBaseline,learnHourKey,d1Wrap,d1MeterStart,d1MeterFlush,d1MeterView,d1QueryShape,'
+    + 'get pending(){return learnPending;}, set pending(v){learnPending=v;},'
+    + 'reset(){learnCounts=null;learnPending={s:0,r:0,e:0,ts:0,hours:{}};learnFlushTs=0;d1Meter=null;}};';
+  return new Function(src)();
+}
+
+/** Minimales, aber ehrliches D1-Double. */
+export function fakeDb(opts = {}) {
+  const meta = new Map();                 // fp_meta
+  const state = {
+    fail: opts.fail || null,              // z. B. 'D1_ERROR: … row read limit'
+    failWrite: opts.failWrite || null,    // nur Schreibvorgaenge scheitern
+    rowsReadPerQuery: opts.rowsRead ?? 3,
+    inserted: opts.inserted ?? 1,         // meta.changes fuer INSERT OR IGNORE
+    log: [],
+    meta,
+  };
+  const boom = () => { if (state.fail) throw new Error(state.fail); };
+  const boomW = () => { boom(); if (state.failWrite) throw new Error(state.failWrite); };
+  const result = (results, written = 0) => ({
+    results,
+    meta: { rows_read: state.rowsReadPerQuery, rows_written: written, changes: written },
+  });
+  const stmt = (sql, args = []) => ({
+    bind: (...a) => stmt(sql, a),
+    all: async () => {
+      boom(); state.log.push(sql);
+      return result([]);
+    },
+    first: async () => {
+      boom(); state.log.push(sql);
+      if (/FROM fp_meta/i.test(sql)) {
+        const row = meta.get(String(args[0]));
+        return row ? { value: row.value, updated_ts: row.ts } : null;
+      }
+      if (/COUNT\(\*\)/i.test(sql)) return { ...(opts.baseline || { snapshots: 100, resolved: 40, expansions: 7, last_ts: 1 }) };
+      return null;
+    },
+    run: async () => {
+      boomW(); state.log.push(sql);
+      if (/INSERT INTO fp_meta/i.test(sql)) {
+        meta.set(String(args[0]), { value: String(args[1]), ts: Number(args[2]) || 0 });
+        return result([], 1);
+      }
+      if (/INSERT OR IGNORE INTO market_snapshots/i.test(sql)) return result([], state.inserted);
+      return result([], 1);
+    },
+  });
+  const db = {
+    prepare: (sql) => stmt(sql),
+    batch: async (stmts) => { boomW(); state.log.push('BATCH'); return stmts.map(() => result([], 1)); },
+    exec: async () => ({}),
+  };
+  return { db, state };
+}
