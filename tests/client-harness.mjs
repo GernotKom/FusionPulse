@@ -148,6 +148,12 @@ export function loadClient(overrides = {}) {
      Genau diese Luecke hat drei Fehlversionen durchgelassen. Ein Muster im
      Quelltext beweist, dass etwas dasteht — nicht, dass es das Richtige tut. */
   crvGeometry, crvGeometryRow,
+  /* v3.32.10 · Twin-Auswertung. Der lokale Zweig zaehlte auf die alte
+     5-%-Marke, der D1-Zweig auf 2,04 % — dieselbe Kachel bedeutete je nach
+     Quelle etwas anderes. Das ist nur AUSGEFUEHRT nachweisbar. */
+  historicalTwin, edgeStrip, econWinPct, econStopPct,
+  wilsonUpperPct, econBreakEvenPct, econBreakEvenFloorPct,
+  get twinStore(){return twinStore;}, set twinStore(v){twinStore=v;},
   CRV_INFLATION_WARN, CRV_COST_SHARE_WARN, CRV_STRUCT_CONFLICT_FACTOR,
   get health(){return health;}, set health(v){health=v;},
   get authDenied(){return authDenied;}, set authDenied(v){authDenied=v;},

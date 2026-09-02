@@ -232,3 +232,121 @@ const stripComments = (s) => String(s)
 }
 
 console.log('✓ FusionPulse v3.32.9 D1-Zaehler/Telemetrie (ausgefuehrt): OK');
+
+/* ═══ v3.32.10 · R3 — DER AUFLOESER, AUSGEFUEHRT ════════════════════════════
+   Bisher loeste `d1UpdateOutcomes()` nur auf, wenn GENAU DIESES Symbol
+   erneut gescannt wurde, im Fenster Minute 180 bis 195. Verpasst hiess fuer
+   immer verloren. Der neue Cron-Aufloeser kennt kein Fenster mehr.
+
+   Die gefaehrliche Variante waere gewesen, einfach alles Faellige aufzuloesen.
+   `max_pct` waechst nur beim Beobachten; ein nie wieder angesehener Snapshot
+   traegt 0 und wuerde als „hat sich nicht bewegt" aufgezeichnet. Der Fehler
+   waere systematisch negativ — die Lernbasis fuellte sich mit Scheinverlierern
+   und saehe dabei gut belegt aus.                                          */
+{
+  const { loadResolver } = await import('./d1-harness.mjs');
+  const R = loadResolver();
+
+  // NK59 · Genug beobachtet wird aufgeloest, zu wenig beobachtet wird verworfen.
+  {
+    R.reset();
+    const { db } = fakeDb({ due: [{ id:1, obs_n:12 }, { id:2, obs_n:2 }, { id:3, obs_n:null }, { id:4, obs_n:6 }] });
+    const r = await R.d1ResolveDue({ DB: db }, now);
+    assert.equal(r.resolved, 2, `NK59: Nur ausreichend beobachtete Snapshots duerfen aufgeloest werden, waren ${r.resolved}`);
+    assert.equal(r.dropped, 2, `NK59: Der Rest muss VERWORFEN werden, nicht aufgeloest — waren ${r.dropped}`);
+    assert.equal(r.resolved + r.dropped, r.due, 'NK59: Kein faelliger Snapshot darf einfach liegenbleiben');
+  }
+
+  /* NK60 · Der entscheidende Fall: NIE beobachtet.
+     `obs_n = 0` heisst `max_pct = 0`. Wuerde das aufgeloest, stuende in der
+     Lernbasis „der Titel hat sich nicht bewegt", obwohl gilt „wir haben nicht
+     hingesehen". Das ist kein vorsichtiger Naeherungswert, das ist ein
+     erfundenes Ergebnis — und zwar eines, das jedes Setup untauglich aussehen
+     laesst. Genau die Richtung, in der eine falsche Zahl am glaubwuerdigsten
+     wirkt, weil sie zur Erwartung passt. */
+  {
+    R.reset();
+    const { db } = fakeDb({ due: [{ id:1, obs_n:0 }] });
+    const r = await R.d1ResolveDue({ DB: db }, now);
+    assert.equal(r.resolved, 0, 'NK60: Ein nie beobachteter Snapshot darf NIEMALS aufgeloest werden');
+    assert.equal(r.dropped, 1, 'NK60: Er ist eine Luecke und muss als solche gezaehlt werden');
+  }
+
+  /* NK61 · Altbestand ohne `obs_n` ist nicht nachweisbar abgedeckt.
+     Nicht feststellbar ist nicht ausreichend (Regel 5). */
+  {
+    R.reset();
+    const { db } = fakeDb({ due: [{ id:1 }, { id:2, obs_n:undefined }] });
+    const r = await R.d1ResolveDue({ DB: db }, now);
+    assert.equal(r.resolved, 0, 'NK61: Ohne Abdeckungsnachweis wird nicht aufgeloest');
+    assert.equal(r.dropped, 2, 'NK61: … sondern verworfen und gezaehlt');
+  }
+
+  // NK62 · Der Verwurf muss in den Zaehlern ankommen, sonst ist er unsichtbar.
+  {
+    R.reset();
+    const { db } = fakeDb({ due: [{ id:1, obs_n:9 }, { id:2, obs_n:1 }] });
+    await R.d1ResolveDue({ DB: db }, now);
+    const d = R.bumped[0] || {};
+    assert.equal(d.resolved, 1, 'NK62: Aufloesungen muessen gezaehlt werden');
+    assert.equal(d.dropped, 1, 'NK62: Verworfene ebenso — „verpasste Aufloesungen" ist die Kennzahl aus R3');
+  }
+
+  /* NK63 · Fail-closed: wirft D1 im Batch, darf nichts gezaehlt werden.
+     Sonst meldet die App Aufloesungen, die nie geschrieben wurden. */
+  {
+    R.reset();
+    const { db, state } = fakeDb({ due: [{ id:1, obs_n:9 }] });
+    state.failWrite = LIMIT;
+    await assert.rejects(() => R.d1ResolveDue({ DB: db }, now),
+      'NK63: Der Fehler muss weitergereicht werden, nicht verschluckt');
+    assert.equal(R.bumped.length, 0, 'NK63: Und es darf nichts gezaehlt worden sein');
+  }
+
+  /* NK64 · Kein Fenster mehr. Der alte Aufloeser hatte eine untere Zeitgrenze
+     (`ts >= now - 195min`); wer sie verpasste, blieb fuer immer unaufgeloest.
+     Ein zwei Wochen alter Snapshot muss heute noch abgeraeumt werden. */
+  {
+    const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+    const at = worker.indexOf('async function d1ResolveDue(');
+    const body = stripComments(worker.slice(at, worker.indexOf('async function d1StoreSnapshotRow(')));
+    assert.ok(!/ts>=\?/.test(body) && !/ts >= \?/.test(body),
+      'NK64: Der Aufloeser darf keine untere Zeitgrenze mehr haben — genau die war der Korridor');
+    assert.match(body, /ts<=\?/, 'NK64: Nur „faellig oder nicht" darf entscheiden');
+    assert.ok(!/symbol=\?/.test(body),
+      'NK64: Und er darf nicht mehr an ein einzelnes Symbol gebunden sein');
+  }
+
+  /* NK65 · Der Aufloeser laeuft im Cron VOR den Marktjobs und reisst sie nicht
+     mit. Haengt er an einem Scan, ist R3 nur verschoben, nicht behoben. */
+  {
+    const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+    const cycle = worker.slice(worker.indexOf('async function serverLearningCycle('),
+                               worker.indexOf('async function serverLearningCycle(') + 2500);
+    const resolveAt = cycle.indexOf('d1ResolveDue');
+    const firstJob = cycle.indexOf('getSnapshot(');
+    assert.ok(resolveAt > 0, 'NK65: Der Cron muss den Aufloeser aufrufen');
+    assert.ok(firstJob < 0 || resolveAt < firstJob, 'NK65: … und zwar vor den Marktjobs');
+    assert.match(cycle.slice(resolveAt - 200, resolveAt + 400), /catch/,
+      'NK65: Sein Ausfall darf den restlichen Zyklus nicht mitreissen');
+  }
+
+  /* NK66 · Die Beobachtung wird gezaehlt, und erst ausreichende Abdeckung
+     loest im Symbolpfad auf. Ohne das waere die Regel nur halb durchgesetzt. */
+  {
+    const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+    /* Der Slice muss genau HIER enden. Reicht er bis `d1BatchChunks`, umfasst
+       er auch `d1ResolveDue` — und der Test findet `obs>=LEARN_MIN_OBS` dann
+       in der falschen Funktion und bleibt gruen, obwohl der Symbolpfad die
+       Pruefung verloren hat. Dritter Fall derselben Krankheit in dieser Suite
+       (nach NK49 und NK51): ein Test, der den falschen Text liest. */
+    const fn = stripComments(worker.slice(worker.indexOf('async function d1UpdateOutcomes('),
+                                          worker.indexOf('async function d1ResolveDue(')));
+    assert.ok(!/d1ResolveDue/.test(fn), 'NK66: Der geprueffte Ausschnitt darf den Cron-Aufloeser nicht enthalten');
+    assert.match(fn, /obs_n=\?/, 'NK66: Jede Beobachtung muss mitgeschrieben werden');
+    assert.match(fn, /obs>=LEARN_MIN_OBS/,
+      'NK66: Auch der Symbolpfad darf nur bei ausreichender Abdeckung aufloesen');
+  }
+}
+
+console.log('✓ FusionPulse v3.32.10 R3 Aufloeser (ausgefuehrt): OK');

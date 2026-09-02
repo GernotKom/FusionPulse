@@ -109,7 +109,19 @@ assert.match(workerText,/row\.discovery=\{type:'iex-radar',\.\.\.rm,buyWeight:0\
 assert.match(workerText,/row\.discovery=\{type:'boats',\.\.\.bm,buyWeight:0\}/,'BOATS candidate metadata must carry 0 BUY weight');
 assert.match(workerText,/const syms=\[\.\.\.favPick,\.\.\.recheckPick,\.\.\.gainerPick,\.\.\.sectorPick,\.\.\.radarPick,\.\.\.boatsPick,\.\.\.explore\]\.slice\(0,deepLimit\)/,'Deep scan must cap adaptive candidate batch at the configurable deep limit');
 assert.match(workerText,/await tiingoFetch\(env,'\/iex'\)/,'Whole-market Radar must use Tiingo IEX bulk snapshot');
-assert.match(workerText,/stockMinute%2===1[\s\S]*tiingoIexMarketRadar\(env,80,true\)/,'Server scheduler must keep the market radar independent of the browser');
+/* v4.0.0: Diese Zusicherung war an die KADENZFORMEL genagelt
+   (`stockMinute%2===1`), obwohl ihre Aussage lautet „laeuft serverseitig".
+   Damit haette jede Aenderung der Kadenz sie brechen muessen — und beim
+   Einbau des Marktphasen-Waechters tat sie das auch. Geprueft wird jetzt die
+   Absicht: der Radar wird aus dem Cron-Zyklus aufgerufen und dort getaktet. */
+{
+  const cycStart = workerText.indexOf('async function serverLearningCycle(');
+  const cycle = workerText.slice(cycStart, workerText.indexOf('\n}\n', cycStart) + 3);
+  assert.ok(cycle.length > 1000 && cycle.length < 12000,
+    `Der geprueffte Ausschnitt muss der Cron-Zyklus sein, ist ${cycle.length} Zeichen`);
+  assert.match(cycle,/radarDueNow\(phase\.key, ?stockMinute\)[\s\S]{0,200}tiingoIexMarketRadar\(env,80,true\)/,
+    'Server scheduler must keep the market radar independent of the browser, gated by market phase');
+}
 assert.match(workerText,/execution!=='server'&&!force[\s\S]*readLatestPersistedStockScan/,'Browser stock requests must consume the persisted server scan instead of starting a duplicate market scan');
 assert.match(workerText,/source IN \('Twelve Data','Tiingo IEX'\)/,'Learning must accept Tiingo IEX history after Primary migration');
 
@@ -905,9 +917,26 @@ console.log('✓ FusionPulse v3.6.3 focus-metrics/situation glossary regressions
 
   // -- Datenstand: ein Kurs vom Vortag darf nicht wie tagesaktuell aussehen.
   //    Fixture: gestern 19:55 UTC = 15:55 ET = regulaere Sitzung, kurz vor Schluss.
-  const y = new Date(Date.now() - 24*60*60_000);
-  const iso = (d,h,m)=>new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate(),h,m)).toISOString();
-  const stale = C.dataSession({ updated: iso(y,19,55) });
+  /* v3.32.10 · DIESE FIXTURE WAR SELBST ZEITZONENABHAENGIG KAPUTT.
+     Sie baute „gestern" aus UTC minus 24 Stunden und fragte dann nach dem
+     US-HANDELSTAG. Zwischen 00:00 und 04:00 UTC (also 20:00–00:00 ET am Abend
+     davor) liegt „vor 24 Stunden" noch auf DEMSELBEN ET-Kalendertag — die
+     Fixture stellte also gar keinen Vortag dar, und der Test fiel, obwohl der
+     Code richtig war. Genau die Konvention, die das Handover fordert:
+     zeitzonenabhaengige Fixtures muessen aus der GEPRUEFTEN Zone abgeleitet
+     werden, nicht aus UTC oder der Browserzone.
+     Jetzt: vom ET-Kalendertag rueckwaerts gehen, bis ein anderer ET-Tag
+     erreicht ist, und dort 15:55 ET einstellen. */
+  const etDayOf=(ms)=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',
+    year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(ms));
+  const heuteEt=etDayOf(Date.now());
+  let staleAt = Date.now();
+  for (let i=0; i<48 && etDayOf(staleAt)===heuteEt; i++) staleAt -= 60*60_000;
+  assert.notEqual(etDayOf(staleAt), heuteEt, 'Die Fixture muss auf einem anderen US-Handelstag liegen');
+  for (let i=0;i<4;i++) staleAt += ((15*60+55) - nyWall(staleAt)) * 60_000;   // 15:55 ET, kurz vor Schluss
+  assert.equal(nyWall(staleAt), 15*60+55, 'Die Fixture muss in New York 15:55 sein');
+  assert.notEqual(etDayOf(staleAt), heuteEt, 'Und dabei auf dem Vortag bleiben — sonst prueft der Test nichts');
+  const stale = C.dataSession({ updated: new Date(staleAt).toISOString() });
   assert.equal(stale.known, true, 'Der Zeitstempel muss lesbar sein');
   assert.equal(stale.sameDay, false, 'Ein Kurs vom Vortag darf nicht als heutig gelten');
   /* v3.32.3: Diese Pruefung war 47 Versionen lang latent kaputt. `sameDay`
@@ -916,9 +945,6 @@ console.log('✓ FusionPulse v3.6.3 focus-metrics/situation glossary regressions
      `America/Chicago` liegt „vor 24 Stunden" um 23:11 Ortszeit noch auf
      demselben Kalendertag. Zwei ausdrueckliche Faelle, die den Unterschied
      festnageln — ohne sie kaeme derselbe Fehler beim naechsten Umbau zurueck. */
-  const etDayOf=(ms)=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',
-    year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(ms));
-  const heuteEt=etDayOf(Date.now());
   // Ein Kurs aus der LAUFENDEN ET-Sitzung gilt als heutig, egal wo der Nutzer sitzt.
   let probe=Date.now(); while(etDayOf(probe)!==heuteEt) probe-=3600_000;
   assert.equal(C.dataSession({updated:new Date(probe).toISOString()}).sameDay, true,
@@ -4986,5 +5012,132 @@ function crvRowText(C, g) {
 }
 
 console.log('✓ FusionPulse v3.32.8 CRV-Geometrie R1.3/R1.4 (ausgefuehrt): OK');
+
+/* ═══ v3.32.10 · TWIN: DIE ZAHL, DIE ZWEI DINGE BEDEUTETE ═══════════════════
+   Screenshot vom 01.09.: `Twin 0% · n=19 · 10 Titel · unabhaengig · lokal`.
+
+   Zwei Befunde stecken darin. Erstens sagt `lokal`, dass die Zahl NICHT aus
+   D1 kam, sondern aus dem Client-Rueckfall — die D1-Twins waren leer, und
+   genau das behebt R3. Zweitens zaehlte der lokale Zweig auf `maxPct >= 5`,
+   die alte 5-%-Marke, waehrend der D1-Zweig auf ECON_WIN_PCT (2,04 %) zaehlt.
+   Dieselbe Kachel bedeutete je nach Datenquelle etwas anderes, und der
+   Tooltip nannte nur die alte Zahl.
+
+   Und „0 %" war ohnehin die falsche Zahl: 0 von 19 heisst statistisch
+   hoechstens 16,8 %. Erst der Vergleich mit der noetigen Trefferquote macht
+   daraus eine Aussage.                                                     */
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  /* Dieselben Schluessel wie `featureOf()`. Fehlt einer, ergibt `twinDist()`
+     NaN und die Episode wird stillschweigend uebersprungen — die Fixture
+     haette dann null Episoden geliefert und der Test waere aus dem falschen
+     Grund gefallen. */
+  const FEAT = { score:0, crv:0, rv:0, r15:0, r60:0, atr:0, vac:0, lag:0, crowd:null, crowdConfirm:null };
+
+  /* NK67 · Client und Worker muessen dieselben wirtschaftlichen Schwellen
+     rechnen. Sie sind an zwei Stellen implementiert — ohne diese Pruefung
+     driften sie auseinander, und dann bedeutet „Twin %" wieder zweierlei. */
+  {
+    const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+    const num = (name) => {
+      const m = w.match(new RegExp(`${name}\\s*=\\s*([^;]+);`));
+      return m ? m[1] : null;
+    };
+    assert.equal(C.econWinPct(), 2.04, `NK67: Zielweite muss 2,04 % sein, ist ${C.econWinPct()}`);
+    assert.equal(C.econStopPct(), -1.02, `NK67: Stop muss -1,02 % sein, ist ${C.econStopPct()}`);
+    assert.ok(String(num('const ECON_NET_EUR')).includes('120'),
+      'NK67: Beide Seiten muessen von derselben Zielgroesse ausgehen');
+    assert.equal(C.econBreakEvenPct(), 56, `NK67: Break-even muss 56 % sein, ist ${C.econBreakEvenPct()}`);
+  }
+
+  /* NK68 · Der Boden. „Einfach groesser handeln" ist die naheliegende Antwort
+     auf eine zu hohe Break-even-Quote — und sie ist falsch. Fixkosten
+     verschwinden mit der Groesse, Reibung und Steuer nicht. */
+  {
+    const floor = C.econBreakEvenFloorPct();
+    assert.ok(floor > 46 && floor < 48, `NK68: Der Boden muss bei rund 46,8 % liegen, ist ${floor}`);
+    assert.ok(floor < C.econBreakEvenPct(),
+      'NK68: Groesser handeln senkt den Break-even — aber nur bis zum Boden');
+    assert.ok(C.wilsonUpperPct(0, 19) < floor,
+      'NK68: Und bei 0 von 19 liegt selbst die Obergrenze unter dem Boden — keine Groesse hilft');
+  }
+
+  /* NK69 · Wilson: 0 Treffer sind nicht 0 %. Der haeufigste Fehlschluss in
+     dieser App waere, aus einer Punktschaetzung von 0 eine Gewissheit zu
+     machen — oder umgekehrt „zu wenig Daten" zu sagen, obwohl die Sache
+     entschieden ist. */
+  {
+    assert.equal(C.wilsonUpperPct(0, 19), 16.8, `NK69: 0 von 19 muss 16,8 % ergeben, ist ${C.wilsonUpperPct(0,19)}`);
+    assert.ok(C.wilsonUpperPct(0, 100) < C.wilsonUpperPct(0, 19),
+      'NK69: Mehr Episoden muessen die Obergrenze senken');
+    assert.strictEqual(C.wilsonUpperPct(0, 0), null,
+      'NK69: Ohne Episoden gibt es keine Grenze — null, nicht 0');
+  }
+
+  /* NK70 · Der lokale Twin muss auf DIESELBE Schwelle zaehlen wie D1.
+     Fixture: 19 unabhaengige Episoden, davon 4 zwischen 2,04 % und 5 %.
+     Unter der alten Regel waeren das 0 Treffer, unter der richtigen 4. */
+  {
+    const mk = (i, maxPct) => ({ symbol: `S${i}`, sector: 'Tech', ts: Date.UTC(2026,0,1+i),
+      maxPct, minPct: -0.5, f: FEAT });
+    C.twinStore = { done: Array.from({length:19}, (_,i) => mk(i, i < 4 ? 3.1 : 0.4)) };
+    const tw = C.historicalTwin({ symbol: 'S0', sector: 'Tech' });
+    assert.equal(tw.source, 'local', 'Fixture muss den lokalen Zweig treffen');
+    assert.equal(tw.n, 19, `NK70: 19 unabhaengige Episoden erwartet, waren ${tw.n}`);
+    assert.equal(tw.hits, 4,
+      `NK70: Vier Episoden ueber 2,04 % muessen zaehlen — unter der alten 5-%-Marke waeren es 0 (waren ${tw.hits})`);
+    assert.equal(tw.winPct, 2.04, 'NK70: Und die Kachel muss sagen, auf welche Schwelle sie zaehlt');
+  }
+
+  /* NK71 · Fail-closed: `viable` darf nie `true` werden.
+     Diese App erteilt keine Freigabe aus Statistik. Ein guter Twin ist ein
+     fehlendes Gegenargument, kein Argument. */
+  {
+    const mk = (i, maxPct) => ({ symbol: `T${i}`, sector: 'Tech', ts: Date.UTC(2026,0,1+i),
+      maxPct, minPct: -0.2, f: FEAT });
+    C.twinStore = { done: Array.from({length:19}, (_,i) => mk(i, 9)) };   // alle Treffer
+    const good = C.historicalTwin({ symbol: 'T0', sector: 'Tech' });
+    assert.equal(good.hits, 19, 'Fixture: alle Episoden sind Treffer');
+    assert.strictEqual(good.viable, null,
+      'NK71: Selbst bei 19 von 19 Treffern darf nie `true` herauskommen — nur `false` oder `null`');
+    assert.strictEqual(good.sizeHelps, null, 'NK71: Dasselbe fuer die Groessenfrage');
+  }
+
+  /* NK72 · Der Screenshot-Fall, in der Anzeige. 0 Treffer bei 19 Episoden:
+     die Kachel muss die Obergrenze zeigen, die noetige Quote danebenstellen
+     und das Urteil ausgeben. „0 %" allein waere weiterhin die falsche Zahl. */
+  {
+    const mk = (i) => ({ symbol: `U${i}`, sector: 'Tech', ts: Date.UTC(2026,0,1+i),
+      maxPct: 0.3, minPct: -0.4, f: FEAT });
+    C.twinStore = { done: Array.from({length:19}, (_,i) => mk(i)) };
+    const tw = C.historicalTwin({ symbol: 'U0', sector: 'Tech' });
+    assert.equal(tw.hits, 0, 'Fixture: keine Treffer');
+    assert.strictEqual(tw.viable, false,
+      'NK72: Liegt die Obergrenze unter dem Break-even, ist das Ergebnis entschieden');
+    assert.strictEqual(tw.sizeHelps, false,
+      'NK72: Und unter dem Boden heisst: auch mehr Kapital hilft nicht');
+    const html = C.edgeStrip({ symbol: 'U0', sector: 'Tech' });
+    const text = String(html).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+    assert.match(text, /≤16,8%|≤16\.8%/, 'NK72: Die Obergrenze muss in der Kachel stehen, nicht „0 %"');
+    assert.match(text, /nötig 56%/, 'NK72: Und die noetige Trefferquote daneben');
+    assert.match(text, /nicht bezahlbar/, 'NK72: Das Urteil muss ausgesprochen werden');
+    assert.match(text, /auch nicht größer/, 'NK72: Einschliesslich der Antwort auf „dann eben groesser"');
+  }
+
+  /* NK73 · Ohne genug Episoden wird nichts behauptet. */
+  {
+    C.twinStore = { done: [] };
+    const tw = C.historicalTwin({ symbol: 'V0', sector: 'Tech' });
+    assert.ok(tw.n < 5, 'Fixture: zu wenige Episoden');
+    assert.strictEqual(tw.viable, undefined,
+      'NK73: Unter fuenf Episoden darf gar kein Urteil entstehen');
+    const text = String(C.edgeStrip({ symbol: 'V0', sector: 'Tech' })).replace(/<[^>]*>/g, ' ');
+    assert.match(text, /lernt/, 'NK73: Die Kachel muss sagen, dass sie noch lernt');
+    assert.ok(!/nicht bezahlbar/.test(text), 'NK73: Und kein Urteil ausgeben');
+  }
+}
+
+console.log('✓ FusionPulse v3.32.10 Twin-Auswertung (ausgefuehrt): OK');
 
 console.log('✓ FusionPulse v3.29.0 evening-list geometry/study regressions: OK');

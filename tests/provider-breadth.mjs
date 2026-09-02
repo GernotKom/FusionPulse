@@ -165,13 +165,26 @@ function ladeClient() {
   }
   /* Echte Zahlen werden gerechnet — und der Ausfallzustand vom 30.08. (40/40)
      muss rot sein, nicht gelb. */
+  /* v4.0.0 · `pct` ist entfallen. Am 02.09. zeigte die App „1,98 von 40 GB
+     (5 %)", waehrend das Tiingo-Konto 6,61 GB verbraucht meldete — Faktor 3,3.
+     Der Zaehler misst seit dem Deploy, der Nenner meint den ganzen Monat.
+     Diese Suite haelt fest, was von der alten Zusicherung bleiben MUSS. */
   const voll = C.bandwidthNote({ bandwidth: { usedGb: 40, capGb: 40 } });
   assert.equal(voll.measured, true);
-  assert.equal(voll.pct, 100);
-  assert.equal(voll.tone, 'err', '40 von 40 GB ist der Zustand, der den Nachrichtentest blockiert hat — der ist rot');
+  assert.strictEqual(voll.pct, null, 'Ein Prozentsatz des Monatskontingents darf nicht mehr behauptet werden');
+  assert.equal(voll.tone, 'err', '40 von 40 GB ist der Zustand, der den Nachrichtentest blockiert hat — der bleibt rot');
+  /* Die untere Schranke darf verschaerfen, nie beruhigen: ohne Zeitbasis gibt
+     es keine Hochrechnung, und ohne Hochrechnung keine Entwarnung. */
   const halb = C.bandwidthNote({ bandwidth: { usedGb: 10, capGb: 40 } });
-  assert.equal(halb.pct, 25);
-  assert.equal(halb.tone, 'ok');
+  assert.notEqual(halb.tone, 'ok', 'Ein niedriger Messwert ohne Zeitbasis ist keine Reserve');
+  assert.match(halb.label, /mindestens/, 'Die Zahl muss sich als Mindestverbrauch ausweisen');
+  assert.ok(!/\(\d+ ?%\)/.test(halb.label), 'Kein Prozentsatz eines fremden Limits im Label');
+  /* Mit Zeitbasis wird gerechnet — und dann entscheidet das TEMPO. */
+  const langsam = C.bandwidthNote({ bandwidth: { usedGb: 1, capGb: 40, measuredHours: 24 } });
+  assert.equal(langsam.tone, 'ok', '1 GB/Tag ergibt 30 GB/Monat — das passt in 40');
+  const schnell = C.bandwidthNote({ bandwidth: { usedGb: 1.98, capGb: 40, measuredHours: 5 } });
+  assert.equal(schnell.tone, 'err', 'Der reale Stand vom 02.09.: 1,98 GB in 5 Stunden sind ~285 GB/Monat');
+  assert.match(schnell.detail, /-fache des Kontingents/, 'Die Hochrechnung muss dastehen');
 }
 
 /* ─── 4 · §29: die Herkunft darf nichts bewerten ────────────────────────── */
@@ -428,4 +441,98 @@ function ladeClient() {
     'Die autorisierte Health-Antwort muss `authenticated:true` sagen');
 }
 
+console.log('✓ FusionPulse v4.0.0 Radar-Kadenz/Bandbreite (ausgefuehrt): OK');
 console.log('✓ FusionPulse v3.32.7 provider/breadth (Audit §28/§29) regressions: OK');
+
+/* ═══ v4.0.0 · DER RADAR LIEF RUND UM DIE UHR ═══════════════════════════════
+   Befund vom 02.09., 00:03 ET, geschlossene Boerse: 125 Whole-Market-Abrufe
+   zu 11,2 MB in fuenf Stunden. Der Alpaca-Block im Cron traegt einen
+   Marktphasen-Waechter, der Tiingo-Block direkt darunter trug KEINEN.
+   Hochrechnung 185 GB/Monat gegen ein Kontingent von 40 — das Limit waere um
+   den 7. September gerissen und der Aktienteil bis zum 1. Oktober tot.       */
+{
+  const src = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const from = src.indexOf('const RADAR_CADENCE_MIN = {');
+  const to = src.indexOf('async function ttlGate(');
+  assert.ok(from > 0 && to > from, 'Kadenz und Waechter muessen im Worker stehen');
+  /* `boatsTtlFor` liest `BOATS_TTL_MS`, das oberhalb des Ausschnitts steht.
+     Die Konstante wird aus der Quelle gelesen statt hier festgeschrieben —
+     eine im Test hartcodierte Zahl wuerde stillschweigend auseinanderlaufen. */
+  const ttlSrc = (src.match(/const BOATS_TTL_MS = [^;]+;/) || [])[0];
+  assert.ok(ttlSrc, 'BOATS_TTL_MS muss im Worker stehen');
+  const M = new Function(ttlSrc + src.slice(from, to) + 'return { RADAR_CADENCE_MIN, radarDueNow, boatsTtlFor, BOATS_TTL_MS };')();
+
+  /* NK74 · Bei geschlossener Boerse NIE. Nicht „selten" — nie.
+     Nachts entstehen keine Kandidaten; jeder Abruf kostet 11,2 MB fuer nichts. */
+  for (const m of [0, 1, 2, 3, 7, 30, 59, 1439]) {
+    assert.strictEqual(M.radarDueNow('closed', m), false,
+      `NK74: Bei geschlossener Boerse darf der Radar nie laufen (Minute ${m})`);
+  }
+
+  /* NK75 · Fail-closed bei unbekannter Phase. Eine Phase, die wir nicht
+     kennen, darf keinen 11-MB-Abruf ausloesen. */
+  for (const ph of ['halloween', '', null, undefined, 'toString', '__proto__']) {
+    assert.strictEqual(M.radarDueNow(ph, 1), false,
+      `NK75: Unbekannte Phase (${String(ph)}) darf nicht abrufen`);
+  }
+
+  /* NK76 · Der Versatz. `cryptoMinute` ist `cronMinute % 5 === 0`, und der
+     ganze Aktienblock wird dann uebersprungen. Eine Kadenz von 5, 10 oder 30
+     OHNE Versatz faellt IMMER auf eine Kryptominute — der Radar liefe nie.
+     Genau das ist beim ersten Durchrechnen passiert. */
+  for (const [ph, every] of Object.entries(M.RADAR_CADENCE_MIN)) {
+    if (!every) continue;
+    let hits = 0, collisions = 0;
+    for (let m = 0; m < 1440; m++) {
+      if (!M.radarDueNow(ph, m)) continue;
+      hits++;
+      if (m % 5 === 0) collisions++;
+    }
+    assert.ok(hits > 0, `NK76: Kadenz ${every} min (${ph}) muss ueberhaupt ausloesen`);
+    if (every % 5 === 0) {
+      assert.equal(collisions, 0,
+        `NK76: Kadenz ${every} min (${ph}) darf nie auf eine Kryptominute fallen — sonst laeuft der Radar nie`);
+    }
+  }
+
+  /* NK77 · Die Rechnung, die den Ausschlag gibt. Ein voller Handelstag darf
+     das Kontingent nicht sprengen. 11,2 MB je Abruf, 22 Handelstage, 40 GB. */
+  {
+    const phaseOf = (m) => m>=240&&m<480?'premarket-early':m>=480&&m<570?'premarket'
+      :m>=570&&m<660?'opening':m>=660&&m<960?'regular':m>=960&&m<1020?'after'
+      :m>=1020&&m<1200?'after-limited':'closed';
+    let calls = 0;
+    for (let m = 0; m < 1440; m++) {
+      if (m % 5 === 0) continue;                    // Kryptominute
+      if (M.radarDueNow(phaseOf(m), m)) calls++;
+    }
+    const gbMonth = calls * (11218.3/1024) / 1024 * 22;
+    assert.ok(calls > 40, `NK77: Der Radar muss noch oft genug laufen, sind ${calls}/Tag`);
+    assert.ok(gbMonth < 20,
+      `NK77: Der Radar allein muss deutlich unter 40 GB/Monat bleiben, sind ${gbMonth.toFixed(1)} GB`);
+    /* Die Eigenmessung ist eine UNTERE Schranke — der reale Kontostand lag am
+       02.09. beim 3,3-fachen. Deshalb wird nicht bis an die 40 GB geplant. */
+    assert.ok(gbMonth * 2 < 40,
+      `NK77: Auch mit doppeltem Ansatz muss Luft bleiben, sind ${(gbMonth*2).toFixed(1)} GB`);
+  }
+
+  /* NK78 · Die Eroeffnung braucht mehr als die ruhige Sitzung. Wird das
+     umgedreht, spart man an der einzigen Stelle, an der Entdeckung zaehlt. */
+  assert.ok(M.RADAR_CADENCE_MIN.opening < M.RADAR_CADENCE_MIN.regular,
+    'NK78: In der Eroeffnung muss haeufiger gesucht werden als im ruhigen Handel');
+  assert.ok(M.RADAR_CADENCE_MIN.regular < M.RADAR_CADENCE_MIN['after-limited'],
+    'NK78: Und in der duennen Nachboerse seltener als im regulaeren Handel');
+
+  /* NK79 · BOATS: eine TTL im Isolate ist keine TTL. Workers-Isolates starten
+     staendig neu; die Modulvariable ist dann leer und die Sperre weg.
+     Gemessen: 100 Abrufe zu 6,5 MB in fuenf Stunden statt fuenfzehn. */
+  {
+    const fn = src.slice(src.indexOf('async function tiingoBoatsDiscovery('),
+                         src.indexOf('async function tiingoBoatsDiscovery(') + 1200);
+    assert.match(fn, /await ttlGate\(env, ?'boats'/,
+      'NK79: Die BOATS-Sperre muss persistent geprueft werden, nicht nur im Isolate-Memo');
+    assert.match(fn, /await ttlMark\(env, ?'boats'/, 'NK79: … und gesetzt werden');
+    assert.ok(M.boatsTtlFor('closed') > M.boatsTtlFor('regular'),
+      'NK79: Nachts ist die Sitzung duenn — dort gehoert die Sperre laenger');
+  }
+}

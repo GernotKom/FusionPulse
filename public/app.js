@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v3.32.9 — Frontend
+   FusionPulse v4.0.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2263,6 +2263,51 @@ let twinStore=(()=>{try{return JSON.parse(localStorage.getItem(TWIN_KEY)||'{"pen
 function saveTwins(){try{localStorage.setItem(TWIN_KEY,JSON.stringify(twinStore))}catch{}}
 function featureOf(r){const c=crowdForFresh(r.symbol),cc=crowdMarketConfirmation(r);return {score:+r.score||0,crv:+r.netCRV||0,rv:+r.relVol||0,r15:+r.ret15||0,r60:+r.ret60||0,atr:+r.atrPct||0,vac:+r.liquidityVacuum||0,lag:+r.sectorLag||0,crowd:c?+c.score:null,crowdConfirm:Number.isFinite(cc.score)?cc.score:null};}
 function twinDist(a,b){const w={score:1.2,crv:.7,rv:.45,r15:.5,r60:.25,atr:.5,vac:.035,lag:.35,crowd:.025,crowdConfirm:.03};let z=0;for(const k in w)z+=Math.pow((a[k]-b[k])*w[k],2);return Math.sqrt(z)}
+/* ══ v3.32.10 · DIE SCHWELLE, AUF DIE DER TWIN SCHAUT ══════════════════════
+   Der lokale Zweig hat bis v3.32.9 auf `maxPct >= 5` gezaehlt — die alte
+   5-%-Marke —, waehrend der D1-Zweig auf ECON_WIN_PCT (2,04 %) zaehlt. Beide
+   erschienen unter demselben Wort „Twin %". Dieselbe Kachel bedeutete je nach
+   Datenquelle etwas anderes, und der Tooltip nannte nur die alte Zahl.
+
+   Der Screenshot vom 01.09. war genau dieser Fall: `Twin 0% · n=19 · lokal`
+   hiess „keine von 19 Episoden erreichte +5 %" — nicht „+2,04 %", also nicht
+   die Schwelle, an der diese App ihre Freigabe misst.
+
+   RICHTUNG DIESER AENDERUNG, ausdruecklich: die Angleichung von 5 % auf
+   2,04 % laesst die Zahl STEIGEN. Das ist kein Aufweichen einer Huerde, um
+   ein Ergebnis zu erzeugen — die wirtschaftliche Schwelle wird ueberall sonst
+   in der App bereits verwendet; hier stand nur eine veraltete daneben. Der
+   Twin traegt 0 % BUY-Gewicht, verschiebt also keine Freigabe. Umgekehrt: die
+   Stop-Schwelle wandert von -1,5 % auf -1,02 % und zaehlt damit MEHR
+   Episoden als ausgestoppt. Beides folgt derselben Rechnung. */
+const ECON_NET_EUR_REF = 120;
+const econNotional = () => { const v=Number(S?.notionalEur); return Number.isFinite(v)&&v>0 ? v : 10000; };
+const econFixEur = () => orderFeeEur()*2 + econNotional()*(venueFrictionPct()/100);
+const econTaxPct = () => { const v=Number(S?.taxPct); return Number.isFinite(v)&&v>=0&&v<100 ? v : 27.5; };
+function econWinPct(){
+  return Math.round(((ECON_NET_EUR_REF/(1-econTaxPct()/100)+econFixEur())/econNotional()*100)*100)/100;
+}
+function econStopPct(){ return -Math.round(econWinPct()/2*100)/100; }
+/** Wilson-Obergrenze, 95 %. 0 von 19 ist nicht null, sondern hoechstens 16,8 %. */
+function wilsonUpperPct(hits,n){
+  if(!(n>0)) return null;
+  const z=1.96,p=hits/n,d=1+z*z/n,c=p+z*z/(2*n),m=z*Math.sqrt((p*(1-p)+z*z/(4*n))/n);
+  return Math.round(Math.min(1,(c+m)/d)*1000)/10;
+}
+/** Trefferquote, ab der sich das Setto bei DIESER Groesse traegt. */
+function econBreakEvenPct(){
+  const N=econNotional(),FIX=econFixEur(),tax=econTaxPct();
+  const win=econWinPct()/100*N*(1-tax/100)-FIX, loss=Math.abs(econStopPct())/100*N+FIX;
+  return win+loss>0&&win>0 ? Math.round(loss/(win+loss)*1000)/10 : 100;
+}
+/** Und der Boden, den keine Positionsgroesse unterschreitet: Fixkosten fallen
+ *  weg, prozentuale Reibung und Steuerasymmetrie bleiben. */
+function econBreakEvenFloorPct(){
+  const fr=venueFrictionPct(),tax=econTaxPct();
+  const win=econWinPct()*(1-tax/100)-fr, loss=Math.abs(econStopPct())+fr;
+  return win+loss>0&&win>0 ? Math.round(loss/(win+loss)*1000)/10 : 100;
+}
+
 function historicalTwin(r){
   const srv=learningStock.get(String(r.symbol||'').toUpperCase())?.twin;
   if(srv&&Number(srv.n)>0)return {...srv,source:srv.source||'d1'};
@@ -2276,9 +2321,21 @@ function historicalTwin(r){
   }
   const d=[...byEpisode.values()].sort((a,b)=>a.d-b.d).slice(0,40),available=d.length;
   if(d.length<5)return {n:d.length,available,distinctSymbols:new Set(d.map(x=>x.symbol)).size,source:'local'};
-  const stops=d.filter(x=>x.minPct<=-1.5).length,med=[...d].map(x=>x.maxPct).sort((a,b)=>a-b)[Math.floor(d.length/2)];
-  let winW=0,totalW=0;for(const x of d){const w=1/Math.pow(1+Math.max(0,+x.d||0),2);totalW+=w;if(x.maxPct>=5)winW+=w;}
-  return {n:d.length,available,distinctSymbols:new Set(d.map(x=>x.symbol)).size,stops,median:med,edge:totalW?Math.round(winW/totalW*100):0,source:'local',independent:true};
+  const WIN=econWinPct(), STOP=econStopPct();
+  const stops=d.filter(x=>x.minPct<=STOP).length,med=[...d].map(x=>x.maxPct).sort((a,b)=>a-b)[Math.floor(d.length/2)];
+  let winW=0,totalW=0;for(const x of d){const w=1/Math.pow(1+Math.max(0,+x.d||0),2);totalW+=w;if(x.maxPct>=WIN)winW+=w;}
+  const hits=d.filter(x=>x.maxPct>=WIN).length;
+  const breakEven=econBreakEvenPct(), breakEvenFloor=econBreakEvenFloorPct();
+  const edgeUpper=wilsonUpperPct(hits,d.length);
+  return {n:d.length,available,distinctSymbols:new Set(d.map(x=>x.symbol)).size,stops,median:med,
+    edge:totalW?Math.round(winW/totalW*100):0,
+    hits, edgeUpper, breakEven, breakEvenFloor, winPct:WIN,
+    /* Fail-closed wie im Worker: `false` nur, wenn selbst die freundlichste
+       Lesart den Break-even verfehlt. Sonst `null` — nie `true`. Diese App
+       erteilt keine Freigabe aus Statistik. */
+    viable: (edgeUpper!=null && edgeUpper<breakEven) ? false : null,
+    sizeHelps: (edgeUpper!=null && edgeUpper<breakEvenFloor) ? false : null,
+    source:'local',independent:true};
 }
 function learnStocks(){const now=Date.now(),pending=twinStore.pending||[],done=twinStore.done||[];for(const x of pending){const r=stockRows.find(z=>z.symbol===x.symbol);if(r){const pct=(r.priceUsd/x.px-1)*100;x.maxPct=Math.max(x.maxPct??pct,pct);x.minPct=Math.min(x.minPct??pct,pct)}}const keep=[];for(const x of pending){if(now-x.ts>=120*60_000)done.push({...x,resolved:now});else keep.push(x)}const bucket=Math.floor(now/(15*60_000));for(const r of stockRows){if(!keep.some(x=>x.symbol===r.symbol&&x.bucket===bucket))keep.push({symbol:r.symbol,sector:r.sector,ts:now,bucket,px:r.priceUsd,f:featureOf(r),maxPct:0,minPct:0})}twinStore={pending:keep.slice(-500),done:done.slice(-2500)};saveTwins();}
 function edgeSignals(r){const c=crowdForFresh(r.symbol),crowd=c?+c.score:null;const quiet=Math.max(0,100-Math.min(100,Math.abs(+r.ret15||0)*18));const apd=crowd==null?null:Math.round(Math.max(0,Math.min(100,crowd*.72+quiet*.28)));const vac=Math.round(+r.liquidityVacuum||0);const lag=r.sectorLag==null?null:+r.sectorLag;const lagScore=Math.round(Math.max(0,Math.min(100,50+(lag??0)*18)));const tw=historicalTwin(r);return {apd,vac,lag,lagScore,tw};}
@@ -2335,7 +2392,24 @@ function leadModel(r){
   return {n,cur,firstKey,best};
 }
 function leadBadge(r){const m=leadModel(r);const cur=m.cur.length?m.cur.slice(0,4).map(k=>LEAD_LABEL[k]).join('→'):'wartet';let learned='lernt';if(m.n>=5){const f=m.firstKey?LEAD_LABEL[m.firstKey]:'–';const lead=m.best[0]&&Number.isFinite(m.best[0].m)?` · ${LEAD_LABEL[m.best[0].k]} ~${Math.round(m.best[0].m)}m vor +5%`:'';learned=`${f} zuerst · n=${m.n}${lead}`;}return `<span title="Early-Momentum-Learning: speichert, welcher Frühindikator wie viele Minuten VOR einer tatsächlich beobachteten +5%-Expansion angesprungen ist. Aktuelle Reihenfolge: ${esc(cur)}. Auswertung erst nach echten Fällen; 0 % BUY-Gewicht.">🧬 Lead ${esc(cur)} · ${esc(learned)}</span>`;}
-function edgeStrip(r){const e=edgeSignals(r),tw=e.tw;const twinSrc=tw.source==='d1'?'D1':'lokal';const ds=tw.distinctSymbols!=null?` · ${tw.distinctSymbols} Titel`:'';const avail=tw.available!=null&&tw.available!==tw.n?`/${tw.available}`:'';const indep=tw.independent?' · unabhängig':'';const twin=tw.n>=5?`${tw.edge}% · n=${tw.n}${avail}${ds}${indep} · ${twinSrc}`:`lernt · n=${tw.n}${avail}${ds}${indep} · ${twinSrc}`;return `<div class="edge-strip"><span title="Attention-Price-Divergence: hohe Suchaufmerksamkeit bei noch relativ ruhigem Preis. Forschungsindikator, kein BUY allein.">⚡ Attention ${e.apd==null?'n.v.':e.apd+'/100'}</span><span title="Liquidity Vacuum: heuristisch wenig frühere Aktivität/Widerstand direkt oberhalb des Einstiegs. Höher kann schnellere Expansion begünstigen.">↗ Vacuum ${e.vac}/100</span><span title="Sector Leader-Lag: positiver Wert bedeutet, dass andere Titel derselben Branche kurzfristig stärker laufen. Beobachtet potenzielle Nachzügler.">⇢ Sektor-Lag ${e.lag==null?'n.v.':num(e.lag,1)+'%'}</span><span title="Historical Twin: bevorzugt serverseitig in Cloudflare D1 gelernte, ähnlichste frühere Markt-Snapshots; lokal nur Fallback. Prozent = Anteil der ähnlichen Fälle mit mindestens +5 % beobachteter Maximalbewegung. Erst ab 5 Fällen angezeigt.">🧠 Twin ${twin}</span>${leadBadge(r)}</div>`;}
+function edgeStrip(r){const e=edgeSignals(r),tw=e.tw;const twinSrc=tw.source==='d1'?'D1':'lokal';const ds=tw.distinctSymbols!=null?` · ${tw.distinctSymbols} Titel`:'';const avail=tw.available!=null&&tw.available!==tw.n?`/${tw.available}`:'';const indep=tw.independent?' · unabhängig':'';
+  /* v3.32.10 · „Twin 0 %" war die falsche Zahl. 0 von 19 heisst statistisch
+     nicht null, sondern hoechstens 16,8 % (Wilson, 95 %). Und erst der
+     Vergleich mit der noetigen Trefferquote macht daraus eine Aussage: liegt
+     selbst die Obergrenze darunter, ist die Sache entschieden — dann sind 19
+     Episoden KEINE duenne Stichprobe, sondern ein Ergebnis.
+     Die Punktschaetzung bleibt daneben stehen, statt ersetzt zu werden. */
+  const up=tw.edgeUpper!=null?`≤${num(tw.edgeUpper,1)}%`:`${tw.edge}%`;
+  const be=tw.breakEven!=null?` · nötig ${num(tw.breakEven,0)}%`:'';
+  const legacy=tw.legacyN?` ${tw.legacyN} davon ohne Abdeckungsnachweis.`:'';
+  const twin=tw.n>=5?`${up}${be} · n=${tw.n}${avail}${ds}${indep} · ${twinSrc}`:`lernt · n=${tw.n}${avail}${ds}${indep} · ${twinSrc}`;
+  /* Der Satz, den die App bisher nicht gesagt hat. `viable===false` heisst
+     nicht „schlechtes Setup", sondern „bei dieser Kostenstruktur und diesem
+     Zeitfenster nicht bezahlbar". `sizeHelps===false` beantwortet die
+     Anschlussfrage, bevor sie gestellt wird. */
+  const verdict = tw.viable===false
+    ? `<span class="twin-verdict bad" title="${esc(`Selbst die obere Konfidenzgrenze (${num(tw.edgeUpper,1)} %) liegt unter der Trefferquote, ab der sich das Setup nach Kosten und Steuer trägt (${num(tw.breakEven,0)} %). Das ist keine zu kleine Stichprobe — das ist ein Ergebnis.${tw.sizeHelps===false?` Auch eine größere Position hilft nicht: der Break-even fällt mit wachsender Größe nur bis rund ${num(tw.breakEvenFloor,0)} %, weil Ausführungsreibung und Kapitalertragsteuer prozentual bleiben.`:''}`)}">nicht bezahlbar${tw.sizeHelps===false?' · auch nicht größer':''}</span>`
+    : '';return `<div class="edge-strip"><span title="Attention-Price-Divergence: hohe Suchaufmerksamkeit bei noch relativ ruhigem Preis. Forschungsindikator, kein BUY allein.">⚡ Attention ${e.apd==null?'n.v.':e.apd+'/100'}</span><span title="Liquidity Vacuum: heuristisch wenig frühere Aktivität/Widerstand direkt oberhalb des Einstiegs. Höher kann schnellere Expansion begünstigen.">↗ Vacuum ${e.vac}/100</span><span title="Sector Leader-Lag: positiver Wert bedeutet, dass andere Titel derselben Branche kurzfristig stärker laufen. Beobachtet potenzielle Nachzügler.">⇢ Sektor-Lag ${e.lag==null?'n.v.':num(e.lag,1)+'%'}</span><span title="${esc(`Historical Twin: ähnlichste frühere Markt-Snapshots, bevorzugt serverseitig aus Cloudflare D1, lokal nur als Rückfall. Gezählt wird der Anteil der Fälle, die mindestens ${num(tw.winPct??2.04,2)} % Maximalbewegung erreicht haben — die wirtschaftliche Zielweite dieser App, nicht mehr die alte 5-%-Marke. Angezeigt wird die obere 95-%-Konfidenzgrenze: 0 von 19 Fällen heißt nicht 0 %, sondern höchstens 16,8 %. Erst ab 5 unabhängigen Episoden. 0 % Gewicht in Score, Ampel und Freigabe.${legacy}`)}">🧠 Twin ${twin}</span>${verdict}${leadBadge(r)}</div>`;}
 
 
 function learningBadge(){
@@ -2480,10 +2554,53 @@ function bandwidthNote(meta) {
     return { measured: false, label: 'Bandbreite: nicht gemessen',
       detail: 'Der Server meldet noch keine Bandbreitenzahlen je Datenpfad. Das ist eine fehlende Messung, kein niedriger Verbrauch — aus dieser Anzeige lässt sich NICHT schließen, dass Reserve vorhanden ist.', tone: 'warn' };
   }
-  const pct = Math.min(999, Math.round((used / cap) * 100));
-  return { measured: true, pct, label: `Bandbreite: ${num(used, 2)} von ${num(cap, 0)} GB (${pct} %)`,
-    detail: `Monatsbandbreite des Aktien-Datenanbieters. Bei 100 % antwortet der Anbieter mit HTTP 429, unabhängig davon, wie viele Abfragen noch offen wären — genau dieser Zustand hat am 30.08. den Nachrichtentest blockiert.`,
-    tone: pct >= 95 ? 'err' : pct >= 80 ? 'warn' : 'ok' };
+  /* ══ v4.0.0 · ZAEHLER UND NENNER AUS ZWEI WELTEN ═══════════════════════════
+     Bis v3.32.10 stand hier `1,98 von 40 GB (5 %)`. Am 02.09. meldete das
+     Tiingo-Konto zeitgleich 33,39 von 40,00 GB uebrig — also 6,61 GB
+     verbraucht, 16,5 %. Faktor 3,3.
+
+     Der Kleingedruckte-Text darunter war korrekt („Eigenmessung DIESES
+     Workers ab v3.32.0, als untere Schranke lesen"). Die Zahl davor war es
+     nicht: sie stellt eine Eigenmessung seit dem Deploy gegen das MONATS-
+     limit des Kontos und rechnet daraus einen Prozentsatz. Frueherer
+     Verbrauch im selben Monat und andere Clients fehlen im Zaehler, stehen
+     aber im Nenner.
+
+     Es ist dasselbe Muster wie beim CRV (Tagesspanne gegen 5-Minuten-Bars)
+     und beim Twin (5 % gegen 2,04 %): zwei Groessen aus verschiedenen
+     Bezugsrahmen in einem Bruch. Und es ist die gefaehrlichste Richtung —
+     die Zahl ist zu KLEIN und liest sich als Reserve.
+
+     Deshalb: die gemessene Menge steht ohne Prozentsatz da, ausdruecklich als
+     Mindestverbrauch. Der Nenner erscheint nur noch als Hinweis, nicht als
+     Bezugsgroesse. Und der Ton richtet sich nach der Hochrechnung des
+     gemessenen TEMPOS, nicht nach dem Stand — denn genau das Tempo ist die
+     Frage, und darauf ist die Eigenmessung eine gueltige Auskunft. */
+  const hours = bw && Number.isFinite(Number(bw.measuredHours)) && Number(bw.measuredHours) > 0
+    ? Number(bw.measuredHours) : null;
+  const perDay = hours ? used / hours * 24 : null;
+  const perMonth = perDay != null ? perDay * 30 : null;
+  const over = perMonth != null && cap > 0 ? perMonth / cap : null;
+  const floorShare = cap > 0 ? used / cap : 0;
+  const rate = perDay != null ? ` · Tempo ${num(perDay, 2)} GB/Tag` : '';
+  return { measured: true, pct: null, usedGb: used, capGb: cap, perDayGb: perDay, perMonthGb: perMonth,
+    label: `Bandbreite: mindestens ${num(used, 2)} GB gemessen${rate}`,
+    detail: `Eigenmessung dieses Workers seit seinem Start — eine UNTERE SCHRANKE, kein Kontostand. Früherer Verbrauch im selben Monat und andere Clients fehlen darin. Der Anbieter deckelt bei ${num(cap, 0)} GB im Monat und antwortet danach mit HTTP 429; aus dieser Zahl lässt sich NICHT ablesen, wie viel davon noch frei ist.`
+      + (perMonth != null ? ` Hochgerechnet aus dem gemessenen Tempo: rund ${num(perMonth, 0)} GB im Monat${over != null && over > 1 ? ` — das ${num(over, 1)}-fache des Kontingents.` : '.'}` : ''),
+    /* ══ DIE UNTERE SCHRANKE DARF ESKALIEREN, ABER NIE BERUHIGEN ═════════════
+       `used/cap` ist als Bruch irrefuehrend, weil der Zaehler seit dem Deploy
+       zaehlt und der Nenner den ganzen Monat meint. In EINER Richtung ist er
+       trotzdem gueltig: hat allein die Eigenmessung das Kontingent erreicht,
+       ist es sicher erreicht — mehr kann der wahre Wert nur sein.
+
+       Also: der Anteil darf den Ton verschaerfen, nie entspannen. Der Zustand
+       40 von 40 GB, der am 30.08. den Nachrichtentest blockiert hat, bleibt
+       damit rot — auch ohne Zeitbasis. Umgekehrt fuehrt ein niedriger Anteil
+       NICHT zu Gruen; dafuer braucht es eine Hochrechnung, und ohne Zeitbasis
+       gibt es die nicht. Fehlende Information darf nichts erlauben. */
+    tone: (floorShare >= 1 || (over != null && over >= 1)) ? 'err'
+        : (over == null || floorShare >= 0.8 || over >= 0.8) ? 'warn'
+        : 'ok' };
 }
 function renderResourceStrip(){
   const box=$('#resourceStrip'), out=$('#resourceText'); if(!box||!out)return;

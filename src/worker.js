@@ -2617,6 +2617,25 @@ const PICK_REACH_PCT = ECON_WIN_PCT;
  *  damit der Unterschied sichtbar ist statt behauptet. Sie steuert nichts. */
 const LEGACY_WIN_PCT = 5;
 const LEARN_HORIZON_MS = 180 * 60_000;
+/* ══ v3.32.10 · R3 · MINDESTABDECKUNG ═══════════════════════════════════════
+   Der Horizont ist 180 Minuten, der Scan-Takt 5 Minuten — voll beobachtet
+   waeren rund 36 Messpunkte. Sechs entsprechen etwa alle 30 Minuten einmal
+   hingesehen. Das ist wenig, aber es ist der Unterschied zwischen „der Kurs
+   ist nicht ueber 2 % gestiegen" und „wir haben nicht hingesehen".
+
+   Die Zahl ist bewusst NICHT hoeher: sie soll Scheinverlierer ausschliessen,
+   nicht die Stichprobe kuenstlich klein halten. Und sie ist bewusst nicht
+   niedriger: bei ein bis zwei Beobachtungen ist `max_pct` kein Hoechststand,
+   sondern der hoechste von zwei Zufallsmomenten.
+
+   Wird sie erhoeht, sinkt die Zahl der Episoden. Wird sie gesenkt, steigt sie
+   — mit schlechteren Daten. Sie darf nie gesenkt werden, um auf die fuenf
+   Episoden zu kommen, die ein Twin braucht. Das ist dieselbe Regel wie bei
+   MAX_DIST.                                                                */
+const LEARN_MIN_OBS = 6;
+/** Wie viele faellige Snapshots ein Cron-Lauf hoechstens anfasst. Bremse fuer
+ *  D1-Reads — der Rest kommt in der naechsten Minute dran, nicht nie. */
+const LEARN_RESOLVE_BUDGET = 400;
 const LEARN_HISTORY_MS = 120 * 60_000;
 const LEARN_SIGNAL_LABELS = ['attention','crowd','sector','rvol','vacuum','elliott','momentum','technical'];
 
@@ -2654,6 +2673,33 @@ async function ensureD1Schema(env){
      sich nicht weit genug bewegt oder ob es sich bewegt und einen nur vorher
      herausschuettelt. Das sind zwei voellig verschiedene Probleme. */
   if(!cols.some(c=>String(c.name)==='mae_pre')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN mae_pre REAL').run();
+  /* ══ v3.32.10 · R3 · WAS NICHT BEOBACHTET WURDE, IST KEIN ERGEBNIS ═════════
+     Der Aufloeser lief bisher nur, wenn GENAU DIESES Symbol erneut gescannt
+     wurde, und nur im Fenster Minute 180 bis 195. Wer es verpasste, blieb fuer
+     immer unaufgeloest.
+
+     Die naheliegende Reparatur — ein Cron loest einfach alles Faellige auf —
+     waere die gefaehrlichere Variante gewesen. `max_pct` und `min_pct` wachsen
+     ausschliesslich dann, wenn beobachtet wird. Ein nie wieder angesehener
+     Snapshot traegt `max_pct = 0`. Ihn aufzuloesen hiesse aufzuzeichnen: „der
+     Titel hat sich nicht bewegt" — obwohl in Wahrheit gilt: „wir haben nicht
+     hingesehen". Das ist keine vorsichtige Naeherung, das ist ein erfundenes
+     Ergebnis, und es waere systematisch NEGATIV: die Lernbasis wuerde sich mit
+     Scheinverlierern fuellen und jedes Setup als untauglich ausweisen.
+
+     `obs_n` zaehlt deshalb die tatsaechlichen Beobachtungen, `last_obs_ts`
+     haelt die letzte fest. Aufgeloest wird nur, was genug beobachtet wurde;
+     der Rest wird mit `dropped_ts` ausdruecklich VERWORFEN und gezaehlt.
+     Ein verworfener Snapshot ist eine Luecke, kein Datenpunkt.
+
+     Rueckwirkend nicht heilbar: Altbestand traegt `obs_n IS NULL`. Diese
+     Zeilen wurden unter der alten Regel aufgeloest, hatten also mindestens
+     eine Beobachtung — sie bleiben gueltig, werden aber als `legacyN`
+     ausgewiesen, damit niemand sie fuer nachgewiesen haelt.               */
+  if(!cols.some(c=>String(c.name)==='obs_n')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN obs_n INTEGER').run();
+  if(!cols.some(c=>String(c.name)==='last_obs_ts')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN last_obs_ts INTEGER').run();
+  if(!cols.some(c=>String(c.name)==='dropped_ts')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN dropped_ts INTEGER').run();
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_snap_due ON market_snapshots(resolved_ts, dropped_ts, ts)').run();
   d1SchemaReady=true;return true;
 }
 const dbNum = (x) => Number.isFinite(Number(x)) ? Number(x) : null;
@@ -2807,7 +2853,7 @@ async function d1MeterView(env, now=Date.now()){
   }catch{ return null; }
 }
 let learnCounts = null;                                   // zuletzt bekannter persistierter Stand
-let learnPending = { s:0, r:0, e:0, ts:0, hours:{} };      // eigene, noch nicht uebertragene Deltas
+let learnPending = { s:0, r:0, e:0, d:0, ts:0, hours:{} };      // eigene, noch nicht uebertragene Deltas
 let learnFlushTs = 0;
 
 const learnHourKey = (ts) => Math.floor(ts / 3_600_000);
@@ -2818,8 +2864,8 @@ function learnPrune(c, now){
   return c;
 }
 function learnHourAdd(target, hour, d){
-  const b = target[hour] || (target[hour] = { s:0, r:0, e:0 });
-  b.s += d.s||0; b.r += d.r||0; b.e += d.e||0;
+  const b = target[hour] || (target[hour] = { s:0, r:0, e:0, d:0 });
+  b.s += d.s||0; b.r += d.r||0; b.e += d.e||0; b.d += d.d||0;
 }
 
 /** Einmalige Volltabellen-Aggregation. Die einzige, die es noch gibt. */
@@ -2828,11 +2874,12 @@ async function learnCountersBaseline(env, now){
     COUNT(*) snapshots,
     SUM(CASE WHEN resolved_ts IS NOT NULL THEN 1 ELSE 0 END) resolved,
     SUM(CASE WHEN success_ts IS NOT NULL THEN 1 ELSE 0 END) expansions,
+    SUM(CASE WHEN dropped_ts IS NOT NULL THEN 1 ELSE 0 END) dropped,
     MAX(ts) last_ts FROM market_snapshots`).first();
   if(!q) return null;
   return { snapshots:Number(q.snapshots)||0, resolved:Number(q.resolved)||0,
-           expansions:Number(q.expansions)||0, lastTs:Number(q.last_ts)||null,
-           baseTs:now, hours:{} };
+           expansions:Number(q.expansions)||0, dropped:Number(q.dropped)||0,
+           lastTs:Number(q.last_ts)||null, baseTs:now, hours:{} };
 }
 
 /** Liest den persistierten Stand; bildet die Baseline, wenn es noch keinen gibt. */
@@ -2863,8 +2910,9 @@ function learnCountersBump(delta, now=Date.now()){
   learnPending.s += delta.snapshots||0;
   learnPending.r += delta.resolved||0;
   learnPending.e += delta.expansions||0;
+  learnPending.d += delta.dropped||0;
   if(delta.ts && delta.ts > learnPending.ts) learnPending.ts = delta.ts;
-  learnHourAdd(learnPending.hours, h, { s:delta.snapshots||0, r:delta.resolved||0, e:delta.expansions||0 });
+  learnHourAdd(learnPending.hours, h, { s:delta.snapshots||0, r:delta.resolved||0, e:delta.expansions||0, d:delta.dropped||0 });
 }
 
 /** Read-modify-write. Erst nach erfolgreichem Schreiben werden die Deltas verworfen. */
@@ -2879,6 +2927,7 @@ async function learnCountersFlush(env, now=Date.now(), force=false){
   merged.snapshots += learnPending.s;
   merged.resolved  += learnPending.r;
   merged.expansions+= learnPending.e;
+  merged.dropped = (Number(merged.dropped)||0) + learnPending.d;
   if(learnPending.ts && (!merged.lastTs || learnPending.ts > merged.lastTs)) merged.lastTs = learnPending.ts;
   for(const [h,d] of Object.entries(learnPending.hours)) learnHourAdd(merged.hours, h, d);
   learnPrune(merged, now);
@@ -2886,7 +2935,7 @@ async function learnCountersFlush(env, now=Date.now(), force=false){
     await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts')
       .bind(LEARN_COUNT_KEY, JSON.stringify(merged), now).run();
   }catch{ return null; }                      // Deltas bleiben erhalten, naechster Versuch
-  learnPending = { s:0, r:0, e:0, ts:0, hours:{} };
+  learnPending = { s:0, r:0, e:0, d:0, ts:0, hours:{} };
   learnCounts = merged; learnFlushTs = now;
   return merged;
 }
@@ -2894,7 +2943,7 @@ async function learnCountersFlush(env, now=Date.now(), force=false){
 /** Die Zahlen fuer /api/learning. Niemals geraten. */
 async function learnCountersView(env, now=Date.now()){
   const persisted = await learnCountersLoad(env, now);
-  if(!persisted) return { snapshots:null, resolved:null, expansions:null, lastTs:null,
+  if(!persisted) return { snapshots:null, resolved:null, expansions:null, dropped:null, dropped24h:null, lastTs:null,
     snapshots24h:null, resolved24h:null, expansions24h:null,
     exact:false, reason:'D1 nicht lesbar — Zaehler nicht bewertbar' };
   /* Eigene, noch nicht uebertragene Deltas werden dazugerechnet: sonst meldet
@@ -2902,18 +2951,19 @@ async function learnCountersView(env, now=Date.now()){
   const snapshots = persisted.snapshots + learnPending.s;
   const resolved  = persisted.resolved  + learnPending.r;
   const expansions= persisted.expansions+ learnPending.e;
+  const dropped   = (Number(persisted.dropped)||0) + learnPending.d;
   const hours = { ...(persisted.hours||{}) };
   for(const [h,d] of Object.entries(learnPending.hours)) learnHourAdd(hours, h, d);
   const from = learnHourKey(now) - 23;
-  let s=0,r=0,e=0;
-  for(const [k,v] of Object.entries(hours)){ if(Number(k) < from) continue; s+=Number(v.s)||0; r+=Number(v.r)||0; e+=Number(v.e)||0; }
+  let s=0,r=0,e=0,dr=0;
+  for(const [k,v] of Object.entries(hours)){ if(Number(k) < from) continue; s+=Number(v.s)||0; r+=Number(v.r)||0; e+=Number(v.e)||0; dr+=Number(v.d)||0; }
   const baseTs = Number(persisted.baseTs)||null;
   /* Das 24-Stunden-Fenster ist nur so alt wie die Zaehlung selbst. Solange die
      Baseline juenger als 24 Stunden ist, sind die Fensterwerte UNVOLLSTAENDIG
      — das gehoert dazugesagt, nicht stillschweigend als volle Tageszahl
      ausgegeben. */
   const windowComplete = !!baseTs && (now - baseTs) >= 24*3_600_000;
-  return { snapshots, resolved, expansions, lastTs: (learnPending.ts && (!persisted.lastTs || learnPending.ts>persisted.lastTs)) ? learnPending.ts : (persisted.lastTs||null),
+  return { snapshots, resolved, expansions, dropped, dropped24h:dr, lastTs: (learnPending.ts && (!persisted.lastTs || learnPending.ts>persisted.lastTs)) ? learnPending.ts : (persisted.lastTs||null),
     snapshots24h:s, resolved24h:r, expansions24h:e,
     exact:true, countedSince:baseTs, windowComplete,
     reason: windowComplete ? null : 'Stundenfenster juenger als 24 h — Tageswerte unvollstaendig' };
@@ -2970,8 +3020,8 @@ async function d1StoreCrowd(env, rows){
 async function d1UpdateOutcomes(env, symbol, price, now=Date.now(), assetType='stock', source='server'){
   if(!env.DB || !(price>0) || !symbol) return;
   const rows=(await env.DB.prepare(
-    `SELECT id,ts,price,max_pct,min_pct,success_ts,reach_ts,mae_pre FROM market_snapshots
-     WHERE symbol=? AND asset_type=? AND source=? AND resolved_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 500`
+    `SELECT id,ts,price,max_pct,min_pct,success_ts,reach_ts,mae_pre,obs_n FROM market_snapshots
+     WHERE symbol=? AND asset_type=? AND source=? AND resolved_ts IS NULL AND dropped_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 500`
   ).bind(symbol, assetType, source, now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
   if(!rows.length) return;
   const stmts=[];
@@ -2995,11 +3045,17 @@ async function d1UpdateOutcomes(env, symbol, price, now=Date.now(), assetType='s
        vorsichtige Richtung. */
     const setsNewMax = pct > (Number(x.max_pct) || 0);
     const maePre = setsNewMax ? mn : (Number.isFinite(Number(x.mae_pre)) ? Number(x.mae_pre) : mn);
-    const resolved=(now-Number(x.ts)>=LEARN_HORIZON_MS) ? now : null;
+    /* v3.32.10 · Jede Beobachtung wird gezaehlt. Aufgeloest wird nur, was den
+       Kursverlauf ausreichend oft gesehen hat — sonst waere `max_pct` kein
+       gemessener Hoechststand, sondern nur der hoechste der wenigen Momente,
+       in denen zufaellig jemand hinsah. */
+    const obs=(Number(x.obs_n)||0)+1;
+    const due=(now-Number(x.ts)>=LEARN_HORIZON_MS);
+    const resolved=(due && obs>=LEARN_MIN_OBS) ? now : null;
     if(resolved) newlyResolved++;
     if(successTs && !x.success_ts) newlyExpanded++;
-    stmts.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),reach_ts=COALESCE(reach_ts,?),mae_pre=?,resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
-      .bind(mx,mn,successTs,reachTs,maePre,resolved,x.id));
+    stmts.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),reach_ts=COALESCE(reach_ts,?),mae_pre=?,obs_n=?,last_obs_ts=?,resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
+      .bind(mx,mn,successTs,reachTs,maePre,obs,now,resolved,x.id));
   }
   /* v3.32.9 · FAIL-CLOSED AN DER TEUERSTEN STELLE.
      Wirft D1 hier (Limit erreicht, Ausfall), darf NICHTS als aufgeloest
@@ -3013,6 +3069,58 @@ async function d1UpdateOutcomes(env, symbol, price, now=Date.now(), assetType='s
     if(newlyResolved || newlyExpanded) learnCountersBump({ resolved:newlyResolved, expansions:newlyExpanded }, now);
   }
 }
+/* ══ v3.32.10 · R3 — DER AUFLOESER, DER NICHT MEHR AUF ZUFALL WARTET ════════
+   Bisher: `d1UpdateOutcomes()` loeste nur auf, wenn GENAU DIESES Symbol
+   erneut gescannt wurde, im Fenster Minute 180 bis 195. Wer das Fenster
+   verpasste, blieb fuer immer unaufgeloest — und ein unaufgeloester Snapshot
+   zaehlt fuer keinen Twin, auch spaeter nicht. Das ist der Grund, warum die
+   Lernschicht seit Monaten leerlaeuft, und es multipliziert sich mit jedem
+   D1-Ausfall: was waehrend der Sperre in den Korridor faellt, ist weg.
+
+   Jetzt laeuft die Aufloesung im Cron ueber ALLE faelligen Snapshots,
+   unabhaengig davon, welches Symbol gerade an der Reihe ist. Kein Korridor
+   mehr — nur noch faellig oder nicht.
+
+   DIE ENTSCHEIDENDE ZURUECKHALTUNG: aufgeloest wird nur, was oft genug
+   beobachtet wurde. `max_pct` waechst ausschliesslich beim Beobachten. Ein
+   nie wieder angesehener Snapshot traegt `max_pct = 0`; ihn aufzuloesen
+   hiesse aufzuzeichnen „hat sich nicht bewegt", obwohl gilt „wir haben nicht
+   hingesehen". Der Fehler waere systematisch negativ und wuerde die
+   Lernbasis mit Scheinverlierern fuellen — jedes Setup saehe untauglich aus,
+   und die Zahl saehe dabei gut belegt aus. Solche Snapshots werden mit
+   `dropped_ts` VERWORFEN und gezaehlt. Eine Luecke ist kein Datenpunkt.
+
+   Der Verwurf ist zugleich die Kennzahl, die R3 verlangt: `missed` sagt,
+   wie viel Beobachtung fehlt. Steht sie hoch, ist nicht die Datenmenge das
+   Problem, sondern die Abdeckung — und dann hilft dichteres Scannen der
+   INTERESSANTEN Titel nichts, sondern nur gleichmaessigeres Wiedersehen der
+   bereits aufgezeichneten.                                                 */
+async function d1ResolveDue(env, now=Date.now(), budget=LEARN_RESOLVE_BUDGET){
+  if(!env.DB) return { due:0, resolved:0, dropped:0 };
+  const rows=(await env.DB.prepare(
+    `SELECT id,obs_n FROM market_snapshots
+     WHERE resolved_ts IS NULL AND dropped_ts IS NULL AND ts<=? ORDER BY ts ASC LIMIT ?`
+  ).bind(now-LEARN_HORIZON_MS, budget).all()).results||[];
+  if(!rows.length) return { due:0, resolved:0, dropped:0 };
+  const ok=[], gap=[];
+  for(const x of rows){
+    /* Altbestand ohne `obs_n` (vor v3.32.10 aufgezeichnet): die Abdeckung ist
+       rueckwirkend nicht feststellbar. Nicht feststellbar ist nicht
+       ausreichend — solche Zeilen werden verworfen, nicht geraten. Sie
+       erscheinen in `missed`, damit der Verlust sichtbar bleibt statt sich
+       als Ergebnis auszugeben. */
+    const obs=Number(x.obs_n);
+    if(Number.isFinite(obs) && obs>=LEARN_MIN_OBS) ok.push(x.id); else gap.push(x.id);
+  }
+  const stmts=[];
+  for(const id of ok) stmts.push(env.DB.prepare('UPDATE market_snapshots SET resolved_ts=COALESCE(resolved_ts,?) WHERE id=?').bind(now,id));
+  for(const id of gap) stmts.push(env.DB.prepare('UPDATE market_snapshots SET dropped_ts=COALESCE(dropped_ts,?) WHERE id=?').bind(now,id));
+  /* Fail-closed wie in d1UpdateOutcomes: erst schreiben, dann zaehlen. */
+  if(stmts.length) await env.DB.batch(stmts);
+  if(ok.length || gap.length) learnCountersBump({ resolved:ok.length, dropped:gap.length }, now);
+  return { due:rows.length, resolved:ok.length, dropped:gap.length, budgetHit: rows.length>=budget };
+}
+
 async function d1StoreSnapshotRow(env, row, {source='server',assetType='stock',now=Date.now()}={}){
   if(!env.DB || !row) return;
   await ensureD1Schema(env);
@@ -3191,7 +3299,7 @@ async function d1TwinFor(env, symbol){
   if(!cur) return {n:0,source:'d1'};
   if(!cur.sector) return {n:0,source:'d1',reason:'kein Sektor'};
   const curBucket=Math.floor(Date.now()/(5*60_000));
-  const q=env.DB.prepare(`SELECT symbol,ts,bucket5,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure,max_pct,min_pct
+  const q=env.DB.prepare(`SELECT symbol,ts,bucket5,score,crv,rvol rv,ret15 r15,ret60 r60,atr_pct atr,liquidity_vacuum vac,sector_lag lag,crowd_score crowd,structure_pct structure,max_pct,min_pct,obs_n
        FROM market_snapshots WHERE resolved_ts IS NOT NULL AND asset_type='stock' AND source IN ('Twelve Data','Tiingo IEX') AND sector=? AND bucket5<=? ORDER BY ts DESC LIMIT 500`).bind(cur.sector,curBucket-36);
   const rows=(await q.all()).results||[];
   const twins=independentTwinEpisodes(cur,rows);
@@ -3202,7 +3310,47 @@ async function d1TwinFor(env, symbol){
   // Distance-weighted outcome: close historical analogues count more than marginal ones.
   let winW=0,totalW=0;
   for(const x of twins){const w=1/Math.pow(1+Math.max(0,Number(x.d)||0),2);totalW+=w;if(Number(x.max_pct)>=ECON_WIN_PCT)winW+=w;}
-  return {n:twins.length,available,distinctSymbols,edge:totalW?Math.round(winW/totalW*100):0,stops:twins.filter(x=>Number(x.min_pct)<=ECON_STOP_PCT).length,median:r1(vals[Math.floor(vals.length/2)]||0),source:'d1',independent:true};
+  /* ══ v3.32.10 · WAS „TWIN 0 %" WIRKLICH HEISST ════════════════════════════
+     `edge` ist eine Punktschaetzung. 0 von 19 ist statistisch NICHT null,
+     sondern „hoechstens 16,8 %" (Wilson, 95 %). Die Punktschaetzung allein
+     verleitet zu zwei entgegengesetzten Fehlschluessen: „alles sinnlos" und
+     „zu wenig Daten, weitermessen". Beide sind falsch.
+
+     Erst der Vergleich mit der Break-even-Trefferquote macht daraus eine
+     Aussage. Bei 38 EUR Fixkosten auf 10.000 EUR, Ziel +2,04 % und Stop
+     -1,02 % liegt sie bei rund 56 %. Eine Obergrenze von 16,8 % ist davon
+     Faktor 3 entfernt — das ist keine duenne Stichprobe, das ist ein
+     ENTSCHIEDENES Ergebnis. Neunzehn Episoden reichen aus, um auszuschliessen,
+     dass hier 56 % erreichbar sind.
+
+     `hits` zaehlt ungewichtet, weil eine Konfidenzgrenze ganze Beobachtungen
+     braucht; `edge` bleibt distanzgewichtet und unveraendert. Beide stehen
+     nebeneinander, statt eine durch die andere zu ersetzen.
+
+     Gerechnet wird NICHTS schoen: `edgeUpper` ist die obere Grenze, also die
+     freundlichste noch vertretbare Lesart. Liegt selbst sie unter dem
+     Break-even, ist die Sache erledigt.                                    */
+  const hits=twins.filter(x=>Number(x.max_pct)>=ECON_WIN_PCT).length;
+  const breakEven=Math.round(breakEvenHitRate(ECON_WIN_PCT, ECON_STOP_PCT, PICK_COST)*1000)/10;
+  const breakEvenFloor=Math.round(breakEvenFloorRate(ECON_WIN_PCT, ECON_STOP_PCT, PICK_COST)*1000)/10;
+  const edgeUpper=Math.round(wilsonUpper(hits,twins.length)*1000)/10;
+  const edgeLower=Math.round(wilsonLower(hits,twins.length)*1000)/10;
+  /* Altbestand vor v3.32.10 hat keinen Abdeckungsnachweis (`obs_n IS NULL`).
+     Er wird nicht verworfen — er wurde unter der alten Regel aufgeloest, hatte
+     also mindestens eine Beobachtung — aber er wird AUSGEWIESEN, damit ihn
+     niemand fuer nachgewiesen haelt. */
+  const legacyN=twins.filter(x=>!Number.isFinite(Number(x.obs_n))).length;
+  return {n:twins.length,available,distinctSymbols,
+    edge:totalW?Math.round(winW/totalW*100):0,
+    hits, edgeUpper, edgeLower, breakEven, breakEvenFloor, legacyN,
+    /* Selbst bei unendlicher Positionsgroesse unerreichbar: dann hilft kein Kapital. */
+    sizeHelps: edgeUpper < breakEvenFloor ? false : null,
+    /* Fail-closed: `viable` ist nur dann `false`, wenn die freundlichste
+       Lesart den Break-even verfehlt. Sonst `null` — nicht `true`. Diese App
+       gibt keine Freigabe aus Statistik. */
+    viable: edgeUpper < breakEven ? false : null,
+    stops:twins.filter(x=>Number(x.min_pct)<=ECON_STOP_PCT).length,
+    median:r1(vals[Math.floor(vals.length/2)]||0),source:'d1',independent:true};
 }
 async function d1LeadModel(env, symbol){
   if(!env.DB)return {n:0};
@@ -3502,6 +3650,30 @@ function pickExpectancy(outcome, targetPct, stopPct, cfg) {
 
 /** Trefferquote, ab der ein Setup nach Kosten und Steuer bei null landet.
  *  Die Zahl, die der Nutzer eigentlich braucht — sie stand nirgends. */
+/* ══ v3.32.10 · DER BODEN, DEN KEINE POSITIONSGROESSE UNTERSCHREITET ═══════
+   Naheliegender Gedanke bei „die App muss liefern": groesser handeln. 38 EUR
+   Fixkosten sind bei 10.000 EUR 0,38 %, bei 100.000 EUR nur 0,04 % — die
+   Break-even-Trefferquote faellt von 56 % auf 47,7 %.
+
+   Sie faellt aber nicht weiter. Die Fixkosten verschwinden mit wachsender
+   Groesse, die prozentuale Reibung (0,15 %) und die Steuerasymmetrie nicht:
+   Gewinne werden mit 27,5 % besteuert, Verluste tragen die vollen Kosten. Der
+   Grenzwert liegt bei rund 46,8 %.
+
+   Das ist die wichtigste Zahl, die diese App liefern kann. Sie beantwortet
+   „soll ich mehr investieren, damit es aufgeht?" mit einer Rechnung statt mit
+   einer Meinung: bei einer gemessenen Obergrenze von 16,8 % hilft keine
+   Groesse. Nicht das Kapital ist zu klein — das Zeitfenster ist zu kurz fuer
+   die Reibung, die darin bezahlt werden muss.                              */
+function breakEvenFloorRate(targetPct, stopPct, cfg) {
+  const fr = Number(cfg?.frictionPct) || 0, tax = Number(cfg?.taxPct) || 0;
+  const win = Math.abs(Number(targetPct) || 0) * (1 - tax / 100) - fr;
+  const loss = Math.abs(Number(stopPct) || 0) + fr;
+  /* Fail-closed: traegt das Setup selbst ohne Fixkosten nichts, ist die
+     Break-even-Quote nicht „niedrig", sondern unerreichbar — 1, nicht 0. */
+  return win + loss > 0 && win > 0 ? loss / (win + loss) : 1;
+}
+
 function breakEvenHitRate(targetPct, stopPct, cfg) {
   const win = netEurAtMove(targetPct, cfg), loss = lossEurAtStop(stopPct, cfg);
   return win + loss > 0 ? loss / (win + loss) : 1;
@@ -5840,11 +6012,54 @@ async function learningPayload(env, stocks=[], coins=[]){
   },stocks:stockOut,coins:coinOut,version:APP_VERSION};
   learnMemo={ts:now,key,data}; return data;
 }
+/* Takt des Whole-Market-Radars je Marktphase. Zahl = jede n-te Cron-Minute.
+   Der Radar zieht 11,2 MB je Abruf; das ist der teuerste einzelne Posten der
+   App und der Grund, warum das Tiingo-Limit gerissen waere.
+
+   Die Werte sind bewusst nicht symmetrisch. Im Opening entscheidet sich, was
+   den Tag traegt — dort bleibt es beim bisherigen Takt. Nachts geht es nur
+   noch darum, dass die Vorabend-Liste ueberhaupt Kandidaten hat; einmal je
+   halbe Stunde genuegt dafuer.
+
+   `null` heisst: gar nicht. Am Wochenende und an Feiertagen bewegt sich
+   nichts, was ein Radar finden koennte. */
+const RADAR_CADENCE = {
+  'opening':          2,    // 09:30–11:00 ET · unveraendert dicht
+  'regular':          2,    // 11:00–16:00 ET
+  'premarket':        4,    // 08:00–09:30 ET
+  'premarket-early': 10,    // 04:00–08:00 ET · IEX bildet hier ohnehin wenig ab
+  'after':            4,    // 16:00–17:00 ET
+  'after-limited':   10,    // 17:00–20:00 ET
+  'closed':          30,    // Nacht · nur damit die Vorabend-Liste Kandidaten hat
+};
+/** Der Deep Scan aus dem persistierten Radar ist billig (16,1 KB je Kursverlauf)
+ *  und darf weiterlaufen, solange ueberhaupt gehandelt wird. */
+function radarDue(phase, minute){
+  const key = phase && phase.key ? phase.key : 'closed';
+  /* Unbekannte Phase → sparsamster Takt. Fehlende Information darf nie in den
+     teuersten Fall fallen. */
+  const every = Number.isFinite(RADAR_CADENCE[key]) ? RADAR_CADENCE[key] : RADAR_CADENCE.closed;
+  const weekendOrHoliday = key === 'closed' && phase && ['Sat','Sun'].includes(phase.weekday);
+  if (weekendOrHoliday) return minute % (RADAR_CADENCE.closed * 2) === 1;
+  return minute % every === 1 || minute % 2 === 0;   // ungerade = Radar-Takt, gerade = Deep Scan
+}
+
 async function serverLearningCycle(env, scheduledTime=Date.now()){
   if(!env.DB) return;
   await ensureD1Schema(env);
   const now=Number(scheduledTime)||Date.now(), phase=usMarketPhase(new Date(now));
   const cronMinute=Math.floor(now/60_000);
+  /* v3.32.10 · R3: Die Aufloesung laeuft ZUERST und unabhaengig von jedem
+     Marktjob. Genau diese Kopplung war der Fehler — haengte der Scan eines
+     Symbols, wurde dessen Historie nie ausgewertet. Faellt sie hier aus, darf
+     das den restlichen Zyklus nicht mitreissen; der Rueckstand bleibt in der
+     Datenbank stehen und wird in der naechsten Minute erneut versucht.
+     Ein Snapshot kann jetzt beliebig spaet aufgeloest werden — es gibt kein
+     Fenster mehr, das man verpassen kann. */
+  try{
+    const res=await d1ResolveDue(env, now);
+    if(res.due) cronLog('resolve','ok',`${res.resolved} aufgeloest, ${res.dropped} verworfen`,res);
+  }catch(e){ cronLog('resolve','error',e?.message); }
   const cryptoMinute=cronMinute%5===0;
   // v3.2.5: pro Cron-Aufruf maximal EIN schwerer Marktjob. Alle 5 Minuten
   // besitzt Krypto den Worker exklusiv; dadurch kollidiert Bitpanda nicht mehr
@@ -5873,19 +6088,46 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
     }
   }
   const stockMinute=cronMinute, primaryStocks=tiingoStocksMode(env)==='primary';
-  if(!cryptoMinute && primaryStocks && env.TIINGO_API_TOKEN){
+  /* ══ v3.32.11 · DER RADAR LIEF RUND UM DIE UHR ═════════════════════════════
+     Befund vom 02.09., 06:03 CEST = 00:03 ET, bei geschlossener Boerse:
+     125 Whole-Market-Radar-Abrufe zu je 11,2 MB in gut fuenf Stunden.
+
+     Der Alpaca-Block eine Ebene darueber traegt seit jeher einen Waechter
+     (`minsET>=480 && minsET<=1020 && phase.key!=='closed'`). Der Tiingo-Block
+     hatte KEINEN. Er lief in etwa zwei von fuenf Minuten — nachts, am
+     Wochenende, an Feiertagen. Hochrechnung: 576 Abrufe/Tag x 11,2 MB
+     = 6,2 GB/Tag = rund 185 GB/Monat gegen ein Limit von 40 GB. Der
+     Kontostand bei Tiingo bestaetigte es: 6,61 GB am zweiten Tag des Monats.
+
+     Ein reiner Ein/Aus-Waechter reicht NICHT. Selbst auf die regulaere
+     Sitzung eingeschraenkt laege allein der Radar bei rund 36 GB — plus
+     Nachtsitzung und Kursverlaeufe. Deshalb wird der Takt nach Marktphase
+     GESTAFFELT: dort dicht, wo sich etwas bewegt, und ausserhalb selten
+     genug, dass die Vorabend-Liste weiter Kandidaten findet.
+
+     Fail-closed bei der Phase: ist sie nicht bestimmbar, gilt der
+     sparsamste Takt — eine unbekannte Phase darf nie in den teuersten Fall
+     fallen. Das ist dieselbe Regel wie ueberall: fehlende Information darf
+     nichts verbessern, und „mehr Abrufe" ist hier die teure Richtung.       */
+  if(!cryptoMinute && primaryStocks && env.TIINGO_API_TOKEN && radarDue(phase, stockMinute)){
     // v3.2.4 CPU-Hotfix: schwere Jobs werden auf getrennte Cron-Minuten verteilt.
     // Ungerade Minute = Whole-Market-Bulk-Radar. Gerade Minute = Deep Scan aus
     // dem persistierten Radar. So laufen JSON-Bulk-Ranking und 20 Historien-
     // Analysen nie mehr im selben Worker-Aufruf.
-    if(stockMinute%2===1){
+    /* v4.0.0 · Der Waechter, den dieser Block als einziger nicht hatte.
+       `phase.key==='closed'` deckt Nacht, Wochenende und Feiertage ab
+       (`nyseCalendar`). Der Deep Scan im else-Zweig laeuft weiter, solange die
+       Boerse offen ist — er kostet 16 KB und fuellt `obs_n`. */
+    if(phase.key==='closed'){
+      // Nichts. Kein Radar, kein Deep Scan. Es gibt nichts zu entdecken.
+    } else if(radarDueNow(phase.key, stockMinute)){
       try{
         const rd=await tiingoIexMarketRadar(env,80,true);
         setApiState('stocks','ok',`Whole-Market Radar aktualisiert · ${rd?.rows?.length||0} Kandidaten`);
         await persistApiState(env,'stocks','ok',`Whole-Market Radar aktualisiert · ${rd?.rows?.length||0} Kandidaten`,now);
       }
       catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('iex-radar',state,e?.message);}
-    }else{
+    }else if(stockMinute%2===0){
       try{
         const st=await tiingoStockSnapshot(env,false,new Set(ALL_ON),3,[],'server');
         await d1StoreRows(env,st.rows||[],{source:'Tiingo IEX',assetType:'stock',now});
@@ -5969,7 +6211,7 @@ function authHint(req, url, env) {
 
    NULL WIRKUNG AUF DIE BEWERTUNG. Reine Beobachtung. */
 const TIINGO_BW_CAP_GB = 40;   // Tarif „Power", Stand 30.08.2026. Siehe /api/health.
-let tiingoBw = { monthKey:'', paths:{}, exact:0, approx:0, loadedFromD1:false };
+let tiingoBw = { monthKey:'', paths:{}, exact:0, approx:0, loadedFromD1:false, startedTs:0 };
 let tiingoBwLimitHit = 0;   // Zeitpunkt des letzten Bandbreiten-429, 0 = nie
 
 function tiingoMonthKeyUTC(){ return new Date().toISOString().slice(0,7); }
@@ -5995,7 +6237,7 @@ function noteTiingoBytes(env, path, bytes, exact){
   const n=Number(bytes);
   if(!Number.isFinite(n)||n<0) return;          // Regel 2: nichts erfinden
   const mk=tiingoMonthKeyUTC();
-  if(tiingoBw.monthKey!==mk){ tiingoBw={monthKey:mk,paths:{},exact:0,approx:0,loadedFromD1:tiingoBw.loadedFromD1}; }
+  if(tiingoBw.monthKey!==mk){ tiingoBw={monthKey:mk,paths:{},exact:0,approx:0,loadedFromD1:tiingoBw.loadedFromD1,startedTs:Date.now()}; }
   const b=tiingoBwBucket(path);
   const cur=tiingoBw.paths[b]||{calls:0,bytes:0};
   cur.calls++; cur.bytes+=n; tiingoBw.paths[b]=cur;
@@ -6016,8 +6258,8 @@ async function loadTiingoBwOnce(env){
     const r=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=?').bind('tiingo_bandwidth').first();
     const v=r?.value?JSON.parse(r.value):null;
     if(v && v.monthKey===tiingoMonthKeyUTC() && v.paths && typeof v.paths==='object'){
-      tiingoBw={monthKey:v.monthKey,paths:v.paths,exact:Number(v.exact)||0,approx:Number(v.approx)||0,loadedFromD1:true};
-    } else { tiingoBw.monthKey=tiingoMonthKeyUTC(); tiingoBw.loadedFromD1=true; }
+      tiingoBw={monthKey:v.monthKey,paths:v.paths,exact:Number(v.exact)||0,approx:Number(v.approx)||0,loadedFromD1:true,startedTs:Number(v.startedTs)||Date.now()};
+    } else { tiingoBw.monthKey=tiingoMonthKeyUTC(); tiingoBw.loadedFromD1=true; tiingoBw.startedTs=Date.now(); }
   }catch(e){ tiingoBw.loadedFromD1=true; console.warn(JSON.stringify({event:'tiingo_bw_load_failed',message:String(e?.message||e),ts:Date.now()})); }
 }
 
@@ -6041,12 +6283,23 @@ function tiingoBandwidthView(){
     .sort((a,b)=>b.bytes-a.bytes);
   const total=rows.reduce((s,r)=>s+r.bytes,0);
   const usedGb=+(total/1073741824).toFixed(4);
+  /* v4.0.0 · Die Messdauer gehoert dazu. Ohne sie ist `usedGb` eine Zahl ohne
+     Bezugsgroesse, und die Anzeige hat sie bis v3.32.10 gegen das Monatslimit
+     gestellt — Zaehler seit Deploy, Nenner ganzer Monat. `pct` bleibt fuer
+     Bestandsleser erhalten, ist aber ausdruecklich als irrefuehrend markiert
+     und wird in der Anzeige nicht mehr verwendet. */
+  const startedTs = Number(tiingoBw.startedTs) || null;
+  const measuredHours = startedTs ? Math.max(0, (Date.now()-startedTs)/3_600_000) : null;
+  const perDayGb = measuredHours && measuredHours > 0.25 ? +(usedGb/measuredHours*24).toFixed(3) : null;
   return {
     measured:true, monthKey:mk, usedGb, capGb:TIINGO_BW_CAP_GB,
-    pct:+Math.min(999,(usedGb/TIINGO_BW_CAP_GB)*100).toFixed(1),
+    startedTs, measuredHours: measuredHours!=null ? +measuredHours.toFixed(2) : null,
+    perDayGb, perMonthGb: perDayGb!=null ? +(perDayGb*30).toFixed(1) : null,
+    pctMisleading:+Math.min(999,(usedGb/TIINGO_BW_CAP_GB)*100).toFixed(1),
+    pct:null,
     paths:rows,
     exactSamples:tiingoBw.exact, approxSamples:tiingoBw.approx,
-    note:'Eigenmessung DIESES Workers ab v3.32.0. Nicht der Kontostand bei Tiingo — frueherer Verbrauch im selben Monat und andere Clients fehlen. Als untere Schranke lesen.',
+    note:'Eigenmessung DIESES Workers seit seinem Start. Nicht der Kontostand bei Tiingo — frueherer Verbrauch im selben Monat und andere Clients fehlen. Als UNTERE SCHRANKE lesen; ein Prozentsatz des Monatskontingents laesst sich daraus nicht bilden.',
   };
 }
 
@@ -6135,9 +6388,118 @@ function boatsDiscoveryScore(r){
    Rauschen fuer 6,5 MB je Blick. 20 Minuten reichen — die Vorabend-Liste
    entsteht ohnehin aus Tagesbalken, nicht hieraus. */
 const BOATS_TTL_MS = 20*60_000;
+
+/* ══ v4.0.0 · DER RADAR LIEF RUND UM DIE UHR ════════════════════════════════
+   Befund vom 02.09., 06:03 CEST = 00:03 ET, also mitten in der Nacht bei
+   geschlossener Boerse: 125 Whole-Market-Radar-Abrufe zu je 11,2 MB in gut
+   fuenf Stunden. Der Alpaca-Block im Cron traegt einen Marktphasen-Waechter
+   (`minsET>=480 && minsET<=1020 && phase.key!=='closed'`), der Tiingo-Block
+   direkt darunter traegt KEINEN. Er lief in etwa zwei von fuenf Minuten —
+   nachts, am Wochenende, an Feiertagen.
+
+   Hochrechnung: 576 Abrufe/Tag x 11,2 MB = 6,2 GB/Tag = 185 GB/Monat, gegen
+   ein Limit von 40 GB. Tiingo meldete am zweiten Tag des Monats bereits
+   6,61 GB verbraucht — bei dem Tempo waere das Limit um den 7. September
+   erreicht und der Aktienteil bis zum 1. Oktober tot.
+
+   WICHTIG FUER DIE ABGRENZUNG: teuer ist ausschliesslich der RADAR
+   (11,2 MB je Abruf). Der Deep Scan laeuft ueber `iex-chart` mit 16,1 KB —
+   611 Abrufe ergaben 0,009 GB. Der Deep Scan wird deshalb NICHT gedrosselt:
+   er ist es, der `obs_n` fuellt, und eine Drosselung dort wuerde die
+   Beobachtungsabdeckung senken und Snapshots in den Verwurf treiben (R3).
+   Bandbreite sparen darf nie die Messung beschaedigen.
+
+   Die Kadenz folgt dem, was Entdeckung ueberhaupt bringen kann: in der
+   Eroeffnung entstehen neue Kandidaten im Minutentakt, nachts entsteht gar
+   nichts. `null` heisst NIE — nicht „selten". */
+const RADAR_CADENCE_MIN = {
+  'opening': 3,           // 09:30–11:00 ET · neue Kandidaten entstehen laufend
+  'regular': 8,           // 11:00–16:00 ET
+  'premarket': 15,        // 08:00–09:30 ET
+  'premarket-early': 60,  // 04:00–08:00 ET · duenn, IEX bildet kaum ab
+  'after': 15,            // 16:00–17:00 ET
+  'after-limited': 60,    // 17:00–20:00 ET
+  'closed': null,         // Wochenende, Feiertag, Nacht — kein Abruf
+};
+/* Nachgerechnet, 22 Handelstage, 11,2 MB je Abruf:
+     bisher (24/7, ~2 von 5 Minuten)   576 Abrufe/Tag   185 GB/Monat
+     Kadenz 2/5/10/30                  125 Abrufe/Tag    29 GB/Monat
+     diese Werte                        70 Abrufe/Tag    17 GB/Monat
+   Dazu BOATS mit wirksamer Sperre rund 4 GB. Zusammen ~21 GB gegen ein
+   Kontingent von 40 — bewusst mit Luft, weil die Eigenmessung eine UNTERE
+   Schranke ist und der reale Kontostand am 02.09. das 3,3-fache zeigte. */
+/* Der Versatz ist kein Schoenheitsfehler, sondern noetig: `cryptoMinute` ist
+   `cronMinute % 5 === 0`, und der ganze Aktienblock wird in dieser Minute
+   uebersprungen. Eine Kadenz von 5, 10 oder 30 Minuten OHNE Versatz faellt
+   damit IMMER auf eine Kryptominute — der Radar liefe nie. Beim ersten
+   Durchrechnen kamen genau deshalb nur 36 Abrufe heraus, alle aus der
+   Eroeffnungsphase (Kadenz 2). Mit Versatz 1 liegt keine der Kadenzen je auf
+   einem Vielfachen von 5.
+   `cronMinute` sind absolute Epochenminuten; da 1440 durch 2, 5, 10 und 30
+   teilbar ist, ist die Restklasse ueber Tagesgrenzen hinweg stabil. */
+const RADAR_PHASE_OFFSET = 1;
+/** Faellt der Radar in dieser Cron-Minute an? Fail-closed: unbekannte Phase
+ *  heisst NEIN. Eine Phase, die wir nicht kennen, darf nicht 11 MB kosten. */
+function radarDueNow(phaseKey, cronMinute){
+  if(!Object.prototype.hasOwnProperty.call(RADAR_CADENCE_MIN, phaseKey)) return false;
+  const every = RADAR_CADENCE_MIN[phaseKey];
+  if(!(Number.isFinite(every) && every > 0)) return false;
+  const m = Number(cronMinute);
+  if(!Number.isFinite(m)) return false;
+  return ((m % every) + every) % every === RADAR_PHASE_OFFSET % every;
+}
+
+/* ══ v4.0.0 · EINE TTL IM ISOLATE IST KEINE TTL ═════════════════════════════
+   `BOATS_TTL_MS = 20 min` wurde ausschliesslich in `tiingoDiscoveryMemo`
+   geprueft — einer Modulvariablen. Workers-Isolates starten staendig neu, und
+   mit jedem Neustart ist der Memo leer und die Sperre weg. Gemessen: 100
+   Abrufe zu 6,5 MB in fuenf Stunden, wo bei 20 Minuten TTL fuenfzehn haetten
+   stehen duerfen. Faktor sieben.
+
+   Es ist derselbe Fehler wie beim 60-Sekunden-Memo von `learningPayload()`,
+   der das D1-Limit gerissen hat: eine Sperre, die im Prozessgedaechtnis lebt,
+   existiert bei Workers praktisch nicht. Die TTL gehoert in `fp_meta`.
+
+   Fail-closed: ist D1 nicht lesbar, gilt die Sperre als GESETZT und es wird
+   NICHT abgerufen. Ein unbekannter Stand darf keinen 6,5-MB-Abruf ausloesen —
+   fehlende Information darf nichts erlauben. */
+/* BOATS laeuft aus dem Anfragepfad, nicht aus dem Cron — es haengt also am
+   Nutzungsverhalten, nicht am Takt. Nachts ist die Sitzung duenn; wer dort im
+   20-Minuten-Takt 6,5 MB zieht, kauft Rauschen. Die Sperre wird deshalb bei
+   geschlossener Boerse laenger, statt den Abruf ganz zu verbieten: der
+   Common-Stock-Filter braucht die Liste auch abends, nur nicht frisch. */
+function boatsTtlFor(phaseKey){
+  return phaseKey === 'closed' ? 6*BOATS_TTL_MS : BOATS_TTL_MS;   // 120 statt 20 Minuten
+}
+
+async function ttlGate(env, key, ttlMs, now=Date.now()){
+  if(!env.DB) return { allowed:false, reason:'kein D1 — Sperre gilt als gesetzt' };
+  try{
+    const row=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind(`ttl:${key}`).first();
+    const last=row&&row.value ? Number(row.value) : 0;
+    if(Number.isFinite(last) && now-last < ttlMs) return { allowed:false, lastTs:last, reason:'TTL laeuft noch' };
+    return { allowed:true, lastTs:Number.isFinite(last)?last:null };
+  }catch{ return { allowed:false, reason:'D1 nicht lesbar — Sperre gilt als gesetzt' }; }
+}
+async function ttlMark(env, key, now=Date.now()){
+  if(!env.DB) return;
+  try{
+    await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts')
+      .bind(`ttl:${key}`, String(now), now).run();
+  }catch{ /* der naechste Lauf versucht es erneut */ }
+}
 async function tiingoBoatsDiscovery(env,limit=15,force=false){
   const now=Date.now();
   if(!force && tiingoDiscoveryMemo.rows.length && now-tiingoDiscoveryMemo.ts<BOATS_TTL_MS) return tiingoDiscoveryMemo;
+  /* v4.0.0 · Der Isolate-Memo darueber ist nur noch eine Abkuerzung fuer den
+     Normalfall. Die eigentliche Sperre liegt in D1, weil Isolates staendig
+     neu starten und die Modulvariable dann leer ist. Ohne diese Zeile lief
+     der 6,5-MB-Abruf statt 15x rund 100x in fuenf Stunden. */
+  if(!force){
+    const gate = await ttlGate(env, 'boats', boatsTtlFor(usMarketPhase(new Date(now)).key), now);
+    if(!gate.allowed) return tiingoDiscoveryMemo.rows.length ? tiingoDiscoveryMemo : { rows:[], ts:gate.lastTs||0, source:'Tiingo BOATS · TTL', throttled:true, reason:gate.reason };
+    await ttlMark(env, 'boats', now);
+  }
   try{
     const d=await tiingoFetch(env,'/boats');
     const rows=(Array.isArray(d)?d:[]).map(x=>{

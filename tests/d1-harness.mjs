@@ -13,6 +13,19 @@ import fs from 'node:fs';
 
 const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
 
+/* v3.32.10 · Der Aufloeser wird eigenstaendig geladen: er ist der Kern von R3
+   und muss AUSGEFUEHRT geprueft werden, nicht per Muster. */
+export function loadResolver() {
+  const from = worker.indexOf('async function d1ResolveDue(');
+  const to = worker.indexOf('async function d1StoreSnapshotRow(');
+  if (from < 0 || to <= from) throw new Error('d1ResolveDue nicht gefunden');
+  const consts = 'const LEARN_HORIZON_MS = 180*60_000, LEARN_MIN_OBS = 6, LEARN_RESOLVE_BUDGET = 400;\n';
+  const src = consts + 'let bumped = [];\nfunction learnCountersBump(d, now){ bumped.push(d); }\n'
+    + worker.slice(from, to)
+    + '\nreturn { d1ResolveDue, LEARN_MIN_OBS, get bumped(){return bumped;}, reset(){bumped=[];} };';
+  return new Function(src)();
+}
+
 export function loadD1() {
   const from = worker.indexOf("const LEARN_COUNT_KEY = 'learn_counts';");
   const to = worker.indexOf('function learningFeatures(row){');
@@ -34,6 +47,7 @@ export function fakeDb(opts = {}) {
     rowsReadPerQuery: opts.rowsRead ?? 3,
     inserted: opts.inserted ?? 1,         // meta.changes fuer INSERT OR IGNORE
     log: [],
+    due: opts.due || null,   // Zeilen, die der Aufloeser findet
     meta,
   };
   const boom = () => { if (state.fail) throw new Error(state.fail); };
@@ -46,6 +60,8 @@ export function fakeDb(opts = {}) {
     bind: (...a) => stmt(sql, a),
     all: async () => {
       boom(); state.log.push(sql);
+      /* Faellige Snapshots fuer den Aufloeser. `rows` wird vom Test gesetzt. */
+      if (/FROM market_snapshots/i.test(sql) && state.due) return result(state.due);
       return result([]);
     },
     first: async () => {
