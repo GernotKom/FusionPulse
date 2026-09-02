@@ -1188,6 +1188,14 @@ function resolveStockQuery(raw) {
 }
 
 let stockMemo = { ts: 0, rows: [], cycle: -1, sig: '' };
+/* v4.0.1 · Zwei getrennte Groessen, weil sie zwei verschiedene Fragen
+   beantworten. LIVE_MS: „gilt das als aktueller Scan?" — bleibt eng, sonst
+   waere die Beschriftung gelogen. MAX_AGE_MS: „darf die Oberflaeche es
+   ueberhaupt noch sehen?" — darf weit sein, weil ein sichtbar veralteter
+   Stand mehr wert ist als eine leere Liste. Frueher war beides dieselbe Zahl
+   (4 Min), und das hiess: was nicht taufrisch ist, existiert nicht. */
+const STOCK_SNAPSHOT_LIVE_MS = 4*60_000;
+const STOCK_SNAPSHOT_MAX_AGE_MS = 72*60*60_000;
 let fxMemo = { ts: 0, usdPerEur: null };
 const stockLookupMemo = new Map();
 
@@ -2122,13 +2130,40 @@ async function alpacaJSON(path, params, env){
 function barTimeET(ts){
   const p=nyParts(new Date(ts)); return Number(p.hour)*60+Number(p.minute);
 }
+/* ══ v4.0.2 · DER GAP WAR EINE SITZUNG ZU ALT ═══════════════════════════════
+   Befund vom 02.09., 15:10 MESZ = 09:10 ET: die App zeigte MRNA mit +9,8 %
+   Gap, Google Finance im selben Moment mit -2,22 %. Beide Zahlen stimmten —
+   sie hatten nur verschiedene Bezugspunkte. 150,84 / 154,27 = -2,2 %
+   (Vortagesschluss 1. Sept.), 150,84 / 137,40 = +9,8 % (Schluss 31. Aug.).
+
+   Ursache: `snap.prevDailyBar` ist NICHT „der Vortagesschluss", sondern
+   schlicht der vorletzte Tagesbalken. Solange auf IEX noch kein Trade des
+   laufenden Tages gedruckt hat, ist `dailyBar` weiterhin GESTERN — und
+   `prevDailyBar` damit VORGESTERN. Der Vergleich lief also gegen den falschen
+   Tag, und weil der Preis selbst aus `minuteBar`/`latestTrade` von HEUTE kam,
+   wurde die komplette Vortagesbewegung in den Premarket-Gap hineingerechnet.
+   Genau deshalb standen dort fuenf Titel mit lauter grossen Plus-Gaps.
+
+   Der Bezugstag wird jetzt am Datum entschieden statt am Feldnamen. Laesst er
+   sich nicht bestimmen, gibt es KEINE Zeile — eine falsche Prozentzahl ist
+   schlechter als eine fehlende. */
+function alpacaPrevClose(snap, now=new Date()){
+  const t=nyParts(now), todayKey=`${t.year}-${t.month}-${t.day}`;
+  const dayKey=(v)=>{ if(!v)return null; const d=new Date(v); if(!Number.isFinite(d.getTime()))return null; const p=nyParts(d); return `${p.year}-${p.month}-${p.day}`; };
+  const dailyKey=dayKey(snap?.dailyBar?.t), daily=Number(snap?.dailyBar?.c||0), prev=Number(snap?.prevDailyBar?.c||0);
+  if(!dailyKey) return null;                                   // ohne Datum kein Bezug
+  if(dailyKey===todayKey) return prev>0?{value:prev,date:dayKey(snap?.prevDailyBar?.t),field:'prevDailyBar'}:null;
+  if(dailyKey<todayKey)   return daily>0?{value:daily,date:dailyKey,field:'dailyBar'}:null;
+  return null;                                                 // Balken aus der Zukunft: unbrauchbar
+}
 function momentumFromAlpaca(symbol, snap, bars=[]){
   if(!snap)return null;
   // v3.4.1 P0: Die Preisquelle muss vor dem Return immer definiert sein.
   // Reihenfolge bleibt bewusst minute -> trade -> daily; daily ist nur Discovery-Fallback
   // und darf in der UI nicht wie ein frischer Extended-Hours-Quote aussehen.
   const priceSource = Number(snap.minuteBar?.c||0)>0 ? 'minute' : Number(snap.latestTrade?.p||0)>0 ? 'trade' : Number(snap.dailyBar?.c||0)>0 ? 'daily' : 'none';
-  const prevClose=Number(snap.prevDailyBar?.c||0), latest=Number(snap.minuteBar?.c||snap.latestTrade?.p||snap.dailyBar?.c||0);
+  const ref=alpacaPrevClose(snap);
+  const prevClose=Number(ref?.value||0), latest=Number(snap.minuteBar?.c||snap.latestTrade?.p||snap.dailyBar?.c||0);
   if(!(latest>0&&prevClose>0))return null;
   const bs=(bars||[]).map(b=>({t:b.t,c:+b.c,h:+b.h,l:+b.l,v:+b.v||0})).filter(b=>b.c>0).sort((a,b)=>new Date(a.t)-new Date(b.t));
   const closeAgoBars=(n)=>bs.length>n?bs.at(-1-n).c:bs[0]?.c||latest;
@@ -2151,7 +2186,7 @@ function momentumFromAlpaca(symbol, snap, bars=[]){
   const light=momentumScore>=8?'green':momentumScore>=6.5?'yellow':'red';
   const actionable=['opening','regular'].includes(phase.key)&&momentumScore>=8;
   const phaseAction=['premarket-early','premarket'].includes(phase.key)?(momentumScore>=7.5?'VORBEREITEN':'beobachten'):actionable?'Opening-Bestätigung prüfen':phase.key==='closed'?'Vorbereitung':'beobachten';
-  return {symbol,priceUsd:latest,gapPct:r1(gapPct),ret5:r1(ret5),ret15:r1(ret15),ret60:r1(ret60),relVol:r1(relVol),momentumScore,preHigh,preLow,openingHigh,breakPremarketHigh:!!(preHigh&&latest>preHigh),structurePct,structureTargetUsd:r2(latest*(1+structurePct/100)),light,phaseAction,marketPhase:phase.key,updated:snap.minuteBar?.t||snap.latestTrade?.t||snap.dailyBar?.t||null,priceSource};
+  return {symbol,priceUsd:latest,prevCloseUsd:r2(prevClose),prevCloseDate:ref?.date||null,prevCloseField:ref?.field||null,gapPct:r1(gapPct),ret5:r1(ret5),ret15:r1(ret15),ret60:r1(ret60),relVol:r1(relVol),momentumScore,preHigh,preLow,openingHigh,breakPremarketHigh:!!(preHigh&&latest>preHigh),structurePct,structureTargetUsd:r2(latest*(1+structurePct/100)),light,phaseAction,marketPhase:phase.key,updated:snap.minuteBar?.t||snap.latestTrade?.t||snap.dailyBar?.t||null,priceSource};
 }
 async function openingMomentum(env, force=false, favoriteSymbols=[]){
   const phase=usMarketPhase();
@@ -7185,8 +7220,24 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   // Sie liest den letzten Cron-Batch. Das verhindert parallele CPU-Spitzen bei
   // mehreren Tabs/Geraeten und auf frisch gestarteten Worker-Isolates.
   if(execution!=='server'&&!force){
-    const persisted=await readLatestPersistedStockScan(env,4*60_000);
+    /* ══ v4.0.1 · DER LETZTE BEKANNTE STAND LAG DA UND WURDE VERWORFEN ═══════
+       v4.0.0 hat den Radar bei `phase.key==='closed'` stillgelegt — richtig,
+       das war der Bandbreitenfresser. Uebersehen wurde die Folge auf der
+       Leseseite: das Fenster hier war hart auf 4 Minuten gesetzt. Sobald der
+       Cron nichts mehr schreibt, ist der letzte Batch nach vier Minuten fuer
+       die Oberflaeche unsichtbar — obwohl er vollstaendig in D1 steht.
+       Sichtbar war das als „0 geladen / 0 angezeigt" und als Abfragezeit
+       01:00:00, weil `stockMemo.ts` auf einem kalten Isolate 0 ist und der
+       Epochenbeginn in unserer Zone genau so aussieht.
+       Das Fenster wird jetzt weit (72 h), die EHRLICHKEIT wandert in den
+       Zustand: aelter als 4 Minuten heisst `stale`, und die Oberflaeche
+       beschriftet das bereits mit „Daten veraltet" plus Frische-Marke je
+       Zeile. Kein Zusatzabruf, keine Bandbreite, keine Kauf-Freigabe — `marketOk`
+       in der App laesst BUY weiterhin nur in `opening`/`regular` zu. */
+    const persisted=await readLatestPersistedStockScan(env,STOCK_SNAPSHOT_MAX_AGE_MS);
     if(persisted){
+      const ageMs=Math.max(0,Date.now()-Number(persisted.ts||0));
+      const fresh=ageMs<=STOCK_SNAPSHOT_LIVE_MS;
       let verifiedRadar=verifiedCommonOnly(Array.isArray(persisted.meta?.verifiedRadar)?persisted.meta.verifiedRadar:[]);
       const openingVerified=await readVerifiedOpeningRadar(env,30*60_000);
       if(openingVerified.length){
@@ -7199,7 +7250,7 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       const cleanRows=(persisted.rows||[]).filter(r=>{const sym=String(r?.symbol||'').toUpperCase();return !NON_COMMON_SYMBOL_DENY.has(sym) && !NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''}`) && (catalogSet.has(sym)||favs.includes(sym)||allowed.has(sym));});
       stockMemo={ts:persisted.ts,rows:cleanRows,cycle:persisted.cycle,sig:persisted.sig,refreshedSymbols:Array.isArray(persisted.meta?.refreshedSymbols)?persisted.meta.refreshedSymbols:[]};
       const radar=await readPersistedIexRadar(env);
-      return {configured:true,state:'ok',cached:true,persistent:true,rows:cleanRows,ts:persisted.ts,cycle:persisted.cycle,universe:radar?.universe||12000,universeLabel:`${radar?.universe||'12.000+'} Tiingo/IEX`,scanned:cleanRows.length,updatedThisCycle:0,refreshedSymbols:Array.isArray(persisted.meta?.refreshedSymbols)?persisted.meta.refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified',ts:persisted.ts||0,candidates:verifiedRadar,gainers:openingGainers(verifiedRadar),buyWeight:0,gate:{...radarGateStats}},boats:{source:'Tiingo BOATS · verified',ts:persisted.ts||0,candidates:verifiedBoats,buyWeight:0}},version:APP_VERSION,note:'Server-Cache: autonomer Cron-Radar/Deep-Scan; PWA startet keinen Doppel-Scan. Nur verifizierte Common Stocks werden an die UI gereicht.'};
+      return {configured:true,state:fresh?'ok':'stale',cached:true,persistent:true,ageMinutes:Math.round(ageMs/60_000),rows:cleanRows,ts:persisted.ts,cycle:persisted.cycle,universe:radar?.universe||12000,universeLabel:`${radar?.universe||'12.000+'} Tiingo/IEX`,scanned:cleanRows.length,updatedThisCycle:0,refreshedSymbols:Array.isArray(persisted.meta?.refreshedSymbols)?persisted.meta.refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified',ts:persisted.ts||0,candidates:verifiedRadar,gainers:openingGainers(verifiedRadar),buyWeight:0,gate:{...radarGateStats}},boats:{source:'Tiingo BOATS · verified',ts:persisted.ts||0,candidates:verifiedBoats,buyWeight:0}},version:APP_VERSION,note:fresh?'Server-Cache: autonomer Cron-Radar/Deep-Scan; PWA startet keinen Doppel-Scan. Nur verifizierte Common Stocks werden an die UI gereicht.':`Letzter Stand der Vorsitzung, ${Math.round(ageMs/60_000)} Min. alt. Ausserhalb der US-Handelszeit laeuft kein Scan (Bandbreitenschutz v4.0.0) — angezeigte Kurse sind historisch, keine Kauf-Freigabe.`};
     }
     const staleRows=stripKnownNonCommon(stockMemo.rows||[]);
     return {configured:true,state:'stale',cached:true,rows:staleRows,ts:stockMemo.ts||0,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:staleRows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:tiingoIexRadarMemo.ts,candidates:(tiingoIexRadarMemo.rows||[]).slice(0,20),buyWeight:0,gate:{...radarGateStats}},boats:tiingoDiscoveryMemo},version:APP_VERSION,note:'Warte auf ersten serverseitigen Cron-Batch.'};
@@ -7412,7 +7463,7 @@ async function tiingoStockLookup(env,raw,comp,minCrv=3,force=false){
   stockLookupMemo.set(info.symbol,{ts:Date.now(),row});const old=new Map(stockMemo.rows.map(r=>[r.symbol,r]));old.set(row.symbol,row);stockMemo.rows=[...old.values()].sort((a,b)=>b.score-a.score).slice(0,80);
   return {configured:true,state:'ok',cached:false,lookup:true,row,source:'Tiingo IEX',provider:'Tiingo',version:APP_VERSION};
 }
-export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation };
+export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation, alpacaPrevClose, momentumFromAlpaca };
 
 export default {
   async fetch(request, env, ctx) {

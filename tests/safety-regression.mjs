@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { analyse, analyseStock, aladdinIntelligence } from '../src/worker.js';
+import { analyse, analyseStock, aladdinIntelligence, alpacaPrevClose, momentumFromAlpaca } from '../src/worker.js';
 
 function coinBars(n=82){
   const out=[]; const t0=1_700_000_000;
@@ -5141,3 +5141,53 @@ console.log('✓ FusionPulse v3.32.8 CRV-Geometrie R1.3/R1.4 (ausgefuehrt): OK')
 console.log('✓ FusionPulse v3.32.10 Twin-Auswertung (ausgefuehrt): OK');
 
 console.log('✓ FusionPulse v3.29.0 evening-list geometry/study regressions: OK');
+
+/* ══ v4.0.2 · DER GAP-BEZUGSTAG ════════════════════════════════════════════
+   Befund vom 02.09.2026, 09:10 ET: die App zeigte MRNA mit +9,8 % Gap,
+   Google Finance zeitgleich mit -2,22 %. Ursache war `snap.prevDailyBar` als
+   vermeintlicher Vortagesschluss. Das Feld ist nur der VORLETZTE Tagesbalken;
+   solange auf IEX kein Trade des laufenden Tages gedruckt hat, ist `dailyBar`
+   noch gestern und `prevDailyBar` damit vorgestern. Der Preis kam aus
+   `minuteBar` von heute — die komplette Vortagesbewegung landete im Gap.
+   Der Test rechnet mit den ECHTEN Zahlen des Vorfalls, nicht mit runden
+   Platzhaltern: nur so faellt eine Regression mit demselben Betrag auf. */
+{
+  const now = new Date(Date.UTC(2026, 8, 2, 13, 10, 0));   // 09:10 ET, Premarket
+
+  const heuteNochKeinBalken = {
+    minuteBar:    { c: 150.84, t: '2026-09-02T13:09:00Z' },
+    latestTrade:  { p: 150.84, t: '2026-09-02T13:09:00Z' },
+    dailyBar:     { c: 154.27, t: '2026-09-01T20:00:00Z' },   // gestern
+    prevDailyBar: { c: 137.40, t: '2026-08-31T20:00:00Z' },   // vorgestern
+  };
+  const ref = alpacaPrevClose(heuteNochKeinBalken, now);
+  assert.strictEqual(ref.value, 154.27,
+    'v4.0.2: Bezug ist der Vortagesschluss, nicht der vorletzte Balken');
+  assert.strictEqual(ref.field, 'dailyBar');
+
+  const heuteMitBalken = {
+    minuteBar:    { c: 150.84, t: '2026-09-02T13:09:00Z' },
+    dailyBar:     { c: 150.84, t: '2026-09-02T13:09:00Z' },
+    prevDailyBar: { c: 154.27, t: '2026-09-01T20:00:00Z' },
+  };
+  const ref2 = alpacaPrevClose(heuteMitBalken, now);
+  assert.strictEqual(ref2.value, 154.27,
+    'v4.0.2: Existiert heute ein Balken, ist prevDailyBar wieder richtig');
+  assert.strictEqual(ref2.field, 'prevDailyBar');
+
+  /* Ohne Datum kein Bezug — fail-closed. Eine falsche Prozentzahl ist
+     schlechter als eine fehlende Zeile. */
+  assert.strictEqual(alpacaPrevClose({ dailyBar: { c: 1 }, prevDailyBar: { c: 2 } }, now), null,
+    'v4.0.2: Ohne Zeitstempel darf kein Bezugswert entstehen');
+  assert.strictEqual(momentumFromAlpaca('X', { minuteBar: { c: 10 }, prevDailyBar: { c: 9 } }), null,
+    'v4.0.2: Ohne Bezugstag entsteht gar keine Zeile');
+
+  const row = momentumFromAlpaca('MRNA', heuteNochKeinBalken, []);
+  assert.ok(row, 'v4.0.2: Zeile muss entstehen');
+  assert.ok(Math.abs(row.gapPct - (-2.2)) < 0.15,
+    `v4.0.2: Gap muss ca. -2,2 % sein (Google-Referenz), ist ${row.gapPct}`);
+  assert.strictEqual(row.prevCloseUsd, 154.27, 'v4.0.2: Bezugskurs gehoert auf die Zeile');
+  assert.strictEqual(row.prevCloseDate, '2026-09-01', 'v4.0.2: und sein Datum ebenso');
+}
+
+console.log('✓ FusionPulse v4.0.2 Gap-Bezugstag (ausgefuehrt): OK');

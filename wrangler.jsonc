@@ -7,9 +7,23 @@
 
   "observability": { "enabled": true, "head_sampling_rate": 1 },
 
+  /* v4.0.3 · DIE EINZIGE HARTE BREMSE, DIE ES GIBT.
+     Budget-Alerts bei Cloudflare sind ausdruecklich nur informativ — sie
+     schicken eine Mail und deckeln NICHTS. Der Workers-Paid-Plan rechnet
+     Ueberschreitungen automatisch ab, ohne Rueckfrage. Die einzige Stelle, an
+     der sich eine durchgedrehte Schleife wirklich stoppen laesst, ist die
+     CPU-Zeit je Aufruf.
+     30 Sekunden sind bewusst nicht knapp gewaehlt: der schwerste Job
+     (Whole-Market-Radar, ~11 MB JSON ranken) soll nicht mitsterben. Der Wert
+     wirkt trotzdem, weil Cron-Trigger sonst bis zu 15 MINUTEN CPU ziehen
+     duerfen — das ist der Faktor 30, um den ein Amoklauf hier billiger wird.
+     Nach ein paar Tagen im Dashboard die tatsaechliche CPU-Zeit ablesen und
+     den Wert auf das Doppelte des beobachteten Maximums nachziehen. */
+  "limits": { "cpu_ms": 30000 },
+
   // Nur Diagnose. Die verbindliche Version steht in src/version.js und wird
   // von scripts/sync-version.mjs aus package.json hierher gespiegelt.
-  "vars": { "APP_VERSION": "4.0.0", "ALPACA_FEED": "iex", "TIINGO_STOCKS_MODE": "primary" },
+  "vars": { "APP_VERSION": "4.0.3", "ALPACA_FEED": "iex", "TIINGO_STOCKS_MODE": "primary" },
 
   // v3.2: Cron läuft jede Minute. Im Worker selbst wird gedrosselt:
   // Krypto 5-minütig, Alpaca im Opening-Fenster, Aktien-Learning im Primary-Modus über Tiingo.
