@@ -8,9 +8,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/style.css?v=4.0.6">
+<link rel="stylesheet" href="/style.css?v=4.1.0">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
-<script src="/version.js?v=4.0.6"></script>
+<script src="/version.js?v=4.1.0"></script>
 <!-- ══════════════════════════════════════════════ v3.24.0 · BOOT-WÄCHTER ═══
      ANLASS: Am 29.08. stand die Oberfläche still — Statusampeln grau, Version
      "v–", Taktuhr "--:--". Alles stand auf den STATISCHEN Startwerten aus
@@ -66,13 +66,13 @@
   });
 })();
 </script>
-<title>FusionPulse 4.0.6</title>
+<title>FusionPulse 4.1.0</title>
 <!-- v3.14.1: Versionsstempel der SHELL (index.html). Wird von sync-version.mjs
      gesetzt und beim Start gegen FP_VERSION aus version.js verglichen. Weichen
      die beiden ab, ist eine halb aktualisierte Auslieferung im Umlauf: neues
      app.js/style.css auf altem index.html. Das erzeugt Fehler, die wie
      Layout-Probleme aussehen, aber keine sind — und kostet beim Suchen Stunden. -->
-<meta name="fp-shell-version" content="4.0.6">
+<meta name="fp-shell-version" content="4.1.0">
 </head>
 <body>
 <!-- v3.24.0 · Wird nur sichtbar, wenn app.js nicht startet. -->
@@ -267,7 +267,13 @@
         <option value="green">Handeln</option>
         <option value="yellow">Beobachten</option>
       </select>
+      <!-- v4.1.0: Der Schalter gehoert neben den Filter, weil er dieselbe Frage
+           beantwortet — WAS sehe ich. Nur wirkt er serverseitig statt nur auf
+           die Anzeige. -->
+      <button id="watchlistToggle" class="wl-toggle" type="button" aria-pressed="false"
+        title="Umschalten zwischen Whole-Market-Radar und Watchlist-Modus. Im Watchlist-Modus untersucht der Server ausschließlich deine Favoriten — jede Minute statt jede zweite, ohne Entdeckung. Du übernimmst damit das Screening: was nicht in der Liste steht, wird auch nicht gefunden.">📡 Radar</button>
     </div>
+    <div id="watchlistNote" class="wl-note hidden" aria-live="polite"></div>
     <!-- v3.9.1: Fokusfenster und Heatmap stehen jetzt VOR Depot, Crowd,
          Portfolio und den Learning-Kacheln. Begruendung: zuerst der
          handlungsrelevante Zustand, danach Systemzustand und Rueckblick.
@@ -532,6 +538,6 @@
      Muss das LETZTE Element im Fluss bleiben. Hoehe kommt aus derselben
      Messung wie alles andere (--fp-foot-h). -->
 <div class="foot-spacer" aria-hidden="true"></div>
-<script src="/app.js?v=4.0.6"></script>
+<script src="/app.js?v=4.1.0"></script>
 </body>
 </html>

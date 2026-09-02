@@ -1194,6 +1194,53 @@ let stockMemo = { ts: 0, rows: [], cycle: -1, sig: '' };
    ueberhaupt noch sehen?" — darf weit sein, weil ein sichtbar veralteter
    Stand mehr wert ist als eine leere Liste. Frueher war beides dieselbe Zahl
    (4 Min), und das hiess: was nicht taufrisch ist, existiert nicht. */
+/* ══ v4.1.0 · DIE WATCHLIST LEBT SERVERSEITIG ══════════════════════════════
+   Favoriten lagen bisher nur im Browser und wurden je Anfrage mitgeschickt.
+   Fuer den Cron ist das wertlos: er laeuft ohne Browser. Der Modus muss
+   deshalb dort stehen, wo der Cron ihn sieht — in `fp_meta`, derselben
+   Schluessel/Wert-Tabelle, die schon `stock_scan:last` haelt. Kein neues
+   Schema, keine neue Migration.
+
+   Geschrieben wird NUR beim Umschalten, nicht je Zyklus. Gelesen wird mit
+   60-Sekunden-Gedaechtnis, damit der Modus nicht jede Minute eine Abfrage
+   kostet. Faellt das Lesen aus, gilt `radar` — der bisherige Zustand. Ein
+   Fehler darf niemals still in einen eingeschraenkten Scan kippen, sonst
+   verschwinden Titel ohne erkennbaren Grund. */
+const snapshotWriteMemo=new Map();   // v4.1.0: letzter geschriebener Zustand je Symbol
+let watchlistMemo={ts:0,mode:'radar',symbols:[]};
+const WATCHLIST_KEY='focus:watchlist';
+function normalizeWatchlist(list){
+  return [...new Set((list||[]).map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,8}$/.test(x)))].slice(0,40);
+}
+async function readWatchlist(env, maxAgeMs=60_000){
+  if(Date.now()-watchlistMemo.ts<maxAgeMs) return watchlistMemo;
+  if(!env?.DB) return watchlistMemo;
+  try{
+    const row=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind(WATCHLIST_KEY).first();
+    if(row?.value){
+      const p=JSON.parse(row.value);
+      const symbols=normalizeWatchlist(p?.symbols);
+      /* Watchlist-Modus OHNE Symbole waere ein Scanner, der nichts scannt.
+         Er faellt deshalb auf den Radar zurueck, statt leer zu laufen. */
+      const mode=(p?.mode==='watchlist'&&symbols.length)?'watchlist':'radar';
+      watchlistMemo={ts:Date.now(),mode,symbols};
+    } else watchlistMemo={ts:Date.now(),mode:'radar',symbols:[]};
+  }catch(e){ console.warn(JSON.stringify({event:'watchlist_read_failed',message:String(e?.message||e),ts:Date.now()})); }
+  return watchlistMemo;
+}
+async function writeWatchlist(env, mode, symbols){
+  const clean=normalizeWatchlist(symbols);
+  const m=(mode==='watchlist'&&clean.length)?'watchlist':'radar';
+  const payload=JSON.stringify({mode:m,symbols:clean});
+  if(env?.DB){
+    await ensureD1Schema(env);
+    await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
+      .bind(WATCHLIST_KEY,payload,Date.now()).run();
+  }
+  watchlistMemo={ts:Date.now(),mode:m,symbols:clean};
+  return watchlistMemo;
+}
 const STOCK_SNAPSHOT_LIVE_MS = 4*60_000;
 const STOCK_SNAPSHOT_MAX_AGE_MS = 72*60*60_000;
 let fxMemo = { ts: 0, usdPerEur: null };
@@ -3256,6 +3303,26 @@ async function d1StoreRows(env, rows, opts={}){
     if(symbol && price>0) clean.push({row,symbol,price});
   }
   if(!clean.length) return;
+  /* ══ v4.1.0 · NICHT JEDE MINUTE DASSELBE AUFSCHREIBEN ═══════════════════
+     `rows_written` zaehlt Indexeintraege mit; `market_snapshots` traegt vier
+     Indizes, ein INSERT kostet also fuenf Zeilen. Im Watchlist-Modus laeuft
+     der Scan jede Minute — ein unveraenderter Titel wuerde 1.440-mal am Tag
+     dieselbe Aussage einschreiben und dabei fuenf Zeilen kosten.
+     Die Schwelle ist bewusst grob: 0,15 % Kursbewegung ODER ein Wechsel der
+     Ampel. Feiner waere Selbstbetrug — unterhalb davon ist die Bewegung fuer
+     jede Auswertung dieser App Rauschen. Fehlt ein Vergleichswert, wird
+     GESCHRIEBEN: ein unbekannter Zustand ist kein unveraenderter. */
+  if(opts.onlyChanged){
+    const kept=[];
+    for(const c of clean){
+      const prev=snapshotWriteMemo.get(c.symbol);
+      const moved=!prev || !(prev.price>0) || Math.abs(c.price/prev.price-1)*100>=0.15;
+      const flipped=!prev || String(prev.light||'')!==String(c.row?.light||'');
+      if(moved||flipped){ kept.push(c); snapshotWriteMemo.set(c.symbol,{price:c.price,light:c.row?.light||'',ts:now}); }
+    }
+    if(!kept.length) return;
+    clean.length=0; clean.push(...kept);
+  }
   const symbols=[...new Set(clean.map(x=>x.symbol))];
   const placeholders=symbols.map(()=>'?').join(',');
 
@@ -6123,6 +6190,7 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
     }
   }
   const stockMinute=cronMinute, primaryStocks=tiingoStocksMode(env)==='primary';
+  const wl=await readWatchlist(env);   // v4.1.0: bestimmt, OB entdeckt wird
   /* ══ v3.32.11 · DER RADAR LIEF RUND UM DIE UHR ═════════════════════════════
      Befund vom 02.09., 06:03 CEST = 00:03 ET, bei geschlossener Boerse:
      125 Whole-Market-Radar-Abrufe zu je 11,2 MB in gut fuenf Stunden.
@@ -6155,6 +6223,21 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
        Boerse offen ist — er kostet 16 KB und fuellt `obs_n`. */
     if(phase.key==='closed'){
       // Nichts. Kein Radar, kein Deep Scan. Es gibt nichts zu entdecken.
+    } else if(wl.mode==='watchlist'){
+      /* ══ v4.1.0 · WATCHLIST STATT WHOLE MARKET ═══════════════════════════
+         Kein Radar-Abruf (11,2 MB), kein BOATS, keine Exploration — nur die
+         Titel des Nutzers, dafuer JEDE Minute statt jede zweite. Genau das
+         war der Handel: Breite gegen Frische.
+         Rechnung fuer 12 Titel: 12 Snapshots x 5 (Tabelle + vier Indizes)
+         = 60 geschriebene Zeilen je Lauf, 1.440 Laeufe = 86.400/Tag. Das
+         liegt unter dem Free-Limit von 100.000, aber nicht komfortabel —
+         deshalb greift in `d1StoreRows` zusaetzlich die Aenderungsschwelle. */
+      try{
+        const st=await tiingoStockSnapshot(env,true,new Set(ALL_ON),3,wl.symbols,'server',{onlySymbols:wl.symbols});
+        await d1StoreRows(env,st.rows||[],{source:'Tiingo IEX · Watchlist',assetType:'stock',now,onlyChanged:true});
+        setApiState('stocks','ok',`Watchlist · ${st.rows?.length||0} von ${wl.symbols.length} Titeln`);
+        await persistApiState(env,'stocks','ok',`Watchlist · ${st.rows?.length||0} von ${wl.symbols.length} Titeln`,now);
+      }catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('watchlist',state,e?.message);}
     } else if(radarDueNow(phase.key, stockMinute)){
       try{
         const rd=await tiingoIexMarketRadar(env,80,true);
@@ -7203,7 +7286,29 @@ async function tiingoValidation(env,rawSymbols){
   out.safe=true;out.note='Read-only-Test mit 0 % Einfluss auf BUY/Score. 5-MIN wird nach echter Verwendbarkeit (Bars, OHLC, Zeitstempel) statt nach einer starren Anzahl von 24 Bars bewertet. Primary bleibt bis zur ausdruecklichen Umschaltung im Shadow-Modus.';
   return out;
 }
-async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols=[],execution='client'){
+/* ══ v4.1.0 · WATCHLIST-MODUS ══════════════════════════════════════════════
+   Anlass: am 02.09. um 10:32 meldete Cloudflare das taegliche D1-Limit von
+   100.000 geschriebenen Zeilen als gerissen. Kein Amoklauf — schlichte
+   Arithmetik. Der Cron laeuft 1.440-mal am Tag, das sind 69 erlaubte Zeilen
+   je Lauf. `rows_written` zaehlt zudem INDEXEINTRAEGE mit, und
+   `market_snapshots` traegt vier Indizes: ein einziger INSERT kostet dort
+   fuenf Zeilen. Zwanzig neue Snapshots pro Minute sind damit 144.000/Tag.
+   Der Whole-Market-Betrieb passt nicht in den Free-Tarif, Punkt.
+
+   Der Watchlist-Modus dreht die Frage um: statt 12.000 Titel flach und selten
+   zu streifen, werden WENIGE Titel dicht verfolgt. `onlySymbols` ersetzt die
+   gesamte Kandidatenkuer — und ueberspringt dabei den 11-MB-Bulk-Radar und
+   BOATS vollstaendig. Das spart nicht nur D1-Zeilen, sondern auch genau die
+   Tiingo-Bandbreite, die seit v3.32.11 der zweite Engpass ist.
+
+   Was der Modus NICHT tut: er ruehrt weder analyseStock noch Score, Ampel
+   oder BUY-Gates an. Er bestimmt ausschliesslich, WELCHE Titel untersucht
+   werden. Wer die Liste fuellt, uebernimmt damit das Screening — die App
+   sagt das in der Oberflaeche ausdruecklich, damit niemand die fehlende
+   Entdeckung fuer eine fehlende Gelegenheit haelt. */
+async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols=[],execution='client',opts={}){
+  const onlySymbols=[...new Set((opts?.onlySymbols||[]).map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,8}$/.test(x)))].slice(0,40);
+  const watchlistMode=onlySymbols.length>0;
   if(!env.TIINGO_API_TOKEN) return {configured:false,state:'nokey',rows:stockMemo.rows||[],source:'Tiingo IEX',version:APP_VERSION,note:'TIINGO_API_TOKEN fehlt'};
   const minuteSlot=Math.floor(Date.now()/60_000), favs=[...new Set((favoriteSymbols||[]).map(x=>String(x).trim().toUpperCase()).filter(x=>/^[A-Z0-9.\-]{1,12}$/.test(x)))].slice(0,30);
   const cycle=Math.floor(minuteSlot/2); // Deep Scan alle 2 Minuten - Browser und Cron verwenden denselben Zyklus.
@@ -7260,7 +7365,11 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   // v3.2.1: waehrend der US-Session ist /iex der marktweite Primaer-Radar.
   // BOATS bleibt Overnight-/Uebergangs-Discovery. Beide Layer nominieren nur und haben 0 % BUY-Gewicht.
   let radar={ts:0,rows:[],universe:12000,source:'Tiingo IEX Whole-Market Radar',buyWeight:0};
+  /* Im Watchlist-Modus wird die Entdeckung KOMPLETT uebersprungen. Das ist der
+     eigentliche Ersparnispunkt: der Bulk-Radar allein sind 11,2 MB je Abruf. */
   try{
+    if(watchlistMode){ radar={ts:0,rows:[],universe:onlySymbols.length,source:'Watchlist (keine Entdeckung)',buyWeight:0}; }
+    else{
     radar=(tiingoIexRadarMemo.rows.length&&Date.now()-tiingoIexRadarMemo.ts<4*60_000)?tiingoIexRadarMemo:(await readPersistedIexRadar(env)||radar);
     // ETF/ETP-Gate jetzt auf der kleinen Kandidatenmenge und getrennt vom Bulk-Radar.
     radar={...radar,rows:await filterRadarToCommonStocks(env,radar.rows||[],20),source:'Tiingo IEX Whole-Market Radar · Common Stocks verified'};
@@ -7269,8 +7378,9 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       const merged=new Map([...(radar.rows||[]),...openingVerified].map(x=>[String(x.symbol||'').toUpperCase(),x]));
       radar={...radar,rows:[...merged.values()].slice(0,24),source:'Tiingo IEX Whole-Market Radar + Opening verified'};
     }
+    }
   }catch(e){console.warn(JSON.stringify({event:'iex_market_radar_cache_failed',message:String(e?.message||e),ts:Date.now()}));}
-  let boats=await tiingoBoatsDiscovery(env,20,false);
+  let boats=watchlistMode?{ts:0,rows:[],source:'Watchlist (keine Entdeckung)'}:await tiingoBoatsDiscovery(env,20,false);
   try{
     boats={...boats,rows:await filterRadarToCommonStocks(env,boats.rows||[],12),source:'Tiingo BOATS · Common Stocks verified'};
   }catch(e){
@@ -7344,7 +7454,15 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   // Exploration verhindert Tunnelblick und sorgt fuer fortlaufende Rotation des stabilen Basiskatalogs.
   const start=(cycle*7)%STOCK_SEARCH_CATALOG.length;
   for(let i=0;i<STOCK_SEARCH_CATALOG.length&&picked.size<deepLimit;i++){const sym=STOCK_SEARCH_CATALOG[(start+i)%STOCK_SEARCH_CATALOG.length][1];if(!picked.has(sym)){picked.add(sym);explore.push(sym);}}
-  const syms=[...favPick,...recheckPick,...gainerPick,...sectorPick,...radarPick,...boatsPick,...explore].slice(0,deepLimit), fx=await getTiingoFx(env);
+  /* v4.1.0 · EIN Engpass, EINE Entscheidung. Im Watchlist-Modus wird die
+     gesamte Kandidatenkuer verworfen und exakt die vom Nutzer gesetzte Liste
+     untersucht — keine Sektorreserve, keine Exploration, keine Rotation.
+     Sonst waere es kein Fokus, sondern nur eine Gewichtung. */
+  const syms=(watchlistMode?onlySymbols:[...favPick,...recheckPick,...gainerPick,...sectorPick,...radarPick,...boatsPick,...explore]).slice(0,watchlistMode?onlySymbols.length:deepLimit), fx=await getTiingoFx(env);
+  /* Die Watchlist darf NICHT am Deep-Limit abgeschnitten werden. Das Limit
+     rationiert die Entdeckung; hier gibt es keine — es gibt genau die Titel,
+     die der Nutzer sehen will. Eine still gekuerzte Liste waere der
+     schlimmste Fall: er glaubt, ein Titel werde beobachtet, und er wird es nicht. */
   const radarMap=new Map((radar.rows||[]).map(x=>[x.symbol,x])), boatsMap=new Map((boats.rows||[]).map(x=>[x.symbol,x]));
   const fresh=(await pool(syms,6,async sym=>{
     const inf=STOCK_SEARCH_BY_SYMBOL.get(sym)||{sector:'Discovery',name:sym};
@@ -7580,6 +7698,24 @@ export default {
     }
 
 
+
+    /* ══ v4.1.0 · WATCHLIST-SCHALTER ═════════════════════════════════════════
+       GET liest den Zustand, POST setzt ihn. Der Wert lebt serverseitig, weil
+       der Cron ihn braucht — ein Browser-Schalter waere fuer den Cron
+       unsichtbar und der Modus damit wirkungslos.
+       Geschrieben wird nur beim Umschalten. Der Aufruf ist bewusst schmal:
+       ein Modus, eine Symbolliste, sonst nichts. */
+    if (url.pathname === '/api/watchlist') {
+      try{
+        if(req.method==='POST'){
+          const body=await req.json().catch(()=>({}));
+          const wl=await writeWatchlist(env, body?.mode, body?.symbols);
+          return json({...wl, saved:true, version:APP_VERSION},200,{ 'cache-control':'no-store' });
+        }
+        const wl=await readWatchlist(env,0);
+        return json({...wl, version:APP_VERSION},200,{ 'cache-control':'no-store' });
+      }catch(e){ return json({state:'error',error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
 
     if (url.pathname === '/api/tiingo/validate') {
       try { return json(await tiingoValidation(env,url.searchParams.get('symbols')),200,{ 'cache-control':'no-store' }); }

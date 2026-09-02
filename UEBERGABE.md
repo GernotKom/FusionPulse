@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 02.09.2026, Version **4.0.6**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 02.09.2026, Version **4.1.0**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 ---
 
@@ -36,6 +36,20 @@ Aus dem Build-Protokoll: `Duplicate key "d1"`. Das Objekt hatte `d1` zweimal —
 2. **Coin-Karte hat jetzt einen Ausgang.** Spiegelbildlich zum Google-Finance-Link der Aktienkarte: `Bitpanda Fusion ↗` in der Fokuskarte, `B↗` in den Listenzeilen. **Wichtig:** Bitpanda dokumentiert kein Deeplink-Schema auf ein einzelnes Paar. Verlinkt wird der belegte Einstiegspunkt `https://web.bitpanda.com/fusion`; das Paar steht im Titeltext. Ein geratener Pfad wie `/trade/BTC-EUR` wäre schlimmer als kein Link. Sobald ein Schema belegt ist, ändert sich nur `bitpandaUrl()`.
 3. **Beide Heatmaps teilen jetzt eine Geometrie.** Krypto stand auf `.stage{1fr 250px}` mit `aspect-ratio:1`, Aktien auf `.stockstage{1.7fr .8fr}` mit fester Höhe 215 px. Dieselbe 200×200-viewBox wurde dadurch einmal quadratisch und einmal gestaucht gezeichnet — gleiche Punktabstände bedeuteten in den zwei Feldern nicht dasselbe, obwohl die Achsen identisch beschriftet sind. Jetzt identisch in Spaltenaufteilung, Seitenverhältnis, Rahmen, Radius und Innenabstand.
 
+
+### 4.1.0 · Watchlist-Modus (Antwort auf das D1-Limit)
+Am 02.09. um 10:32 meldete Cloudflare das tägliche D1-Limit von 100.000 `rows_written` als gerissen; Schreibvorgänge scheiterten bis 03.09. 00:00 UTC. **Kein Amoklauf, sondern Arithmetik:** 1.440 Cron-Läufe am Tag lassen 69 Zeilen je Lauf zu, und `rows_written` zählt **Indexeinträge mit** — `market_snapshots` trägt vier Indizes, ein INSERT kostet dort also fünf Zeilen. Zwanzig Snapshots pro Minute sind 144.000/Tag. Whole-Market passt nicht in den Free-Tarif.
+
+Neu ist ein serverseitiger Schalter zwischen zwei Betriebsarten:
+- **Radar** (unverändert): Whole-Market-Entdeckung, Deep Scan jede zweite Minute.
+- **Watchlist**: ausschließlich die Favoriten des Nutzers, **jede Minute**, ohne Bulk-Radar (spart 11,2 MB je Abruf) und ohne BOATS.
+
+Bausteine: `onlySymbols` in `tiingoStockSnapshot` (ersetzt die gesamte Kandidatenkür und wird **nicht** am Deep-Limit gekürzt — eine still beschnittene Watchlist wäre der schlimmste Fall), `readWatchlist`/`writeWatchlist` in `fp_meta` (kein neues Schema; der Cron braucht den Zustand serverseitig, ein Browser-Schalter wäre für ihn unsichtbar), Cron-Zweig, `GET/POST /api/watchlist`, Umschaltknopf neben dem Aktienfilter.
+
+Dazu die Schreibschwelle `opts.onlyChanged` in `d1StoreRows`: ein Snapshot wird nur geschrieben, wenn der Kurs sich um ≥0,15 % bewegt hat oder die Ampel gewechselt ist. Fehlt ein Vergleichswert, wird geschrieben — ein unbekannter Zustand ist kein unveränderter.
+
+**Fail-open an zwei Stellen:** Lesefehler ergeben `radar`, nicht `watchlist`; eine Watchlist ohne Symbole fällt auf `radar` zurück. Der Modus rührt Score, Ampel und BUY-Gates nicht an, er bestimmt nur die Titelauswahl. Die Oberfläche sagt ausdrücklich, dass eine leere Trefferliste hier „keine in deiner Auswahl" bedeutet und nicht „keine Gelegenheit am Markt".
+
 ## 3. Verifikation
 
 `node --check` auf `src/worker.js`, `public/app.js`, `public/sw.js`; alle sechs Suiten grün (`safety`, `coinscope`, `provider`, `bandwidth`, `d1`, `sw`). Zusätzlich `npx wrangler deploy --dry-run` mit Wrangler 4.128.0 — derselbe Schritt, an dem der Build gescheitert war: sauber, keine Warnungen, `env.APP_VERSION ("4.0.6")`.
@@ -56,7 +70,7 @@ Dafür exportiert `src/worker.js` zusätzlich `alpacaPrevClose` und `momentumFro
 
 ## 5. Kosten und Cloudflare-Plan
 
-Aktuell **Workers Free**: es gibt keine Abrechnung, bei Erreichen der Limits wird abgewiesen. Kostenrisiko null.
+Aktuell **Workers Free**: es gibt keine Abrechnung, bei Erreichen der Limits wird abgewiesen. Kostenrisiko null — aber am 02.09. wurde das tägliche D1-Schreiblimit gerissen, weshalb der Watchlist-Modus aus 4.1.0 entstanden ist. Auf Paid wären 50 Mio. Writes/Monat enthalten; der Betrieb liegt bei geschätzt 6–9 Mio., also bei 15–18 % des Enthaltenen. Die Rechnung bliebe bei 5 $.
 
 Bei einem Upgrade auf Workers Paid (5 USD Mindestgebühr) wird Überschreitung **automatisch abgerechnet, ohne Rückfrage**. Budget-Alerts sind ausdrücklich nur informativ und deckeln nichts. Die einzigen harten Bremsen sind der auskommentierte `limits`-Block (`cpu_ms` deckelt Rechenzeit, `subrequests` deckelt Zugriffe — letzteres ist die wichtigere, weil D1-Wartezeit nicht zur CPU-Zeit zählt) und strukturell der Minutentakt des Crons: rund 43.200 Aufrufe im Monat.
 

@@ -724,7 +724,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"4.0.6";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"4.1.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1653,3 +1653,20 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
   font-size:10.5px;font-weight:800;letter-spacing:.02em}
 .sf-grid.plan-stale{opacity:.62}
 .sf-grid.plan-stale b{font-style:italic;font-weight:700;text-decoration:line-through;text-decoration-color:#f2c01566;text-decoration-thickness:1px}
+
+/* ══ v4.1.0 · WATCHLIST-SCHALTER ═══════════════════════════════════════════
+   Der Modus veraendert, WAS der Server ueberhaupt untersucht. Ein solcher
+   Schalter darf nicht aussehen wie ein Anzeigefilter — im eingeschalteten
+   Zustand traegt er deshalb Farbe, und die Notizzeile darunter sagt
+   ausgeschrieben, was der Nutzer damit uebernommen hat. */
+.wl-toggle{border:1px solid var(--line);background:var(--panel2);color:var(--dim);
+  border-radius:9px;padding:6px 11px;font-size:11px;font-weight:800;cursor:pointer;
+  white-space:nowrap;transition:background .2s,color .2s,border-color .2s}
+.wl-toggle:hover{border-color:var(--line2);color:var(--fg)}
+.wl-toggle.on{background:#f2c01518;border-color:var(--yellow);color:var(--yellow)}
+.wl-toggle:disabled{opacity:.5;cursor:progress}
+.wl-note{margin:6px var(--pad) 0;padding:7px 10px;border-radius:9px;
+  border:1px dashed var(--yellow);background:#f2c0150e;color:var(--dim);
+  font-size:10.5px;line-height:1.5}
+.wl-note b{color:var(--yellow)}
+.wl-note.hidden{display:none}

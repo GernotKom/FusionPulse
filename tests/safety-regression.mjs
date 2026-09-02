@@ -107,7 +107,13 @@ assert.match(wrangler,/"TIINGO_STOCKS_MODE": "primary"/,'Tiingo Primary must rem
 assert.match(workerText,/Discovery only: unusual overnight move[\s\S]*NEVER enters analyseStock\/BUY/,'BOATS discovery must be explicitly isolated from BUY');
 assert.match(workerText,/row\.discovery=\{type:'iex-radar',\.\.\.rm,buyWeight:0\}/,'IEX Radar candidate metadata must carry 0 BUY weight');
 assert.match(workerText,/row\.discovery=\{type:'boats',\.\.\.bm,buyWeight:0\}/,'BOATS candidate metadata must carry 0 BUY weight');
-assert.match(workerText,/const syms=\[\.\.\.favPick,\.\.\.recheckPick,\.\.\.gainerPick,\.\.\.sectorPick,\.\.\.radarPick,\.\.\.boatsPick,\.\.\.explore\]\.slice\(0,deepLimit\)/,'Deep scan must cap adaptive candidate batch at the configurable deep limit');
+/* v4.1.0: Die Reihenfolge der Kandidatenquellen bleibt unveraendert — sie ist die
+   Prioritaet des Deep Scans. Neu ist nur, dass der Watchlist-Modus die gesamte Kuer
+   ersetzen darf und dann NICHT am Deep-Limit gekuerzt wird: eine still beschnittene
+   Watchlist waere der schlimmste Fall, weil der Nutzer einen Titel beobachtet glaubt,
+   der gar nicht untersucht wird. */
+assert.match(workerText,/\[\.\.\.favPick,\.\.\.recheckPick,\.\.\.gainerPick,\.\.\.sectorPick,\.\.\.radarPick,\.\.\.boatsPick,\.\.\.explore\]/,'Deep scan must keep the adaptive candidate priority order');
+assert.match(workerText,/\.slice\(0,watchlistMode\?onlySymbols\.length:deepLimit\)/,'Deep scan must cap the adaptive batch at the deep limit but never truncate an explicit watchlist');
 assert.match(workerText,/await tiingoFetch\(env,'\/iex'\)/,'Whole-market Radar must use Tiingo IEX bulk snapshot');
 /* v4.0.0: Diese Zusicherung war an die KADENZFORMEL genagelt
    (`stockMinute%2===1`), obwohl ihre Aussage lautet „laeuft serverseitig".
@@ -5250,3 +5256,52 @@ console.log('✓ FusionPulse v4.0.2 Gap-Bezugstag (ausgefuehrt): OK');
 }
 
 console.log('✓ FusionPulse v4.0.6 Plan-Alter / Coin-Link / Kartengeometrie (ausgefuehrt): OK');
+
+/* ══ v4.1.0 · WATCHLIST-MODUS ══════════════════════════════════════════════
+   Anlass: am 02.09. um 10:32 riss das taegliche D1-Limit von 100.000
+   geschriebenen Zeilen. Kein Amoklauf, sondern Arithmetik — 1.440 Cron-Laeufe
+   am Tag lassen 69 Zeilen je Lauf zu, und `rows_written` zaehlt Indizes mit.
+   Der Modus tauscht Breite gegen Frische. Geprueft wird, dass er das
+   TATSAECHLICH tut und dabei nichts still verschluckt. */
+{
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+
+  /* Der Modus muss die Entdeckung wirklich ueberspringen — sonst spart er
+     weder die 11,2 MB des Bulk-Radars noch D1-Zeilen. */
+  assert.match(w, /if\(watchlistMode\)\{ radar=\{ts:0,rows:\[\]/,
+    'v4.1.0: Watchlist-Modus muss den Whole-Market-Radar ueberspringen');
+  assert.match(w, /let boats=watchlistMode\?\{ts:0,rows:\[\]/,
+    'v4.1.0: Watchlist-Modus muss auch BOATS ueberspringen');
+
+  /* Fail-open beim Lesen: ein Fehler darf NIE still in einen eingeschraenkten
+     Scan kippen, sonst verschwinden Titel ohne erkennbaren Grund. */
+  assert.match(w, /watchlistMemo=\{ts:0,mode:'radar',symbols:\[\]\}/,
+    'v4.1.0: Ausfallzustand ist der Radar, nicht die Watchlist');
+  assert.match(w, /const mode=\(p\?\.mode==='watchlist'&&symbols\.length\)\?'watchlist':'radar'/,
+    'v4.1.0: Watchlist ohne Symbole muss auf Radar zurueckfallen — ein Scanner ohne Titel scannt nichts');
+
+  /* Die Aenderungsschwelle ist der eigentliche Zeilensparer. Fehlt ein
+     Vergleichswert, MUSS geschrieben werden. */
+  assert.match(w, /if\(opts\.onlyChanged\)\{/,
+    'v4.1.0: Schreibfilter muss existieren');
+  assert.match(w, /const moved=!prev \|\| !\(prev\.price>0\) \|\| Math\.abs\(c\.price\/prev\.price-1\)\*100>=0\.15/,
+    'v4.1.0: unbekannter Zustand gilt als geaendert, nicht als unveraendert');
+  assert.match(w, /onlyChanged:true/,
+    'v4.1.0: der Cron muss den Schreibfilter im Watchlist-Modus auch benutzen');
+
+  /* Der Modus darf Score, Ampel und BUY nicht anfassen — er waehlt nur aus. */
+  assert.ok(!/watchlistMode\s*\?[^\n]*(score|light|buy)/i.test(w),
+    'v4.1.0: der Modus darf ausschliesslich die Titelauswahl bestimmen');
+
+  /* Arithmetik-Gegenprobe: 12 Titel x 5 Zeilen (Tabelle + vier Indizes) x
+     1.440 Laeufe = 86.400 — knapp unter dem Free-Limit. Genau deshalb ist die
+     Aenderungsschwelle nicht optional, sondern Teil des Entwurfs. */
+  const indizes = (w.match(/CREATE INDEX IF NOT EXISTS \w+ ON market_snapshots/g) || []).length;
+  const zeilenProInsert = indizes + 1;
+  const proTag = 12 * zeilenProInsert * 1440;
+  assert.strictEqual(indizes, 4, 'v4.1.0: die Rechnung unten haengt an vier Indizes auf market_snapshots');
+  assert.ok(proTag > 80_000,
+    `v4.1.0: ${proTag} Zeilen/Tag ohne Schreibfilter — die Schwelle ist kein Beiwerk`);
+}
+
+console.log('✓ FusionPulse v4.1.0 Watchlist-Modus (ausgefuehrt): OK');

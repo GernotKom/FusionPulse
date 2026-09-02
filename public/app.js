@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.0.6 — Frontend
+   FusionPulse v4.1.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -5740,6 +5740,63 @@ $('#stockQ').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.pre
 $('#stockSearchGo').onclick = searchStockNow;
 $('#stockSearchClear').onclick = () => { $('#stockQ').value=''; $('#stockSearchClear').classList.add('hidden'); $('#stockSearchPreview').textContent=''; renderStocks(); };
 $('#stockF').onchange = () => renderStocks();
+
+/* ══ v4.1.0 · WATCHLIST-SCHALTER ═══════════════════════════════════════════
+   Der Zustand lebt auf dem Server, nicht hier: der Cron muss ihn sehen, und
+   der laeuft ohne Browser. Diese Funktionen spiegeln ihn nur.
+
+   Beim Einschalten werden die aktuellen Favoriten mitgeschickt. Ohne
+   Favoriten waere der Modus ein Scanner, der nichts scannt — der Schalter
+   verweigert dann und sagt auch warum. */
+let watchlistState={mode:'radar',symbols:[]};
+/* Keine eigene Toast-Infrastruktur erfinden — die Notizzeile unter dem Filter
+   ist bereits da und wird ohnehin fuer den Modus gebraucht. */
+function wlSay(msg){ const n=$('#watchlistNote'); if(!n)return; n.classList.remove('hidden'); n.textContent=msg; }
+function paintWatchlist(){
+  const b=$('#watchlistToggle'), n=$('#watchlistNote'); if(!b)return;
+  const on=watchlistState.mode==='watchlist';
+  b.textContent = on ? `🎯 Watchlist · ${watchlistState.symbols.length}` : '📡 Radar';
+  b.classList.toggle('on', on);
+  b.setAttribute('aria-pressed', on?'true':'false');
+  if(!n)return;
+  n.classList.toggle('hidden', !on);
+  if(on) n.innerHTML = `<b>Watchlist-Modus:</b> Der Server untersucht ausschließlich `
+    + `${watchlistState.symbols.map(esc).join(', ')} — jede Minute, ohne Whole-Market-Entdeckung. `
+    + `<b>Du screenst selbst.</b> Ein Titel, der nicht in dieser Liste steht, wird nicht gefunden — `
+    + `eine leere Trefferliste bedeutet hier also nicht „keine Gelegenheit am Markt", sondern nur „keine in deiner Auswahl".`;
+}
+async function loadWatchlist(){
+  try{
+    const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
+    const r=await fetch('/api/watchlist?'+q,{cache:'no-store'});
+    if(!r.ok)return;
+    const d=await r.json();
+    watchlistState={mode:d.mode==='watchlist'?'watchlist':'radar',symbols:d.symbols||[]};
+    paintWatchlist();
+  }catch(e){ /* Anzeige bleibt auf Radar — der ehrlichere Ausfallzustand. */ }
+}
+async function toggleWatchlist(){
+  const b=$('#watchlistToggle'); if(b)b.disabled=true;
+  try{
+    const want = watchlistState.mode==='watchlist' ? 'radar' : 'watchlist';
+    const syms = [...(S.favoriteStocks||[])];
+    if(want==='watchlist' && !syms.length){
+      wlSay('Keine Favoriten gesetzt. Der Watchlist-Modus braucht mindestens einen Titel — sonst gäbe es nichts zu beobachten.');
+      return;
+    }
+    const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
+    const r=await fetch('/api/watchlist?'+q,{method:'POST',cache:'no-store',headers:{'content-type':'application/json'},body:JSON.stringify({mode:want,symbols:syms})});
+    const d=await r.json();
+    watchlistState={mode:d.mode==='watchlist'?'watchlist':'radar',symbols:d.symbols||[]};
+    paintWatchlist();
+    wlSay(watchlistState.mode==='watchlist'
+      ? `Watchlist-Modus aktiv · ${watchlistState.symbols.length} Titel, Minutentakt, keine Entdeckung.`
+      : 'Whole-Market-Radar wieder aktiv.');
+  }catch(e){ wlSay('Umschalten fehlgeschlagen: '+String(e?.message||e)); }
+  finally{ if(b)b.disabled=false; }
+}
+if($('#watchlistToggle')) $('#watchlistToggle').onclick = toggleWatchlist;
+loadWatchlist();
 $('#iv').onchange = () => setPoll(+$('#iv').value);
 $('#x').onclick = closeDetail;
 $('#qClose').onclick = () => $('#quotaModal').classList.remove('open');
