@@ -1,4 +1,4 @@
-# FusionPulse v4.0.3
+# FusionPulse v4.0.4
 
 Autonomer Momentum- und Opportunity-Wächter für Krypto (Bitpanda Fusion) und
 liquide US-Aktien, betrieben als Cloudflare Worker mit PWA-Oberfläche.
