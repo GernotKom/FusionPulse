@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.1.0 — Frontend
+   FusionPulse v4.1.1 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -390,13 +390,35 @@ const clock = (ts) => {
   const d = new Date(Number(ts)||ts);
   return Number.isFinite(d.getTime()) ? d.toLocaleTimeString('de-AT',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '–';
 };
+/* ══ v4.1.1 · DAS ALTER WAR BEKANNT, DER PARSER NICHT ══════════════════════
+   Befund aus dem Betrieb am 02.09., 17:39: der Hinweis meldete „PLAN AUF
+   ALTEM KURS · unbekanntem Alter", waehrend zwei Zeilen darueber „70756s alt"
+   und „Daten 2026-09-01T19:55:00.000Z" standen. Das Alter war also da.
+
+   Ursache: `raw.replace(' ','T')+'Z'` haengt ein Z an einen Zeitstempel, der
+   bereits auf Z endet — „...000ZZ" ist ungueltig, Date.parse gibt NaN. Der
+   Server liefert seit laengerem ISO mit Zone; die Ergaenzung stammt aus der
+   Zeit, als er „YYYY-MM-DD hh:mm:ss" ohne Zone schickte.
+
+   Betroffen war NICHT nur der neue Hinweis: `stockFreshness` trug denselben
+   Fehler und fiel deshalb auf „ANGEZEIGT / NICHT DIESE RUNDE" zurueck, statt
+   eine 19 Stunden alte Zeile als STALE zu kennzeichnen. Ein Parser, zwei
+   Aufrufer — vorher zwei Kopien, eine davon still falsch. */
+function rowTs(r){
+  const raw=String(r?.updated||'').trim();
+  if(raw){
+    const t=Date.parse(/[Zz]|[+-]\d{2}:?\d{2}$/.test(raw)?raw:raw.replace(' ','T')+'Z');
+    if(Number.isFinite(t)) return t;
+  }
+  const q=Number(r?.liveQuoteTs);            // Rueckfall: der Quote-Zeitstempel
+  return Number.isFinite(q)&&q>0?q:null;
+}
 function stockFreshness(r){
   const refreshed=new Set(stockMeta?.refreshedSymbols||[]), sym=String(r?.symbol||'').toUpperCase();
   if(r?._staleLast) return {key:'cached',label:'ANGEZEIGT / NICHT DIESE RUNDE'};
   if(refreshed.has(sym) && Date.now()-Number(stockMeta?.ts||0)<90_000) return {key:'live',label:'AKTUELLER SCAN'};
-  const raw=String(r?.updated||'').trim(); if(!raw) return {key:'na',label:'DATEN n. v.'};
-  const t=Date.parse(raw.replace(' ','T')+'Z');
-  if(Number.isFinite(t)){const age=Date.now()-t;if(age>24*60*60_000)return {key:'stale',label:'STALE'};if(age>20*60_000)return {key:'cached',label:'GECACHED'};}
+  const t=rowTs(r); if(t==null) return {key:'na',label:'DATEN n. v.'};
+  {const age=Date.now()-t;if(age>24*60*60_000)return {key:'stale',label:'STALE'};if(age>20*60_000)return {key:'cached',label:'GECACHED'};}
   return {key:'cached',label:'ANGEZEIGT / NICHT DIESE RUNDE'};
 }
 /* v3.6.1: Wie oft wird DIESE Aktie eigentlich aktualisiert? Bisher war nur
@@ -3580,14 +3602,13 @@ function flatexTradability(row){
 const PLAN_STALE_MS = 20*60_000;
 function planFreshness(r){
   const key = stockFreshness(r).key;
-  const raw = String(r?.updated||'').trim();
-  const t = raw ? Date.parse(raw.replace(' ','T')+'Z') : NaN;
-  const ageMs = Number.isFinite(t) ? Date.now()-t : null;
+  const t = rowTs(r);
+  const ageMs = t!=null ? Date.now()-t : null;
   const stale = key==='stale' || key==='cached' || key==='na' || (ageMs!=null && ageMs>PLAN_STALE_MS);
   if(!stale) return {stale:false, ageMs, label:'', detail:''};
-  const ageTxt = ageMs==null ? 'unbekanntem Alter'
-    : ageMs>=3600_000 ? `${(ageMs/3600_000).toFixed(1)} Std. Alter`
-    : `${Math.round(ageMs/60_000)} Min. Alter`;
+  const ageTxt = ageMs==null ? 'Alter unbekannt'
+    : ageMs>=3600_000 ? `${(ageMs/3600_000).toFixed(1)} Std. alt`
+    : `${Math.round(ageMs/60_000)} Min. alt`;
   return {stale:true, ageMs,
     label:`PLAN AUF ALTEM KURS · ${ageTxt}`,
     detail:`Entry, Stop und Ziele sind auf dem zuletzt gelieferten Kurs gerechnet, nicht auf dem aktuellen (${ageTxt}). Solange keine frische Notierung vorliegt, sind diese Zahlen ein Rechenbeispiel und keine Ordervorlage. Vor jeder Order den echten Kurs beim Broker prüfen und den Plan neu rechnen lassen.`};

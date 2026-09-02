@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 02.09.2026, Version **4.1.0**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 02.09.2026, Version **4.1.1**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 ---
 
@@ -49,6 +49,11 @@ Bausteine: `onlySymbols` in `tiingoStockSnapshot` (ersetzt die gesamte Kandidate
 Dazu die Schreibschwelle `opts.onlyChanged` in `d1StoreRows`: ein Snapshot wird nur geschrieben, wenn der Kurs sich um ≥0,15 % bewegt hat oder die Ampel gewechselt ist. Fehlt ein Vergleichswert, wird geschrieben — ein unbekannter Zustand ist kein unveränderter.
 
 **Fail-open an zwei Stellen:** Lesefehler ergeben `radar`, nicht `watchlist`; eine Watchlist ohne Symbole fällt auf `radar` zurück. Der Modus rührt Score, Ampel und BUY-Gates nicht an, er bestimmt nur die Titelauswahl. Die Oberfläche sagt ausdrücklich, dass eine leere Trefferliste hier „keine in deiner Auswahl" bedeutet und nicht „keine Gelegenheit am Markt".
+
+
+### 4.1.1 · Zwei Betriebsbefunde
+1. **Der Hinweis meldete „unbekanntem Alter", obwohl das Alter dastand.** Die Karte zeigte gleichzeitig „70756s alt" und „Daten 2026-09-01T19:55:00.000Z". Ursache: `raw.replace(' ','T')+'Z'` hängt ein Z an einen Zeitstempel, der bereits auf Z endet — `...000ZZ` ist ungültig, `Date.parse` gibt NaN. Die Ergänzung stammt aus der Zeit, als der Server `YYYY-MM-DD hh:mm:ss` ohne Zone lieferte. **Betroffen war nicht nur der neue Hinweis:** `stockFreshness` trug dieselbe Zeile und fiel deshalb immer in den Rückfallzweig „ANGEZEIGT / NICHT DIESE RUNDE" — die Schwellen für GECACHED (>20 Min.) und STALE (>24 Std.) waren praktisch unerreichbar. Jetzt ein Parser (`rowTs`), zwei Aufrufer; Rückfall auf `liveQuoteTs`, wenn `updated` fehlt.
+2. **Die Heatmap sprang auf eine andere Punktmenge und wieder zurück.** Kein Datenfehler, ein Zustandsfehler: `stockMemo` lebt **im Isolate**, und Cloudflare verteilt Anfragen auf beliebig viele. Der normale Abruf liest den persistierten Scan und ist überall gleich; ein erzwungener Abruf (`force=1`, Knopf „↻ Aktie") umgeht ihn und rechnet auf dem gerade bedienenden Isolate, dessen Memo frisch und fast leer ist → kleinere Population, danach wieder die große. Gelöst nicht durch Beschneiden von `force`, sondern indem sich jedes Isolate aus dem gemeinsamen persistierten Stand impft, sobald sein Memo leer oder älter ist. Kostet einen D1-Lesevorgang, keine geschriebene Zeile.
 
 ## 3. Verifikation
 

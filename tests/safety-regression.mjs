@@ -5216,9 +5216,9 @@ console.log('✓ FusionPulse v4.0.2 Gap-Bezugstag (ausgefuehrt): OK');
   const ohne   = C.planFreshness({ symbol:'NONE' });
 
   assert.strictEqual(alt19h.stale, true, 'v4.0.6: 19 Stunden alt muss als veraltet gelten');
-  assert.match(alt19h.label, /Std\. Alter/, 'v4.0.6: Stunden werden als Stunden benannt, nicht als 1152 Minuten');
+  assert.match(alt19h.label, /Std\. alt/, 'v4.0.6: Stunden werden als Stunden benannt, nicht als 1152 Minuten');
   assert.strictEqual(alt45m.stale, true, 'v4.0.6: 45 Minuten liegen ueber der 20-Minuten-Schwelle');
-  assert.match(alt45m.label, /Min\. Alter/, 'v4.0.6: unter einer Stunde in Minuten');
+  assert.match(alt45m.label, /Min\. alt/, 'v4.0.6: unter einer Stunde in Minuten');
   assert.strictEqual(ohne.stale, true, 'v4.0.6: fehlender Zeitstempel ist kein Freibrief — fail-closed');
   assert.ok(alt19h.detail.length > 60, 'v4.0.6: der Hinweis muss erklaeren, nicht nur etikettieren');
   /* Die Gegenprobe ist der eigentliche Test: waere ALLES veraltet, waere die
@@ -5305,3 +5305,50 @@ console.log('✓ FusionPulse v4.0.6 Plan-Alter / Coin-Link / Kartengeometrie (au
 }
 
 console.log('✓ FusionPulse v4.1.0 Watchlist-Modus (ausgefuehrt): OK');
+
+/* ══ v4.1.1 · ZEITSTEMPEL-PARSER UND ISOLATE-SAAT ══════════════════════════
+   Zwei Befunde aus dem Betrieb vom 02.09.:
+   (1) Der Hinweis meldete „unbekanntem Alter", waehrend die Karte zwei Zeilen
+       darueber „70756s alt" und „Daten 2026-09-01T19:55:00.000Z" zeigte.
+       `raw.replace(' ','T')+'Z'` haengt ein Z an einen Zeitstempel, der schon
+       auf Z endet — „...000ZZ" ist ungueltig. Derselbe Fehler steckte in
+       `stockFreshness` und liess eine 19 Stunden alte Zeile als
+       „ANGEZEIGT / NICHT DIESE RUNDE" statt als STALE erscheinen.
+   (2) Die Heatmap sprang auf eine andere Punktmenge und wieder zurueck.
+       `stockMemo` lebt im Isolate; ein erzwungener Abruf rechnet auf einem
+       Isolate mit fast leerem Memo. */
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+
+  /* Genau der Zeitstempel aus dem Screenshot — ISO mit Z. */
+  const isoZ = { symbol:'BWXT', updated:'2026-09-01T19:55:00.000Z' };
+  const pf = C.planFreshness(isoZ);
+  assert.strictEqual(pf.stale, true, 'v4.1.1: eine Zeile vom Vortag ist veraltet');
+  assert.ok(pf.ageMs != null, 'v4.1.1: das Alter DARF nicht unbekannt sein — es steht im Zeitstempel');
+  assert.ok(!/unbekannt/.test(pf.label), `v4.1.1: Alter muss beziffert werden, war „${pf.label}"`);
+  assert.match(pf.label, /Std\. alt/, 'v4.1.1: 19 Stunden gehoeren in Stunden ausgewiesen');
+
+  /* Das alte Format ohne Zone muss weiterhin funktionieren — sonst waere der
+     Fix nur eine Verschiebung des Fehlers. */
+  const legacy = { symbol:'OLD', updated:'2026-09-01 19:55:00' };
+  assert.ok(C.planFreshness(legacy).ageMs != null,
+    'v4.1.1: Zeitstempel ohne Zone muessen weiterhin gelesen werden');
+
+  /* Und die Frische-Marke selbst, die denselben Parser benutzt. Wichtig ist
+     nicht die Wortwahl, sondern dass die Marke aus dem ALTER kommt und nicht
+     aus dem Rueckfallzweig: 19 Stunden sind GECACHED (>20 Min.), jenseits von
+     24 Stunden STALE. Vor dem Fix landete beides im Rueckfall. */
+  assert.strictEqual(C.stockFreshness(isoZ).key, 'cached',
+    'v4.1.1: 19 Stunden liegen ueber 20 Minuten und unter 24 Stunden');
+  assert.strictEqual(C.stockFreshness({symbol:'OLD2',updated:'2026-08-28T19:55:00.000Z'}).key, 'stale',
+    'v4.1.1: jenseits von 24 Stunden muss STALE erreicht werden — der Zweig war vorher unerreichbar');
+
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  assert.match(w, /Number\(shared\.ts\|\|0\)>Number\(stockMemo\.ts\|\|0\)/,
+    'v4.1.1: jedes Isolate muss sich aus dem gemeinsamen persistierten Stand impfen');
+  assert.match(w, /event:'stock_memo_seed_failed'/,
+    'v4.1.1: scheitert die Saat, darf sie den Scan nicht mitreissen');
+}
+
+console.log('✓ FusionPulse v4.1.1 Zeitstempel/Isolate-Saat (ausgefuehrt): OK');

@@ -7361,6 +7361,35 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
     return {configured:true,state:'stale',cached:true,rows:staleRows,ts:stockMemo.ts||0,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:staleRows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:tiingoIexRadarMemo.ts,candidates:(tiingoIexRadarMemo.rows||[]).slice(0,20),buyWeight:0,gate:{...radarGateStats}},boats:tiingoDiscoveryMemo},version:APP_VERSION,note:'Warte auf ersten serverseitigen Cron-Batch.'};
   }
 
+  /* ══ v4.1.1 · DIE HEATMAP SPRANG HIN UND HER ═══════════════════════════════
+     Befund aus dem Betrieb: die Karte zeigte zeitweise eine andere Punktmenge
+     und wechselte dann wieder zurueck — ohne dass sich am Markt etwas geruehrt
+     haette.
+
+     Ursache ist `stockMemo`: eine Variable IM ISOLATE. Cloudflare verteilt
+     Anfragen auf beliebig viele Isolate, und jedes fuehrt sein eigenes
+     Gedaechtnis. Der normale Abruf liest den persistierten Scan und ist
+     deshalb ueberall gleich; ein erzwungener Abruf (`force=1`, der Knopf
+     „↻ Aktie") umgeht ihn und rechnet auf DIESEM Isolate — dessen Memo
+     frisch gestartet und damit fast leer ist. Ergebnis: eine kleinere
+     Population, danach wieder die grosse. Kein Datenfehler, ein
+     Zustandsfehler.
+
+     Die Loesung ist nicht, `force` zu beschneiden, sondern jedem Isolate
+     denselben Ausgangspunkt zu geben: ist das Memo leer oder aelter als der
+     persistierte Stand, wird es daraus geimpft. Der erzwungene Scan legt
+     seine frischen Zeilen dann OBEN AUF die gemeinsame Menge, statt sie zu
+     ersetzen. Kostet einen D1-Lesevorgang und keine einzige geschriebene
+     Zeile. */
+  if(env?.DB){
+    try{
+      const shared=await readLatestPersistedStockScan(env,STOCK_SNAPSHOT_MAX_AGE_MS);
+      if(shared?.rows?.length && Number(shared.ts||0)>Number(stockMemo.ts||0)){
+        stockMemo={ts:Number(shared.ts)||Date.now(),rows:shared.rows,cycle:Number(shared.cycle)||stockMemo.cycle,sig:stockMemo.sig};
+      }
+    }catch(e){ console.warn(JSON.stringify({event:'stock_memo_seed_failed',message:String(e?.message||e),ts:Date.now()})); }
+  }
+
   const phase=usMarketPhase(new Date(),'iex');
   // v3.2.1: waehrend der US-Session ist /iex der marktweite Primaer-Radar.
   // BOATS bleibt Overnight-/Uebergangs-Discovery. Beide Layer nominieren nur und haben 0 % BUY-Gewicht.
