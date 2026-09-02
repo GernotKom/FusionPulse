@@ -7743,7 +7743,25 @@ export default {
         }
         const wl=await readWatchlist(env,0);
         return json({...wl, version:APP_VERSION},200,{ 'cache-control':'no-store' });
-      }catch(e){ return json({state:'error',error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+      }catch(e){
+        /* v4.1.2 · Der Umschaltversuch scheiterte am 02.09. still: D1 hatte das
+           taegliche Schreiblimit gerissen, `writeWatchlist` warf, und die
+           Oberflaeche meldete daraufhin „Whole-Market-Radar wieder aktiv" —
+           ein FEHLSCHLAG, ausgegeben als erfolgreiche Umschaltung. Das ist die
+           schlimmste Sorte Meldung. Der Grund wird jetzt benannt, und der
+           zuletzt gueltige Zustand wird mitgeschickt, damit die Oberflaeche
+           nicht raten muss. */
+        const msg=String(e?.message||e);
+        const writeBlocked=/rows_written|daily limit|exceeded your .*limit|D1_ERROR.*limit/i.test(msg);
+        return json({state:'error',saved:false,
+          error:msg,
+          reason:writeBlocked?'d1_write_limit':'unknown',
+          hint:writeBlocked
+            ? 'Das taegliche D1-Schreiblimit ist erreicht. Der Modus wird serverseitig gespeichert und braucht dafuer genau einen Schreibvorgang — der geht erst nach dem Zuruecksetzen des Limits um 00:00 UTC wieder, oder sofort nach einem Upgrade auf Workers Paid.'
+            : 'Der Modus konnte nicht gespeichert werden. Der bisherige Zustand bleibt unveraendert.',
+          mode:watchlistMemo.mode, symbols:watchlistMemo.symbols,
+          version:APP_VERSION},502,{ 'cache-control':'no-store' });
+      }
     }
 
     if (url.pathname === '/api/tiingo/validate') {

@@ -6,12 +6,12 @@
       dass Tab-Titel, UI und Worker verschiedene Versionsnummern zeigen.
    APP_VERSION wird von scripts/sync-version.mjs aus package.json gesetzt.
    ========================================================================== */
-const APP_VERSION = '4.1.1';
+const APP_VERSION = '4.1.2';
 const CACHE = `fusionpulse-v${APP_VERSION}`;
 /* v3.14.3: app.js/style.css/version.js tragen die Version im URL. Der Cache
    muss dieselben URLs vorhalten, sonst greift die Offline-Rueckfallebene ins
    Leere. Die Liste wird von scripts/sync-version.mjs gesetzt. */
-const SHELL_VERSIONED = ['/version.js?v=4.1.1', '/app.js?v=4.1.1', '/style.css?v=4.1.1'];
+const SHELL_VERSIONED = ['/version.js?v=4.1.2', '/app.js?v=4.1.2', '/style.css?v=4.1.2'];
 const SHELL = ['/', '/index.html', ...SHELL_VERSIONED,
                '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-512-maskable.png'];
 

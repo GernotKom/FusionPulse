@@ -5352,3 +5352,36 @@ console.log('✓ FusionPulse v4.1.0 Watchlist-Modus (ausgefuehrt): OK');
 }
 
 console.log('✓ FusionPulse v4.1.1 Zeitstempel/Isolate-Saat (ausgefuehrt): OK');
+
+/* ══ v4.1.2 · EIN FEHLSCHLAG DARF NICHT WIE ERFOLG AUSSEHEN ════════════════
+   Befund vom 02.09., 21:28: Der Nutzer legte Favoriten an, drueckte den
+   Schalter — und las „Whole-Market-Radar wieder aktiv". Es sah aus wie eine
+   Umschaltung, war aber ein Schreibfehler: D1 hatte am selben Tag das
+   taegliche Limit von 100.000 `rows_written` gerissen, `writeWatchlist` warf,
+   die Antwort kam als 502 OHNE `mode` — und `d.mode==='watchlist'?…:'radar'`
+   faellt bei einem FEHLENDEN Feld auf 'radar'. Die Oberflaeche meldete damit
+   genau den Zustand, den sie gerade NICHT herstellen konnte. */
+{
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const a = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  assert.match(a, /if\(!r\.ok \|\| d\?\.saved!==true\)/,
+    'v4.1.2: Erfolg muss am ausdruecklichen saved-Feld haengen, nicht am Fehlen eines Feldes');
+  /* Praeziser als eine Textsuche im ganzen Modul: zwischen dem POST und der
+     Erfolgsmeldung MUSS die Fehlerpruefung liegen. Sonst kann die Meldung
+     wieder vor der Pruefung stehen. */
+  const postIdx = a.indexOf("method:'POST'");
+  const okIdx   = a.indexOf('Whole-Market-Radar wieder aktiv');
+  assert.ok(postIdx > 0 && okIdx > postIdx, 'v4.1.2: Testanker nicht gefunden');
+  assert.ok(a.slice(postIdx, okIdx).includes("d?.saved!==true"),
+    'v4.1.2: die Fehlerpruefung muss VOR der Erfolgsmeldung stehen');
+  assert.match(w, /saved:true/, 'v4.1.2: der Erfolgsfall muss saved:true senden');
+  assert.match(w, /reason:writeBlocked\?'d1_write_limit':'unknown'/,
+    'v4.1.2: der Grund gehoert benannt, nicht verschluckt');
+  assert.match(w, /rows_written\|daily limit/,
+    'v4.1.2: das D1-Schreiblimit muss als eigener Fall erkannt werden');
+  assert.match(w, /mode:watchlistMemo\.mode, symbols:watchlistMemo\.symbols/,
+    'v4.1.2: im Fehlerfall wird der zuletzt gueltige Zustand mitgeschickt, damit die Oberflaeche nicht raet');
+}
+
+console.log('✓ FusionPulse v4.1.2 Umschalt-Fehlermeldung (ausgefuehrt): OK');

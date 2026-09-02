@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.1.1 — Frontend
+   FusionPulse v4.1.2 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -5807,7 +5807,17 @@ async function toggleWatchlist(){
     }
     const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
     const r=await fetch('/api/watchlist?'+q,{method:'POST',cache:'no-store',headers:{'content-type':'application/json'},body:JSON.stringify({mode:want,symbols:syms})});
-    const d=await r.json();
+    const d=await r.json().catch(()=>({}));
+    /* v4.1.2 · Ein fehlgeschlagener Schreibvorgang sah vorher exakt aus wie
+       eine Umschaltung auf Radar: die Antwort trug kein `mode`, der Ausdruck
+       fiel auf 'radar' zurueck, und die Zeile meldete „Whole-Market-Radar
+       wieder aktiv". Der Nutzer las eine Bestaetigung, wo ein Fehler stand.
+       Erfolg wird jetzt am ausdruecklichen `saved` erkannt, nicht daran, dass
+       ein Feld fehlt. */
+    if(!r.ok || d?.saved!==true){
+      wlSay(`Umschalten fehlgeschlagen. ${d?.hint||d?.error||'Der Server hat den Modus nicht gespeichert.'} Der bisherige Zustand bleibt: ${watchlistState.mode==='watchlist'?'Watchlist':'Whole-Market-Radar'}.`);
+      return;
+    }
     watchlistState={mode:d.mode==='watchlist'?'watchlist':'radar',symbols:d.symbols||[]};
     paintWatchlist();
     wlSay(watchlistState.mode==='watchlist'
