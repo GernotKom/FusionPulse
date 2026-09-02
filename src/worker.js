@@ -1188,14 +1188,6 @@ function resolveStockQuery(raw) {
 }
 
 let stockMemo = { ts: 0, rows: [], cycle: -1, sig: '' };
-/* v4.0.1 · Zwei getrennte Groessen, weil sie zwei verschiedene Fragen
-   beantworten. LIVE_MS: „gilt das als aktueller Scan?" — bleibt eng, sonst
-   waere die Beschriftung gelogen. MAX_AGE_MS: „darf die Oberflaeche es
-   ueberhaupt noch sehen?" — darf weit sein, weil ein sichtbar veralteter
-   Stand mehr wert ist als eine leere Liste. Frueher war beides dieselbe Zahl
-   (4 Min), und das hiess: was nicht taufrisch ist, existiert nicht. */
-const STOCK_SNAPSHOT_LIVE_MS = 4*60_000;
-const STOCK_SNAPSHOT_MAX_AGE_MS = 72*60*60_000;
 let fxMemo = { ts: 0, usdPerEur: null };
 const stockLookupMemo = new Map();
 
@@ -7193,24 +7185,8 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   // Sie liest den letzten Cron-Batch. Das verhindert parallele CPU-Spitzen bei
   // mehreren Tabs/Geraeten und auf frisch gestarteten Worker-Isolates.
   if(execution!=='server'&&!force){
-    /* ══ v4.0.1 · DER LETZTE BEKANNTE STAND LAG DA UND WURDE VERWORFEN ═══════
-       v4.0.0 hat den Radar bei `phase.key==='closed'` stillgelegt — richtig,
-       das war der Bandbreitenfresser. Uebersehen wurde die Folge auf der
-       Leseseite: das Fenster hier war hart auf 4 Minuten gesetzt. Sobald der
-       Cron nichts mehr schreibt, ist der letzte Batch nach vier Minuten fuer
-       die Oberflaeche unsichtbar — obwohl er vollstaendig in D1 steht.
-       Sichtbar war das als „0 geladen / 0 angezeigt" und als Abfragezeit
-       01:00:00, weil `stockMemo.ts` auf einem kalten Isolate 0 ist und der
-       Epochenbeginn in unserer Zone genau so aussieht.
-       Das Fenster wird jetzt weit (72 h), die EHRLICHKEIT wandert in den
-       Zustand: aelter als 4 Minuten heisst `stale`, und die Oberflaeche
-       beschriftet das bereits mit „Daten veraltet" plus Frische-Marke je
-       Zeile. Kein Zusatzabruf, keine Bandbreite, keine Kauf-Freigabe — `marketOk`
-       in der App laesst BUY weiterhin nur in `opening`/`regular` zu. */
-    const persisted=await readLatestPersistedStockScan(env,STOCK_SNAPSHOT_MAX_AGE_MS);
+    const persisted=await readLatestPersistedStockScan(env,4*60_000);
     if(persisted){
-      const ageMs=Math.max(0,Date.now()-Number(persisted.ts||0));
-      const fresh=ageMs<=STOCK_SNAPSHOT_LIVE_MS;
       let verifiedRadar=verifiedCommonOnly(Array.isArray(persisted.meta?.verifiedRadar)?persisted.meta.verifiedRadar:[]);
       const openingVerified=await readVerifiedOpeningRadar(env,30*60_000);
       if(openingVerified.length){
@@ -7223,7 +7199,7 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       const cleanRows=(persisted.rows||[]).filter(r=>{const sym=String(r?.symbol||'').toUpperCase();return !NON_COMMON_SYMBOL_DENY.has(sym) && !NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''}`) && (catalogSet.has(sym)||favs.includes(sym)||allowed.has(sym));});
       stockMemo={ts:persisted.ts,rows:cleanRows,cycle:persisted.cycle,sig:persisted.sig,refreshedSymbols:Array.isArray(persisted.meta?.refreshedSymbols)?persisted.meta.refreshedSymbols:[]};
       const radar=await readPersistedIexRadar(env);
-      return {configured:true,state:fresh?'ok':'stale',cached:true,persistent:true,ageMinutes:Math.round(ageMs/60_000),rows:cleanRows,ts:persisted.ts,cycle:persisted.cycle,universe:radar?.universe||12000,universeLabel:`${radar?.universe||'12.000+'} Tiingo/IEX`,scanned:cleanRows.length,updatedThisCycle:0,refreshedSymbols:Array.isArray(persisted.meta?.refreshedSymbols)?persisted.meta.refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified',ts:persisted.ts||0,candidates:verifiedRadar,gainers:openingGainers(verifiedRadar),buyWeight:0,gate:{...radarGateStats}},boats:{source:'Tiingo BOATS · verified',ts:persisted.ts||0,candidates:verifiedBoats,buyWeight:0}},version:APP_VERSION,note:fresh?'Server-Cache: autonomer Cron-Radar/Deep-Scan; PWA startet keinen Doppel-Scan. Nur verifizierte Common Stocks werden an die UI gereicht.':`Letzter Stand der Vorsitzung, ${Math.round(ageMs/60_000)} Min. alt. Ausserhalb der US-Handelszeit laeuft kein Scan (Bandbreitenschutz v4.0.0) — angezeigte Kurse sind historisch, keine Kauf-Freigabe.`};
+      return {configured:true,state:'ok',cached:true,persistent:true,rows:cleanRows,ts:persisted.ts,cycle:persisted.cycle,universe:radar?.universe||12000,universeLabel:`${radar?.universe||'12.000+'} Tiingo/IEX`,scanned:cleanRows.length,updatedThisCycle:0,refreshedSymbols:Array.isArray(persisted.meta?.refreshedSymbols)?persisted.meta.refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified',ts:persisted.ts||0,candidates:verifiedRadar,gainers:openingGainers(verifiedRadar),buyWeight:0,gate:{...radarGateStats}},boats:{source:'Tiingo BOATS · verified',ts:persisted.ts||0,candidates:verifiedBoats,buyWeight:0}},version:APP_VERSION,note:'Server-Cache: autonomer Cron-Radar/Deep-Scan; PWA startet keinen Doppel-Scan. Nur verifizierte Common Stocks werden an die UI gereicht.'};
     }
     const staleRows=stripKnownNonCommon(stockMemo.rows||[]);
     return {configured:true,state:'stale',cached:true,rows:staleRows,ts:stockMemo.ts||0,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:staleRows.length,updatedThisCycle:0,refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:tiingoIexRadarMemo.ts,candidates:(tiingoIexRadarMemo.rows||[]).slice(0,20),buyWeight:0,gate:{...radarGateStats}},boats:tiingoDiscoveryMemo},version:APP_VERSION,note:'Warte auf ersten serverseitigen Cron-Batch.'};
