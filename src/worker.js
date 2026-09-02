@@ -7546,7 +7546,17 @@ export default {
         bandwidth: tiingoBandwidthView(),
         bandwidthLimitHitTs: tiingoBwLimitHit || null,
         kv: !!env.SNAP,
-        d1: !!env.DB,
+        /* v4.0.5 · BEFUND AUS DEM BUILD-PROTOKOLL: esbuild meldete
+           „Duplicate key d1 in object literal". Dieses Objekt hatte `d1`
+           ZWEIMAL — oben die gemessene Nutzung aus v3.32.9, hier unten ein
+           blosses `!!env.DB`. In JavaScript gewinnt der LETZTE Schluessel,
+           also hat die Wahrheitswert-Zeile die komplette Messung ueberschrieben.
+           `/api/health` lieferte damit `d1: true` statt der Zeilen-Zaehlung —
+           genau die Zahl, mit der am 01.09. haette geklaert werden sollen,
+           welcher Pfad das Free-Limit fuer gelesene Zeilen reisst. Der Wert
+           war nie falsch berechnet, er kam nur nie an.
+           Die Bindungs-Information bleibt erhalten, aber unter eigenem Namen. */
+        d1Bound: !!env.DB,
         cacheAgeMs: memo.ts ? Date.now() - memo.ts : null,
         components: COMPONENTS,
         status: {

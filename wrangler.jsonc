@@ -7,40 +7,35 @@
 
   "observability": { "enabled": true, "head_sampling_rate": 1 },
 
-  /* v4.0.4 · ZWEI BREMSEN, WEIL EINE DIE FALSCHE GROESSE MISST.
-     Budget-Alerts bei Cloudflare sind ausdruecklich nur informativ — sie
-     schicken eine Mail und deckeln NICHTS. Der Workers-Paid-Plan rechnet
-     Ueberschreitungen automatisch ab, ohne Rueckfrage. Es bleiben also nur
-     die beiden Limits hier.
+  /* v4.0.5 · DEAKTIVIERT — BELEGT DURCH DAS BUILD-PROTOKOLL VOM 02.09.
+     Der Deploy scheiterte reproduzierbar am versions-Endpunkt:
+       „CPU limits are not supported for the Free plan" [code: 100328]
+     Ein `limits`-Block ist auf dem Free-Plan nicht erlaubt — auch nicht der
+     Subrequest-Teil, das ganze Feld wird abgelehnt. Die Zeile blieb drei
+     Versionen lang drin und hat jeden Build gekillt, waehrend die App
+     unveraendert weiterlief und dadurch voellig normal aussah.
 
-     `cpu_ms` deckelt RECHENZEIT. 30 Sekunden sind bewusst nicht knapp
-     gewaehlt: der schwerste Job (Whole-Market-Radar, ~11 MB JSON ranken) soll
-     nicht mitsterben. Der Wert wirkt trotzdem, weil Cron-Trigger sonst bis zu
-     15 MINUTEN CPU ziehen duerfen — Faktor 30 gegen einen Amoklauf.
+     WIEDER EINSCHALTEN, sobald auf Workers Paid umgestellt ist. Beide Werte
+     sind dann sinnvoll und wurden bereits durchgerechnet:
+       cpu_ms      30000 · deckelt RECHENZEIT. Cron-Trigger duerfen sonst bis
+                           zu 15 Minuten CPU ziehen — Faktor 30 gegen einen
+                           Amoklauf. Der schwerste Job (Whole-Market-Radar,
+                           ~11 MB JSON ranken) bleibt weit darunter.
+       subrequests  1000 · deckelt ZUGRIFFE und ist die wichtigere der beiden.
+                           Wartezeit auf fetch(), KV oder D1 zaehlt NICHT zur
+                           CPU-Zeit; eine Schleife, die Millionen Zeilen nach
+                           D1 schreibt, verbraucht fast keine CPU und liefe am
+                           CPU-Deckel vorbei. Jede D1-Query ist aber ein
+                           Subrequest. Der Cron liegt mit ~150 weit darunter.
+     Auf dem Free-Plan braucht es sie ohnehin nicht: dort wird nicht
+     abgerechnet, sondern bei Erreichen der Limits schlicht abgewiesen.
 
-     `subrequests` deckelt ZUGRIFFE, und das ist die wichtigere der beiden.
-     Wartezeit auf fetch(), KV oder D1 zaehlt NICHT zur CPU-Zeit. Eine
-     Schleife, die eine Million Zeilen nach D1 schreibt, verbraucht fast keine
-     CPU — sie wartet nur. Der CPU-Deckel loeste dabei nie aus. Jede D1-Query
-     ist aber ein Subrequest. 1.000 statt der 10.000 Standard: der Cron liegt
-     mit ein paar Dutzend weit darunter (`d1BatchChunks` fasst je 50
-     Statements zusammen), im Normalbetrieb passiert also nichts.
-
-     Was strukturell schuetzt, ist keines der beiden Limits, sondern der
-     Minutentakt: rund 43.200 Aufrufe im Monat. Mal 1.000 gedeckelten
-     Zugriffen sind das im Worst Case ~43 Mio. D1-Operationen gegen 50 Mio.
-     enthaltene Writes. EHRLICHKEIT DAZU: ein Batch ist EIN Subrequest, kann
-     aber 50 Zeilen schreiben. Voll ausgereizt liegt der Worst Case hoeher.
-     Sauber deckeln liesse sich das nur im Code, nicht in dieser Datei —
-     „gedeckelt\" heisst hier begrenzt, nicht mathematisch unmoeglich.
-
-     Nach ein paar Tagen im Dashboard die tatsaechlichen Werte ablesen und
-     beide Zahlen auf das Doppelte des beobachteten Maximums nachziehen. */
   "limits": { "cpu_ms": 30000, "subrequests": 1000 },
+  */
 
   // Nur Diagnose. Die verbindliche Version steht in src/version.js und wird
   // von scripts/sync-version.mjs aus package.json hierher gespiegelt.
-  "vars": { "APP_VERSION": "4.0.4", "ALPACA_FEED": "iex", "TIINGO_STOCKS_MODE": "primary" },
+  "vars": { "APP_VERSION": "4.0.5", "ALPACA_FEED": "iex", "TIINGO_STOCKS_MODE": "primary" },
 
   // v3.2: Cron läuft jede Minute. Im Worker selbst wird gedrosselt:
   // Krypto 5-minütig, Alpaca im Opening-Fenster, Aktien-Learning im Primary-Modus über Tiingo.
