@@ -5653,3 +5653,145 @@ console.log('✓ FusionPulse v4.1.5 Vorrang statt Reife (ausgefuehrt): OK');
 }
 
 console.log('✓ FusionPulse v4.1.6 Schreibschwelle auf allen Pfaden (ausgefuehrt): OK');
+
+/* ══ v4.1.7 · DIE ZAHL STAND NUR IM ROH-JSON ════════════════════════════════
+   4.1.6 hat das Schreibbudget messbar gemacht, aber nur unter
+   `/api/health?t=…`. Das ist derselbe Rat, den v3.32.5 schon einmal als
+   schlecht erkannt hat: ein Token mit `+`, `&`, `#`, `/` oder `%` zerlegt die
+   Adresse, der Server lehnt ab, und es sieht nach einem kaputten Token aus.
+   Eine Kennzahl, die man taeglich braucht, gehoert in die App.
+
+   Der wichtigste Teil dieser Pruefung ist NICHT der Normalfall, sondern das
+   Schweigen: ohne Messung darf keine beruhigende Zahl entstehen. */
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url),'utf8');
+
+  const voll = {
+    measured:true, rowsWritten:12_340, freeLimitRowsWritten:100_000,
+    atLeastRowsWrittenPerMin:34.2, sustainableRowsWrittenPerMin:69.4,
+    writeBudgetHoldsToday:true, writeBudgetMinutesLeft:2570, complete:true,
+  };
+  C.authDenied = false;
+
+  const ok = C.d1Note({ d1: voll });
+  assert.strictEqual(ok.measured, true, 'v4.1.7: eine vollstaendige Messung muss als gemessen gelten');
+  assert.match(ok.label, /12\.340 von 100\.000 \(12 %\)/,
+    `v4.1.7: Zaehler, Nenner und Anteil gehoeren in die Beschriftung, war: "${ok.label}"`);
+  assert.match(ok.detail, /tragfähig sind 69,4/,
+    'v4.1.7: der tragfaehige Takt muss danebenstehen, sonst fehlt der Massstab');
+  assert.match(ok.detail, /UNTERGRENZE/,
+    'v4.1.7: die Untergrenze muss mitlaufen, sonst liest sich „reicht" wie eine Zusage');
+  assert.strictEqual(ok.tone, 'ok', 'v4.1.7: 12 % mit haltender Projektion ist kein Warnfall');
+
+  // -- Die Anzeige muss auch NEIN sagen koennen.
+  const eng = C.d1Note({ d1: { ...voll, rowsWritten:60_000, atLeastRowsWrittenPerMin:400,
+    writeBudgetHoldsToday:false, writeBudgetMinutesLeft:100 } });
+  assert.notStrictEqual(eng.tone, 'ok', 'v4.1.7: eine reissende Projektion darf nicht unauffaellig bleiben');
+  assert.match(eng.detail, /100 Minuten aufgebraucht/,
+    `v4.1.7: die Restlaufzeit gehoert in den Hilfetext, war: "${eng.detail}"`);
+
+  const voll100 = C.d1Note({ d1: { ...voll, rowsWritten:100_000, writeBudgetHoldsToday:false } });
+  assert.strictEqual(voll100.tone, 'err', 'v4.1.7: ein aufgebrauchtes Budget ist ein Fehlerzustand');
+  assert.match(voll100.detail, /bis 00:00 UTC wird nichts mehr gespeichert/,
+    'v4.1.7: der Nutzer muss erfahren, WANN es weitergeht');
+
+  /* -- FAIL-CLOSED. Das ist der Kern: keine Messung darf niemals wie ein
+        niedriger Verbrauch aussehen. Dieselbe Regel wie bei der Bandbreite,
+        wo genau dieser Fehler schon einmal drin war. */
+  for(const [name, arg] of [
+    ['gar kein d1-Zweig', {}],
+    ['measured:false',    { d1:{ measured:false, reason:'heute noch nichts gemessen' } }],
+    ['Zahlen fehlen',     { d1:{ measured:true } }],
+    ['Nenner ist 0',      { d1:{ measured:true, rowsWritten:5, freeLimitRowsWritten:0 } }],
+  ]){
+    const n = C.d1Note(arg);
+    assert.strictEqual(n.measured, false, `v4.1.7 (${name}): das muss als „nicht gemessen" gelten`);
+    assert.match(n.label, /nicht gemessen/, `v4.1.7 (${name}): und auch so beschriftet sein`);
+    assert.doesNotMatch(n.label, /\d+ %/, `v4.1.7 (${name}): ohne Messung darf kein Prozentwert entstehen`);
+    assert.match(n.detail, /NICHT schließen/, `v4.1.7 (${name}): und ausdruecklich vor der Fehldeutung warnen`);
+  }
+
+  // -- Ohne Token ist es nicht abrufbar, nicht „null verbraucht".
+  C.authDenied = true;
+  const zu = C.d1Note({ d1: voll });
+  assert.strictEqual(zu.measured, false, 'v4.1.7: ohne Token gibt es keine gueltige Messung');
+  assert.match(zu.label, /nicht abrufbar/, 'v4.1.7: und das muss so heissen');
+  C.authDenied = false;
+
+  // -- Die Anzeige muss den Weg in die Oberflaeche wirklich finden.
+  assert.match(app, /const d1n=d1Note\(health\)/, 'v4.1.7: der Lernbericht muss die Bilanz holen');
+  assert.match(app, /class="lr-d1"/, 'v4.1.7: und sie sichtbar rendern');
+  assert.match(app, /d1Sys=d1Note\(health\)/, 'v4.1.7: die Systemleiste muss sie ebenfalls tragen');
+}
+
+console.log('✓ FusionPulse v4.1.7 Schreibbudget in der App (ausgefuehrt): OK');
+
+/* ══ v4.1.8 · DIE FEHLMELDUNG SCHICKTE ZUM FALSCHEN KONTO ═══════════════════
+   Frage des Nutzers: „Stoppt die App beim Erreichen des Limits, oder muss ich
+   etwas abschalten?" Beim Nachsehen zeigte sich, dass sie weder stoppt noch
+   etwas abzuschalten waere — sie meldet nur das Falsche.
+
+   Cloudflare meldet das erschoepfte D1-Kontingent als
+     „D1_ERROR: Your account has exceeded D1's free tier daily row write limit."
+   Der Text enthaelt „daily", also stufte `classifyError` ihn als `daylimit`
+   ein. Weil `d1StoreRows()` im selben try-Block wie der Datenabruf liegt,
+   landete diese Einstufung auf der Lampe der DATENQUELLE — und das Modal
+   behauptete „Twelve Data: Tageslimit erreicht · Für heute sind keine
+   Aktien-Credits mehr verfügbar", bei einem Betrieb auf Tiingo, dessen
+   Anbieter einwandfrei geantwortet hatte.
+
+   Eine Fehlmeldung, die zum falschen Konto schickt, ist teurer als gar keine:
+   man prueft den Anbieter, findet nichts, und die Ursache laeuft weiter.    */
+{
+  const { classifyError } = await import('../src/worker.js');
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url),'utf8');
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url),'utf8');
+
+  // -- AUSGEFUEHRT: die echten Meldungstexte von Cloudflare.
+  for(const m of [
+    "D1_ERROR: Your account has exceeded D1's free tier daily row write limit.",
+    "D1_ERROR: Your account has exceeded D1's free tier daily row read limit.",
+  ]){
+    assert.strictEqual(classifyError(new Error(m)), 'dblimit',
+      `v4.1.8: „${m.slice(0,48)}…" ist ein Datenbank-, kein Anbieterproblem`);
+  }
+
+  // -- Und die Anbieterfaelle duerfen dabei NICHT mitgerissen werden.
+  assert.strictEqual(classifyError(new Error('Twelve Data: out of API credits for the day')), 'daylimit',
+    'v4.1.8: ein echtes Anbieter-Tageslimit muss weiterhin daylimit heissen');
+  assert.strictEqual(classifyError(new Error('Fusion Rate-Limit (429)')), 'ratelimit',
+    'v4.1.8: 429 bleibt ratelimit');
+  assert.strictEqual(classifyError(new Error('401 unauthorized')), 'nokey',
+    'v4.1.8: ein fehlender Schluessel bleibt nokey');
+
+  /* -- Die Lampe der Datenquelle darf bei einem Datenbanklimit nicht
+        eingefaerbt werden. Der Anbieter HAT geantwortet — der Abruf steht
+        vor dem Schreibvorgang im selben try-Block. */
+  const faenger = [...worker.matchAll(/\}?\s*catch\(e\)\{[^}]*setApiState\('(crypto|stocks|alpaca)'/g)];
+  assert.strictEqual(faenger.length, 0,
+    `v4.1.8: kein Cron-Faenger darf die Anbieterlampe direkt setzen — ${faenger.length} tun es noch`);
+  assert.match(worker, /if \(state === 'dblimit'\) \{ cronLog\('d1'/,
+    'v4.1.8: ein Datenbanklimit muss unter d1 protokolliert werden, nicht unter dem Anbieter');
+  assert.ok(worker.indexOf("return 'dblimit'") < worker.indexOf("return 'daylimit'"),
+    'v4.1.8: die spezifischere Regel muss VOR der daily-Regel greifen, sonst gewinnt wieder die alte');
+
+  // -- Die Oberflaeche muss den Fall benennen koennen.
+  assert.strictEqual(C.STATE_TEXT.dblimit, 'Datenbank-Tageslimit',
+    'v4.1.8: der Zustand braucht eine eigene Beschriftung');
+  assert.strictEqual(C.STATE_TONE.dblimit, 'warn',
+    'v4.1.8: ein erschoepftes Schreibbudget ist eine Warnung, kein Ausfall — die Anzeige laeuft weiter');
+  assert.match(app, /dblimit: \['Datenbank: Tagesbudget aufgebraucht'/,
+    'v4.1.8: das Modal braucht einen eigenen Text');
+  const modal = app.slice(app.indexOf("dblimit: ['Datenbank"), app.indexOf('daynear:'));
+  assert.doesNotMatch(modal, /Twelve Data|Aktien-Credits/,
+    'v4.1.8: der Text darf keinen Datenanbieter beschuldigen');
+  assert.match(modal, /00:00 UTC/, 'v4.1.8: er muss sagen, WANN es weitergeht');
+  assert.match(modal, /muss nichts abgeschaltet werden/,
+    'v4.1.8: und die Frage beantworten, ob man eingreifen muss');
+}
+
+console.log('✓ FusionPulse v4.1.8 Datenbanklimit statt Anbieterschuld (ausgefuehrt): OK');

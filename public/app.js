@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.1.6 — Frontend
+   FusionPulse v4.1.8 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1360,9 +1360,13 @@ async function copy(text, el) {
 /* ---------------------------------------------------- Status / Kontingent */
 const STATE_TEXT = {
   ok: 'verbunden', busy: 'wird geprüft', ratelimit: 'Rate-Limit', daylimit: 'Tageslimit erreicht',
+  /* v4.1.8: eigener Zustand fuer das Tageslimit der DATENBANK. Vorher lief er
+     als `daylimit` auf der Lampe der Datenquelle mit und schickte einen damit
+     zum falschen Konto. */
+  dblimit: 'Datenbank-Tageslimit',
   nokey: 'API-Key fehlt', error: 'API-Fehler', unknown: 'Status noch nicht verifiziert', stale: 'Daten veraltet', warn: 'eingeschränkt', cpu: 'Ressourcenwarnung',
 };
-const STATE_TONE = { ok: 'ok', busy: 'busy', ratelimit: 'warn', daylimit: 'warn', nokey: 'err', error: 'err', unknown: 'busy', stale: 'warn', warn: 'warn', cpu: 'warn' };
+const STATE_TONE = { ok: 'ok', busy: 'busy', ratelimit: 'warn', daylimit: 'warn', dblimit: 'warn', nokey: 'err', error: 'err', unknown: 'busy', stale: 'warn', warn: 'warn', cpu: 'warn' };
 
 function setSys(id, st, detail) {
   const el = $(id); if (!el) return;
@@ -1376,7 +1380,7 @@ function setSys(id, st, detail) {
 function setMiniStatus(id, st, detail = '') {
   const el = $(id); if (!el) return;
   const raw = String(st || 'busy').toLowerCase();
-  const cls = raw === 'ok' ? 'ok' : ['warn','stale','ratelimit','daylimit','cpu'].includes(raw) ? 'warn' : ['err','error','nokey'].includes(raw) ? 'err' : 'busy';
+  const cls = raw === 'ok' ? 'ok' : ['warn','stale','ratelimit','daylimit','dblimit','cpu'].includes(raw) ? 'warn' : ['err','error','nokey'].includes(raw) ? 'err' : 'busy';
   el.classList.remove('ok','warn','err','busy');
   el.classList.add(cls);
   const label = detail || (el.id === 'miniCrypto' ? 'Krypto-Datenquelle' : el.id === 'miniStocks' ? 'Aktien-Datenquelle' : el.id === 'miniTiingo' ? 'Tiingo-Aktienfeed' : 'Cloudflare/Worker');
@@ -1406,6 +1410,7 @@ function quotaText(q) {
 function checkQuotaPopup(q, state) {
   // v3.0.7: Minutenknappheit/429 bleibt eine kleine gelbe Statusmeldung.
   // Ein Modal ist nur für das echte Tageslimit bzw. eine einmalige Tageswarnung sinnvoll.
+  if (state === 'dblimit') return showQuotaWarning('dblimit');
   if (state === 'daylimit') return showQuotaWarning('daylimit');
   if (!q) return;
   if (q.dayLimit && q.dayCredits >= q.dayLimit * 0.9) return showQuotaWarning('daynear', quotaText(q).long);
@@ -1520,6 +1525,12 @@ function showQuotaWarning(kind, detail = '') {
       `<p>Das Minutenkontingent ist aufgebraucht. Twelve Data setzt es zu Beginn jeder neuen Minute zurück. Der Krypto-Scanner läuft unverändert weiter.</p><p class="hint">${esc(detail)}</p>`],
     daylimit: ['Twelve Data: Tageslimit erreicht',
       `<p>Für heute sind keine Aktien-Credits mehr verfügbar. Der Aktienradar zeigt bis zum Zurücksetzen die zuletzt gecachten Werte; der Krypto-Scanner läuft weiter.</p><p class="hint">${esc(detail)}</p>`],
+    /* v4.1.8: Der eigene Text fuer das Datenbanklimit. Vorher lief dieser Fall
+       unter `daylimit` und behauptete, bei Twelve Data seien keine Credits
+       mehr da — auch bei einem Betrieb, der Tiingo als Quelle nutzt und dessen
+       Anbieter tadellos geantwortet hat. */
+    dblimit: ['Datenbank: Tagesbudget aufgebraucht',
+      `<p>Nicht der Datenanbieter, sondern das <b>Schreibbudget der Cloudflare-Datenbank</b> ist erschöpft. Kurse und Analysen laufen unverändert weiter — aber bis zum Zurücksetzen um <b>00:00 UTC (2 Uhr MESZ)</b> wird nichts mehr für die Lernschicht gespeichert.</p><p>Es muss nichts abgeschaltet werden. Den aktuellen Stand zeigt die Zeile „Schreibbudget" im Lernbericht.</p><p class="hint">${esc(detail)}</p>`],
     daynear: ['Twelve Data: Tageskontingent fast erschöpft',
       `<p>Weniger als 10 % des Tageskontingents sind übrig. Erhöhe das Aktien-Intervall oder reduziere das Universum, wenn du bis Handelsschluss durchkommen willst.</p><p class="hint">${esc(detail)}</p>`],
     minutenear: ['Twelve Data: Minutenkontingent fast erschöpft',
@@ -2574,6 +2585,48 @@ function renderBandwidthTable(){
       <small class="hint">${esc(bw.note||'')} Gemessen seit dem Start dieser Worker-Version; ${num(bw.exactSamples,0)} exakte und ${num(bw.approxSamples,0)} geschätzte Messungen.</small>`;
 }
 
+/* ══ v4.1.7 · DIE ZAHL, DIE MAN MORGENS BRAUCHT, STAND NUR IM ROH-JSON ═══════
+   Seit 4.1.6 misst der Server das Schreibbudget. Abzulesen war es aber nur
+   ueber `/api/health?t=…` von Hand in der Adresszeile — genau der Rat, den
+   v3.32.5 schon einmal als schlecht erkannt hat (siehe Fussnote am
+   Feed-Abzeichen): enthaelt der Token ein `+`, `&`, `#`, `/` oder `%`, zerlegt
+   der Browser die Adresse falsch und es sieht aus, als waere der Token kaputt.
+   Dieselbe Lehre, zweite Anwendung. Die App verpackt den Wert korrekt, also
+   gehoert die Anzeige in die App.
+
+   Fail-closed wie bei der Bandbreite: keine Messung heisst „nicht gemessen",
+   niemals eine beruhigende Null. */
+function d1Note(meta){
+  if(authDenied){
+    return { measured:false, tone:'warn', label:'Schreibbudget: nicht abrufbar',
+      detail:'Ohne Zugriffs-Token beantwortet der Server keine Statusabfrage.' };
+  }
+  const d=(meta||{}).d1;
+  if(!d || d.measured===false){
+    return { measured:false, tone:'warn', label:'Schreibbudget: nicht gemessen',
+      detail:(d&&d.reason?d.reason+' ':'')+'Das ist eine fehlende Messung, kein niedriger Verbrauch — daraus lässt sich NICHT schließen, dass Reserve vorhanden ist.' };
+  }
+  const w=Number(d.rowsWritten), cap=Number(d.freeLimitRowsWritten);
+  if(!Number.isFinite(w)||!(cap>0)){
+    return { measured:false, tone:'warn', label:'Schreibbudget: nicht gemessen',
+      detail:'Der Server meldet noch keine Zeilenzahlen für den laufenden UTC-Tag. Das ist eine fehlende Messung, kein niedriger Verbrauch — daraus lässt sich NICHT schließen, dass Reserve vorhanden ist.' };
+  }
+  const share=w/cap, rate=Number(d.atLeastRowsWrittenPerMin), soll=Number(d.sustainableRowsWrittenPerMin);
+  const haelt=d.writeBudgetHoldsToday!==false;
+  const rest=Number(d.writeBudgetMinutesLeft);
+  const tone = share>=1 ? 'err' : (!haelt||share>=0.8) ? 'orange' : 'ok';
+  const n=(x)=>Number(x).toLocaleString('de-DE');
+  const label=`Schreibbudget: ${n(w)} von ${n(cap)} (${Math.round(share*100)} %)`;
+  const takt = Number.isFinite(rate)&&Number.isFinite(soll)
+    ? ` Takt: mindestens ${rate.toLocaleString('de-DE')} Zeilen/min, tragfähig sind ${soll.toLocaleString('de-DE')}.` : '';
+  const reicht = share>=1 ? ' Das Budget ist aufgebraucht — bis 00:00 UTC wird nichts mehr gespeichert.'
+    : haelt ? ' Bei diesem Takt reicht es bis Mitternacht UTC.'
+    : Number.isFinite(rest) ? ` Bei diesem Takt ist es in rund ${n(rest)} Minuten aufgebraucht.` : '';
+  return { measured:true, tone, label,
+    /* Die Untergrenze muss mitlaufen, sonst liest sich „reicht" wie eine
+       Zusage. Der Server misst `.first()`-Abfragen nicht mit. */
+    detail:`${label}.${takt}${reicht} Gerechnet wird gegen 00:00 UTC (2 Uhr MESZ). Die Messung ist eine UNTERGRENZE${d.complete===false?' und ausdrücklich unvollständig':''} — der echte Verbrauch liegt bei oder über diesem Wert. Maßgeblich bleibt der Kontostand im Cloudflare-Dashboard.` };
+}
 function bandwidthNote(meta) {
   if (authDenied) {
     return { measured: false, tone: 'warn', label: 'Bandbreite: nicht abrufbar',
@@ -2718,13 +2771,13 @@ function renderResourceStrip(){
     return;
   }
   const red=states.some(x=>['error','nokey'].includes(x));
-  const orange=states.some(x=>['cpu','daylimit'].includes(x));
+  const orange=states.some(x=>['cpu','daylimit','dblimit'].includes(x));
   const yellow=states.some(x=>['ratelimit','stale','warn','unknown'].includes(x));
   const level=red?'red':orange?'orange':yellow?'yellow':'green';
   const bad=level==='green'?[]:Object.keys(RESOURCE_LABEL)
     .filter(k=>{const st=hs[k]?.state;if(!st||st==='ok')return false;
       return level==='red'?['error','nokey'].includes(st)
-        :level==='orange'?['cpu','daylimit'].includes(st)
+        :level==='orange'?['cpu','daylimit','dblimit'].includes(st)
         :['ratelimit','stale','warn','unknown'].includes(st);})
     .map(k=>`${RESOURCE_LABEL[k]}: ${STATE_TEXT[hs[k].state]||hs[k].state}`);
   const who=bad.length?' · '+bad.join(' · '):'';
@@ -2739,13 +2792,16 @@ function renderResourceStrip(){
   const text=(level==='green'?'App läuft einwandfrei · Datenserver stabil · kein Handlungsbedarf':level==='yellow'?'App funktioniert · einzelne Datenquelle eingeschränkt · kein unmittelbarer Handlungsbedarf':level==='orange'?'App eingeschränkt · Ressourcen/Limit beobachten':'Handlungsbedarf · Datenquelle fehlerhaft')+who;
   out.textContent=text+rateNote;
   box.classList.remove('warn','orange','err','ok'); box.classList.add(level==='green'?'ok':level==='yellow'?'warn':level==='orange'?'orange':'err');
-  const fiSys=feedInfo(stockMeta,openingMeta), bwSys=bandwidthNote(health);
-  box.dataset.tip=`${text}${rateNote}. Datenquelle Aktien: ${fiSys.label}. ${bwSys.label}. Krypto: ${hs.crypto?.state||'n.v.'}; Aktien: ${hs.stocks?.state||'n.v.'}; Opening: ${hs.alpaca?.state||'n.v.'}; Tiingo: ${health?.tiingoConfigured?'aktiv':'n.v.'}. Grün = alles stabil, Gelb = funktioniert mit kleiner Einschränkung, Orange = beobachten/zeitnah prüfen, Rot = konkreter Handlungsbedarf.`;
+  const fiSys=feedInfo(stockMeta,openingMeta), bwSys=bandwidthNote(health), d1Sys=d1Note(health);
+  box.dataset.tip=`${text}${rateNote}. Datenquelle Aktien: ${fiSys.label}. ${bwSys.label}. ${d1Sys.label}. Krypto: ${hs.crypto?.state||'n.v.'}; Aktien: ${hs.stocks?.state||'n.v.'}; Opening: ${hs.alpaca?.state||'n.v.'}; Tiingo: ${health?.tiingoConfigured?'aktiv':'n.v.'}. Grün = alles stabil, Gelb = funktioniert mit kleiner Einschränkung, Orange = beobachten/zeitnah prüfen, Rot = konkreter Handlungsbedarf.`;
 }
 
 function renderLearningReport(){
   const el=$('#learningReport');if(!el)return;const st=learningData?.stats||{};const last=st.lastTs?clock(st.lastTs):'–';
-  el.innerHTML=`<b>🧠 Nacht-/Learning-Bericht</b> <small>serverseitig · verändert keine Tradingregel automatisch</small><div class="lr-grid"><span><b>${Number(st.snapshots24h||0)}</b>Beobachtungen 24 h</span><span><b>${Number(st.resolved24h||0)}</b>ausgewertet 24 h</span><span><b>${Number(st.expansions24h||0)}</b>Expansionen 24 h</span><span><b>${last}</b>letztes Learning</span></div><small>Warum sinnvoll? FusionPulse soll nicht nur nachts laufen, sondern sichtbar machen, was gespeichert und später ausgewertet wurde. „Expansion“ bedeutet nur: Nach einer gespeicherten Situation folgte eine relevante Bewegung – noch kein Beweis für ein gutes Kaufsignal.</small>`;
+  /* v4.1.7: Das Schreibbudget entscheidet, ob ueberhaupt noch etwas dazukommt.
+     Es gehoert deshalb neben die Beobachtungszahlen und nicht in ein Roh-JSON. */
+  const d1n=d1Note(health);
+  el.innerHTML=`<b>🧠 Nacht-/Learning-Bericht</b> <small>serverseitig · verändert keine Tradingregel automatisch</small><div class="lr-grid"><span><b>${Number(st.snapshots24h||0)}</b>Beobachtungen 24 h</span><span><b>${Number(st.resolved24h||0)}</b>ausgewertet 24 h</span><span><b>${Number(st.expansions24h||0)}</b>Expansionen 24 h</span><span><b>${last}</b>letztes Learning</span></div><div class="lr-d1" data-tone="${d1n.tone}" title="${esc(d1n.detail)}">${esc(d1n.label)}</div><small>Warum sinnvoll? FusionPulse soll nicht nur nachts laufen, sondern sichtbar machen, was gespeichert und später ausgewertet wurde. „Expansion“ bedeutet nur: Nach einer gespeicherten Situation folgte eine relevante Bewegung – noch kein Beweis für ein gutes Kaufsignal.</small>`;
 }
 function renderLearningStatus(){
   const el=$('#learningState'); if(!el)return;

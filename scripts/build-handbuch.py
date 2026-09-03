@@ -649,8 +649,22 @@ H2('Das Lerngedächtnis steht — nichts wird mehr gespeichert')
 P('Die Oberfläche läuft weiter, aber es kommen keine neuen Auswertungen dazu. Das ist '
   'fast immer das tägliche Schreiblimit der Datenbank. Es setzt sich um <b>00:00 UTC</b> '
   'zurück, also um 2 Uhr mitteleuropäischer Sommerzeit — nicht um Mitternacht Ortszeit.')
-P('Nachsehen lässt sich das seit v4.1.6 in der App selbst. Der Abschnitt <i>d1</i> unter '
-  '<i>/api/health</i> nennt vier Zahlen, die zusammen die ganze Antwort geben:')
+BOX('Es muss nichts abgeschaltet werden', [
+    'Die App hält nicht an. Kurse, Analysen und Pläne laufen unverändert weiter — nur die '
+    'Lernschicht speichert nichts mehr. Ein Eingriff ist weder nötig noch hilfreich; um '
+    '2 Uhr früh geht es von selbst weiter.',
+    'Seit v4.1.8 sagt die App dabei auch das Richtige. Vorher meldete sie in diesem Fall '
+    '<i>„Twelve Data: Tageslimit erreicht"</i> — der Datenanbieter, der gar nichts damit zu '
+    'tun hatte. Ursache war, dass Cloudflares Fehlertext das Wort <i>daily</i> enthält und '
+    'die Einstufung deshalb auf der Lampe der Datenquelle landete. Jetzt gibt es dafür den '
+    'eigenen Zustand <b>Datenbank-Tageslimit</b>.',
+])
+P('Seit v4.1.7 steht die Antwort <b>im Lernbericht</b>, direkt unter den '
+  'Beobachtungszahlen: <i>„Schreibbudget: 12.340 von 100.000 (12 %)"</i>. Der Hilfetext '
+  'beim Zeigen mit der Maus nennt den aktuellen Takt, den tragfähigen Takt und wie lange '
+  'es noch reicht. Dieselbe Angabe steht im Hilfetext der Systemleiste.')
+P('Wer die Rohwerte sehen will, findet sie im Abschnitt <i>d1</i> unter '
+  '<i>/api/health</i>:')
 BUL([
     '<b>writeShareOfFreeLimit</b> — wie viel des Tagesbudgets bereits verbraucht ist.',
     '<b>atLeastRowsWrittenPerMin</b> — der aktuelle Takt, daneben steht mit '

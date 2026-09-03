@@ -819,8 +819,44 @@ const apiState = {
 function setApiState(which, state, message = null) {
   apiState[which] = { state, ts: Date.now(), message: message ? String(message).slice(0, 220) : null };
 }
+/* ══ v4.1.8 · WER GESCHEITERT IST, ENTSCHEIDET, WELCHE LAMPE ROT WIRD ═══════
+   Die Datenquellen-Bloecke im Cron holen erst die Daten und schreiben sie
+   danach nach D1 — beides im selben try. Scheitert der zweite Teil am
+   Tageslimit der Datenbank, war der erste Teil trotzdem erfolgreich: der
+   Anbieter hat geantwortet, die Kurse stehen in der Anzeige.
+
+   Bis 4.1.7 wurde in diesem Fall die Lampe der DATENQUELLE eingefaerbt. Bei
+   `dblimit` bleibt sie deshalb unberuehrt, und der Vorfall wird unter `d1`
+   protokolliert. Persistieren waere ohnehin zwecklos: `persistApiState`
+   schreibt selbst nach D1 und wuerde am selben Limit scheitern.             */
+async function noteProviderFailure(env, which, e, now, tag = which) {
+  const state = classifyError(e);
+  if (state === 'dblimit') { cronLog('d1', state, e?.message, { blockedPath: tag }); return state; }
+  setApiState(which, state, e?.message);
+  await persistApiState(env, which, state, e?.message, now);
+  cronLog(tag, state, e?.message);
+  return state;
+}
 function classifyError(e) {
   const m = String(e?.message || e || '');
+  /* ══ v4.1.8 · DAS TAGESLIMIT DER DATENBANK IST KEIN ANBIETERPROBLEM ═══════
+     Cloudflare meldet das erschoepfte D1-Kontingent als
+       „D1_ERROR: Your account has exceeded D1's free tier daily row write limit."
+     Dieser Text enthaelt das Wort „daily". Die Pruefung darunter hat ihn
+     deshalb als `daylimit` eingestuft — und weil `d1StoreRows()` INNERHALB des
+     try-Blocks der jeweiligen Datenquelle laeuft, landete die Einstufung auf
+     der Lampe von Bitpanda oder Tiingo. Die Oberflaeche meldete daraufhin
+     „Twelve Data: Tageslimit erreicht · Für heute sind keine Aktien-Credits
+     mehr verfügbar" — bei einem Nutzer, der Tiingo als Quelle betreibt und
+     dessen Anbieter tadellos geantwortet hat.
+
+     Das ist die teuerste Sorte Fehlmeldung: sie schickt einen zum falschen
+     Konto. Man prueft den Datenanbieter, findet dort nichts, und die
+     eigentliche Ursache laeuft weiter.
+
+     Die Pruefung steht bewusst VOR der `daily`-Regel — die spezifischere
+     Aussage muss zuerst greifen. */
+  if (/D1_ERROR|D1's (free tier )?daily|row (read|write) limit/i.test(m)) return 'dblimit';
   if (/api[_-]?key|unauthor|401|403/i.test(m)) return 'nokey';
   if (/day|daily|täglich|out of api credits for the day/i.test(m)) return 'daylimit';
   if (/429|rate|too many|run out of api credits/i.test(m)) return 'ratelimit';
@@ -6258,10 +6294,7 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
       await d1StoreRows(env,snap.rows||[],{source:'Bitpanda Fusion',assetType:'coin',now,onlyChanged:true});
       await persistCoinLive(env,snap.rows||[]);
       setApiState('crypto','ok'); await persistApiState(env,'crypto','ok',`${snap.rows?.length||0} Rows`,now);
-    }catch(e){
-      const state=classifyError(e); setApiState('crypto',state,e?.message);
-      await persistApiState(env,'crypto',state,e?.message,now); cronLog('crypto',state,e?.message);
-    }
+    }catch(e){ await noteProviderFailure(env,'crypto',e,now); }
   }
   const np=nyParts(new Date(now)),minsET=Number(np.hour)*60+Number(np.minute);
   if(!cryptoMinute && env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY&&minsET>=480&&minsET<=1020&&phase.key!=='closed'){
@@ -6270,10 +6303,7 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
       if(Math.floor(now/60_000)%5===0) await d1StoreRows(env,op.rows||[],{source:alpacaFeed(env)==='sip'?'Alpaca SIP':'Alpaca IEX',assetType:'opening',now,onlyChanged:true});
       setApiState('alpaca','ok',`${op.rows?.length||0} Rows`);
       await persistApiState(env,'alpaca','ok',`${op.rows?.length||0} Rows`,now);
-    }catch(e){
-      const state=classifyError(e); setApiState('alpaca',state,e?.message);
-      await persistApiState(env,'alpaca',state,e?.message,now); cronLog('alpaca',state,e?.message);
-    }
+    }catch(e){ await noteProviderFailure(env,'alpaca',e,now); }
   }
   const stockMinute=cronMinute, primaryStocks=tiingoStocksMode(env)==='primary';
   const wl=await readWatchlist(env);   // v4.1.0: bestimmt, OB entdeckt wird
@@ -6323,21 +6353,21 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
         await d1StoreRows(env,st.rows||[],{source:'Tiingo IEX · Watchlist',assetType:'stock',now,onlyChanged:true});
         setApiState('stocks','ok',`Watchlist · ${st.rows?.length||0} von ${wl.symbols.length} Titeln`);
         await persistApiState(env,'stocks','ok',`Watchlist · ${st.rows?.length||0} von ${wl.symbols.length} Titeln`,now);
-      }catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('watchlist',state,e?.message);}
+      }catch(e){ await noteProviderFailure(env,'stocks',e,now,'watchlist'); }
     } else if(radarDueNow(phase.key, stockMinute)){
       try{
         const rd=await tiingoIexMarketRadar(env,80,true);
         setApiState('stocks','ok',`Whole-Market Radar aktualisiert · ${rd?.rows?.length||0} Kandidaten`);
         await persistApiState(env,'stocks','ok',`Whole-Market Radar aktualisiert · ${rd?.rows?.length||0} Kandidaten`,now);
       }
-      catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('iex-radar',state,e?.message);}
+      catch(e){ await noteProviderFailure(env,'stocks',e,now,'iex-radar'); }
     }else if(stockMinute%2===0){
       try{
         const st=await tiingoStockSnapshot(env,false,new Set(ALL_ON),3,[],'server');
         await d1StoreRows(env,st.rows||[],{source:'Tiingo IEX',assetType:'stock',now,onlyChanged:true});
         setApiState('stocks','ok',`${st.rows?.length||0} Rows · Radar ${st.discovery?.radar?.universe||0}`);
         await persistApiState(env,'stocks','ok',`${st.rows?.length||0} Rows · Radar ${st.discovery?.radar?.universe||0}`,now);
-      }catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('stocks',state,e?.message);}
+      }catch(e){ await noteProviderFailure(env,'stocks',e,now,'stocks'); }
     }
   } else if(!cryptoMinute && !primaryStocks && env.TWELVE_API_KEY && stockMinute%10===1){
     try{
@@ -6345,7 +6375,7 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
       await d1StoreRows(env,st.rows||[],{source:'Twelve Data',assetType:'stock',now,onlyChanged:true});
       setApiState('stocks','ok',`${st.rows?.length||0} Rows`);
       await persistApiState(env,'stocks','ok',`${st.rows?.length||0} Rows`,now);
-    }catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('stocks',state,e?.message);}
+    }catch(e){ await noteProviderFailure(env,'stocks',e,now,'stocks'); }
   }
 }
 
@@ -7741,7 +7771,7 @@ async function tiingoStockLookup(env,raw,comp,minCrv=3,force=false){
   stockLookupMemo.set(info.symbol,{ts:Date.now(),row});const old=new Map(stockMemo.rows.map(r=>[r.symbol,r]));old.set(row.symbol,row);stockMemo.rows=[...old.values()].sort((a,b)=>b.score-a.score).slice(0,80);
   return {configured:true,state:'ok',cached:false,lookup:true,row,source:'Tiingo IEX',provider:'Tiingo',version:APP_VERSION};
 }
-export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation, alpacaPrevClose, momentumFromAlpaca, maturityBreakdown, snapshotWriteDecision };
+export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation, alpacaPrevClose, momentumFromAlpaca, maturityBreakdown, snapshotWriteDecision, classifyError };
 
 export default {
   async fetch(request, env, ctx) {

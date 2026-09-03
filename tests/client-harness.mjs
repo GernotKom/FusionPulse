@@ -153,6 +153,12 @@ export function loadClient(overrides = {}) {
      allem der Fall ohne Zerlegung (Zeilen aus einem Scan vor 4.1.5). Ein
      Regex im Quelltext koennte nicht zeigen, dass dort nichts erfunden wird. */
   maturityTag,
+  /* v4.1.7: Die Schreibbudget-Anzeige muss AUSGEFUEHRT prueffbar sein — vor
+     allem die Faelle ohne Messung, in denen nichts beruhigt werden darf. */
+  d1Note,
+  /* v4.1.8: die Zustandstabellen, damit der neue Datenbank-Zustand AUSGEFUEHRT
+     geprueft werden kann statt per Regex im Quelltext. */
+  STATE_TEXT, STATE_TONE,
   /* v3.32.10 · Twin-Auswertung. Der lokale Zweig zaehlte auf die alte
      5-%-Marke, der D1-Zweig auf 2,04 % — dieselbe Kachel bedeutete je nach
      Quelle etwas anderes. Das ist nur AUSGEFUEHRT nachweisbar. */

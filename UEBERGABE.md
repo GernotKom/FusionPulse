@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 03.09.2026, Version **4.1.6**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 03.09.2026, Version **4.1.8**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -122,6 +122,24 @@ Die späte Rate über die 385 Minuten seit 00:30 UTC erklärt 3.008 Zeilen; beob
 
 **Der Zähler maß die falsche Seite.** Seit 3.32.9 wies `/api/health` nur `readShareOfFreeLimit` aus. Gerissen ist zweimal das *Schreib*-Limit — die Kennzahl, die die App angehalten hat, stand nirgends, und „Lesequote 22 %" liest sich dabei wie Entwarnung. Neu: `freeLimitRowsWritten`, `writeShareOfFreeLimit`, `atLeastRowsWrittenPerMin` neben `sustainableRowsWrittenPerMin` (69,4), `atLeastProjectedRowsWritten`, `writeBudgetMinutesLeft` und `writeBudgetHoldsToday`. Gerechnet wird gegen 00:00 UTC, nicht gegen die Ortszeit. Alle Projektionsfelder heißen `atLeast…`, weil die Eigenmessung `.first()`-Abfragen nicht erfasst und deshalb eine **Untergrenze** bleibt.
 
+### 4.1.7 · Die Zahl stand nur im Roh-JSON
+4.1.6 hat das Schreibbudget messbar gemacht — abzulesen war es aber nur über `/api/health?t=…` von Hand in der Adresszeile. Das ist **derselbe Rat, den v3.32.5 schon einmal als schlecht erkannt hat**: enthält der Token ein `+`, `&`, `#`, `/` oder `%`, zerlegt der Browser die Adresse falsch, der Server lehnt ab, und es sieht nach einem kaputten Token aus. Dieselbe Lehre, zweite Anwendung.
+
+Neu: `d1Note()` im Client, gebaut wie `bandwidthNote()`. Sichtbar im **Lernbericht** unter den Beobachtungszahlen (`Schreibbudget: 12.340 von 100.000 (12 %)`), mit Takt, tragfähigem Takt und Restlaufzeit im Hilfetext; dieselbe Zeile zusätzlich im Hilfetext der Systemleiste.
+
+Fail-closed in vier Fällen, jeder einzeln geprüft: kein `d1`-Zweig, `measured:false`, fehlende Zahlen, Nenner 0. In allen vieren steht „nicht gemessen", **kein Prozentwert** und der ausdrückliche Hinweis, dass daraus nicht auf Reserve geschlossen werden darf. Ohne Token heißt es „nicht abrufbar", nicht „null verbraucht".
+
+Der Test hat dabei eine Unstimmigkeit gefunden, die vorher niemand gesehen hätte: einer der vier Zweige trug den Warnsatz nicht. Korrigiert.
+
+### 4.1.8 · Die Fehlmeldung schickte zum falschen Konto
+Ausgangspunkt war die Frage, ob die App beim Erreichen des Limits stoppt. Antwort: sie stoppt nicht, und abzuschalten ist auch nichts — **sie meldet nur das Falsche.**
+
+Cloudflare meldet das erschöpfte Kontingent als `D1_ERROR: Your account has exceeded D1's free tier daily row write limit.` Dieser Text enthält „daily", also stufte `classifyError` ihn als `daylimit` ein. Und weil `d1StoreRows()` im selben try-Block liegt wie der Datenabruf, landete die Einstufung auf der Lampe der **Datenquelle**. Das Modal behauptete daraufhin „Twelve Data: Tageslimit erreicht · Für heute sind keine Aktien-Credits mehr verfügbar" — bei einem Betrieb auf Tiingo, dessen Anbieter einwandfrei geantwortet hatte.
+
+Eine Fehlmeldung, die zum falschen Konto schickt, ist teurer als gar keine: man prüft den Anbieter, findet nichts, und die Ursache läuft weiter. Sie hat vermutlich zur bisherigen Verwirrung um offenen Punkt 1 beigetragen.
+
+Neu: eigener Zustand `dblimit`, geprüft **vor** der `daily`-Regel. Alle sechs Cron-Fänger laufen jetzt über `noteProviderFailure()`, das bei `dblimit` die Anbieterlampe unberührt lässt und unter `d1` protokolliert — der Abruf war ja erfolgreich. Eigener Modaltext, der die Datenbank nennt, den Reset um 00:00 UTC angibt und ausdrücklich sagt, dass nichts abgeschaltet werden muss.
+
 ## 3. Verifikation
 
 `node --check` auf `src/worker.js`, `public/app.js`, `public/sw.js`; alle sechs Suiten grün (`safety`, `coinscope`, `provider`, `bandwidth`, `d1`, `sw`). Zusätzlich `npx wrangler deploy --dry-run` mit Wrangler 4.128.0 — derselbe Schritt, an dem der Build gescheitert war: sauber, keine Warnungen, `env.APP_VERSION ("4.0.6")`.
@@ -133,6 +151,21 @@ Neue ausgeführte Regressionstests in `tests/safety-regression.mjs`:
 - **v4.1.5 Vorrang statt Reife** — 3.000 Rasterfälle vergleichen `maturityBreakdown` gegen eine **bewusst duplizierte** wörtliche Abschrift der 4.1.4-Formel. Die Duplikation ist der Punkt: ein Test, der dieselbe Funktion aufruft, könnte keine Drift sehen. Dazu Rekonstruktion `echo + fresh ≈ value`, der CRV-Deckel-Befund, der negative Phasenanteil als Abzug, und der Fail-closed-Fall ohne gelieferte Zerlegung.
 
 - **v4.1.6 Schreibschwelle und Schreibbudget** — `snapshotWriteDecision` ausgeführt: unbekannt schreibt, 0,05 % nicht, 0,2 % wieder, Ampelwechsel auch ohne Kursbewegung. Die Vergleichsbasis ist der zuletzt **geschriebene** Zustand, nicht der zuletzt gesehene (drei Schritte zu 0,05 % lösen beim dritten aus, weil er von der Basis aus 0,16 % entfernt ist). Aktie und Münze mit demselben Ticker erhalten getrennte Einträge. Ein Durchlauf über **alle** `d1StoreRows`-Aufrufe im Worker fällt beim ersten ohne `onlyChanged`. Der Zähler wird in `tests/d1-usage.mjs` (NK60/NK61) gegen einen festen Ablesezeitpunkt gerechnet, unter `TZ=Europe/Vienna` und `TZ=America/Chicago` geprüft.
+
+- **v4.1.7 Schreibbudget in der App** — `d1Note` ausgeführt über Normalfall, reißende Projektion, aufgebrauchtes Budget, vier Nichtmessungs-Fälle und den Token-Fall.
+
+- **v4.1.8 Datenbanklimit statt Anbieterschuld** — `classifyError` ausgeführt gegen die echten Cloudflare-Meldungstexte (Schreib- und Leselimit) sowie gegen die Anbieterfälle, die dabei nicht mitgerissen werden dürfen. Ein Durchlauf über alle Cron-Fänger fällt, sobald einer die Anbieterlampe wieder direkt setzt.
+
+**Negativkontrollen zu 4.1.8**, alle drei haben gefeuert und wurden zurückgesetzt:
+- `dblimit`-Regel hinter die `daily`-Regel geschoben → die Einstufung fällt zurück auf `daylimit`, der Test fällt.
+- Anbieterlampe im Fänger wieder direkt gesetzt → der Durchlauf über die Fänger fällt.
+- Modaltext wieder Twelve Data beschuldigen lassen → der Text-Test fällt.
+
+**Negativkontrollen zu 4.1.7**, alle vier haben gefeuert und wurden zurückgesetzt:
+- fehlende Messung als `0`/Standardnenner verbuchen → die Fail-closed-Schleife fällt.
+- Untergrenzen-Hinweis entfernen → der Zusagen-Test fällt.
+- Warnton fest auf `ok` → die reißende Projektion bliebe unauffällig, der Test fällt.
+- Anzeige aus dem Lernbericht entfernen → der Sichtbarkeitstest fällt.
 
 **Negativkontrollen zu 4.1.6**, alle fünf haben gefeuert und wurden zurückgesetzt:
 - `onlyChanged` im Radar-Pfad entfernt → der Durchlauf über die Schreibpfade fällt.
@@ -158,7 +191,7 @@ Eine ältere Regex-Zusicherung auf die Inline-Formel (`safety-regression.mjs`, Z
 4. **Bandbreite gegen den echten Kontostand prüfen**, nicht gegen `/api/health`. Die Eigenmessung ist eine *untere* Schranke; am 02.09. zeigte der reale Tiingo-Stand das 3,3-fache.
 5. **Der Vorrang wäre auch inhaltlich zu verbessern** — nachgezogen aus dem erledigten Punkt 4. Die Beschriftung ist seit 4.1.5 ehrlich, die Formel bleibt schwach: der CRV-Term unterscheidet fast nichts (siehe 4.1.5), das Volumen zählt doppelt. Eine bessere Rangfolge wäre denkbar, **aber sie braucht einen Beleg** — welche Reihenfolge trifft im Nachhinein besser? Die Daten dafür liegen in `snapshots` (Modul 0, `/api/attribution`). Ohne diese Auswertung wäre jede neue Gewichtung nur eine andere Meinung, und die Titelauswahl änderte sich ohne Grund.
 
-6. **Die erste belastbare Messung der Schreibrate steht noch aus.** Alles bis 03.09. ist unbrauchbar, weil das Kontingent vor dem Deploy von 4.1.3/4.1.4 erschöpft war (siehe 4.1.6). Der nächste Reset um 00:00 UTC ist der erste ehrliche Lauf. Seit 4.1.6 beantwortet die App das selbst: `/api/health` → `d1` → `atLeastRowsWrittenPerMin` gegen `sustainableRowsWrittenPerMin` (69,4) und `writeBudgetHoldsToday`. Fällt die Rate nicht deutlich unter die 3.333/min vom 03.09., wirkt 4.1.3 nicht und der nächste Schritt ist `topQueries` im selben Zweig — der Zähler weist seit 3.32.9 nach Abfrageform aus, welche Form verbraucht.
+6. **Die erste belastbare Messung der Schreibrate steht noch aus.** Alles bis 03.09. ist unbrauchbar, weil das Kontingent vor dem Deploy von 4.1.3/4.1.4 erschöpft war (siehe 4.1.6). Der nächste Reset um 00:00 UTC ist der erste ehrliche Lauf. Seit 4.1.7 steht die Antwort im **Lernbericht** der App, Rohwerte weiterhin unter `/api/health` → `d1` → `atLeastRowsWrittenPerMin` gegen `sustainableRowsWrittenPerMin` (69,4) und `writeBudgetHoldsToday`. Fällt die Rate nicht deutlich unter die 3.333/min vom 03.09., wirkt 4.1.3 nicht und der nächste Schritt ist `topQueries` im selben Zweig — der Zähler weist seit 3.32.9 nach Abfrageform aus, welche Form verbraucht.
 7. **`d1StoreSnapshotRow` und `d1UpdateOutcomes` haben keinen Aufrufer mehr.** Gefunden bei der 4.1.6-Analyse. `d1UpdateOutcomes` trägt eine eigene `LIMIT 500`-Abfrage **pro Symbol** und liest wie ein zweiter, lebender Auflöser neben `d1StoreRows` — genau die Sorte Fund, die beim nächsten Bandbreitenproblem falsch verdächtigt wird. Bewusst nicht gelöscht: totes Entfernen ist eine eigene Änderung mit eigenem Risiko, und die Suite deckt diesen Pfad nicht ab. Vor dem Löschen prüfen, ob die Aufrufer wirklich alle weg sind (`grep -n 'd1StoreSnapshotRow('`).
 
 **Erledigt in 4.1.5:** der frühere Punkt 4 („Reife %" liest sich wie eine zweite Meinung).
