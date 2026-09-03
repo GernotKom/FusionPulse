@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 03.09.2026, Version **4.1.8**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 03.09.2026, Version **4.2.0**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -140,6 +140,25 @@ Eine Fehlmeldung, die zum falschen Konto schickt, ist teurer als gar keine: man 
 
 Neu: eigener Zustand `dblimit`, geprüft **vor** der `daily`-Regel. Alle sechs Cron-Fänger laufen jetzt über `noteProviderFailure()`, das bei `dblimit` die Anbieterlampe unberührt lässt und unter `d1` protokolliert — der Abruf war ja erfolgreich. Eigener Modaltext, der die Datenbank nennt, den Reset um 00:00 UTC angibt und ausdrücklich sagt, dass nichts abgeschaltet werden muss.
 
+### 4.2.0 · Session-VWAP je Symbol, Benchmark statt Breadth
+Drei Befunde aus der Analyse, bevor Code entstand:
+
+**1. „Risk-On · 80 % über VWAP" ist Krypto, nicht Aktien.** Der Wert entsteht in `worker.js:772` im Krypto-Scanner (`analyse()`, Bitpanda-Paare, `btcTrend` in der Schwelle) und steht im globalen `<header>` — also auch sichtbar, während eine Aktie im Fokus liegt. Gleichzeitig nennt die Market-Recommendation-Karte darunter die US-Aktien-Breadth aus `aladdinRegime` mit **identischer Formulierung**. Zwei Zahlen, zwei Universen, ein Bildschirm, keine nennt ihres. Behoben durch Beschriftung: „Krypto · …" und „US-Aktien: … der Stichprobe über VWAP", plus Warnung im Glossareintrag.
+
+**2. Ein Symbol-VWAP existierte, war aber nicht sitzungsverankert.** `worker.js:1545` rechnet über `bars.slice(-26)` — ein rollendes 130-Minuten-Fenster. Um 10:00 ET stammen 6 dieser Bars aus der laufenden Sitzung und 20 aus dem Vortagsschluss. Neu ist `sessionVwap()`: Fenster 09:30–16:00 ET des laufenden ET-Handelstags, Grenze **einmal** als Epoch-ms berechnet (`Intl.formatToParts` pro Bar wären 78 × 100 Aufrufe je Zyklus).
+
+**Das alte Feld bleibt unverändert.** `vwapUsd`/`aboveVwap` speisen Score (0,20), `SITU_W`, `reclaimVwap` und `aladdinRegime.vwapBreadth`. Ein Austausch verschöbe Score, Ampel, Titelauswahl und Marktregime gleichzeitig — ohne Beleg, dass die neue Rangfolge besser trifft. Der neue Wert ist reine Anzeige. Tests halten beides fest.
+
+**Der Preis ist Verfügbarkeit.** Um 09:35 ET existiert ein Bar; unter drei Bars steht `UNAVAILABLE`. Der rollende VWAP hatte dieses Problem nie, weil er sich still beim Vortag bedient hat — genau deshalb war er stabil und falsch.
+
+**3. Relative Stärke gegen SPY, nicht gegen die Breadth.** Zwei Gründe, beide in den Daten:
+- Die Breadth entsteht aus `stockMemo.rows` — Titel, die der Deep-Scan ausgewählt hat, *weil* sie sich bewegen. Als Referenz ist sie nach oben verzerrt; „Markt stark, Aktie schwach" feuerte systematisch zu oft.
+- Sie zählt `r.aboveVwap`, also den rollenden Wert. Ihre Differenz zum neuen sitzungsverankerten Symbolwert enthielte zuerst einen Definitionsunterschied und erst danach vielleicht ein Signal — am stärksten morgens.
+
+`benchmarkSessionVwap()` holt SPY einmal je Deep-Scan (4 Minuten gecacht, ein Tiingo-Abruf), gleiche Formel, gleicher Anker, keine Vorauswahl. `relativeVwapStrengthPct` ist null, sobald eine Seite nicht VALID ist — nie null als Zahl.
+
+**Nicht angefasst, bewusst:** `marketRecommendation` (`worker.js:6150/6151`) koppelt Regime und `aboveVwap` bereits — und bestraft „Risk-Off + über VWAP" mit −0,15, also genau die Konstellation, die als relative Stärke gilt. Das ist ein Regimefilter, kein Relative-Strength-Maß; beides kann sich keine Zahl teilen. `vwapDistancePct`, `vwapState` und `relVwapStrengthPct` werden ab jetzt in `market_snapshots` mitgeschrieben, damit `/api/attribution` überhaupt erst beantworten kann, ob die Divergenz out-of-sample etwas wert ist.
+
 ## 3. Verifikation
 
 `node --check` auf `src/worker.js`, `public/app.js`, `public/sw.js`; alle sechs Suiten grün (`safety`, `coinscope`, `provider`, `bandwidth`, `d1`, `sw`). Zusätzlich `npx wrangler deploy --dry-run` mit Wrangler 4.128.0 — derselbe Schritt, an dem der Build gescheitert war: sauber, keine Warnungen, `env.APP_VERSION ("4.0.6")`.
@@ -155,6 +174,16 @@ Neue ausgeführte Regressionstests in `tests/safety-regression.mjs`:
 - **v4.1.7 Schreibbudget in der App** — `d1Note` ausgeführt über Normalfall, reißende Projektion, aufgebrauchtes Budget, vier Nichtmessungs-Fälle und den Token-Fall.
 
 - **v4.1.8 Datenbanklimit statt Anbieterschuld** — `classifyError` ausgeführt gegen die echten Cloudflare-Meldungstexte (Schreib- und Leselimit) sowie gegen die Anbieterfälle, die dabei nicht mitgerissen werden dürfen. Ein Durchlauf über alle Cron-Fänger fällt, sobald einer die Anbieterlampe wieder direkt setzt.
+
+- **v4.2.0 Session-VWAP** — alle 13 geforderten Fälle ausgeführt, dazu Sommer-/Winterzeit der Sitzungsgrenze und die Live-Quote aus dem Premarket gegen einen Regular-Session-VWAP. Ein Bar-Satz mit Vortag, Premarket und After Hours (je mit riesigem Volumen) muss den Wert **exakt unverändert** lassen.
+
+**Negativkontrollen zu 4.2.0**, alle sechs haben gefeuert und wurden zurückgesetzt:
+- Sitzungsfilter entfernt → der Vortag zählt mit, der Bar-Zähler fällt.
+- Fester UTC-Versatz statt `nyOffsetMs` → der Winterzeit-Test fällt.
+- Twelve Data zugelassen → der Datenquellen-Test fällt.
+- Relative Stärke als 0 statt null erfunden → der Fail-closed-Test fällt.
+- Veralteten Kurs trotzdem bewerten lassen → die Kernforderung-Prüfung fällt.
+- Distanz in `vwapScore` gehängt → der Score-Unveränderlichkeits-Test fällt.
 
 **Negativkontrollen zu 4.1.8**, alle drei haben gefeuert und wurden zurückgesetzt:
 - `dblimit`-Regel hinter die `daily`-Regel geschoben → die Einstufung fällt zurück auf `daylimit`, der Test fällt.

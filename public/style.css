@@ -724,7 +724,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"4.1.8";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"4.2.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -781,6 +781,10 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v4.1.7: Das Schreibbudget neben den Beobachtungszahlen. Der Farbton kommt
    aus d1Note(); 'ok' bleibt bewusst unauffaellig, gewarnt wird nur, wenn es
    etwas zu warnen gibt. */
+/* v4.2.0: Session-VWAP in der Fokuskarte. Neutral, wenn er gilt; auffaellig
+   nur bei STALE, weil dort eine Fehldeutung teuer waere. */
+.sf-grid .sf-vwap[class*="vw-stale"] b,.sf-grid .sf-vwap[class*="vw-stale"] small{color:var(--orange,#c87b2a)}
+.sf-grid .sf-vwap[class*="vw-unavailable"] small,.sf-grid .sf-vwap[class*="vw-mismatch"] small{color:var(--dim)}
 .learning-report .lr-d1{margin-top:6px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-size:10px;color:var(--dim);cursor:help}
 .learning-report .lr-d1[data-tone="orange"]{border-color:var(--orange,#c87b2a);color:var(--fg)}
 .learning-report .lr-d1[data-tone="err"]{border-color:var(--red,#c0392b);color:var(--fg)}

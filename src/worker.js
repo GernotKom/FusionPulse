@@ -1529,7 +1529,100 @@ function usMarketPhase(date = new Date(), feed = null) {
 }
 function isoAgo(minutes){ return new Date(Date.now()-minutes*60_000).toISOString(); }
 
-function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
+/* ══ v4.2.0 · SESSION-VWAP ══════════════════════════════════════════════════
+   Der vorhandene VWAP in `analyseStock` ist ein ROLLENDES Fenster ueber 26
+   Bars (`bars.slice(-26)`, 130 Minuten). Formel und Typical Price stimmen, der
+   Anker fehlt. Um 10:00 ET stammen 6 dieser Bars aus der laufenden Sitzung und
+   20 aus dem Schluss des Vortags — „ueber VWAP" ist morgens ueberwiegend eine
+   Aussage ueber gestern.
+
+   DAS ALTE FELD BLEIBT UNVERAENDERT. `vwap`, `aboveVwap` und `vwapScore`
+   speisen den Score (Gewicht 0,20), `SITU_W.aboveVwap`, `reclaimVwap` und
+   `aladdinRegime.vwapBreadth`. Ein stiller Austausch wuerde Score, Ampel,
+   Situationsbewertung, Titelauswahl und Marktregime gleichzeitig verschieben,
+   ohne einen Beleg, dass die neue Rangfolge besser trifft. Die Umstellung ist
+   eine eigene Version mit Messung aus `/api/attribution`.
+
+   DER PREIS DER RICHTIGEN ZAHL IST VERFUEGBARKEIT. Um 09:35 ET existiert ein
+   einziger Bar. Der rollende VWAP hatte dieses Problem nie, weil er sich
+   stillschweigend beim Vortag bedient hat — genau deshalb war er stabil und
+   falsch. Hier wird stattdessen UNAVAILABLE gemeldet.                       */
+const RTH_OPEN_MIN = 9 * 60 + 30;      // 09:30 ET
+const RTH_CLOSE_MIN = 16 * 60;         // 16:00 ET
+const RTH_MIN_BARS = 3;                // unter 15 Minuten Sitzung: keine Aussage
+
+/* Versatz der New-Yorker Wanduhr gegen UTC, in Millisekunden (negativ).
+   Wird EINMAL je Aufruf gebildet: `Intl.formatToParts` pro Bar waeren bei
+   78 Bars x 100 Titeln je Zyklus ein CPU-Problem auf dem Worker. Innerhalb
+   eines Handelstages ist der Versatz konstant — die Sommerzeit wechselt
+   sonntags um 02:00 ET bei geschlossener Boerse. */
+function nyOffsetMs(date) {
+  const p = nyParts(date);
+  const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute);
+  return asUtc - Math.floor(date.getTime() / 60_000) * 60_000;
+}
+function regularSessionWindow(now = new Date()) {
+  const p = nyParts(now);
+  const off = nyOffsetMs(now);
+  const start = Date.UTC(+p.year, +p.month - 1, +p.day, 0, RTH_OPEN_MIN) - off;
+  const end = Date.UTC(+p.year, +p.month - 1, +p.day, 0, RTH_CLOSE_MIN) - off;
+  return { start, end, etDay: `${p.year}-${p.month}-${p.day}` };
+}
+/** Session-VWAP der laufenden regulaeren US-Sitzung. Gibt IMMER ein Objekt
+ *  zurueck; `state` traegt die Aussage, `vwap` ist bei allem ausser VALID/STALE
+ *  null. Es wird nie ein Defaultwert gesetzt und nie aus dem Vortag uebernommen. */
+function sessionVwap(bars, opts = {}) {
+  const now = opts.now instanceof Date ? opts.now : new Date(opts.now || Date.now());
+  const feed = String(opts.feed || '');
+  const price = Number(opts.price);
+  const out = { vwapSession: null, vwapSessionUsd: null, vwapSessionBars: 0,
+    vwapDistancePct: null, vwapPosition: 'UNKNOWN', vwapState: 'UNAVAILABLE',
+    vwapSource: null, vwapTimestamp: null, vwapReason: null };
+
+  /* Nur der Tiingo-IEX-Pfad ist geeignet. Twelve Data wird mit `prepost:'true'`
+     und `outputsize:'40'` abgerufen — Premarket ist eingemischt und 40 Bars
+     sind 200 Minuten, eine volle Sitzung braucht 78. Ab etwa 11:50 ET waere
+     ein Session-VWAP dort strukturell unmoeglich. Kein Teilfenster, keine
+     stille Mischung: dieser Pfad meldet nichts. */
+  if (!/tiingo/i.test(feed)) { out.vwapReason = feed ? `Datenquelle ${feed} liefert keine sitzungsreine Bar-Serie` : 'Datenquelle unbekannt'; return out; }
+
+  const phase = usMarketPhase(now, 'iex').key;
+  const running = phase === 'opening' || phase === 'regular';
+  const ended = phase === 'after' || phase === 'after-limited';
+  if (!running && !ended) { out.vwapReason = `keine reguläre US-Sitzung (${phase})`; return out; }
+
+  const win = regularSessionWindow(now);
+  let pv = 0, vv = 0, n = 0, lastTs = null;
+  for (const b of bars || []) {
+    const t = Date.parse(b?.dt || '');
+    if (!Number.isFinite(t) || t < win.start || t >= win.end) continue;
+    const h = Number(b.h), l = Number(b.l), c = Number(b.c), v = Number(b.v);
+    if (!Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(c) || !(v > 0)) continue;
+    pv += ((h + l + c) / 3) * v; vv += v; n++;
+    if (lastTs == null || t > lastTs) lastTs = t;
+  }
+  out.vwapSessionBars = n;
+  if (!(vv > 0)) { out.vwapReason = 'kein Intraday-Volumen in der laufenden Sitzung'; return out; }
+  if (n < RTH_MIN_BARS) { out.vwapReason = `erst ${n} Bar(s) seit 09:30 ET — zu dünn für eine Aussage`; return out; }
+
+  const vwap = pv / vv;
+  out.vwapSession = 'REGULAR';
+  out.vwapSessionUsd = vwap;
+  out.vwapSource = 'Tiingo IEX · Teilmarkt';
+  out.vwapTimestamp = lastTs == null ? null : new Date(lastTs).toISOString();
+  out.vwapState = running ? 'VALID' : 'STALE';
+  if (ended) out.vwapReason = 'reguläre Sitzung beendet — Stand des Schlusses, keine laufende Aussage';
+  if (Number.isFinite(price) && price > 0 && vwap > 0) {
+    const d = (price / vwap - 1) * 100;
+    out.vwapDistancePct = +d.toFixed(3);
+    /* NEAR statt ABOVE/BELOW im Rauschband: ein Tick ueber dem VWAP ist keine
+       Lage, sondern ein Zufall. Deckt zusammen mit der bar-basierten
+       `reclaimVwap`-Logik den Whipsaw-Punkt der Anforderung ab. */
+    out.vwapPosition = Math.abs(d) < 0.10 ? 'NEAR' : d > 0 ? 'ABOVE' : 'BELOW';
+  }
+  return out;
+}
+function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3, opts = {}) {
   const on = comp instanceof Set ? comp : new Set(ALL_ON);
   const vals = src?.values;
   const bars = (vals || []).map((v) => ({ c: +v.close, h: +v.high, l: +v.low, o: +v.open, v: +v.volume || 0, dt: v.datetime }))
@@ -1541,10 +1634,18 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
   const ema9 = emaN(cs.slice(-30), 9), ema21 = emaN(cs.slice(-40), 21), atr = stockATR(bars, 14);
 
   // VWAP über die vorliegenden Bars (Typical Price × Volumen)
+  // ROLLEND über 26 Bars, NICHT sitzungsverankert — siehe sessionVwap() oben.
+  // Dieses Feld speist weiterhin Score, Situation und Marktregime.
   let pv = 0, vv = 0;
   for (const b of bars.slice(-26)) { const tp = (b.h + b.l + b.c) / 3; pv += tp * b.v; vv += b.v; }
   const volumeKnown = vv > 0;
   const vwap = volumeKnown ? pv / vv : null;
+  /* v4.2.0: der sitzungsverankerte VWAP daneben — reine Anzeige, kein
+     Score-Eingang. `price` ist bewusst der Analysekurs des juengsten Bars und
+     NICHT eine separat geholte Live-Quote: beide muessen aus derselben Sitzung
+     stammen, sonst waere die Distanz eine Vermischung. Die Oberflaeche prueft
+     zusaetzlich den Scope der angezeigten Quote. */
+  const sv = sessionVwap(bars, { now: new Date(), feed: opts.feed || '', price: last.c });
 
   const ret5 = (last.c / prev.c - 1) * 100;
   const ret15 = (last.c / bars.at(-4).c - 1) * 100;
@@ -1972,6 +2073,10 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3) {
     netCRV:fusion.netCRV, elliott:fusion.elliott, atrPct: +((atr / last.c) * 100).toFixed(2),
     ret5: +ret5.toFixed(2), ret15: +ret15.toFixed(2), ret60: +ret60.toFixed(2),
     relVol: relVol == null ? null : +relVol.toFixed(2), volumeKnown, vwapUsd: vwap, aboveVwap: volumeKnown ? last.c >= vwap : null,
+    /* v4.2.0: Session-VWAP als eigener Feldsatz. Bewusst NEBEN `vwapUsd`/
+       `aboveVwap`, nicht an deren Stelle — die alten Felder bleiben Score-,
+       Situations- und Regime-Eingang, bis eine Attributionsmessung vorliegt. */
+    ...sv,
     liquidityVacuum: +liquidityVacuum.toFixed(0),
     // Situation-/Erklaerungsfelder: Discovery bleibt 0 % direktes BUY-Gewicht; FusionPulse Adaptiv nutzt nur die Deep-Situation als Analysekomponente.
     situationType, situationScore, situationReasons:situationReasons.slice(0,4),
@@ -2072,7 +2177,7 @@ async function stockLookup(env, raw, comp, minCrv = 3) {
     extendedHours = false;
     j = await twelveJSON('time_series', { symbol: info.symbol, interval: '5min', outputsize: '40', format: 'JSON', timezone: 'UTC' }, env.TWELVE_API_KEY, 1, env);
   }
-  const row = analyseStock(info.symbol, info.sector, j, fx, comp, minCrv);
+  const row = analyseStock(info.symbol, info.sector, j, fx, comp, minCrv, {feed:'twelve-data'});
   if (!row) return { configured: true, state: 'ok', notFound: true, error: 'Titel gefunden, aber noch nicht genügend 5-Minuten-Daten für die Analyse.', quota: quotaView(), version: APP_VERSION };
   if ((!row.name || row.name === row.symbol) && info.name) row.name = info.name;
   row.extendedHours = extendedHours;
@@ -2151,7 +2256,7 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3, favoriteSymbo
   const fresh = [];
   for (const [sector, symbol] of batch) {
     const src = j[symbol] || (syms.length === 1 ? j : null);
-    const r = analyseStock(symbol, sector, src, fx, comp, minCrv);
+    const r = analyseStock(symbol, sector, src, fx, comp, minCrv, {feed:'twelve-data'});
     if (r) fresh.push(r);
   }
   const old = new Map(stockMemo.rows.map((r) => [r.symbol, r]));
@@ -3359,6 +3464,17 @@ function snapshotPayload(row){
     lifecycle: row?.radarLifecycle || row?.lifecycle || null,
     maturity: Number.isFinite(Number(row?.preSignalMaturity)) ? Math.round(Number(row.preSignalMaturity)) : null,
     prioritySector: row?.prioritySector || null,
+    /* v4.2.0: Session-VWAP-Distanz und die relative Staerke gegen den
+       Benchmark werden MITGESCHRIEBEN, obwohl sie heute keinen Score
+       veraendern. Dieselbe Lehre wie beim Dollarumsatz unten: was man nicht
+       aufzeichnet, kann man spaeter nicht kalibrieren. Erst mit diesen Spalten
+       kann `/api/attribution` beantworten, ob die Divergenz „Markt stark,
+       Aktie unter VWAP" out-of-sample ueberhaupt etwas wert ist — und erst
+       dann darf sie in eine Gewichtung. Ohne die Messung waere jede
+       Gewichtung nur eine andere Meinung. */
+    vwapDistancePct: Number.isFinite(Number(row?.vwapDistancePct)) ? +Number(row.vwapDistancePct).toFixed(2) : null,
+    vwapState: row?.vwapState || null,
+    relVwapStrengthPct: Number.isFinite(Number(row?.relativeVwapStrengthPct)) ? +Number(row.relativeVwapStrengthPct).toFixed(2) : null,
     /* v3.18.0: Der IEX-Dollarumsatz wird ab hier MITGESCHRIEBEN. Er ist die
        Groesse, gegen die MOM_MIN_DOLLARVOL prueft — und sie stand nirgends in
        der Aufzeichnung. Deshalb liess sich die Schwelle seit v3.9.0 nur raten.
@@ -6059,7 +6175,11 @@ function aladdinRegime(rows){
   const prob=Math.round(riskOnScore*100);
   const reasons=[];
   reasons.push(`${Math.round(breadth*100)} % der Titel mit positivem 1h-Return (Breadth)`);
-  reasons.push(`${Math.round(vwapBreadth*100)} % ueber VWAP`);
+  /* v4.2.0 (Anforderung 8): Das Universum MUSS im Text stehen. In der
+     Kopfzeile steht der gleichlautende Satz der KRYPTO-Breadth (analyse(),
+     ~20 Bitpanda-Paare) — beide waren auf demselben Bildschirm sichtbar und
+     keiner nannte, worauf er sich bezieht. */
+  reasons.push(`US-Aktien: ${Math.round(vwapBreadth*100)} % der Stichprobe ueber VWAP`);
   if(rvolShare>=0.3) reasons.push(`${Math.round(rvolShare*100)} % mit RVOL ≥ 1,5x – Volumen bestaetigt Bewegung`);
   else reasons.push(`nur ${Math.round(rvolShare*100)} % mit erhoehtem Volumen – Bewegung schwach getragen`);
   return {label,prob,confidence:sampleConfidence(n),sample:n,breadth:+breadth.toFixed(2),
@@ -7305,9 +7425,66 @@ async function tiingoIexSeries(env,symbol){
   const arr=Array.isArray(d)?d:[];
   return {meta:{symbol,name:STOCK_NAMES[symbol]||STOCK_SEARCH_BY_SYMBOL.get(symbol)?.name||symbol,exchange:'US',currency:'USD'},values:arr.map(x=>({datetime:x.date,open:x.open,high:x.high,low:x.low,close:x.close,volume:x.volume})).reverse()};
 }
+/* ══ v4.2.0 · RELATIVE STAERKE GEGEN EINEN BENCHMARK, NICHT GEGEN DIE BREADTH ══
+   Der naheliegende Bezug waere `aladdinRegime.vwapBreadth` gewesen. Dagegen
+   sprechen zwei Dinge, die beide in den Daten stehen und nicht in einer
+   Meinung:
+
+   1) VERZERRTE STICHPROBE. Die Breadth entsteht aus `stockMemo.rows` — bis zu
+      100 Titel, die der Deep-Scan ausgewaehlt hat, WEIL sie sich bewegen.
+      `dataBasis.honesty` sagt das bereits. Eine relative Staerke gegen ein
+      nach Staerke vorgefiltertes Universum ist keine relative Staerke gegen
+      den Markt: die Referenz liegt systematisch zu hoch, „Markt stark, Aktie
+      schwach" feuert zu oft, „Markt schwach" fast nie.
+
+   2) ZWEI MASSSTAEBE. Die Breadth zaehlt `r.aboveVwap` — den ROLLENDEN
+      26-Bar-VWAP. Der Titel traegt ab 4.2.0 einen sitzungsverankerten. Ihre
+      Differenz enthielte damit zuerst einen Definitionsunterschied und erst
+      danach vielleicht ein Signal, und zwar am staerksten morgens, wenn man
+      sie am ehesten benutzen will.
+
+   Ein Benchmark loest beides: dieselbe Formel, derselbe Anker, dieselbe
+   Sitzung, keine Vorauswahl. Kosten: ein Tiingo-Abruf je Deep-Scan.
+   Zwischengespeichert fuer 4 Minuten, damit der Zwei-Minuten-Takt ihn nicht
+   verdoppelt. */
+const BENCHMARK_SYMBOL = 'SPY';
+let benchmarkVwapMemo = { ts: 0, value: null };
+async function benchmarkSessionVwap(env, now = Date.now()) {
+  if (benchmarkVwapMemo.value && now - benchmarkVwapMemo.ts < 4 * 60_000) return benchmarkVwapMemo.value;
+  try {
+    const src = await tiingoIexSeries(env, BENCHMARK_SYMBOL);
+    const bars = (src.values || []).map(v => ({ c: +v.close, h: +v.high, l: +v.low, v: +v.volume || 0, dt: v.datetime }))
+      .filter(b => Number.isFinite(b.c)).reverse();
+    const last = bars.at(-1);
+    const sv = sessionVwap(bars, { now: new Date(now), feed: 'tiingo-iex', price: last?.c });
+    /* Fail-closed: taugt der Benchmark nicht, gibt es KEINE relative Staerke —
+       nicht etwa eine gegen null. Eine erfundene Referenz waere schlimmer als
+       gar keine, weil die Differenz dann wie eine Messung aussaehe. */
+    const value = (sv.vwapState === 'VALID' && sv.vwapDistancePct != null)
+      ? { symbol: BENCHMARK_SYMBOL, distancePct: sv.vwapDistancePct, state: sv.vwapState, ts: sv.vwapTimestamp }
+      : { symbol: BENCHMARK_SYMBOL, distancePct: null, state: sv.vwapState, reason: sv.vwapReason || null };
+    benchmarkVwapMemo = { ts: now, value };
+    return value;
+  } catch (e) {
+    const value = { symbol: BENCHMARK_SYMBOL, distancePct: null, state: 'UNAVAILABLE', reason: String(e?.message || e).slice(0, 120) };
+    benchmarkVwapMemo = { ts: now, value };
+    return value;
+  }
+}
+/** Haengt die relative Staerke an eine Zeile. Beide Seiten muessen VALID sein,
+ *  sonst bleiben alle drei Felder null. */
+function attachRelativeVwap(row, bench) {
+  if (!row) return row;
+  row.benchmarkSymbol = bench?.symbol || null;
+  row.benchmarkVwapDistancePct = bench?.distancePct ?? null;
+  row.relativeVwapStrengthPct =
+    (bench?.distancePct != null && row.vwapState === 'VALID' && row.vwapDistancePct != null)
+      ? +(row.vwapDistancePct - bench.distancePct).toFixed(3) : null;
+  return row;
+}
 async function tiingoAnalyseOne(env,symbol,sector,comp,minCrv,fx){
   const src=await tiingoIexSeries(env,symbol);
-  const r=analyseStock(symbol,sector,src,fx,comp,minCrv);
+  const r=analyseStock(symbol,sector,src,fx,comp,minCrv,{feed:'tiingo-iex'});
   if(r){r.feed='Tiingo IEX';r.dataSource='tiingo-iex';}
   return r;
 }
@@ -7657,6 +7834,9 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
     try{
       const row=await tiingoAnalyseOne(env,sym,inf.sector,comp,minCrv,fx);
       if(!row)return null;
+      // v4.2.0: relative Staerke gegen den Benchmark. Der Abruf ist gecacht,
+      // dieser Aufruf kostet daher nichts pro Titel.
+      attachRelativeVwap(row, await benchmarkSessionVwap(env, now));
       if(NON_COMMON_SYMBOL_DENY.has(sym)||NON_COMMON_EQUITY_RE.test(`${row?.name||''} ${row?.securityName||''}`))return null;
       const rm=radarMap.get(sym),bm=boatsMap.get(sym);
       if(rm){ row.discovery={type:'iex-radar',...rm,buyWeight:0}; row.securityVerified=rm.securityVerified===true; row.securityName=rm.securityName||row.name; row.companyDescription=rm.companyDescription||''; row.exchange=rm.exchange||''; }
@@ -7759,6 +7939,7 @@ async function tiingoStockLookup(env,raw,comp,minCrv=3,force=false){
     return {configured:true,state:'ok',cached:true,lookup:true,row,source:'Tiingo IEX',version:APP_VERSION};
   }
   const fx=await getTiingoFx(env),row=await tiingoAnalyseOne(env,info.symbol,info.sector,comp,minCrv,fx);
+  if(row) attachRelativeVwap(row, await benchmarkSessionVwap(env));
   if(!row)return {configured:true,state:'ok',notFound:true,error:'Noch nicht genügend Tiingo-5-Minuten-Daten.',source:'Tiingo IEX',version:APP_VERSION};
   if(info.name&&row.name===row.symbol)row.name=info.name;
   const fq=await freshestStockQuote(env,info.symbol);
@@ -7771,7 +7952,7 @@ async function tiingoStockLookup(env,raw,comp,minCrv=3,force=false){
   stockLookupMemo.set(info.symbol,{ts:Date.now(),row});const old=new Map(stockMemo.rows.map(r=>[r.symbol,r]));old.set(row.symbol,row);stockMemo.rows=[...old.values()].sort((a,b)=>b.score-a.score).slice(0,80);
   return {configured:true,state:'ok',cached:false,lookup:true,row,source:'Tiingo IEX',provider:'Tiingo',version:APP_VERSION};
 }
-export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation, alpacaPrevClose, momentumFromAlpaca, maturityBreakdown, snapshotWriteDecision, classifyError };
+export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation, alpacaPrevClose, momentumFromAlpaca, maturityBreakdown, snapshotWriteDecision, classifyError, sessionVwap, attachRelativeVwap, regularSessionWindow };
 
 export default {
   async fetch(request, env, ctx) {

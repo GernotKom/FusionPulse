@@ -374,10 +374,46 @@ BOX('„PLAN AUF ALTEM KURS"', [
     'Vor jeder Order den echten Kurs beim Broker prüfen.',
 ], warn=True)
 
+BOX('Zwei Marktbreiten, gleich formuliert', [
+    'FusionPulse zeigt <b>zwei</b> Werte der Form „X % über VWAP", und sie meinen '
+    'Verschiedenes. Der Knopf in der Kopfzeile ist die <b>Krypto</b>-Marktbreite: die '
+    'gescannten Bitpanda-Paare plus der Bitcoin-Trend. Die Karte '
+    '<i>Market Recommendation</i> nennt getrennt die <b>US-Aktien</b>-Marktbreite.',
+    'Seit v4.2.0 trägt jede der beiden ihr Universum in der Beschriftung. Vorher standen '
+    'sie gleich formuliert auf demselben Bildschirm — der Kopfzeilen-Knopf ist auch '
+    'sichtbar, während eine Aktie im Fokus liegt. Die beiden Zahlen dürfen nicht '
+    'miteinander verrechnet werden.',
+])
+
 H3('Die Bewertungszeile')
 P('Eine Zeile wie <i>„Discovery · Score 8,0 · Vorrang 86 · 70 bekannt + 16 neu · '
   'Situation PULLBACK HOLD 73/100 · Phase IGNITION"</i>.')
 G('score'); G('maturity'); G('situationScore'); G('lifecyclePhase')
+
+H3('Session-VWAP der ausgewählten Aktie')
+P('Seit v4.2.0 steht im Block <i>Ausgewählte Aktie</i> neben dem Kurs eine VWAP-Kachel: '
+  '<i>„VWAP $224,82 · Δ +0,53 % · ↑ ÜBER VWAP"</i>.')
+G('vwapSession'); G('relVwap')
+BOX('Warum hier ein Strich stehen darf — und oft muss', [
+    'Der Wert ist an die <b>laufende reguläre US-Sitzung</b> gebunden (ab 09:30 ET). Mit jeder '
+    'neuen Sitzung beginnt er von vorn. Das ist der Unterschied zu einem gleitenden '
+    'Durchschnitt und der Grund, warum er morgens kurz nach der Eröffnung noch keine '
+    'Aussage erlaubt: nach zehn Minuten gibt es zwei Kursbalken, und aus zweien lässt sich '
+    'kein Durchschnittspreis eines Handelstages ableiten.',
+
+    'Ein Strich erscheint außerdem, wenn der angezeigte Kurs selbst als veraltet markiert '
+    'ist, wenn die Live-Quote aus dem Premarket stammt, während der VWAP die reguläre '
+    'Sitzung meint, oder wenn die Daten aus der Ersatzquelle Twelve Data kommen — diese '
+    'liefert Premarket vermischt und nur gut drei Stunden Rückblick. In all diesen Fällen '
+    'wird <b>kein Ersatzwert eingesetzt</b> und nichts aus dem Vortag übernommen.',
+
+    '<b>Weiter über dem VWAP ist nicht besser.</b> Ein Kurs weit oberhalb ist für einen '
+    'Neueinstieg eher ungünstiger, nicht günstiger. Deshalb wird die Distanz beziffert und '
+    'nicht in eine Belohnung umgerechnet: die Kachel verändert Score und Ampel nicht.',
+
+    'Die Grundlage ist das Volumen der Börse IEX, also ein Ausschnitt des US-Handels. Der '
+    'VWAP in der Software Ihres Brokers kann deshalb abweichen. Die Kachel nennt die Quelle.',
+])
 BOX('Warum der Vorrang seit v4.1.5 aufgeteilt dasteht', [
     'Bis v4.1.4 hieß dieser Wert <b>„Reife %"</b> und stand als eigene Kachel neben dem '
     'Score. Damit las er sich wie eine unabhängige Bestätigung — und genau das ist er '

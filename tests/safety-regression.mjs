@@ -5795,3 +5795,151 @@ console.log('✓ FusionPulse v4.1.7 Schreibbudget in der App (ausgefuehrt): OK')
 }
 
 console.log('✓ FusionPulse v4.1.8 Datenbanklimit statt Anbieterschuld (ausgefuehrt): OK');
+
+/* ══ v4.2.0 · SESSION-VWAP JE SYMBOL ════════════════════════════════════════
+   Der vorhandene VWAP in analyseStock ist ein ROLLENDES 26-Bar-Fenster
+   (130 Minuten) ohne Sitzungsanker. Um 10:00 ET stammen 6 dieser Bars aus der
+   laufenden Sitzung und 20 aus dem Vortagsschluss — „ueber VWAP" ist morgens
+   ueberwiegend eine Aussage ueber gestern.
+
+   DAS ALTE FELD BLEIBT. Es speist Score (0,20), Situation, reclaimVwap und
+   aladdinRegime.vwapBreadth. Der neue Wert ist reine Anzeige, bis eine
+   Attributionsmessung vorliegt. Beide Zusicherungen werden hier geprueft. */
+{
+  const { sessionVwap, attachRelativeVwap, regularSessionWindow, analyseStock } = await import('../src/worker.js');
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url),'utf8');
+
+  // Mittwoch, 02.09.2026, 11:00 ET (= 15:00 UTC, Sommerzeit) — Sitzung laeuft.
+  const mittags = Date.UTC(2026, 8, 2, 15, 0);
+  const win = regularSessionWindow(new Date(mittags));
+  assert.strictEqual(new Date(win.start).toISOString(), '2026-09-02T13:30:00.000Z',
+    `v4.2.0: 09:30 ET muss 13:30 UTC sein (Sommerzeit), war ${new Date(win.start).toISOString()}`);
+  assert.strictEqual(new Date(win.end).toISOString(), '2026-09-02T20:00:00.000Z',
+    'v4.2.0: 16:00 ET muss 20:00 UTC sein');
+  // Winterzeit: 09:30 ET = 14:30 UTC. Ein fester Versatz waere hier falsch.
+  const winterWin = regularSessionWindow(new Date(Date.UTC(2026, 0, 14, 16, 0)));
+  assert.strictEqual(new Date(winterWin.start).toISOString(), '2026-01-14T14:30:00.000Z',
+    'v4.2.0: im Winter verschiebt sich die Sitzung um eine Stunde — der Versatz darf nicht fest verdrahtet sein');
+
+  const bar = (isoMin, c, v=1000) => ({ dt:isoMin, c, h:c+0.1, l:c-0.1, v });
+  const heute = (hhmm, c, v) => bar(`2026-09-02T${hhmm}:00.000Z`, c, v);
+  const sitzung = [heute('13:30',100), heute('13:35',101), heute('13:40',102), heute('13:45',103)];
+
+  // 1+2+3 — ueber, unter, nahe.
+  const ueber = sessionVwap(sitzung, { now:mittags, feed:'tiingo-iex', price:110 });
+  assert.strictEqual(ueber.vwapState, 'VALID', `v4.2.0: gueltige Sitzungsdaten muessen VALID ergeben (${ueber.vwapReason})`);
+  assert.strictEqual(ueber.vwapPosition, 'ABOVE', 'v4.2.0: 110 gegen ~101,5 ist ABOVE');
+  assert.ok(ueber.vwapDistancePct > 8, 'v4.2.0: die Distanz muss beziffert sein, nicht nur ein Boolean');
+  assert.strictEqual(sessionVwap(sitzung, { now:mittags, feed:'tiingo-iex', price:90 }).vwapPosition, 'BELOW',
+    'v4.2.0: darunter ist BELOW');
+  const nah = sessionVwap(sitzung, { now:mittags, feed:'tiingo-iex', price:ueber.vwapSessionUsd*1.0005 });
+  assert.strictEqual(nah.vwapPosition, 'NEAR',
+    'v4.2.0: im Rauschband darf kein ABOVE/BELOW behauptet werden — ein Tick ist keine Lage');
+
+  // 5 — Volumen fehlt.
+  const ohneVol = sessionVwap(sitzung.map(b=>({...b,v:0})), { now:mittags, feed:'tiingo-iex', price:110 });
+  assert.strictEqual(ohneVol.vwapState, 'UNAVAILABLE', 'v4.2.0: ohne Intraday-Volumen gibt es keinen VWAP');
+  assert.strictEqual(ohneVol.vwapSessionUsd, null, 'v4.2.0: und keinen Ersatzwert');
+
+  // 8+9+10 — Vortag, Premarket, falsche Sitzung duerfen NICHT einfliessen.
+  const mitVortag = [
+    bar('2026-09-01T19:55:00.000Z', 500, 999_999),   // Vortag, riesiges Volumen
+    bar('2026-09-02T12:00:00.000Z', 400, 999_999),   // Premarket 08:00 ET
+    ...sitzung,
+    bar('2026-09-02T20:30:00.000Z', 300, 999_999),   // After Hours
+  ];
+  const gefiltert = sessionVwap(mitVortag, { now:mittags, feed:'tiingo-iex', price:110 });
+  assert.strictEqual(gefiltert.vwapSessionBars, 4,
+    `v4.2.0: nur die 4 Bars der laufenden Sitzung duerfen zaehlen, waren ${gefiltert.vwapSessionBars}`);
+  assert.ok(Math.abs(gefiltert.vwapSessionUsd - ueber.vwapSessionUsd) < 1e-9,
+    'v4.2.0: Vortag, Premarket und After Hours duerfen den Wert NICHT veraendern — genau das war der Fehler des rollenden Fensters');
+
+  // 4 — zu duenn: der Preis der richtigen Zahl ist Verfuegbarkeit.
+  const duenn = sessionVwap(sitzung.slice(0,2), { now:mittags, feed:'tiingo-iex', price:110 });
+  assert.strictEqual(duenn.vwapState, 'UNAVAILABLE',
+    'v4.2.0: zwei Bars nach Sitzungsbeginn sind keine Aussage — der rollende VWAP hat sich hier still beim Vortag bedient');
+  assert.match(duenn.vwapReason, /zu dünn/, 'v4.2.0: und der Grund muss dastehen');
+
+  // Datenquelle: Twelve Data wird mit prepost:'true' und 40 Bars geholt.
+  assert.strictEqual(sessionVwap(sitzung, { now:mittags, feed:'twelve-data', price:110 }).vwapState, 'UNAVAILABLE',
+    'v4.2.0: Twelve Data mischt Premarket ein und liefert nur 200 Minuten — dort gibt es keinen Session-VWAP');
+  assert.strictEqual(sessionVwap(sitzung, { now:mittags, feed:'', price:110 }).vwapState, 'UNAVAILABLE',
+    'v4.2.0: unbekannte Datenquelle ist fail-closed');
+  assert.match(worker, /outputsize:'40', format:'JSON', timezone:'UTC'/,
+    'v4.2.0: Vorbedingung des Tests — der Twelve-Data-Abruf ist weiterhin auf 40 Bars begrenzt');
+
+  // Ausserhalb der Sitzung: nach Schluss STALE, sonst UNAVAILABLE.
+  assert.strictEqual(sessionVwap(sitzung, { now:Date.UTC(2026,8,2,21,0), feed:'tiingo-iex', price:110 }).vwapState, 'STALE',
+    'v4.2.0: nach Boersenschluss ist der Wert ein Stand, keine laufende Aussage');
+  assert.strictEqual(sessionVwap(sitzung, { now:Date.UTC(2026,8,2,11,0), feed:'tiingo-iex', price:110 }).vwapState, 'UNAVAILABLE',
+    'v4.2.0: im Premarket gibt es keinen Regular-Session-VWAP');
+  assert.strictEqual(sessionVwap(sitzung, { now:Date.UTC(2026,8,5,15,0), feed:'tiingo-iex', price:110 }).vwapState, 'UNAVAILABLE',
+    'v4.2.0: am Wochenende erst recht nicht');
+
+  // 11+12 — der Score darf davon NICHTS mitbekommen.
+  assert.match(worker, /const vwapScore = volumeKnown \? \(last\.c >= vwap \? 7\.6 : 3\.4\) : null;/,
+    'v4.2.0: der Score-Eingang bleibt der alte, binaere, rollende Wert — unveraendert');
+  assert.doesNotMatch(worker, /vwapScore[^\n]*vwapDistancePct|vwapDistancePct[^\n]*vwapScore/,
+    'v4.2.0: die Distanz darf NICHT in den Score einfliessen — ein groesserer Abstand ist nicht besser');
+  assert.doesNotMatch(worker, /SITU_W[\s\S]{0,200}vwapSessionUsd/,
+    'v4.2.0: und auch nicht in die Situationsgewichte');
+  for(const feld of ['vwapUsd: vwap','aboveVwap: volumeKnown ? last.c >= vwap : null'])
+    assert.ok(worker.includes(feld), `v4.2.0: das alte Feld „${feld}" muss unveraendert bleiben`);
+
+  // 13 — relative Staerke: Benchmark statt Breadth, fail-closed.
+  const zeile = { symbol:'NVDA', vwapState:'VALID', vwapDistancePct:0.70 };
+  attachRelativeVwap(zeile, { symbol:'SPY', distancePct:-0.80 });
+  assert.strictEqual(zeile.relativeVwapStrengthPct, 1.5,
+    'v4.2.0: Markt schwach und Aktie stark muss als positive relative Staerke sichtbar bleiben');
+  const gegen = { symbol:'NVDA', vwapState:'VALID', vwapDistancePct:-0.80 };
+  attachRelativeVwap(gegen, { symbol:'SPY', distancePct:0.70 });
+  assert.strictEqual(gegen.relativeVwapStrengthPct, -1.5,
+    'v4.2.0: und der umgekehrte Fall als Divergenz — er darf vom positiven Marktbild nicht ueberdeckt werden');
+  for(const [name, b, z] of [
+    ['Benchmark unbrauchbar', { symbol:'SPY', distancePct:null }, { symbol:'X', vwapState:'VALID', vwapDistancePct:1 }],
+    ['Titel nicht VALID',     { symbol:'SPY', distancePct:0.5 },  { symbol:'X', vwapState:'STALE', vwapDistancePct:1 }],
+  ]){
+    const t={...z}; attachRelativeVwap(t,b);
+    assert.strictEqual(t.relativeVwapStrengthPct, null,
+      `v4.2.0 (${name}): ohne beide Seiten gibt es keine relative Staerke — insbesondere keine gegen null`);
+  }
+
+  /* Anforderung 8: beide Marktbreiten muessen ihr Universum nennen. Sie waren
+     gleich formuliert und gleichzeitig sichtbar. */
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url),'utf8');
+  assert.match(app, /`Krypto · \$\{meta\.marketRegime/, 'v4.2.0: der Kopfzeilen-Knopf muss „Krypto" nennen');
+  assert.match(worker, /US-Aktien: \$\{Math\.round\(vwapBreadth\*100\)\}/, 'v4.2.0: die Aktien-Breadth muss „US-Aktien" nennen');
+  assert.match(C.gloss('breadth'), /ZWEI/, 'v4.2.0: das Glossar muss vor der Verwechslung warnen');
+
+  /* Die Anzeige — ausgefuehrt, mit Schwerpunkt auf dem Schweigen. */
+  const gueltig = { symbol:'NVDA', vwapState:'VALID', vwapSessionUsd:224.82, vwapDistancePct:0.53,
+    vwapPosition:'ABOVE', vwapSource:'Tiingo IEX · Teilmarkt', updated:new Date().toISOString(),
+    relativeVwapStrengthPct:1.2, benchmarkVwapDistancePct:-0.67, benchmarkSymbol:'SPY' };
+  const vn = C.vwapNote(gueltig, 'NVDA');
+  assert.strictEqual(vn.state, 'VALID', 'v4.2.0: ein gueltiger Stand muss angezeigt werden');
+  assert.match(vn.status, /ÜBER VWAP/, 'v4.2.0: mit klarer Lage');
+  assert.match(vn.distance, /\+0,53 %/, `v4.2.0: und beziffert, war "${vn.distance}"`);
+  assert.match(vn.detail, /NICHT besser/, 'v4.2.0: weiter weg darf nicht als besser gelesen werden');
+  assert.match(vn.detail, /SPY/, 'v4.2.0: der Benchmark-Vergleich gehoert in den Hilfetext');
+
+  assert.strictEqual(C.vwapNote({symbol:'NVDA'}, 'NVDA'), null,
+    'v4.2.0: ein Datensatz vor 4.2.0 darf nichts erzeugen — der Client rechnet nichts nach');
+  assert.strictEqual(C.vwapNote(gueltig, 'AAPL').state, 'MISMATCH',
+    'v4.2.0: ein VWAP aus einem fremden Datensatz darf NIE angezeigt werden');
+  // 7 — Kurs veraltet: die Kernforderung.
+  const alt = { ...gueltig, updated:new Date(Date.now()-30*60*60_000).toISOString() };
+  const altN = C.vwapNote(alt, 'NVDA');
+  assert.strictEqual(altN.state, 'STALE',
+    'v4.2.0: aus einem veralteten Kurs darf KEINE aktuelle VWAP-Beurteilung entstehen');
+  assert.strictEqual(altN.label, '—', 'v4.2.0: und kein Zahlenwert daneben stehen');
+  assert.doesNotMatch(altN.status, /ÜBER|UNTER/, 'v4.2.0: erst recht keine Lage');
+  // Live-Quote aus dem Premarket gegen einen Regular-Session-VWAP.
+  assert.strictEqual(C.vwapNote({...gueltig, liveQuoteScope:'premarket'}, 'NVDA').state, 'STALE',
+    'v4.2.0: eine Premarket-Quote gegen einen Regular-Session-VWAP ist eine Vermischung, keine Distanz');
+  assert.strictEqual(C.vwapNote({...gueltig, vwapState:'UNAVAILABLE', vwapReason:'kein Volumen'}, 'NVDA').label, '—',
+    'v4.2.0: ohne Bewertbarkeit steht dort ein Strich');
+}
+
+console.log('✓ FusionPulse v4.2.0 Session-VWAP je Symbol (ausgefuehrt): OK');

@@ -155,7 +155,7 @@ export function loadClient(overrides = {}) {
   maturityTag,
   /* v4.1.7: Die Schreibbudget-Anzeige muss AUSGEFUEHRT prueffbar sein — vor
      allem die Faelle ohne Messung, in denen nichts beruhigt werden darf. */
-  d1Note,
+  d1Note, vwapNote,
   /* v4.1.8: die Zustandstabellen, damit der neue Datenbank-Zustand AUSGEFUEHRT
      geprueft werden kann statt per Regex im Quelltext. */
   STATE_TEXT, STATE_TONE,
