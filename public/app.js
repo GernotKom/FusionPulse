@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.2.1 — Frontend
+   FusionPulse v4.2.2 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2621,7 +2621,22 @@ function vwapNote(r, expectedSymbol){
       detail:'Die angezeigte Analyse gehört zu einem anderen Titel. Ein VWAP aus einem fremden Datensatz wird nicht angezeigt.' };
   }
   const st=String(r?.vwapState||'');
-  if(!st) return null;                       // Datensatz vor v4.2.0 — nichts erfinden
+  /* ══ v4.2.2 · UNSICHTBAR IST NICHT DASSELBE WIE AUSSAGELOS ════════════════
+     Bis 4.2.1 gab diese Funktion `null` zurueck, wenn der Datensatz die Felder
+     nicht trug — und die Kachel verschwand ersatzlos. Genau das passiert im
+     wichtigsten Fall: Die Oberflaeche wird aus dem PERSISTIERTEN Scan bedient
+     (`stock_scan:last` in fp_meta). Kann der Cron nicht mehr schreiben, friert
+     dieser Stand ein, und die angezeigten Zeilen stammen weiter aus der Zeit
+     vor 4.2.0. Die Anzeige sah dann so aus, als gaebe es die Funktion nicht.
+
+     Ein Feld, das bei einer Stoerung spurlos verschwindet, ist schlechter als
+     eines, das die Stoerung benennt. Es wird deshalb weiterhin nichts
+     nachgerechnet — aber der Platz bleibt sichtbar und sagt, warum er leer
+     ist. */
+  if(!st){
+    return { state:'PENDING', label:'—', status:'⚪ NOCH NICHT BERECHNET',
+      detail:'Dieser Datensatz stammt aus einem Scan vor v4.2.0 und trägt noch keinen Session-VWAP. Der Wert wird NICHT im Browser nachgerechnet — er erscheint, sobald ein neuer Scan durchläuft und gespeichert werden konnte. Bleibt er längere Zeit stehen, ist der gespeicherte Scan eingefroren: dann zuerst das Schreibbudget in der Systemleiste prüfen.' };
+  }
   const quelle=r?.vwapSource?` Quelle: ${r.vwapSource}.`:'';
   const basis=' Grundlage ist die reguläre US-Sitzung ab 09:30 ET; Premarket wird nicht eingerechnet und nichts aus dem Vortag übernommen.';
   if(st!=='VALID'&&st!=='STALE'){
@@ -2657,17 +2672,17 @@ function vwapNote(r, expectedSymbol){
 }
 function d1Note(meta){
   if(authDenied){
-    return { measured:false, tone:'warn', label:'Schreibbudget: nicht abrufbar',
+    return { measured:false, tone:'warn', short:'DB n. v.', label:'Schreibbudget: nicht abrufbar',
       detail:'Ohne Zugriffs-Token beantwortet der Server keine Statusabfrage.' };
   }
   const d=(meta||{}).d1;
   if(!d || d.measured===false){
-    return { measured:false, tone:'warn', label:'Schreibbudget: nicht gemessen',
+    return { measured:false, tone:'warn', short:'DB n. gem.', label:'Schreibbudget: nicht gemessen',
       detail:(d&&d.reason?d.reason+' ':'')+'Das ist eine fehlende Messung, kein niedriger Verbrauch — daraus lässt sich NICHT schließen, dass Reserve vorhanden ist.' };
   }
   const w=Number(d.rowsWritten), cap=Number(d.freeLimitRowsWritten);
   if(!Number.isFinite(w)||!(cap>0)){
-    return { measured:false, tone:'warn', label:'Schreibbudget: nicht gemessen',
+    return { measured:false, tone:'warn', short:'DB n. gem.', label:'Schreibbudget: nicht gemessen',
       detail:'Der Server meldet noch keine Zeilenzahlen für den laufenden UTC-Tag. Das ist eine fehlende Messung, kein niedriger Verbrauch — daraus lässt sich NICHT schließen, dass Reserve vorhanden ist.' };
   }
   /* v4.2.1: Gemessen wird ab jetzt gegen die SELBST gesetzte Obergrenze, nicht
@@ -2688,7 +2703,8 @@ function d1Note(meta){
   const reicht = share>=1 ? ' Das Budget ist aufgebraucht — bis 00:00 UTC wird nichts mehr gespeichert.'
     : haelt ? ' Bei diesem Takt reicht es bis Mitternacht UTC.'
     : Number.isFinite(rest) ? ` Bei diesem Takt ist es in rund ${n(rest)} Minuten aufgebraucht.` : '';
-  return { measured:true, tone, label,
+  const kurz=(x)=>x>=10_000?Math.round(x/1000)+'k':n(x);
+  return { measured:true, tone, label, short:`DB ${kurz(w)}/${kurz(grenze)}`,
     /* Die Untergrenze muss mitlaufen, sonst liest sich „reicht" wie eine
        Zusage. Der Server misst `.first()`-Abfragen nicht mit. */
     detail:`${label}.${takt}${reicht}${eigen?` Die Grenze ist eine SELBST gesetzte Tagesobergrenze (${n(grenze)}), nicht das Limit des Tarifs (${n(cap)}) — Cloudflare bietet für D1 keine Ausgabenbremse. Bei Erreichen stoppen die großen Schreibvorgänge; Kurse und Analysen laufen weiter.`:''}${d.selfCapExhausted?' ⛔ Die Obergrenze ist erreicht, es wird nichts mehr für die Lernschicht gespeichert.':''} Gerechnet wird gegen 00:00 UTC (2 Uhr MESZ). Die Messung ist eine UNTERGRENZE${d.complete===false?' und ausdrücklich unvollständig':''} — der echte Verbrauch liegt bei oder über diesem Wert. Maßgeblich bleibt der Kontostand im Cloudflare-Dashboard.` };
@@ -2859,6 +2875,14 @@ function renderResourceStrip(){
   out.textContent=text+rateNote;
   box.classList.remove('warn','orange','err','ok'); box.classList.add(level==='green'?'ok':level==='yellow'?'warn':level==='orange'?'orange':'err');
   const fiSys=feedInfo(stockMeta,openingMeta), bwSys=bandwidthNote(health), d1Sys=d1Note(health);
+  /* v4.2.2: sichtbar statt nur im Hilfetext. Der Kurzwert nennt Verbrauch und
+     Grenze; die Ampel faerbt sich erst, wenn es etwas zu sagen gibt. */
+  const dbEl=$('#sysDb');
+  if(dbEl){
+    dbEl.textContent=d1Sys.short||'DB n. v.';
+    dbEl.dataset.state=d1Sys.measured===false?'warn':d1Sys.tone==='err'?'err':d1Sys.tone==='orange'?'warn':'ok';
+    dbEl.title=d1Sys.detail;
+  }
   box.dataset.tip=`${text}${rateNote}. Datenquelle Aktien: ${fiSys.label}. ${bwSys.label}. ${d1Sys.label}. Krypto: ${hs.crypto?.state||'n.v.'}; Aktien: ${hs.stocks?.state||'n.v.'}; Opening: ${hs.alpaca?.state||'n.v.'}; Tiingo: ${health?.tiingoConfigured?'aktiv':'n.v.'}. Grün = alles stabil, Gelb = funktioniert mit kleiner Einschränkung, Orange = beobachten/zeitnah prüfen, Rot = konkreter Handlungsbedarf.`;
 }
 

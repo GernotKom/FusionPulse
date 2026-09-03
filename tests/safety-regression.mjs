@@ -5924,8 +5924,20 @@ console.log('✓ FusionPulse v4.1.8 Datenbanklimit statt Anbieterschuld (ausgefu
   assert.match(vn.detail, /NICHT besser/, 'v4.2.0: weiter weg darf nicht als besser gelesen werden');
   assert.match(vn.detail, /SPY/, 'v4.2.0: der Benchmark-Vergleich gehoert in den Hilfetext');
 
-  assert.strictEqual(C.vwapNote({symbol:'NVDA'}, 'NVDA'), null,
-    'v4.2.0: ein Datensatz vor 4.2.0 darf nichts erzeugen — der Client rechnet nichts nach');
+  /* v4.2.2: aus `null` wurde ein SICHTBARER Zustand. Ein Feld, das bei einer
+     Stoerung spurlos verschwindet, ist schlechter als eines, das die Stoerung
+     benennt — und genau dieser Fall trat im Betrieb ein, als der persistierte
+     Scan einfror und die Oberflaeche weiter Zeilen von vor 4.2.0 zeigte. */
+  const vorher = C.vwapNote({symbol:'NVDA'}, 'NVDA');
+  assert.ok(vorher,
+    'v4.2.2: die Kachel darf bei fehlenden Feldern nicht ersatzlos verschwinden — genau so sah es im Betrieb aus, als gaebe es die Funktion nicht');
+  assert.strictEqual(vorher.state, 'PENDING',
+    'v4.2.2: ein Datensatz vor 4.2.0 muss die Kachel SICHTBAR lassen, nicht verschwinden');
+  assert.strictEqual(vorher.label, '—', 'v4.2.2: aber ohne Zahlenwert');
+  assert.match(vorher.detail, /NICHT im Browser nachgerechnet/,
+    'v4.2.2: und ausdruecklich sagen, dass nichts nachgerechnet wird');
+  assert.match(vorher.detail, /Schreibbudget/,
+    'v4.2.2: bei dauerhaftem Stillstand muss die Kachel auf die eigentliche Ursache zeigen');
   assert.strictEqual(C.vwapNote(gueltig, 'AAPL').state, 'MISMATCH',
     'v4.2.0: ein VWAP aus einem fremden Datensatz darf NIE angezeigt werden');
   // 7 — Kurs veraltet: die Kernforderung.
@@ -5943,3 +5955,46 @@ console.log('✓ FusionPulse v4.1.8 Datenbanklimit statt Anbieterschuld (ausgefu
 }
 
 console.log('✓ FusionPulse v4.2.0 Session-VWAP je Symbol (ausgefuehrt): OK');
+
+/* ══ v4.2.2 · DIE ZAHL STAND AUF DEM FALSCHEN TAB ═══════════════════════════
+   Befund aus dem Betrieb (Screenshot 03.09., 21:20): v4.2.1 lief, der Nutzer
+   fand das Schreibbudget nicht. Grund: `renderLearningReport` schreibt es in
+   `#learningReport`, und das liegt im Tab „Lab / Learning". Auf „Aktien", wo
+   taeglich gearbeitet wird, war die Zahl unsichtbar — ausgerechnet die Zahl,
+   an der die Tarifentscheidung haengt.
+
+   Zweiter Befund aus demselben Bild: die VWAP-Kachel fehlte ersatzlos. Die
+   Oberflaeche wird aus dem PERSISTIERTEN Scan bedient; kann der Cron nicht
+   schreiben, friert dieser Stand ein und liefert weiter Zeilen von vor 4.2.0.
+   Beide Fehler sind derselbe: etwas verschwindet, statt sich zu erklaeren. */
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url),'utf8');
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url),'utf8');
+
+  assert.match(html, /id="sysDb"/,
+    'v4.2.2: die Systemleiste braucht einen Platz fuer das Schreibbudget — sie steht auf ALLEN Ansichten');
+  assert.match(app, /const dbEl=\$\('#sysDb'\)/, 'v4.2.2: und er muss befuellt werden');
+
+  const kurz = C.d1Note({ d1:{ measured:true, rowsWritten:12_340, freeLimitRowsWritten:100_000,
+    selfCap:90_000, atLeastRowsWrittenPerMin:34, sustainableRowsWrittenPerMin:69.4,
+    writeBudgetHoldsToday:true, complete:true } });
+  assert.strictEqual(kurz.short, 'DB 12k/90k',
+    `v4.2.2: der Kurzwert muss Verbrauch UND Grenze nennen, war "${kurz.short}"`);
+  assert.match(kurz.label, /von 90\.000/,
+    'v4.2.2: gemessen wird gegen die selbst gesetzte Grenze, nicht gegen das Tariflimit');
+
+  /* Auch die Nichtmessung braucht einen Kurzwert — sonst stuende dort nichts
+     und es saehe aus wie „alles in Ordnung". */
+  for(const [name, arg] of [
+    ['kein d1-Zweig', {}],
+    ['measured:false', { d1:{ measured:false } }],
+  ]){
+    const n = C.d1Note(arg);
+    assert.ok(n.short && /n\./.test(n.short),
+      `v4.2.2 (${name}): eine fehlende Messung muss in der Leiste als solche stehen, nicht als Leerstelle`);
+  }
+}
+
+console.log('✓ FusionPulse v4.2.2 Schreibbudget und VWAP sichtbar (ausgefuehrt): OK');

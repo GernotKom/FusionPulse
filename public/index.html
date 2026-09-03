@@ -8,9 +8,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/style.css?v=4.2.1">
+<link rel="stylesheet" href="/style.css?v=4.2.2">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
-<script src="/version.js?v=4.2.1"></script>
+<script src="/version.js?v=4.2.2"></script>
 <!-- ══════════════════════════════════════════════ v3.24.0 · BOOT-WÄCHTER ═══
      ANLASS: Am 29.08. stand die Oberfläche still — Statusampeln grau, Version
      "v–", Taktuhr "--:--". Alles stand auf den STATISCHEN Startwerten aus
@@ -66,13 +66,13 @@
   });
 })();
 </script>
-<title>FusionPulse 4.2.1</title>
+<title>FusionPulse 4.2.2</title>
 <!-- v3.14.1: Versionsstempel der SHELL (index.html). Wird von sync-version.mjs
      gesetzt und beim Start gegen FP_VERSION aus version.js verglichen. Weichen
      die beiden ab, ist eine halb aktualisierte Auslieferung im Umlauf: neues
      app.js/style.css auf altem index.html. Das erzeugt Fehler, die wie
      Layout-Probleme aussehen, aber keine sind — und kostet beim Suchen Stunden. -->
-<meta name="fp-shell-version" content="4.2.1">
+<meta name="fp-shell-version" content="4.2.2">
 </head>
 <body>
 <!-- v3.24.0 · Wird nur sichtbar, wenn app.js nicht startet. -->
@@ -104,6 +104,12 @@
       <span class="sys" id="sysStocks" data-state="busy" title="Status der Aktien-Datenquelle (Twelve Data)">Aktien <i></i></span>
       <span class="sysSep">|</span>
       <span class="sys ver" id="appver" title="Laufende FusionPulse-Version. Tab-Titel, Oberfläche, Worker und Service-Worker-Cache verwenden dieselbe Quelle.">v–</span>
+      <!-- v4.2.2: Das Schreibbudget stand nur im Lab-/Learning-Tab. Genau die
+           Zahl, an der die Tarifentscheidung haengt, war damit auf dem Tab
+           unsichtbar, auf dem man taeglich arbeitet. Sie gehoert in die
+           Systemleiste, die auf allen Ansichten steht. -->
+      <span class="sysSep">|</span>
+      <span class="sys" id="sysDb" data-state="busy" title="Schreibbudget der Datenbank">DB <i></i></span>
     </div>
     <small id="status" data-state="busy">Verbinde…</small>
   </div>
@@ -538,6 +544,6 @@
      Muss das LETZTE Element im Fluss bleiben. Hoehe kommt aus derselben
      Messung wie alles andere (--fp-foot-h). -->
 <div class="foot-spacer" aria-hidden="true"></div>
-<script src="/app.js?v=4.2.1"></script>
+<script src="/app.js?v=4.2.2"></script>
 </body>
 </html>

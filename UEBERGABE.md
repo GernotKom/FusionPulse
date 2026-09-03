@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 03.09.2026, Version **4.2.1**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 03.09.2026, Version **4.2.2**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -176,6 +176,19 @@ Der letzte Baustein vor einem Wechsel auf Workers Paid. **Cloudflare bietet für
 
 **Sie ist eine Bremse, keine Garantie.** Der Zähler zählt `.first()`-Abfragen nicht mit; die Grenze greift später als bei vollständiger Messung. Sie ist mit Abstand zu setzen, nicht auf die Kante. Die Anzeige misst ab jetzt gegen die selbst gesetzte Grenze und nennt im Hilfetext ausdrücklich, dass es nicht das Tariflimit ist.
 
+### 4.2.2 · Beides stand da, beides war unsichtbar
+Befund aus dem Betrieb (Screenshot 03.09., 21:20, v4.2.1 live). Zwei Meldungen, eine Ursache.
+
+**Das Schreibbudget stand auf dem falschen Tab.** `renderLearningReport` schreibt es nach `#learningReport`, und das liegt im Tab „Lab / Learning". Auf „Aktien", wo täglich gearbeitet wird, war die Zahl unsichtbar — ausgerechnet die, an der die Tarifentscheidung hängt. Jetzt steht sie als `DB 12k/90k` in der Systemleiste, die auf allen Ansichten sichtbar ist, mit Ampel und vollem Hilfetext.
+
+**Die VWAP-Kachel fehlte ersatzlos.** `vwapNote` gab `null` zurück, wenn der Datensatz die Felder nicht trägt — die Kachel verschwand dann spurlos. Genau das trat im wichtigsten Fall ein: die Oberfläche wird aus dem **persistierten** Scan bedient (`stock_scan:last` in `fp_meta`, `worker.js:7769`). Kann der Cron nicht mehr schreiben, friert dieser Stand ein und liefert weiter Zeilen von vor 4.2.0. Die App sah aus, als gäbe es die Funktion nicht.
+
+Neuer Zustand `PENDING`: Platz bleibt sichtbar, Strich statt Zahl, und der Hilfetext nennt die eigentliche Ursache samt Verweis auf das Schreibbudget. Nach wie vor wird **nichts im Browser nachgerechnet**.
+
+**Die gemeinsame Lehre:** ein Feld, das bei einer Störung spurlos verschwindet, ist schlechter als eines, das die Störung benennt. Dasselbe gilt für den Kurzwert in der Leiste — eine fehlende Messung steht dort als „DB n. gem.", nicht als Leerstelle, weil eine Leerstelle wie „alles in Ordnung" aussieht.
+
+**Zusammenhang, der dabei sichtbar wurde:** Das D1-Schreiblimit hält nicht nur die Lernschicht an. Weil der angezeigte Scan über `fp_meta` persistiert und von dort ausgeliefert wird, friert bei blockierten Schreibvorgängen auch die **Anzeige samt Heatmap** ein — „0 aktualisiert", Kurse von vorgestern, identische Punktwolke bei jedem Start. Das ist kein Anzeigefehler, sondern dieselbe Ursache.
+
 ## 3. Verifikation
 
 `node --check` auf `src/worker.js`, `public/app.js`, `public/sw.js`; alle sechs Suiten grün (`safety`, `coinscope`, `provider`, `bandwidth`, `d1`, `sw`). Zusätzlich `npx wrangler deploy --dry-run` mit Wrangler 4.128.0 — derselbe Schritt, an dem der Build gescheitert war: sauber, keine Warnungen, `env.APP_VERSION ("4.0.6")`.
@@ -195,6 +208,14 @@ Neue ausgeführte Regressionstests in `tests/safety-regression.mjs`:
 - **v4.2.0 Session-VWAP** — alle 13 geforderten Fälle ausgeführt, dazu Sommer-/Winterzeit der Sitzungsgrenze und die Live-Quote aus dem Premarket gegen einen Regular-Session-VWAP. Ein Bar-Satz mit Vortag, Premarket und After Hours (je mit riesigem Volumen) muss den Wert **exakt unverändert** lassen.
 
 - **v4.2.1 Tagesobergrenze** — NK62/NK63 prüfen Konfiguration, Rückfall bei Unsinn (`0`, `-5`, `viel`, leer → Vorgabe, nie 0), Reihenfolge und Herkunft. NK64 führt den Auflöser mit erreichter Grenze aus: nichts aufgelöst, nichts verworfen, **keine einzige zusätzliche Abfrage**, Lernzähler unberührt — und nach dem Zurücksetzen wieder frei.
+
+- **v4.2.2 Sichtbarkeit** — Kurzwert `DB 12k/90k` gegen die selbst gesetzte Grenze, Platz in der Systemleiste, `PENDING`-Zustand der VWAP-Kachel, und die Nichtmessung als eigener Kurzwert.
+
+**Negativkontrollen zu 4.2.2**, alle vier haben gefeuert und wurden zurückgesetzt:
+- `vwapNote` wieder `null` zurückgeben lassen → die Sichtbarkeitsprüfung fällt.
+- Kurzwert bei fehlender Messung geleert → der Leerstellen-Test fällt.
+- `#sysDb` aus der Leiste entfernt → der Platzhalter-Test fällt.
+- Gegen das Tariflimit statt gegen die Eigengrenze gemessen → der Kurzwert-Test fällt.
 
 **Negativkontrollen zu 4.2.1**, alle fünf haben gefeuert und wurden zurückgesetzt:
 - Bremse hinter die Leseabfrage geschoben → der Reihenfolgetest fällt.
