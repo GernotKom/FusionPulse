@@ -3338,6 +3338,35 @@ async function d1StoreRows(env, rows, opts={}){
     const reachTs=x.reach_ts || (mx>=PICK_REACH_PCT ? now : null);
     const setsNewMax = pct > (Number(x.max_pct) || 0);   // MAE-vor-MFE, siehe d1UpdateOutcomes
     const maePre = setsNewMax ? mn : (Number.isFinite(Number(x.mae_pre)) ? Number(x.mae_pre) : mn);
+
+    /* ══ v4.1.3 · DIE UNVERAENDERTE ZEILE WURDE JEDE MINUTE NEU GESCHRIEBEN ══
+       Befund: Cloudflare setzte das taegliche D1-Schreiblimit am 03.09. um
+       00:00 UTC zurueck — und um 00:30 UTC waren die 100.000 Zeilen erneut
+       aufgebraucht. Rund 3.300 Zeilen pro Minute. Das ist keine Arithmetik
+       mehr, das ist eine Schleife.
+
+       Hier war sie. Der Resolver laedt bis zu 3.000 offene Snapshots und hat
+       JEDEN davon aktualisiert — bedingungslos, auch wenn `max_pct`,
+       `min_pct`, `mae_pre` und alle drei Zeitstempel exakt dieselben Werte
+       behielten. Ein Titel, der sich seit einer Stunde nicht bewegt, wurde
+       sechzigmal mit demselben Inhalt ueberschrieben. SQLite schreibt die
+       Tabellenzeile trotzdem neu, und `rows_written` zaehlt sie.
+
+       Geschrieben wird jetzt nur noch bei einer echten Aenderung: neues
+       Extrem, oder ein Zeitstempel, der zum ersten Mal gesetzt wird. Auf vier
+       Nachkommastellen gerundet, damit Gleitkomma-Rauschen keine Aenderung
+       vortaeuscht. Die Auswertung selbst bleibt unangetastet — es wird nichts
+       weggelassen, nur nichts Identisches wiederholt. */
+    const r4=(v)=>Math.round(Number(v)*10000)/10000;
+    const changed =
+      r4(mx)!==r4(Number(x.max_pct)||0) ||
+      r4(mn)!==r4(Number(x.min_pct)||0) ||
+      r4(maePre)!==r4(Number.isFinite(Number(x.mae_pre))?Number(x.mae_pre):mn) ||
+      (!x.success_ts && successTs) ||          // Erfolg zum ersten Mal erreicht
+      (!x.reach_ts   && reachTs)   ||          // Ziel zum ersten Mal beruehrt
+      (!!resolved);                            // Horizont abgelaufen: einmalig
+    if(!changed) continue;
+
     updates.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),reach_ts=COALESCE(reach_ts,?),mae_pre=?,resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
       .bind(mx,mn,successTs,reachTs,maePre,resolved,x.id));
   }

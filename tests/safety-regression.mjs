@@ -5321,8 +5321,12 @@ console.log('✓ FusionPulse v4.1.0 Watchlist-Modus (ausgefuehrt): OK');
   const { loadClient } = await import('./client-harness.mjs');
   const C = loadClient();
 
-  /* Genau der Zeitstempel aus dem Screenshot — ISO mit Z. */
-  const isoZ = { symbol:'BWXT', updated:'2026-09-01T19:55:00.000Z' };
+  /* Das FORMAT aus dem Screenshot — ISO mit Z. Das Alter wird relativ zu
+     jetzt gebildet: ein fest eingetragenes Datum wandert mit jedem Tag weiter
+     in die Vergangenheit und laesst den Test spaeter ohne Codeaenderung
+     umkippen. Genau das ist beim ersten Anlauf passiert. */
+  const isoAgo = (ms) => new Date(Date.now()-ms).toISOString();
+  const isoZ = { symbol:'BWXT', updated: isoAgo(19.2*3600_000) };
   const pf = C.planFreshness(isoZ);
   assert.strictEqual(pf.stale, true, 'v4.1.1: eine Zeile vom Vortag ist veraltet');
   assert.ok(pf.ageMs != null, 'v4.1.1: das Alter DARF nicht unbekannt sein — es steht im Zeitstempel');
@@ -5331,7 +5335,7 @@ console.log('✓ FusionPulse v4.1.0 Watchlist-Modus (ausgefuehrt): OK');
 
   /* Das alte Format ohne Zone muss weiterhin funktionieren — sonst waere der
      Fix nur eine Verschiebung des Fehlers. */
-  const legacy = { symbol:'OLD', updated:'2026-09-01 19:55:00' };
+  const legacy = { symbol:'OLD', updated: isoAgo(5*3600_000).slice(0,19).replace('T',' ') };
   assert.ok(C.planFreshness(legacy).ageMs != null,
     'v4.1.1: Zeitstempel ohne Zone muessen weiterhin gelesen werden');
 
@@ -5341,7 +5345,7 @@ console.log('✓ FusionPulse v4.1.0 Watchlist-Modus (ausgefuehrt): OK');
      24 Stunden STALE. Vor dem Fix landete beides im Rueckfall. */
   assert.strictEqual(C.stockFreshness(isoZ).key, 'cached',
     'v4.1.1: 19 Stunden liegen ueber 20 Minuten und unter 24 Stunden');
-  assert.strictEqual(C.stockFreshness({symbol:'OLD2',updated:'2026-08-28T19:55:00.000Z'}).key, 'stale',
+  assert.strictEqual(C.stockFreshness({symbol:'OLD2',updated:isoAgo(30*3600_000)}).key, 'stale',
     'v4.1.1: jenseits von 24 Stunden muss STALE erreicht werden — der Zweig war vorher unerreichbar');
 
   const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
@@ -5385,3 +5389,87 @@ console.log('✓ FusionPulse v4.1.1 Zeitstempel/Isolate-Saat (ausgefuehrt): OK')
 }
 
 console.log('✓ FusionPulse v4.1.2 Umschalt-Fehlermeldung (ausgefuehrt): OK');
+
+/* ══ v4.1.3 · DER RESOLVER SCHRIEB UNVERAENDERTE ZEILEN ═════════════════════
+   Befund: Cloudflare setzte das taegliche D1-Schreiblimit am 03.09. um
+   00:00 UTC zurueck, um 00:30 UTC waren die 100.000 Zeilen erneut verbraucht
+   — rund 3.300 Zeilen pro Minute. Der Resolver laedt bis zu 3.000 offene
+   Snapshots und aktualisierte JEDEN, auch wenn sich kein einziger Wert
+   geaendert hatte. Ein stillstehender Titel wurde sechzigmal pro Stunde mit
+   demselben Inhalt ueberschrieben. */
+{
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+
+  assert.match(w, /LIMIT 3000/,
+    'v4.1.3: die Rechnung unten haengt an der Batch-Groesse des Resolvers');
+  assert.match(w, /const changed =/,
+    'v4.1.3: es muss eine Aenderungspruefung vor dem UPDATE geben');
+  assert.match(w, /if\(!changed\) continue;/,
+    'v4.1.3: ohne Aenderung darf kein UPDATE erzeugt werden');
+
+  /* Die Pruefung MUSS vor dem updates.push stehen, sonst wirkt sie nicht. */
+  const idxChanged = w.indexOf('if(!changed) continue;');
+  const idxPush    = w.indexOf("updates.push(env.DB.prepare('UPDATE market_snapshots");
+  assert.ok(idxChanged > 0 && idxPush > idxChanged,
+    'v4.1.3: die Aenderungspruefung muss VOR dem Schreibbefehl stehen');
+
+  /* Erstmalig gesetzte Zeitstempel MUESSEN durchkommen — sonst wuerde der
+     Fix Auswertungsdaten verschlucken, und das waere schlimmer als das
+     Schreibvolumen. */
+  for (const bed of ['(!x.success_ts && successTs)', '(!x.reach_ts   && reachTs)', '(!!resolved)']) {
+    assert.ok(w.includes(bed),
+      `v4.1.3: „${bed}" muss weiterhin ein Schreiben ausloesen — sonst gehen Ergebnisse verloren`);
+  }
+
+  /* Rundung gegen Gleitkomma-Rauschen: ohne sie wuerde eine Differenz in der
+     zwoelften Nachkommastelle als Aenderung gelten und der Fix waere wirkungslos. */
+  assert.match(w, /const r4=\(v\)=>Math\.round\(Number\(v\)\*10000\)\/10000;/,
+    'v4.1.3: ohne Rundung taeuscht Gleitkomma-Rauschen eine Aenderung vor');
+
+  /* Groessenordnung, die den Befund erklaert. */
+  const proMinute = 3000, proTag = proMinute * 1440;
+  assert.ok(proTag > 4_000_000,
+    `v4.1.3: ${proTag} Zeilen/Tag im schlimmsten Fall — das Limit von 100.000 faellt in ~30 Minuten`);
+}
+
+console.log('✓ FusionPulse v4.1.3 Resolver-Schreibschleife (ausgefuehrt): OK');
+
+/* ══ v4.1.4 · HANDBUCH UND UEBERGABE GEHOEREN ZUR AUSLIEFERUNG ══════════════
+   Nutzerregel ab dieser Version: jede Version bringt Uebergabeprotokoll UND
+   Handbuch mit, damit sich der Stand an einen neuen Chat uebergeben laesst.
+   Eine Regel, die nur in einer Chatnachricht steht, ist in zwei Wochen
+   vergessen — deshalb prueft sie der Testlauf.
+
+   Der wunde Punkt ist nicht das Fehlen der Dateien, sondern ihr LEISES
+   VERALTEN: ein Handbuch mit falscher Versionsnummer sieht gepflegt aus und
+   ist es nicht. Darum wird die Nummer aus package.json gelesen und das
+   Glossar aus app.js geparst, nicht abgeschrieben. */
+{
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const gen = fs.readFileSync(new URL('../scripts/build-handbuch.py', import.meta.url), 'utf8');
+
+  assert.ok(fs.existsSync(new URL('../UEBERGABE.md', import.meta.url)),
+    'v4.1.4: das Uebergabeprotokoll muss im Repository liegen, nicht im Chatverlauf');
+  assert.ok(fs.existsSync(new URL('../docs/FusionPulse_Handbuch.pdf', import.meta.url)),
+    'v4.1.4: das erzeugte Handbuch gehoert mit ausgeliefert');
+  assert.ok(pkg.scripts?.handbuch, 'v4.1.4: es muss einen Befehl geben, der das Handbuch neu baut');
+  assert.match(pkg.scripts?.release || '', /sync-version.*check.*handbuch/,
+    'v4.1.4: der Release-Befehl muss Version, Tests und Handbuch in einem Zug erledigen');
+
+  assert.match(gen, /VERSION = json\.loads\(\(ROOT\/'package\.json'\)/,
+    'v4.1.4: die Version wird gelesen, nicht eingetippt — sonst veraltet sie unbemerkt');
+  assert.match(gen, /def _lade_glossar\(\)/,
+    'v4.1.4: das Glossar wird aus app.js geparst, nicht abgeschrieben');
+  assert.match(gen, /sys\.exit\(f?'FEHLER: nur \{len\(out\)\} Glossareintraege/,
+    'v4.1.4: bricht das Parsen ein, muss der Bau ABBRECHEN statt ein leeres Glossar zu drucken');
+
+  /* Die Uebergabe muss die Deploy-Fallen enthalten, die uns Tage gekostet
+     haben — sie ist sonst eine Zusammenfassung ohne Nutzwert. */
+  const ue = fs.readFileSync(new URL('../UEBERGABE.md', import.meta.url), 'utf8');
+  for (const stichwort of ['src/worker.js', 'Free-Plan', 'sync-version', 'package-lock.json']) {
+    assert.ok(ue.includes(stichwort),
+      `v4.1.4: „${stichwort}" fehlt in der Uebergabe — genau daran ist ein Deploy schon gescheitert`);
+  }
+}
+
+console.log('✓ FusionPulse v4.1.4 Auslieferung Handbuch/Uebergabe (ausgefuehrt): OK');
