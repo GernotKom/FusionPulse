@@ -20,9 +20,17 @@ export function loadResolver() {
   const to = worker.indexOf('async function d1StoreSnapshotRow(');
   if (from < 0 || to <= from) throw new Error('d1ResolveDue nicht gefunden');
   const consts = 'const LEARN_HORIZON_MS = 180*60_000, LEARN_MIN_OBS = 6, LEARN_RESOLVE_BUDGET = 400;\n';
+  /* v4.2.1: `d1ResolveDue` fragt seit der Tagesobergrenze zuerst das
+     Schreibbudget ab. Der Prueffstand haelt es standardmaessig auf „nicht
+     erreicht" — die Bremse selbst wird in NK62/NK64 getestet, hier geht es um
+     die Aufloesungslogik. `setCap` erlaubt den Gegenversuch. */
   const src = consts + 'let bumped = [];\nfunction learnCountersBump(d, now){ bumped.push(d); }\n'
+    + 'let capState = { cap: 90000, spent: 0, exhausted: false, measured: true };\n'
+    + 'async function d1WriteBudget(){ return capState; }\n'
+    + 'function cronLog(){}\n'
     + worker.slice(from, to)
-    + '\nreturn { d1ResolveDue, LEARN_MIN_OBS, get bumped(){return bumped;}, reset(){bumped=[];} };';
+    + '\nreturn { d1ResolveDue, LEARN_MIN_OBS, setCap(c){ capState = { ...capState, ...c }; },'
+    + ' get bumped(){return bumped;}, reset(){bumped=[]; capState={cap:90000,spent:0,exhausted:false,measured:true};} };';
   return new Function(src)();
 }
 

@@ -685,6 +685,23 @@ H2('Das Lerngedächtnis steht — nichts wird mehr gespeichert')
 P('Die Oberfläche läuft weiter, aber es kommen keine neuen Auswertungen dazu. Das ist '
   'fast immer das tägliche Schreiblimit der Datenbank. Es setzt sich um <b>00:00 UTC</b> '
   'zurück, also um 2 Uhr mitteleuropäischer Sommerzeit — nicht um Mitternacht Ortszeit.')
+BOX('Die selbst gesetzte Tagesobergrenze', [
+    'Seit v4.2.1 bremst FusionPulse sich selbst, <b>bevor</b> ein fremdes Limit greift. Der '
+    'Grund ist der Wechsel auf einen kostenpflichtigen Tarif: Cloudflare bietet für die '
+    'Datenbank <b>keine Ausgabenobergrenze</b>. Budget-Warnungen informieren, sie halten '
+    'nichts an. Auf dem kostenlosen Tarif ist ein Fehler ein Stillstand — auf einem '
+    'bezahlten wäre derselbe Fehler eine Rechnung, die man erst auf der Abrechnung sieht.',
+
+    'Der Wert steht in <i>wrangler.jsonc</i> unter <b>D1_WRITE_BUDGET</b>. Ohne Eintrag '
+    'gelten 90.000 Zeilen pro Tag — bewusst unter Cloudflares eigenen 100.000, weil die '
+    'Eigenmessung eine Untergrenze ist und die Bremse deshalb ohnehin etwas zu spät greift.',
+
+    'Bei Erreichen stoppen die großen Schreibvorgänge. Kurse, Analysen und Pläne laufen '
+    '<b>unverändert weiter</b>; nur die Lernschicht speichert nichts mehr. Die kleinen '
+    'Zustandsmeldungen laufen ebenfalls weiter — eine Bremse, die ihre eigene Anzeige mit '
+    'anhält, wäre keine.',
+])
+
 BOX('Es muss nichts abgeschaltet werden', [
     'Die App hält nicht an. Kurse, Analysen und Pläne laufen unverändert weiter — nur die '
     'Lernschicht speichert nichts mehr. Ein Eingriff ist weder nötig noch hilfreich; um '

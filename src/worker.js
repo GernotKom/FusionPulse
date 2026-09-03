@@ -3053,7 +3053,68 @@ function d1Wrap(db){
     withSession: (...a) => (typeof db.withSession === 'function' ? db.withSession(...a) : undefined),
   };
 }
+/* ══ v4.2.1 · SELBST GESETZTE TAGESOBERGRENZE ═══════════════════════════════
+   Cloudflare bietet fuer D1 KEINE Ausgabenobergrenze. Budget-Alerts
+   informieren, sie bremsen nicht. Auf dem Free-Tarif ist ein Schreibfehler
+   deshalb ein Stillstand; auf Paid ist derselbe Fehler eine Rechnung, die
+   niemand aufhaelt. Die Schreibschleife vom 02./03.09. lief bei 3.333
+   Zeilen/min — auf Paid waeren das rund 144 Mio./Monat gewesen, knapp das
+   Dreifache der enthaltenen 50 Mio. und rund 94 USD Ueberschreitung fuer
+   einen Fehler, den man erst auf der Abrechnung sieht.
+
+   DIESE BREMSE IST EINE BREMSE, KEINE GARANTIE. Der Zaehler aus 4.1.6 ist
+   eine UNTERGRENZE: `.first()`-Abfragen liefern keine Messwerte und fehlen in
+   der Summe. Die Obergrenze greift also spaeter als sie es bei vollstaendiger
+   Messung taete. Sie ist mit Abstand zu setzen, nicht auf die Kante.
+
+   WAS SIE ANHAELT und was nicht: gestoppt werden die grossen Schreiber
+   (`d1StoreRows`, der Aufloeser) — dort entstehen ueber 95 % der Zeilen.
+   Kleine Zustandsschreiber in `fp_meta` laufen weiter, sonst wuerde das
+   Instrument mit abgeschaltet, das die Bremsung ueberhaupt sichtbar macht.
+   Eine Bremse, die ihre eigene Anzeige mit anhaelt, ist keine.
+
+   FAIL-OPEN BEIM LESEN, BEWUSST. Kann der Tagesstand nicht gelesen werden,
+   wird geschrieben. Der umgekehrte Weg klaenge sicherer, waere es aber nicht:
+   ein einzelner Lesefehler wuerde die Lernschicht fuer den Rest des Tages
+   stilllegen, und genau dieser Zustand ist von einem echten Ausfall nicht zu
+   unterscheiden. Ein Lesefehler auf D1 bedeutet ohnehin meist, dass auch die
+   Schreibvorgaenge scheitern. */
 const D1_METER_KEY = 'd1_meter';
+const D1_WRITE_CAP_DEFAULT = 90_000;   // Free: 100.000 minus Reserve fuer die Untergrenze
+let writeCapMemo = { day: null, base: 0, loaded: false };
+function d1WriteCap(env) {
+  const raw = Number(env?.D1_WRITE_BUDGET);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : D1_WRITE_CAP_DEFAULT;
+}
+function d1CapNoteMeter(day, rowsWritten) {
+  if (writeCapMemo.day !== day) writeCapMemo = { day, base: 0, loaded: true };
+  writeCapMemo.base = Number(rowsWritten) || 0;
+  writeCapMemo.loaded = true;
+}
+/** Tagesstand + laufende Invocation. Kostet nach dem ersten Aufruf je Isolate
+ *  KEINE zusaetzliche Abfrage: `d1MeterFlush` schreibt den neuen Stand direkt
+ *  in das Memo zurueck. */
+async function d1WriteBudget(env, now = Date.now()) {
+  const day = new Date(now).toISOString().slice(0, 10);
+  const cap = d1WriteCap(env);
+  if ((writeCapMemo.day !== day || !writeCapMemo.loaded) && env?.DB) {
+    /* Genau ein Lesevorgang je Isolate bzw. je Datumswechsel. Ohne ihn wuerde
+       ein frisch gestartetes Isolate seinen ersten Lauf ungebremst schreiben —
+       eine Luecke, die bei haeufigem Isolate-Wechsel dauerhaft offen bliebe. */
+    try {
+      const row = await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1')
+        .bind(`${D1_METER_KEY}:${day}`).first();
+      const acc = (row && row.value) ? (JSON.parse(row.value) || {}) : {};
+      writeCapMemo = { day, base: Number(acc.rowsWritten) || 0, loaded: true };
+    } catch {
+      return { day, cap, spent: null, remaining: null, exhausted: false, measured: false,
+        reason: 'Tagesstand nicht lesbar — es wird geschrieben, siehe Kommentar zur Fail-open-Entscheidung' };
+    }
+  }
+  const spent = writeCapMemo.base + (d1Meter ? Number(d1Meter.rowsWritten) || 0 : 0);
+  return { day, cap, spent, remaining: Math.max(0, cap - spent),
+    exhausted: spent >= cap, measured: true, reason: null };
+}
 /** Tagesbilanz je UTC-Datum in fp_meta. Eine Zeile, ein Schreibvorgang. */
 async function d1MeterFlush(env, path){
   const m = d1Meter; d1Meter = null;
@@ -3077,6 +3138,10 @@ async function d1MeterFlush(env, path){
     }
     await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts')
       .bind(key, JSON.stringify(acc), Date.now()).run();
+    /* v4.2.1: Der frische Tagesstand geht direkt an die Bremse zurueck. Dadurch
+       kostet `d1WriteBudget` nach dem ersten Aufruf je Isolate keine weitere
+       Abfrage — die Bremse darf nicht selbst zum Verbraucher werden. */
+    d1CapNoteMeter(day, acc.rowsWritten);
   }catch{ /* Telemetrie darf niemals einen Request scheitern lassen */ }
 }
 /** Die Tagesbilanz fuer /api/health. Fail-closed: unlesbar heisst `null`. */
@@ -3131,6 +3196,13 @@ async function d1MeterView(env, now=Date.now()){
       writeBudgetMinutesLeftInDay: Math.round(restMin),
       writeBudgetHoldsToday: wPerMin > 0 ? (rowsWritten + wPerMin * restMin) <= 100_000 : true,
       complete: (Number(acc.unmetered)||0) === 0,
+      /* v4.2.1: die selbst gesetzte Obergrenze. Cloudflare liefert fuer D1
+         keine Ausgabenbremse; diese hier ist die einzige. Sie gehoert neben
+         den Verbrauch, sonst weiss niemand, gegen WELCHE Grenze gemessen wird. */
+      selfCap: d1WriteCap(env),
+      selfCapSpent: rowsWritten,
+      selfCapExhausted: rowsWritten >= d1WriteCap(env),
+      selfCapSource: Number(env?.D1_WRITE_BUDGET) > 0 ? 'D1_WRITE_BUDGET' : 'Vorgabe',
       topQueries: top, topPaths: paths, updatedTs: Number(row.updated_ts)||null };
   }catch{ return null; }
 }
@@ -3379,6 +3451,14 @@ async function d1UpdateOutcomes(env, symbol, price, now=Date.now(), assetType='s
    bereits aufgezeichneten.                                                 */
 async function d1ResolveDue(env, now=Date.now(), budget=LEARN_RESOLVE_BUDGET){
   if(!env.DB) return { due:0, resolved:0, dropped:0 };
+  /* v4.2.1: Die Tagesobergrenze steht VOR der Leseabfrage, nicht dahinter.
+     Wer ohnehin nicht schreiben darf, muss auch nicht bis zu 3.000 Zeilen
+     lesen — sonst bremste man die Kosten und liesse die Leseseite laufen. */
+  const cap=await d1WriteBudget(env, now);
+  if(cap.exhausted){
+    cronLog('d1','capped',`Tagesobergrenze erreicht (${cap.spent}/${cap.cap})`,{ blockedPath:'resolve' });
+    return { due:0, resolved:0, dropped:0, capped:true, cap:cap.cap, spent:cap.spent };
+  }
   const rows=(await env.DB.prepare(
     `SELECT id,obs_n FROM market_snapshots
      WHERE resolved_ts IS NULL AND dropped_ts IS NULL AND ts<=? ORDER BY ts ASC LIMIT ?`
@@ -3504,6 +3584,17 @@ function snapshotPayload(row){
   });
 }
 async function d1StoreRows(env, rows, opts={}){
+  /* v4.2.1: Auch hier vor allem anderen. `d1StoreRows` liest im Normalfall bis
+     zu 3.000 unaufgeloeste Zeilen, bevor es schreibt — bei erreichter
+     Obergrenze waere das reiner Verbrauch ohne Gegenwert. */
+  {
+    const cap=await d1WriteBudget(env, opts.now || Date.now());
+    if(cap.exhausted){
+      cronLog('d1','capped',`Tagesobergrenze erreicht (${cap.spent}/${cap.cap})`,
+        { blockedPath:`store:${opts.assetType||'?'}`, rows:(rows||[]).length });
+      return { stored:0, capped:true, cap:cap.cap, spent:cap.spent };
+    }
+  }
   if(!env.DB || !rows?.length) return;
   await ensureD1Schema(env);
   const source=opts.source||'server', assetType=opts.assetType||'stock', now=opts.now||Date.now();
@@ -7952,7 +8043,7 @@ async function tiingoStockLookup(env,raw,comp,minCrv=3,force=false){
   stockLookupMemo.set(info.symbol,{ts:Date.now(),row});const old=new Map(stockMemo.rows.map(r=>[r.symbol,r]));old.set(row.symbol,row);stockMemo.rows=[...old.values()].sort((a,b)=>b.score-a.score).slice(0,80);
   return {configured:true,state:'ok',cached:false,lookup:true,row,source:'Tiingo IEX',provider:'Tiingo',version:APP_VERSION};
 }
-export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation, alpacaPrevClose, momentumFromAlpaca, maturityBreakdown, snapshotWriteDecision, classifyError, sessionVwap, attachRelativeVwap, regularSessionWindow };
+export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation, alpacaPrevClose, momentumFromAlpaca, maturityBreakdown, snapshotWriteDecision, classifyError, sessionVwap, attachRelativeVwap, regularSessionWindow, d1WriteCap };
 
 export default {
   async fetch(request, env, ctx) {

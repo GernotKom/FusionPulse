@@ -425,3 +425,109 @@ console.log('✓ FusionPulse v3.32.10 R3 Aufloeser (ausgefuehrt): OK');
 }
 
 console.log('✓ FusionPulse v4.1.6 Schreibbudget und Hochrechnung (ausgefuehrt): OK');
+
+/* ── NK62 · v4.2.1 · Die selbst gesetzte Tagesobergrenze ────────────────────
+   Cloudflare bietet fuer D1 KEINE Ausgabenobergrenze. Budget-Alerts
+   informieren, sie halten nichts an. Auf Free ist ein Schreibfehler ein
+   Stillstand; auf Paid ist derselbe Fehler eine Rechnung. Die Schleife vom
+   03.09. lief bei 3.333 Zeilen/min — auf Paid rund 144 Mio./Monat, knapp das
+   Dreifache des Enthaltenen.
+
+   Diese Bremse ist die einzige. Gepruefte Zusicherungen: sie greift, sie ist
+   konfigurierbar, sie steht VOR der teuren Leseabfrage, und sie haelt ihre
+   eigene Anzeige NICHT mit an. */
+{
+  D.reset();
+  const { d1WriteCap } = await import('../src/worker.js');
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+
+  assert.equal(d1WriteCap({}), 90_000,
+    'NK62: ohne Konfiguration gilt eine Vorgabe UNTER Cloudflares 100.000 — die Eigenmessung ist eine Untergrenze, die Bremse greift also zu spaet und braucht Reserve');
+  assert.equal(d1WriteCap({ D1_WRITE_BUDGET: '1500000' }), 1_500_000,
+    'NK62: der Wert muss konfigurierbar sein — auf Paid sind rund 1,667 Mio./Tag im Grundpreis enthalten');
+  for (const murks of [{ D1_WRITE_BUDGET: '0' }, { D1_WRITE_BUDGET: '-5' }, { D1_WRITE_BUDGET: 'viel' }, { D1_WRITE_BUDGET: '' }])
+    assert.equal(d1WriteCap(murks), 90_000,
+      `NK62: unbrauchbare Konfiguration faellt auf die Vorgabe zurueck, nicht auf 0 (${JSON.stringify(murks)}) — eine 0 haette die App stillgelegt`);
+
+  /* Die Reihenfolge ist der Punkt: `d1StoreRows` liest bis zu 3.000
+     unaufgeloeste Zeilen, BEVOR es schreibt. Steht die Bremse dahinter,
+     bremst sie die Kosten und laesst die Leseseite laufen. */
+  const store = worker.slice(worker.indexOf('async function d1StoreRows'));
+  assert.ok(store.indexOf('d1WriteBudget') < store.indexOf('LIMIT 3000'),
+    'NK62: die Obergrenze muss VOR der 3.000-Zeilen-Leseabfrage stehen');
+  const resolve = worker.slice(worker.indexOf('async function d1ResolveDue'));
+  assert.ok(resolve.indexOf('d1WriteBudget') < resolve.indexOf('SELECT id,obs_n'),
+    'NK62: im Aufloeser ebenso');
+
+  /* Eine Bremse, die ihre eigene Anzeige mit anhaelt, ist keine. Der
+     Zaehler-Flush und die Zustandsschreiber in fp_meta duerfen NICHT gedrosselt
+     werden, sonst friert genau die Zahl ein, die die Bremsung sichtbar macht. */
+  const flush = worker.slice(worker.indexOf('async function d1MeterFlush'), worker.indexOf('async function d1MeterView'));
+  /* Geprueft wird der AUFRUF, nicht die Erwaehnung: der Flush nennt die Bremse
+     im Kommentar, weil er ihr den frischen Tagesstand zurueckgibt. */
+  assert.doesNotMatch(flush, /await d1WriteBudget\(/,
+    'NK62: der Zaehler-Flush darf NICHT von der Obergrenze gestoppt werden — sonst haelt die Bremse ihr eigenes Instrument an');
+  assert.match(flush, /d1CapNoteMeter\(day, acc\.rowsWritten\)/,
+    'NK62: umgekehrt muss der Flush den neuen Stand an die Bremse zurueckgeben, sonst kostet jede Pruefung eine eigene Abfrage');
+  const persist = worker.slice(worker.indexOf('async function persistApiState'), worker.indexOf('async function persistentApiState'));
+  assert.doesNotMatch(persist, /await d1WriteBudget\(/,
+    'NK62: Zustandsschreiber bleiben frei, damit die App weiter meldet, warum sie bremst');
+
+  /* Fail-OPEN beim Lesen, und das bewusst: ein einzelner Lesefehler darf die
+     Lernschicht nicht fuer den Rest des Tages stilllegen. */
+  assert.match(worker, /exhausted: false, measured: false,\s*\n?\s*reason: 'Tagesstand nicht lesbar/,
+    'NK62: ein nicht lesbarer Tagesstand darf nicht als „Grenze erreicht" gelten');
+}
+
+/* ── NK63 · Die Bilanz muss sagen, gegen WELCHE Grenze sie misst ────────── */
+{
+  D.reset();
+  const { db } = fakeDb({ rowsRead: 1 });
+  const env = { DB: D.d1Wrap(db), D1_WRITE_BUDGET: '1500000' };
+  const d = new Date();
+  const t = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 6, 0, 0);
+  D.d1MeterStart('/cron');
+  for (let i = 0; i < 10; i++) await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)').bind('k' + i, 'v', t).run();
+  await D.d1MeterFlush(env, '/cron');
+  const v = await D.d1MeterView(env, t);
+
+  assert.equal(v.selfCap, 1_500_000, `NK63: die gesetzte Obergrenze gehoert in die Bilanz, war ${v.selfCap}`);
+  assert.equal(v.selfCapSource, 'D1_WRITE_BUDGET', 'NK63: und die Herkunft, damit eine vergessene Konfiguration auffaellt');
+  assert.strictEqual(v.selfCapExhausted, false, 'NK63: bei 10 Zeilen ist sie nicht erreicht');
+  assert.equal(v.freeLimitRowsWritten, 100_000,
+    'NK63: das Tarif-Limit bleibt daneben stehen — die beiden duerfen nicht verwechselt werden');
+  const ohne = await D.d1MeterView({ DB: env.DB }, t);
+  assert.equal(ohne.selfCapSource, 'Vorgabe', 'NK63: ohne Konfiguration muss das als Vorgabe erkennbar sein');
+}
+
+/* ── NK64 · Sie muss WIRKLICH bremsen, nicht nur dastehen ───────────────────
+   Die vorigen Bloecke pruefen Konfiguration und Reihenfolge. Hier wird der
+   Aufloeser mit erreichter Obergrenze AUSGEFUEHRT: kein Schreibvorgang, keine
+   Leseabfrage, und ein erkennbarer Grund im Rueckgabewert. */
+{
+  const { loadResolver } = await import('./d1-harness.mjs');
+  const R = loadResolver();
+  const { db, state } = fakeDb({ due: [{ id:1, obs_n:12 }, { id:2, obs_n:12 }] });
+  const offen = await R.d1ResolveDue({ DB: db }, now);
+  assert.equal(offen.resolved, 2, `NK64: Vorbedingung — ohne Bremse werden beide aufgeloest, waren ${offen.resolved}`);
+  const vorher = state.log.length;
+  assert.ok(vorher > 0, 'NK64: Vorbedingung — ungebremst entstehen Abfragen');
+
+  R.setCap({ exhausted: true, spent: 90_000, cap: 90_000 });
+  const gebremst = await R.d1ResolveDue({ DB: db }, now);
+  assert.strictEqual(gebremst.capped, true, 'NK64: die Bremse muss sich im Rueckgabewert zu erkennen geben');
+  assert.equal(gebremst.resolved, 0, 'NK64: bei erreichter Obergrenze darf nichts aufgeloest werden');
+  assert.equal(gebremst.dropped, 0, 'NK64: und nichts verworfen — Verwerfen ist auch ein Schreibvorgang');
+  assert.equal(state.log.length, vorher,
+    `NK64: es darf KEINE einzige Abfrage entstehen — auch nicht die teure Leseabfrage (${state.log.length - vorher} zusaetzliche)`);
+  assert.equal(R.bumped.length, 1,
+    'NK64: die Lernzaehler duerfen nicht hochgezaehlt werden, als waere etwas passiert');
+
+  /* Und wieder frei, sobald das Budget es zulaesst. Eine Bremse, die nicht
+     mehr loesst, waere ein Ausfall mit anderem Namen. */
+  R.setCap({ exhausted: false });
+  assert.equal((await R.d1ResolveDue({ DB: db }, now)).resolved, 2,
+    'NK64: nach dem Zuruecksetzen muss wieder aufgeloest werden');
+}
+
+console.log('✓ FusionPulse v4.2.1 Tagesobergrenze für Schreibvorgänge (ausgefuehrt): OK');

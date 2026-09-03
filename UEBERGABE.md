@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 03.09.2026, Version **4.2.0**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 03.09.2026, Version **4.2.1**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -159,6 +159,23 @@ Drei Befunde aus der Analyse, bevor Code entstand:
 
 **Nicht angefasst, bewusst:** `marketRecommendation` (`worker.js:6150/6151`) koppelt Regime und `aboveVwap` bereits — und bestraft „Risk-Off + über VWAP" mit −0,15, also genau die Konstellation, die als relative Stärke gilt. Das ist ein Regimefilter, kein Relative-Strength-Maß; beides kann sich keine Zahl teilen. `vwapDistancePct`, `vwapState` und `relVwapStrengthPct` werden ab jetzt in `market_snapshots` mitgeschrieben, damit `/api/attribution` überhaupt erst beantworten kann, ob die Divergenz out-of-sample etwas wert ist.
 
+### 4.2.1 · Tagesobergrenze für Schreibvorgänge
+Der letzte Baustein vor einem Wechsel auf Workers Paid. **Cloudflare bietet für D1 keine Ausgabenobergrenze** — Budget-Alerts informieren, sie halten nichts an. Auf Free ist ein Schreibfehler ein Stillstand; auf Paid ist derselbe Fehler eine Rechnung. Die Schleife vom 02./03.09. lief bei 3.333 Zeilen/min: auf Paid rund 144 Mio./Monat, knapp das Dreifache der enthaltenen 50 Mio., etwa 94 USD Überschreitung für einen Fehler, den man erst auf der Abrechnung sieht.
+
+`D1_WRITE_BUDGET` in `wrangler.jsonc`, Vorgabe **90.000/Tag**. Bewusst unter Cloudflares 100.000, weil die Eigenmessung eine Untergrenze ist und die Bremse deshalb ohnehin zu spät greift. Für Paid steht der Richtwert im Kommentar: 50 Mio./Monat sind rund 1.667.000/Tag, ein Wert um 1.500.000 bleibt sicher darunter.
+
+**Vier Entwurfsentscheidungen, die begründet werden müssen:**
+
+1. **Die Prüfung steht VOR der Leseabfrage.** `d1StoreRows` liest bis zu 3.000 unaufgelöste Zeilen, bevor es schreibt. Eine Bremse dahinter hätte die Kosten gebremst und die Leseseite laufen lassen. Ein Test prüft die Reihenfolge in beiden Schreibern per Index.
+
+2. **Die Bremse hält ihre eigene Anzeige nicht mit an.** Gestoppt werden nur die großen Schreiber; `d1MeterFlush` und die Zustandsschreiber in `fp_meta` laufen weiter. Sonst fröre genau die Zahl ein, die die Bremsung sichtbar macht. Zwei Tests halten das fest — auf den *Aufruf*, nicht auf die Erwähnung, weil der Flush die Bremse im Kommentar nennt.
+
+3. **Fail-OPEN beim Lesen, bewusst gegen den Reflex.** Ist der Tagesstand nicht lesbar, wird geschrieben. Fail-closed klänge sicherer, wäre es aber nicht: ein einzelner Lesefehler legte die Lernschicht für den Rest des Tages still, und dieser Zustand ist von einem echten Ausfall nicht zu unterscheiden. Ein Lesefehler auf D1 bedeutet ohnehin meist, dass auch die Schreibvorgänge scheitern.
+
+4. **Kein zusätzlicher Verbrauch.** `d1MeterFlush` gibt den frischen Tagesstand über `d1CapNoteMeter()` direkt an die Bremse zurück. Eine eigene Abfrage entsteht nur einmal je Isolate bzw. bei Datumswechsel — ohne diesen einen Lesevorgang schriebe ein frisch gestartetes Isolate seinen ersten Lauf ungebremst.
+
+**Sie ist eine Bremse, keine Garantie.** Der Zähler zählt `.first()`-Abfragen nicht mit; die Grenze greift später als bei vollständiger Messung. Sie ist mit Abstand zu setzen, nicht auf die Kante. Die Anzeige misst ab jetzt gegen die selbst gesetzte Grenze und nennt im Hilfetext ausdrücklich, dass es nicht das Tariflimit ist.
+
 ## 3. Verifikation
 
 `node --check` auf `src/worker.js`, `public/app.js`, `public/sw.js`; alle sechs Suiten grün (`safety`, `coinscope`, `provider`, `bandwidth`, `d1`, `sw`). Zusätzlich `npx wrangler deploy --dry-run` mit Wrangler 4.128.0 — derselbe Schritt, an dem der Build gescheitert war: sauber, keine Warnungen, `env.APP_VERSION ("4.0.6")`.
@@ -176,6 +193,15 @@ Neue ausgeführte Regressionstests in `tests/safety-regression.mjs`:
 - **v4.1.8 Datenbanklimit statt Anbieterschuld** — `classifyError` ausgeführt gegen die echten Cloudflare-Meldungstexte (Schreib- und Leselimit) sowie gegen die Anbieterfälle, die dabei nicht mitgerissen werden dürfen. Ein Durchlauf über alle Cron-Fänger fällt, sobald einer die Anbieterlampe wieder direkt setzt.
 
 - **v4.2.0 Session-VWAP** — alle 13 geforderten Fälle ausgeführt, dazu Sommer-/Winterzeit der Sitzungsgrenze und die Live-Quote aus dem Premarket gegen einen Regular-Session-VWAP. Ein Bar-Satz mit Vortag, Premarket und After Hours (je mit riesigem Volumen) muss den Wert **exakt unverändert** lassen.
+
+- **v4.2.1 Tagesobergrenze** — NK62/NK63 prüfen Konfiguration, Rückfall bei Unsinn (`0`, `-5`, `viel`, leer → Vorgabe, nie 0), Reihenfolge und Herkunft. NK64 führt den Auflöser mit erreichter Grenze aus: nichts aufgelöst, nichts verworfen, **keine einzige zusätzliche Abfrage**, Lernzähler unberührt — und nach dem Zurücksetzen wieder frei.
+
+**Negativkontrollen zu 4.2.1**, alle fünf haben gefeuert und wurden zurückgesetzt:
+- Bremse hinter die Leseabfrage geschoben → der Reihenfolgetest fällt.
+- Vorgabe auf 100.000 ohne Reserve → der Vorgabentest fällt.
+- Unbrauchbare Konfiguration als `0` übernommen → der Rückfalltest fällt (eine `0` hätte die App stillgelegt).
+- Zähler-Flush mitgebremst → der Instrumententest fällt.
+- Nicht lesbaren Tagesstand als „erreicht" gewertet → der Fail-open-Test fällt.
 
 **Negativkontrollen zu 4.2.0**, alle sechs haben gefeuert und wurden zurückgesetzt:
 - Sitzungsfilter entfernt → der Vortag zählt mit, der Bar-Zähler fällt.
@@ -218,10 +244,12 @@ Eine ältere Regex-Zusicherung auf die Inline-Formel (`safety-regression.mjs`, Z
 2. **Tiingo-`prevClose` auf denselben Fehler prüfen wie Alpaca.** `iexRadarQuote` (~Zeile 6713) nimmt `x.prevClose ?? x.previousClose`. Ob Tiingo dieselbe Rollover-Eigenheit im Premarket hat, lässt sich nur mit einem echten Abruf zwischen 04:00 und 09:30 ET belegen, nicht aus dem Code. Offen, nicht behauptet.
 3. **Kaltstart-Lücke im Premarket.** `analyseStock` braucht ≥24 Fünf-Minuten-Bars; IEX bildet 04:00–08:00 ET kaum ab. Ohne analysierbare Bars bleibt `rows` leer, und `persistStockScan` schreibt bei leerem Array nichts. Bewusst nicht angefasst — ein künstlicher Seed wäre eine Zahl ohne Deckung. Seit 4.0.1 ist das Symptom entschärft, weil der Vortagesstand sichtbar bleibt.
 4. **Bandbreite gegen den echten Kontostand prüfen**, nicht gegen `/api/health`. Die Eigenmessung ist eine *untere* Schranke; am 02.09. zeigte der reale Tiingo-Stand das 3,3-fache.
-5. **Der Vorrang wäre auch inhaltlich zu verbessern** — nachgezogen aus dem erledigten Punkt 4. Die Beschriftung ist seit 4.1.5 ehrlich, die Formel bleibt schwach: der CRV-Term unterscheidet fast nichts (siehe 4.1.5), das Volumen zählt doppelt. Eine bessere Rangfolge wäre denkbar, **aber sie braucht einen Beleg** — welche Reihenfolge trifft im Nachhinein besser? Die Daten dafür liegen in `snapshots` (Modul 0, `/api/attribution`). Ohne diese Auswertung wäre jede neue Gewichtung nur eine andere Meinung, und die Titelauswahl änderte sich ohne Grund.
+5. **Vor dem Wechsel auf Paid: Reihenfolge einhalten.** Erst eine saubere Tagesmessung unter 69 Zeilen/min abwarten (offener Punkt 7), dann `D1_WRITE_BUDGET` auf einen Paid-tauglichen Wert setzen (Richtwert 1.500.000), dann den `limits`-Block aktivieren, dann den Tarif wechseln. Nicht umgekehrt: auf Free kostet ein Fehler nichts, auf Paid kostet derselbe Fehler Geld, und diese Sorte Schreibschleife ist in einer Woche zweimal aufgetreten.
 
-6. **Die erste belastbare Messung der Schreibrate steht noch aus.** Alles bis 03.09. ist unbrauchbar, weil das Kontingent vor dem Deploy von 4.1.3/4.1.4 erschöpft war (siehe 4.1.6). Der nächste Reset um 00:00 UTC ist der erste ehrliche Lauf. Seit 4.1.7 steht die Antwort im **Lernbericht** der App, Rohwerte weiterhin unter `/api/health` → `d1` → `atLeastRowsWrittenPerMin` gegen `sustainableRowsWrittenPerMin` (69,4) und `writeBudgetHoldsToday`. Fällt die Rate nicht deutlich unter die 3.333/min vom 03.09., wirkt 4.1.3 nicht und der nächste Schritt ist `topQueries` im selben Zweig — der Zähler weist seit 3.32.9 nach Abfrageform aus, welche Form verbraucht.
-7. **`d1StoreSnapshotRow` und `d1UpdateOutcomes` haben keinen Aufrufer mehr.** Gefunden bei der 4.1.6-Analyse. `d1UpdateOutcomes` trägt eine eigene `LIMIT 500`-Abfrage **pro Symbol** und liest wie ein zweiter, lebender Auflöser neben `d1StoreRows` — genau die Sorte Fund, die beim nächsten Bandbreitenproblem falsch verdächtigt wird. Bewusst nicht gelöscht: totes Entfernen ist eine eigene Änderung mit eigenem Risiko, und die Suite deckt diesen Pfad nicht ab. Vor dem Löschen prüfen, ob die Aufrufer wirklich alle weg sind (`grep -n 'd1StoreSnapshotRow('`).
+6. **Der Vorrang wäre auch inhaltlich zu verbessern** — nachgezogen aus dem erledigten Punkt 4. Die Beschriftung ist seit 4.1.5 ehrlich, die Formel bleibt schwach: der CRV-Term unterscheidet fast nichts (siehe 4.1.5), das Volumen zählt doppelt. Eine bessere Rangfolge wäre denkbar, **aber sie braucht einen Beleg** — welche Reihenfolge trifft im Nachhinein besser? Die Daten dafür liegen in `snapshots` (Modul 0, `/api/attribution`). Ohne diese Auswertung wäre jede neue Gewichtung nur eine andere Meinung, und die Titelauswahl änderte sich ohne Grund.
+
+7. **Die erste belastbare Messung der Schreibrate steht noch aus.** Alles bis 03.09. ist unbrauchbar, weil das Kontingent vor dem Deploy von 4.1.3/4.1.4 erschöpft war (siehe 4.1.6). Der nächste Reset um 00:00 UTC ist der erste ehrliche Lauf. Seit 4.1.7 steht die Antwort im **Lernbericht** der App, Rohwerte weiterhin unter `/api/health` → `d1` → `atLeastRowsWrittenPerMin` gegen `sustainableRowsWrittenPerMin` (69,4) und `writeBudgetHoldsToday`. Fällt die Rate nicht deutlich unter die 3.333/min vom 03.09., wirkt 4.1.3 nicht und der nächste Schritt ist `topQueries` im selben Zweig — der Zähler weist seit 3.32.9 nach Abfrageform aus, welche Form verbraucht.
+8. **`d1StoreSnapshotRow` und `d1UpdateOutcomes` haben keinen Aufrufer mehr.** Gefunden bei der 4.1.6-Analyse. `d1UpdateOutcomes` trägt eine eigene `LIMIT 500`-Abfrage **pro Symbol** und liest wie ein zweiter, lebender Auflöser neben `d1StoreRows` — genau die Sorte Fund, die beim nächsten Bandbreitenproblem falsch verdächtigt wird. Bewusst nicht gelöscht: totes Entfernen ist eine eigene Änderung mit eigenem Risiko, und die Suite deckt diesen Pfad nicht ab. Vor dem Löschen prüfen, ob die Aufrufer wirklich alle weg sind (`grep -n 'd1StoreSnapshotRow('`).
 
 **Erledigt in 4.1.5:** der frühere Punkt 4 („Reife %" liest sich wie eine zweite Meinung).
 **Erledigt in 4.1.6:** die Änderungsschwelle greift auf allen fünf Schreibpfaden, nicht nur im Watchlist-Zweig.
@@ -230,7 +258,7 @@ Eine ältere Regex-Zusicherung auf die Inline-Formel (`safety-regression.mjs`, Z
 
 Aktuell **Workers Free**: es gibt keine Abrechnung, bei Erreichen der Limits wird abgewiesen. Kostenrisiko null — aber am 02.09. wurde das tägliche D1-Schreiblimit gerissen, weshalb der Watchlist-Modus aus 4.1.0 entstanden ist.
 
-**Korrektur in 4.1.6 zur bisherigen Aufstiegsrechnung.** Hier stand, der Betrieb liege bei geschätzt 6–9 Mio. Writes/Monat und damit bei 15–18 % der auf Paid enthaltenen 50 Mio. **Diese Zahl war nie gemessen.** Die einzige tatsächlich gemessene Rate ist die vom 03.09.: 3.333 geschriebene Zeilen pro Minute. Ungebremst hochgerechnet sind das rund 144 Mio. pro Monat — knapp das Dreifache des Enthaltenen, und auf Paid würde die Überschreitung ohne Rückfrage abgerechnet. Ob 4.1.3 und 4.1.6 das auf ein tragfähiges Maß drücken, ist noch nicht gemessen (offener Punkt 6).
+**Korrektur in 4.1.6 zur bisherigen Aufstiegsrechnung.** Hier stand, der Betrieb liege bei geschätzt 6–9 Mio. Writes/Monat und damit bei 15–18 % der auf Paid enthaltenen 50 Mio. **Diese Zahl war nie gemessen.** Die einzige tatsächlich gemessene Rate ist die vom 03.09.: 3.333 geschriebene Zeilen pro Minute. Ungebremst hochgerechnet sind das rund 144 Mio. pro Monat — knapp das Dreifache des Enthaltenen, und auf Paid würde die Überschreitung ohne Rückfrage abgerechnet. Ob 4.1.3 und 4.1.6 das auf ein tragfähiges Maß drücken, ist noch nicht gemessen (offener Punkt 7).
 
 **Praktische Folge: vor dem Aufstieg auf Paid erst die echte Rate messen.** Auf Free ist ein Fehler ein Stillstand, auf Paid ist derselbe Fehler eine Rechnung — und genau diese Sorte Schreibschleife ist in dieser App innerhalb einer Woche zweimal aufgetreten. Der Reihenfolge nach: erst eine saubere Tagesmessung unter 69 Zeilen/min, dann der `limits`-Block, dann der Aufstieg.
 

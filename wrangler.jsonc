@@ -35,7 +35,22 @@
 
   // Nur Diagnose. Die verbindliche Version steht in src/version.js und wird
   // von scripts/sync-version.mjs aus package.json hierher gespiegelt.
-  "vars": { "APP_VERSION": "4.2.0", "ALPACA_FEED": "iex", "TIINGO_STOCKS_MODE": "primary" },
+  //
+  // D1_WRITE_BUDGET (v4.2.1): selbst gesetzte Tagesobergrenze für GESCHRIEBENE
+  // ZEILEN. Cloudflare bietet für D1 keine Ausgabenbremse — Budget-Alerts
+  // informieren, sie halten nichts an. Diese Zahl ist die einzige Bremse.
+  //
+  //   Free : 100.000/Tag ist Cloudflares eigenes Limit. 90.000 lässt Reserve,
+  //          weil die Eigenmessung eine UNTERGRENZE ist (.first()-Abfragen
+  //          werden nicht gezählt) und die Bremse deshalb zu spät greift.
+  //   Paid : enthalten sind 50 Mio./Monat, also rund 1.667.000/Tag. Ein Wert
+  //          um 1.500.000 bleibt sicher darunter. Darüber kostet jede weitere
+  //          Million 1 USD, ohne Rückfrage.
+  //
+  // Ohne diesen Eintrag gilt die Vorgabe 90.000. Vor einem Wechsel auf Paid
+  // erst eine saubere Tagesmessung abwarten, dann diesen Wert setzen, dann
+  // den Tarif wechseln — in dieser Reihenfolge.
+  "vars": { "APP_VERSION": "4.2.1", "ALPACA_FEED": "iex", "TIINGO_STOCKS_MODE": "primary", "D1_WRITE_BUDGET": "90000" },
 
   // v3.2: Cron läuft jede Minute. Im Worker selbst wird gedrosselt:
   // Krypto 5-minütig, Alpaca im Opening-Fenster, Aktien-Learning im Primary-Modus über Tiingo.

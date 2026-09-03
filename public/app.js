@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.2.0 — Frontend
+   FusionPulse v4.2.1 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2670,12 +2670,19 @@ function d1Note(meta){
     return { measured:false, tone:'warn', label:'Schreibbudget: nicht gemessen',
       detail:'Der Server meldet noch keine Zeilenzahlen für den laufenden UTC-Tag. Das ist eine fehlende Messung, kein niedriger Verbrauch — daraus lässt sich NICHT schließen, dass Reserve vorhanden ist.' };
   }
-  const share=w/cap, rate=Number(d.atLeastRowsWrittenPerMin), soll=Number(d.sustainableRowsWrittenPerMin);
+  /* v4.2.1: Gemessen wird ab jetzt gegen die SELBST gesetzte Obergrenze, nicht
+     gegen das Limit des Tarifs. Auf Paid gibt es Cloudflares Grenze als
+     Stillstand gar nicht mehr — dort ist diese Zahl die einzige, die etwas
+     anhaelt, und deshalb die einzige, gegen die zu messen sinnvoll ist. */
+  const selbst=Number(d.selfCap);
+  const grenze=Number.isFinite(selbst)&&selbst>0?selbst:cap;
+  const eigen=Number.isFinite(selbst)&&selbst>0&&selbst!==cap;
+  const share=w/grenze, rate=Number(d.atLeastRowsWrittenPerMin), soll=Number(d.sustainableRowsWrittenPerMin);
   const haelt=d.writeBudgetHoldsToday!==false;
   const rest=Number(d.writeBudgetMinutesLeft);
-  const tone = share>=1 ? 'err' : (!haelt||share>=0.8) ? 'orange' : 'ok';
+  const tone = (share>=1||d.selfCapExhausted===true) ? 'err' : (!haelt||share>=0.8) ? 'orange' : 'ok';
   const n=(x)=>Number(x).toLocaleString('de-DE');
-  const label=`Schreibbudget: ${n(w)} von ${n(cap)} (${Math.round(share*100)} %)`;
+  const label=`Schreibbudget: ${n(w)} von ${n(grenze)} (${Math.round(share*100)} %)`;
   const takt = Number.isFinite(rate)&&Number.isFinite(soll)
     ? ` Takt: mindestens ${rate.toLocaleString('de-DE')} Zeilen/min, tragfähig sind ${soll.toLocaleString('de-DE')}.` : '';
   const reicht = share>=1 ? ' Das Budget ist aufgebraucht — bis 00:00 UTC wird nichts mehr gespeichert.'
@@ -2684,7 +2691,7 @@ function d1Note(meta){
   return { measured:true, tone, label,
     /* Die Untergrenze muss mitlaufen, sonst liest sich „reicht" wie eine
        Zusage. Der Server misst `.first()`-Abfragen nicht mit. */
-    detail:`${label}.${takt}${reicht} Gerechnet wird gegen 00:00 UTC (2 Uhr MESZ). Die Messung ist eine UNTERGRENZE${d.complete===false?' und ausdrücklich unvollständig':''} — der echte Verbrauch liegt bei oder über diesem Wert. Maßgeblich bleibt der Kontostand im Cloudflare-Dashboard.` };
+    detail:`${label}.${takt}${reicht}${eigen?` Die Grenze ist eine SELBST gesetzte Tagesobergrenze (${n(grenze)}), nicht das Limit des Tarifs (${n(cap)}) — Cloudflare bietet für D1 keine Ausgabenbremse. Bei Erreichen stoppen die großen Schreibvorgänge; Kurse und Analysen laufen weiter.`:''}${d.selfCapExhausted?' ⛔ Die Obergrenze ist erreicht, es wird nichts mehr für die Lernschicht gespeichert.':''} Gerechnet wird gegen 00:00 UTC (2 Uhr MESZ). Die Messung ist eine UNTERGRENZE${d.complete===false?' und ausdrücklich unvollständig':''} — der echte Verbrauch liegt bei oder über diesem Wert. Maßgeblich bleibt der Kontostand im Cloudflare-Dashboard.` };
 }
 function bandwidthNote(meta) {
   if (authDenied) {
