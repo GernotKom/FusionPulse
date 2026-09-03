@@ -3371,58 +3371,6 @@ async function d1StoreCrowd(env, rows){
   ).bind(String(x.symbol).toUpperCase(), now, dbNum(x.score), dbNum(x.stars), dbNum(x.accel), dbNum(x.interest), x.source||'Crowd'));
   if(stmts.length) await env.DB.batch(stmts);
 }
-async function d1UpdateOutcomes(env, symbol, price, now=Date.now(), assetType='stock', source='server'){
-  if(!env.DB || !(price>0) || !symbol) return;
-  const rows=(await env.DB.prepare(
-    `SELECT id,ts,price,max_pct,min_pct,success_ts,reach_ts,mae_pre,obs_n FROM market_snapshots
-     WHERE symbol=? AND asset_type=? AND source=? AND resolved_ts IS NULL AND dropped_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 500`
-  ).bind(symbol, assetType, source, now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
-  if(!rows.length) return;
-  const stmts=[];
-  let newlyResolved=0, newlyExpanded=0;
-  for(const x of rows){
-    const pct=(price/Number(x.price)-1)*100;
-    const mx=Math.max(Number(x.max_pct)||0,pct), mn=Math.min(Number(x.min_pct)||0,pct);
-    const successTs=x.success_ts || (mx>=5 ? now : null);
-    const reachTs=x.reach_ts || (mx>=PICK_REACH_PCT ? now : null);
-    /* MAE-vor-MFE: die schlimmste Gegenbewegung, die man aushalten musste, BEVOR
-       der bisherige Hoechststand erreicht war. Wird immer dann neu festgehalten,
-       wenn ein neuer Hoechststand entsteht.
-       Warum nicht "bis zur 2-%-Marke einfrieren" (so stand es im ersten Entwurf):
-       dann waere die Zahl nur fuer Ziele bis 2 % gueltig gewesen und jedes
-       groessere Ziel haette auf `min_pct` zurueckfallen muessen — also auf einen
-       Wert, der auch den Rueckgang NACH dem Ausstieg enthaelt. Ein Setup, das
-       1,8 % Luft braucht und dafuer 4,2 % liefert, waere so faelschlich als
-       unhandelbar ausgewiesen worden.
-       So gemessen gilt: um `max_pct` zu erreichen, musste man `mae_pre`
-       aushalten. Fuer jedes KLEINERE Ziel ist das eine Obergrenze — also die
-       vorsichtige Richtung. */
-    const setsNewMax = pct > (Number(x.max_pct) || 0);
-    const maePre = setsNewMax ? mn : (Number.isFinite(Number(x.mae_pre)) ? Number(x.mae_pre) : mn);
-    /* v3.32.10 · Jede Beobachtung wird gezaehlt. Aufgeloest wird nur, was den
-       Kursverlauf ausreichend oft gesehen hat — sonst waere `max_pct` kein
-       gemessener Hoechststand, sondern nur der hoechste der wenigen Momente,
-       in denen zufaellig jemand hinsah. */
-    const obs=(Number(x.obs_n)||0)+1;
-    const due=(now-Number(x.ts)>=LEARN_HORIZON_MS);
-    const resolved=(due && obs>=LEARN_MIN_OBS) ? now : null;
-    if(resolved) newlyResolved++;
-    if(successTs && !x.success_ts) newlyExpanded++;
-    stmts.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),reach_ts=COALESCE(reach_ts,?),mae_pre=?,obs_n=?,last_obs_ts=?,resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
-      .bind(mx,mn,successTs,reachTs,maePre,obs,now,resolved,x.id));
-  }
-  /* v3.32.9 · FAIL-CLOSED AN DER TEUERSTEN STELLE.
-     Wirft D1 hier (Limit erreicht, Ausfall), darf NICHTS als aufgeloest
-     gebucht werden. Der Fehler wird weitergereicht, damit der Aufrufer ihn
-     sieht — und die Zaehler werden erst NACH dem erfolgreichen Batch
-     fortgeschrieben. Wuerde vorher gezaehlt, meldete die App Auflösungen,
-     die nie in der Datenbank angekommen sind: die Lernreife saehe besser aus
-     als sie ist, und das ist genau die Richtung, die Invariante 1 verbietet. */
-  if(stmts.length){
-    await env.DB.batch(stmts);
-    if(newlyResolved || newlyExpanded) learnCountersBump({ resolved:newlyResolved, expansions:newlyExpanded }, now);
-  }
-}
 /* ══ v3.32.10 · R3 — DER AUFLOESER, DER NICHT MEHR AUF ZUFALL WARTET ════════
    Bisher: `d1UpdateOutcomes()` loeste nur auf, wenn GENAU DIESES Symbol
    erneut gescannt wurde, im Fenster Minute 180 bis 195. Wer das Fenster
@@ -3460,65 +3408,170 @@ async function d1ResolveDue(env, now=Date.now(), budget=LEARN_RESOLVE_BUDGET){
     return { due:0, resolved:0, dropped:0, capped:true, cap:cap.cap, spent:cap.spent };
   }
   const rows=(await env.DB.prepare(
-    `SELECT id,obs_n FROM market_snapshots
+    `SELECT id,ts,symbol,source,asset_type,obs_n FROM market_snapshots
      WHERE resolved_ts IS NULL AND dropped_ts IS NULL AND ts<=? ORDER BY ts ASC LIMIT ?`
   ).bind(now-LEARN_HORIZON_MS, budget).all()).results||[];
   if(!rows.length) return { due:0, resolved:0, dropped:0 };
+  /* v4.2.3 · Die Abdeckung steht im Beobachtungsprotokoll, nicht in der Zeile.
+     Je Kombination aus Quelle und Anlageklasse ein Lesevorgang; mehr als eine
+     Handvoll gibt es nicht. */
+  const logs=new Map();
+  for(const x of rows){
+    const key=`${x.source||'server'}:${x.asset_type||'stock'}`;
+    if(!logs.has(key)) logs.set(key, await d1ReadObsLog(env, x.source||'server', x.asset_type||'stock'));
+  }
+  /* FAIL-CLOSED, ABER NICHT VERWERFEND. Ist ein Protokoll nicht lesbar, ist
+     die Abdeckung unbekannt — und `dropped_ts` ist unwiderruflich. In diesem
+     Fall wird GAR NICHTS entschieden, nicht „im Zweifel verwerfen". Der
+     Aufloeser laeuft jede Minute; ein Aufschub kostet nichts, ein falscher
+     Verwurf kostet den Datenpunkt fuer immer. */
+  if([...logs.values()].some(v=>v===null))
+    return { due:rows.length, resolved:0, dropped:0, obsLogUnreadable:true };
   const ok=[], gap=[];
   for(const x of rows){
-    /* Altbestand ohne `obs_n` (vor v3.32.10 aufgezeichnet): die Abdeckung ist
-       rueckwirkend nicht feststellbar. Nicht feststellbar ist nicht
-       ausreichend — solche Zeilen werden verworfen, nicht geraten. Sie
-       erscheinen in `missed`, damit der Verlust sichtbar bleibt statt sich
-       als Ergebnis auszugeben. */
-    const obs=Number(x.obs_n);
-    if(Number.isFinite(obs) && obs>=LEARN_MIN_OBS) ok.push(x.id); else gap.push(x.id);
+    /* Altbestand ohne Protokolleintrag: die Abdeckung ist rueckwirkend nicht
+       feststellbar. Nicht feststellbar ist nicht ausreichend — solche Zeilen
+       werden verworfen, nicht geraten. Sie erscheinen in `missed`, damit der
+       Verlust sichtbar bleibt statt sich als Ergebnis auszugeben.
+       `obs_n` bleibt als Quelle zugelassen, falls die Spalte je wieder
+       gefuellt wird; der hoehere der beiden Werte gewinnt. */
+    const key=`${x.source||'server'}:${x.asset_type||'stock'}`;
+    const fromLog=obsCountFor(logs.get(key), x.symbol, x.ts);
+    const fromCol=Number(x.obs_n);
+    const obs=Math.max(Number.isFinite(fromCol)?fromCol:0, fromLog);
+    if(obs>=LEARN_MIN_OBS) ok.push(x.id); else gap.push(x.id);
   }
   const stmts=[];
   for(const id of ok) stmts.push(env.DB.prepare('UPDATE market_snapshots SET resolved_ts=COALESCE(resolved_ts,?) WHERE id=?').bind(now,id));
   for(const id of gap) stmts.push(env.DB.prepare('UPDATE market_snapshots SET dropped_ts=COALESCE(dropped_ts,?) WHERE id=?').bind(now,id));
-  /* Fail-closed wie in d1UpdateOutcomes: erst schreiben, dann zaehlen. */
+  /* Fail-closed: erst schreiben, dann zaehlen. */
   if(stmts.length) await env.DB.batch(stmts);
   if(ok.length || gap.length) learnCountersBump({ resolved:ok.length, dropped:gap.length }, now);
   return { due:rows.length, resolved:ok.length, dropped:gap.length, budgetHit: rows.length>=budget };
 }
 
-async function d1StoreSnapshotRow(env, row, {source='server',assetType='stock',now=Date.now()}={}){
-  if(!env.DB || !row) return;
-  await ensureD1Schema(env);
-  const symbol=String(row.symbol||row.pair||'').toUpperCase();
-  const price=dbNum(row.priceUsd ?? row.price ?? row.livePrice ?? row.priceEur);
-  if(!symbol || !(price>0)) return;
-  await d1UpdateOutcomes(env,symbol,price,now,assetType,source);
-  const crowdScore = dbNum(row.crowdScore) ?? await d1CrowdScore(env,symbol);
-  const enriched={...row,crowdScore};
-  const f=learningFeatures(enriched), bucket5=Math.floor(now/(5*60_000));
-  /* v3.32.9 · `INSERT OR IGNORE` mit UNIQUE(source,asset_type,symbol,bucket5):
-     ein zweiter Scan desselben Titels im selben 5-Minuten-Takt fuegt NICHTS
-     ein. Gezaehlt wird deshalb `meta.changes`, nicht der Aufruf — sonst
-     zaehlte die App Beobachtungen, die es gar nicht gibt, und jede engere
-     Abfragefrequenz wuerde die Statistik aufblasen, ohne eine einzige neue
-     Zeile zu erzeugen. */
-  const ins = await env.DB.prepare(
-    `INSERT OR IGNORE INTO market_snapshots
-     (ts,bucket5,source,asset_type,symbol,sector,phase,price,score,crv,rvol,ret15,ret60,atr_pct,liquidity_vacuum,sector_lag,crowd_score,structure_pct,executability,light,payload)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).bind(now,bucket5,source,assetType,symbol,row.sector||null,row.marketPhase||row.phase||null,price,
-    f.score,f.crv,f.rv,f.r15,f.r60,f.atr,f.vac,f.lag,crowdScore,f.structure,dbNum(row.executability),row.light||null,snapshotPayload(row)).run();
-  const inserted = Number(ins?.meta?.changes);
-  if(Number.isFinite(inserted) && inserted > 0) learnCountersBump({ snapshots:inserted, ts:now }, now);
-  const flags=serverLeadFlags(enriched);
-  const ev=[];
-  for(const k of LEARN_SIGNAL_LABELS){
-    if(!flags[k]) continue;
-    const strength = k==='crowd'?crowdScore : k==='rvol'?f.rv : k==='vacuum'?f.vac : k==='sector'?f.lag : k==='elliott'?f.structure : k==='technical'?f.score : k==='momentum'?(dbNum(row.momentumScore)??dbNum(row.momentum)??f.score) : crowdScore;
-    ev.push(env.DB.prepare('INSERT OR IGNORE INTO signal_events(symbol,ts,bucket5,signal,price,strength,source) VALUES(?,?,?,?,?,?,?)')
-      .bind(symbol,now,bucket5,k,price,strength,source));
+/* ══ v4.2.3 · DIE ABDECKUNG WURDE SEIT MONATEN NICHT MEHR AUFGEZEICHNET ═════
+   BEFUND (statisch belegt, nicht vermutet): die einzige Anweisung im ganzen
+   Worker, die je `obs_n` beschrieben hat, stand in `d1UpdateOutcomes`. Diese
+   Funktion hatte genau einen Aufrufer, `d1StoreSnapshotRow`, und der hatte
+   keinen. Der lebende Schreibpfad ist seit langem `d1StoreRows` — und der
+   fuehrt `obs_n` nicht mit. Jede Zeile in `market_snapshots` trug damit
+   `obs_n IS NULL`. Der Aufloeser verlangt `obs >= LEARN_MIN_OBS`, also hat er
+   ausnahmslos JEDE faellige Zeile mit `dropped_ts` verworfen: 0 % aufgeloest,
+   100 % Verwurf, dauerhaft. Ausgefuehrt nachgestellt: drei Zeilen mit
+   `obs_n:null` ergeben `{due:3, resolved:0, dropped:3}`.
+
+   WARUM DAS NIEMANDEM AUFFIEL: der Verwurf ist ein legitimer Zustand. Er
+   liest sich als „zu wenig beobachtet" — also als Abdeckungsproblem, das man
+   mit dichterem Scannen loesen wuerde. Genau diese Diagnose steht auch im
+   Kommentar zur Radar-Kadenz („der Deep Scan fuellt `obs_n`, deshalb wird er
+   nicht gedrosselt"). Die Begruendung war seit dem Wegfall des Aufrufers
+   falsch. Dazu kam, dass die Lernzahlen ohnehin bei null standen, weil das
+   D1-Schreiblimit gerissen war — zwei Ursachen, ein Symptombild.
+
+   WARUM KEIN ZAEHLER IN DER ZEILE. Naheliegend waere, `obs_n` einfach in das
+   UPDATE von `d1StoreRows` aufzunehmen. Das ist genau der Widerspruch, der
+   den Fehler ueberleben liess: ein persistierter Zaehler kann nur wachsen,
+   wenn die Zeile geschrieben wird — und 4.1.3/4.1.6 existieren, um die
+   unveraenderte Zeile NICHT zu schreiben. Beides zusammen ergaebe wieder die
+   Schreibschleife mit 3.333 Zeilen/min. Der Zaehler und die Schreibschwelle
+   schliessen einander aus.
+
+   DESHALB WIRD DIE ABDECKUNG HERGELEITET, NICHT MITGEZAEHLT. Ein Protokoll je
+   Quelle und Anlageklasse in `fp_meta` haelt fest, WANN welches Symbol
+   beobachtet wurde. Es wird einmal je `d1StoreRows`-Aufruf fortgeschrieben —
+   und hoechstens einmal je 5-Minuten-Takt tatsaechlich geschrieben, weil der
+   Snapshot selbst auf `bucket5` gerastert ist und ein feinerer Eintrag keine
+   Frage beantwortet, die die App stellt. Kosten: rund 288 Schreibvorgaenge je
+   Pfad und Tag statt 1.440, also ein niedriger vierstelliger Anteil des
+   Tagesbudgets von 90.000. Das ist der Preis dafuer, dass es die Lernschicht
+   ueberhaupt gibt.
+
+   ENTSCHEIDEND IST DIE REIHENFOLGE IM AUFRUFER: protokolliert wird VOR der
+   Schreibschwelle `onlyChanged`. Beobachtet wurde jedes abgerufene Symbol —
+   auch das, dessen Kurs sich nicht bewegt hat. Stuende das Protokoll hinter
+   der Schwelle, zaehlten nur noch Bewegungen als Beobachtung, und die
+   Lernbasis fuellte sich systematisch mit Bewegern. Das ist dieselbe
+   Verzerrung wie die, vor der R3 warnt, nur mit umgekehrtem Vorzeichen.    */
+const OBS_LOG_PREFIX = 'obs_log:';
+/* Aufbewahrung: der Horizont plus eine Stunde Luft. Der Aufloeser hat seit
+   v3.32.10 keine untere Zeitgrenze mehr (NK64) — eine Zeile kann Wochen alt
+   sein. Fuer sie ist die Abdeckung dann nicht mehr belegbar, und sie wird
+   verworfen. Das ist richtig so: das Protokoll darf nicht unbegrenzt wachsen,
+   und ein geratener Nachweis waere schlimmer als ein fehlender. */
+const OBS_LOG_RETENTION_MS = LEARN_HORIZON_MS + 60*60_000;
+const OBS_LOG_BUCKET_MS = 5*60_000;
+function obsLogKey(source, assetType){ return `${OBS_LOG_PREFIX}${source||'server'}:${assetType||'stock'}`; }
+/** Liest das Protokoll. `null` heisst NICHT LESBAR — nicht „leer".
+    WICHTIG IST DIE TRENNUNG ZWEIER FEHLER, die sich aehnlich anfuehlen:
+    - Die Datenbank antwortet nicht → `null`. Die Abdeckung ist unbekannt, der
+      Aufloeser schiebt auf. Selbstheilend, weil er jede Minute laeuft.
+    - Der Inhalt ist unbrauchbar (kaputtes JSON) → `{}`. Das MUSS als „lesbar,
+      aber leer" gelten. Gaelte es als nicht lesbar, kaeme auch der Schreiber
+      nicht mehr an dem Wert vorbei, der ihn blockiert: er liest vor dem
+      Schreiben. Ein einziges kaputtes Zeichen legte das Protokoll dann
+      dauerhaft still — Aufloeser und Schreiber warteten wechselseitig
+      aufeinander. So kostet es die Abdeckung EINES Fensters und ist mit dem
+      naechsten Schreibvorgang repariert. */
+async function d1ReadObsLog(env, source, assetType){
+  if(!env.DB) return null;
+  let row;
+  try{
+    row=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind(obsLogKey(source,assetType)).first();
+  }catch{ return null; }
+  if(!row || row.value==null) return {};            // noch nie geschrieben: leer, aber lesbar
+  try{
+    const o=JSON.parse(String(row.value));
+    return (o && typeof o==='object' && !Array.isArray(o)) ? o : {};
+  }catch{
+    cronLog('d1','obslog',`Beobachtungsprotokoll ${obsLogKey(source,assetType)} unbrauchbar — wird neu aufgebaut`);
+    return {};
   }
-  if(ev.length) await env.DB.batch(ev);
+}
+/** Haelt fest, dass diese Symbole jetzt beobachtet wurden. */
+async function d1NoteObservations(env, source, assetType, symbols, now=Date.now()){
+  if(!env.DB || !symbols?.length) return { written:false, reason:'nichts zu protokollieren' };
+  const log=await d1ReadObsLog(env, source, assetType);
+  if(log===null) return { written:false, reason:'protokoll nicht lesbar' };
+  const cutoff=now-OBS_LOG_RETENTION_MS, bucket=Math.floor(now/OBS_LOG_BUCKET_MS);
+  const next={};
+  let changed=false;
+  for(const [sym,list] of Object.entries(log)){
+    const kept=(Array.isArray(list)?list:[]).map(Number).filter(t=>Number.isFinite(t)&&t>=cutoff);
+    if(kept.length!==(Array.isArray(list)?list.length:0)) changed=true;
+    if(kept.length) next[sym]=kept;
+  }
+  for(const raw of new Set(symbols.map(s=>String(s||'').toUpperCase()).filter(Boolean))){
+    const list=next[raw] || (next[raw]=[]);
+    const last=list.length?list[list.length-1]:null;
+    /* Ein zweiter Eintrag im selben 5-Minuten-Takt ist keine zweite
+       Beobachtung — derselbe Gedanke wie `INSERT OR IGNORE` auf `bucket5`. */
+    if(last!=null && Math.floor(last/OBS_LOG_BUCKET_MS)===bucket) continue;
+    list.push(now); changed=true;
+  }
+  if(!changed) return { written:false, reason:'takt bereits protokolliert' };
+  await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+     ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
+    .bind(obsLogKey(source,assetType), JSON.stringify(next), now).run();
+  return { written:true, symbols:Object.keys(next).length };
+}
+/** Wie oft wurde dieses Symbol NACH `ts` und innerhalb des Horizonts gesehen? */
+function obsCountFor(log, symbol, ts, horizonMs=LEARN_HORIZON_MS){
+  const list=log?.[String(symbol||'').toUpperCase()];
+  if(!Array.isArray(list)) return 0;
+  const from=Number(ts); if(!Number.isFinite(from)) return 0;
+  const to=from+horizonMs;
+  let n=0;
+  for(const t of list){ const v=Number(t); if(Number.isFinite(v) && v>from && v<=to) n++; }
+  return n;
 }
 async function d1BatchChunks(env, stmts, size=50){
-  for(let i=0;i<stmts.length;i+=size) await env.DB.batch(stmts.slice(i,i+size));
+  const out=[];
+  for(let i=0;i<stmts.length;i+=size){
+    const r=await env.DB.batch(stmts.slice(i,i+size));
+    if(Array.isArray(r)) out.push(...r);
+  }
+  return out;
 }
 /* v3.17.0 · BEFUND: Der Snapshot speicherte nur `setup` — den ALTEN, groben
    Musternamen. Die neun Typen der Situation Engine (SQUEEZE RELEASE, BREAKOUT
@@ -3605,6 +3658,12 @@ async function d1StoreRows(env, rows, opts={}){
     if(symbol && price>0) clean.push({row,symbol,price});
   }
   if(!clean.length) return;
+  /* ══ v4.2.3 · HIER, UND NICHT WEITER UNTEN ═════════════════════════════
+     Beobachtet wurde jedes Symbol dieses Abrufs — auch das, das die
+     Schreibschwelle gleich verwirft. Steht diese Zeile hinter `onlyChanged`,
+     gilt nur noch Bewegung als Beobachtung und die Lernbasis fuellt sich mit
+     Bewegern. Ein Test prueft die Reihenfolge per Index. */
+  await d1NoteObservations(env, source, assetType, clean.map(c=>c.symbol), now);
   /* ══ v4.1.0 · NICHT JEDE MINUTE DASSELBE AUFSCHREIBEN ═══════════════════
      `rows_written` zaehlt Indexeintraege mit; `market_snapshots` traegt vier
      Indizes, ein INSERT kostet also fuenf Zeilen. Im Watchlist-Modus laeuft
@@ -3692,7 +3751,23 @@ async function d1StoreRows(env, rows, opts={}){
         .bind(symbol,now,bucket5,k,price,strength,source));
     }
   }
-  if(inserts.length) await d1BatchChunks(env,inserts);
+  /* ══ v4.2.3 · DER ZWEITE UNTERBROCHENE DRAHT ═══════════════════════════
+     `learnCountersBump({snapshots})` stand ausschliesslich in
+     `d1StoreSnapshotRow` — der Funktion ohne Aufrufer. Der lebende Pfad hat
+     eingefuegt und nie gezaehlt. Die Beobachtungszahl im Lernbericht konnte
+     deshalb gar nicht wachsen, was zusammen mit dem 100-%-Verwurf des
+     Aufloesers wie ein D1-Ausfall aussah und nicht wie ein Codefehler.
+     Gezaehlt wird `meta.changes`, nicht die Zahl der Anweisungen: bei
+     `INSERT OR IGNORE` auf `UNIQUE(source,asset_type,symbol,bucket5)` fuegt
+     ein zweiter Scan im selben Takt NICHTS ein. Wuerde der Aufruf gezaehlt,
+     bliese jede engere Abfragefrequenz die Statistik auf, ohne eine einzige
+     neue Zeile zu erzeugen. */
+  if(inserts.length){
+    const res=await d1BatchChunks(env,inserts);
+    let inserted=0;
+    for(const r of res||[]){ const c=Number(r?.meta?.changes); if(Number.isFinite(c)) inserted+=c; }
+    if(inserted>0) learnCountersBump({ snapshots:inserted, ts:now }, now);
+  }
   if(events.length) await d1BatchChunks(env,events);
 }
 function twinDistance(a,b){
@@ -6442,6 +6517,17 @@ async function learningPayload(env, stocks=[], coins=[]){
   const data={configured:true,state:'ok',ts:now,stats:{
     snapshots:counts.snapshots, resolved:counts.resolved, expansions:counts.expansions,
     snapshots24h:counts.snapshots24h, resolved24h:counts.resolved24h, expansions24h:counts.expansions24h,
+    /* v4.2.3 · DIESE ZWEI FEHLTEN, UND SIE WAREN DIE ANTWORT.
+       `learnCountersView` liefert `dropped` und `dropped24h` seit v3.32.10.
+       Bis 4.2.2 sind sie hier nicht in die Nutzlast uebernommen worden und
+       standen im Client nirgends — `public/app.js` kennt das Wort „dropped"
+       kein einziges Mal. Gezaehlt, transportiert, weggeworfen.
+       Genau diese Zahl haette den Fehler in einem Blick gezeigt: aufgeloest 0,
+       verworfen alles. Stattdessen sah man „0 ausgewertet" neben „0
+       Beobachtungen" und las es als D1-Sperre. Dieselbe Lehre wie in 4.2.2,
+       eine Ebene frueher: ein Feld, das gar nicht erst ankommt, kann auch
+       nicht auffallen. */
+    dropped:counts.dropped ?? null, dropped24h:counts.dropped24h ?? null,
     lastTs:counts.lastTs, exact:counts.exact, countedSince:counts.countedSince??null,
     windowComplete:counts.windowComplete??false, countsReason:counts.reason??null
   },stocks:stockOut,coins:coinOut,version:APP_VERSION};
@@ -6547,7 +6633,12 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
     /* v4.0.0 · Der Waechter, den dieser Block als einziger nicht hatte.
        `phase.key==='closed'` deckt Nacht, Wochenende und Feiertage ab
        (`nyseCalendar`). Der Deep Scan im else-Zweig laeuft weiter, solange die
-       Boerse offen ist — er kostet 16 KB und fuellt `obs_n`. */
+       Boerse offen ist — er kostet 16 KB.
+       v4.2.3 · Hier stand bis 4.2.2 „und fuellt `obs_n`". Das war seit dem
+       Wegfall des Aufrufers von `d1StoreSnapshotRow` falsch und hat die
+       Fehlersuche in die Irre gefuehrt: der Deep Scan fuellte gar nichts, und
+       der Verwurf des Aufloesers sah trotzdem nach einem Abdeckungsproblem
+       aus. Die Abdeckung entsteht jetzt im Beobachtungsprotokoll. */
     if(phase.key==='closed'){
       // Nichts. Kein Radar, kein Deep Scan. Es gibt nichts zu entdecken.
     } else if(wl.mode==='watchlist'){
@@ -6850,9 +6941,15 @@ const BOATS_TTL_MS = 20*60_000;
    WICHTIG FUER DIE ABGRENZUNG: teuer ist ausschliesslich der RADAR
    (11,2 MB je Abruf). Der Deep Scan laeuft ueber `iex-chart` mit 16,1 KB —
    611 Abrufe ergaben 0,009 GB. Der Deep Scan wird deshalb NICHT gedrosselt:
-   er ist es, der `obs_n` fuellt, und eine Drosselung dort wuerde die
-   Beobachtungsabdeckung senken und Snapshots in den Verwurf treiben (R3).
-   Bandbreite sparen darf nie die Messung beschaedigen.
+   er ist der Takt, in dem ueberhaupt hingesehen wird, und eine Drosselung
+   dort wuerde die Beobachtungsabdeckung senken und Snapshots in den Verwurf
+   treiben (R3). Bandbreite sparen darf nie die Messung beschaedigen.
+   v4.2.3 · Die Begruendung lautete bis 4.2.2 „er ist es, der `obs_n` fuellt".
+   Das stimmte nicht mehr: der einzige `obs_n`-Schreiber hatte keinen
+   Aufrufer. Der Satz war also eine richtige Schlussfolgerung aus einer
+   falschen Praemisse — die unangenehmste Sorte, weil sie jede Nachfrage
+   beantwortet. Die Abdeckung entsteht seit 4.2.3 in `d1NoteObservations`,
+   und die aufgezeichnete Beobachtung haengt weiterhin am Deep Scan.
 
    Die Kadenz folgt dem, was Entdeckung ueberhaupt bringen kann: in der
    Eroeffnung entstehen neue Kandidaten im Minutentakt, nachts entsteht gar

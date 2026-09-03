@@ -14,7 +14,7 @@
    Richtung, die Invariante 1 verbietet.                                     */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { loadD1, fakeDb } from './d1-harness.mjs';
+import { loadD1, fakeDb, loadResolver } from './d1-harness.mjs';
 
 const D = loadD1();
 const LIMIT = "D1_ERROR: Your account has exceeded D1's free tier daily row read limit.";
@@ -132,12 +132,19 @@ const stripComments = (s) => String(s)
    der hinter „einfach dichter scannen" steckt. */
 {
   const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
-  const fn = worker.slice(worker.indexOf('async function d1StoreSnapshotRow('),
-                          worker.indexOf('async function d1BatchChunks('));
+  /* v4.2.3 · Der Ausschnitt zeigte bis 4.2.2 auf `d1StoreSnapshotRow` — eine
+     Funktion ohne Aufrufer. Die Regel galt also nachweislich im toten Pfad
+     und im lebenden gar nicht: `d1StoreRows` hat eingefuegt und NIE gezaehlt.
+     Genau so bleibt ein Test gruen, waehrend die App nichts mehr lernt. Der
+     Ausschnitt zeigt jetzt auf den Pfad, der wirklich laeuft. */
+  const fn = worker.slice(worker.indexOf('async function d1StoreRows('),
+                          worker.indexOf('function twinDistance('));
   assert.match(fn, /meta\?\.changes/,
     'NK53: Gezaehlt werden muss die tatsaechliche Einfuegung, nicht der Aufruf');
-  assert.match(fn, /inserted > 0/,
+  assert.match(fn, /inserted>0|inserted > 0/,
     'NK53: Nur eine echte Einfuegung darf den Zaehler bewegen');
+  assert.match(fn, /learnCountersBump\(\s*\{\s*snapshots/,
+    'NK53: Der lebende Schreibpfad MUSS die Beobachtungen zaehlen');
   const { db } = fakeDb({ inserted: 0 });
   const r = await db.prepare('INSERT OR IGNORE INTO market_snapshots (ts) VALUES(?)').bind(1).run();
   assert.equal(r.meta.changes, 0, 'NK53: Das Double muss ein Duplikat als 0 Aenderungen melden');
@@ -145,17 +152,29 @@ const stripComments = (s) => String(s)
 
 /* ── NK54 · Aufloesungen erst NACH dem erfolgreichen Batch zaehlen ──────────
    Wirft D1 im Batch, darf nichts als aufgeloest gebucht sein. Sonst meldet
-   die App Auflösungen, die nie in der Datenbank angekommen sind. */
+   die App Auflösungen, die nie in der Datenbank angekommen sind.
+   v4.2.3 · Geprueft wurde das bis 4.2.2 im Ausschnitt von `d1UpdateOutcomes`
+   — einer Funktion ohne Aufrufer. Die Regel gilt jetzt dort, wo aufgeloest
+   wird, und sie wird AUSGEFUEHRT geprueft statt im Quelltext gesucht:
+   scheitert der Schreibvorgang, darf der Zaehler unberuehrt bleiben. */
 {
+  const R = loadResolver();
+  R.reset();
+  const { db, state } = fakeDb({ due: [{ id: 1, obs_n: 99 }, { id: 2, obs_n: 99 }] });
+  state.failWrite = 'D1_ERROR: batch failed';
+  await assert.rejects(() => R.d1ResolveDue({ DB: db }, Date.now()),
+    'NK54: Der Fehler muss weitergereicht werden, nicht verschluckt — ein stiller Ausfall ist der schlimmste');
+  assert.equal(R.bumped.length, 0,
+    'NK54: Der Zaehler darf erst nach dem erfolgreichen Batch fortgeschrieben werden');
   const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
-  const fn = worker.slice(worker.indexOf('async function d1UpdateOutcomes('),
-                          worker.indexOf('async function d1StoreSnapshotRow('));
+  const fn = worker.slice(worker.indexOf('async function d1ResolveDue('),
+                          worker.indexOf('const OBS_LOG_PREFIX'));
   const batchAt = fn.indexOf('await env.DB.batch(stmts)');
   const bumpAt = fn.indexOf('learnCountersBump');
   assert.ok(batchAt > 0 && bumpAt > batchAt,
-    'NK54: Der Zaehler darf erst nach dem erfolgreichen Batch fortgeschrieben werden');
+    'NK54: Auch im Quelltext muss der Batch vor dem Zaehler stehen');
   assert.ok(!/try\s*\{[\s\S]{0,200}env\.DB\.batch\(stmts\)[\s\S]{0,200}catch/.test(fn),
-    'NK54: Der Fehler muss weitergereicht werden, nicht verschluckt — ein stiller Ausfall ist der schlimmste');
+    'NK54: Der Fehler darf nicht lokal verschluckt werden');
 }
 
 /* ── NK55 · Das 24-Stunden-Fenster darf sich nicht als vollstaendig ausgeben ─
@@ -244,7 +263,6 @@ console.log('✓ FusionPulse v3.32.9 D1-Zaehler/Telemetrie (ausgefuehrt): OK');
    waere systematisch negativ — die Lernbasis fuellte sich mit Scheinverlierern
    und saehe dabei gut belegt aus.                                          */
 {
-  const { loadResolver } = await import('./d1-harness.mjs');
   const R = loadResolver();
 
   // NK59 · Genug beobachtet wird aufgeloest, zu wenig beobachtet wird verworfen.
@@ -309,7 +327,7 @@ console.log('✓ FusionPulse v3.32.9 D1-Zaehler/Telemetrie (ausgefuehrt): OK');
   {
     const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
     const at = worker.indexOf('async function d1ResolveDue(');
-    const body = stripComments(worker.slice(at, worker.indexOf('async function d1StoreSnapshotRow(')));
+    const body = stripComments(worker.slice(at, worker.indexOf('const OBS_LOG_PREFIX')));
     assert.ok(!/ts>=\?/.test(body) && !/ts >= \?/.test(body),
       'NK64: Der Aufloeser darf keine untere Zeitgrenze mehr haben — genau die war der Korridor');
     assert.match(body, /ts<=\?/, 'NK64: Nur „faellig oder nicht" darf entscheiden');
@@ -331,21 +349,123 @@ console.log('✓ FusionPulse v3.32.9 D1-Zaehler/Telemetrie (ausgefuehrt): OK');
       'NK65: Sein Ausfall darf den restlichen Zyklus nicht mitreissen');
   }
 
-  /* NK66 · Die Beobachtung wird gezaehlt, und erst ausreichende Abdeckung
-     loest im Symbolpfad auf. Ohne das waere die Regel nur halb durchgesetzt. */
+  /* ── NK66 · v4.2.3 · JEDE BEOBACHTUNG WIRD FESTGEHALTEN ──────────────────
+     Bis 4.2.2 prueffte NK66 den Ausschnitt von `d1UpdateOutcomes` auf
+     `obs_n=?`. Der Test war gruen — und die Funktion hatte keinen Aufrufer.
+     Sie war die EINZIGE Stelle im Worker, die `obs_n` je beschrieben hat.
+     Folge: jede Zeile trug `obs_n IS NULL`, der Aufloeser verwarf ausnahmslos
+     alles, und die Lernschicht stand still. Der Test hat das nicht gesehen,
+     weil er den Quelltext gelesen und nicht gefragt hat, ob die Stelle
+     erreichbar ist. Ab hier wird ausgefuehrt. */
   {
-    const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
-    /* Der Slice muss genau HIER enden. Reicht er bis `d1BatchChunks`, umfasst
-       er auch `d1ResolveDue` — und der Test findet `obs>=LEARN_MIN_OBS` dann
-       in der falschen Funktion und bleibt gruen, obwohl der Symbolpfad die
-       Pruefung verloren hat. Dritter Fall derselben Krankheit in dieser Suite
-       (nach NK49 und NK51): ein Test, der den falschen Text liest. */
-    const fn = stripComments(worker.slice(worker.indexOf('async function d1UpdateOutcomes('),
-                                          worker.indexOf('async function d1ResolveDue(')));
-    assert.ok(!/d1ResolveDue/.test(fn), 'NK66: Der geprueffte Ausschnitt darf den Cron-Aufloeser nicht enthalten');
-    assert.match(fn, /obs_n=\?/, 'NK66: Jede Beobachtung muss mitgeschrieben werden');
-    assert.match(fn, /obs>=LEARN_MIN_OBS/,
-      'NK66: Auch der Symbolpfad darf nur bei ausreichender Abdeckung aufloesen');
+    const R = loadResolver(); R.reset();
+    const { db } = fakeDb();
+    const t0 = Date.UTC(2026, 8, 3, 12, 0, 0);
+    const r1 = await R.d1NoteObservations({ DB: db }, 'server', 'stock', ['AAPL', 'msft'], t0);
+    assert.equal(r1.written, true, 'NK66: Die erste Beobachtung muss protokolliert werden');
+    const log = await R.d1ReadObsLog({ DB: db }, 'server', 'stock');
+    assert.deepEqual(Object.keys(log).sort(), ['AAPL', 'MSFT'],
+      'NK66: Symbole werden normalisiert abgelegt');
+    assert.equal(R.obsCountFor(log, 'aapl', t0 - 1), 1,
+      'NK66: … und sind danach als Beobachtung zaehlbar');
+  }
+
+  /* NK67 · Ein zweiter Eintrag im selben 5-Minuten-Takt ist KEINE zweite
+     Beobachtung — derselbe Gedanke wie `INSERT OR IGNORE` auf `bucket5`.
+     Ohne diese Raste wuerde ein dichterer Cron die Abdeckung aufblasen, ohne
+     dass ein einziges Mal zusaetzlich hingesehen wurde, und die Bremse aus
+     4.1.3 haette einen neuen Weg gefunden, Zeilen zu schreiben. */
+  {
+    const R = loadResolver(); R.reset();
+    const { db, state } = fakeDb();
+    const t0 = Date.UTC(2026, 8, 3, 12, 0, 0);
+    await R.d1NoteObservations({ DB: db }, 'server', 'stock', ['AAPL'], t0);
+    const writesBefore = state.log.filter(q => /INSERT INTO fp_meta/i.test(q)).length;
+    const again = await R.d1NoteObservations({ DB: db }, 'server', 'stock', ['AAPL'], t0 + 60_000);
+    assert.equal(again.written, false, 'NK67: Derselbe Takt darf nicht erneut geschrieben werden');
+    assert.equal(state.log.filter(q => /INSERT INTO fp_meta/i.test(q)).length, writesBefore,
+      'NK67: … und es darf dabei KEINE Zeile kosten');
+    const next = await R.d1NoteObservations({ DB: db }, 'server', 'stock', ['AAPL'], t0 + 5 * 60_000 + 1);
+    assert.equal(next.written, true, 'NK67: Der naechste Takt zaehlt wieder');
+    const log = await R.d1ReadObsLog({ DB: db }, 'server', 'stock');
+    assert.equal(R.obsCountFor(log, 'AAPL', t0 - 1), 2, 'NK67: Zwei Takte, zwei Beobachtungen');
+  }
+
+  /* NK68 · Aktie und Muenze mit demselben Ticker teilen sich das Protokoll
+     nicht. Dieselbe Lehre wie beim Memo-Schluessel in 4.1.6: „LINK" ist zwei
+     verschiedene Dinge, und eines duerfte das andere nicht mit Abdeckung
+     versorgen, die es nicht hat. */
+  {
+    const R = loadResolver(); R.reset();
+    const { db } = fakeDb();
+    const t0 = Date.UTC(2026, 8, 3, 12, 0, 0);
+    for (let i = 0; i < 8; i++)
+      await R.d1NoteObservations({ DB: db }, 'server', 'stock', ['LINK'], t0 + i * 5 * 60_000 + 1);
+    const stock = await R.d1ReadObsLog({ DB: db }, 'server', 'stock');
+    const coin = await R.d1ReadObsLog({ DB: db }, 'server', 'crypto');
+    assert.ok(R.obsCountFor(stock, 'LINK', t0) >= 6, 'NK68: Die Aktie hat Abdeckung');
+    assert.equal(R.obsCountFor(coin, 'LINK', t0), 0, 'NK68: Die Muenze hat davon nichts');
+  }
+
+  /* NK69 · Der Aufloeser entscheidet jetzt anhand des Protokolls. Das ist der
+     Kern: dieselbe Zeile, die vor 4.2.3 zwangslaeufig verworfen wurde
+     (`obs_n IS NULL`), wird bei belegter Abdeckung aufgeloest. */
+  {
+    const R = loadResolver(); R.reset();
+    const now = Date.UTC(2026, 8, 3, 18, 0, 0);
+    const ts = now - 180 * 60_000;                 // exakt faellig
+    const { db } = fakeDb({
+      due: [
+        { id: 1, ts, symbol: 'AAPL', source: 'server', asset_type: 'stock', obs_n: null },
+        { id: 2, ts, symbol: 'NVDA', source: 'server', asset_type: 'stock', obs_n: null },
+      ],
+    });
+    for (let i = 1; i <= 8; i++)
+      await R.d1NoteObservations({ DB: db }, 'server', 'stock', ['AAPL'], ts + i * 5 * 60_000);
+    await R.d1NoteObservations({ DB: db }, 'server', 'stock', ['NVDA'], ts + 5 * 60_000);
+    R.reset(); R.setCap({ exhausted: false });
+    const out = await R.d1ResolveDue({ DB: db }, now);
+    assert.equal(out.resolved, 1, 'NK69: Die belegte Zeile wird aufgeloest — genau das ging seit Monaten nicht');
+    assert.equal(out.dropped, 1, 'NK69: Die unbelegte bleibt ein Verwurf, nicht geraten');
+  }
+
+  /* NK70 · Ist das Protokoll nicht lesbar, wird NICHTS entschieden.
+     Fail-closed heisst hier ausdruecklich NICHT „im Zweifel verwerfen":
+     `dropped_ts` ist unwiderruflich, der Aufloeser laeuft jede Minute. Ein
+     Aufschub kostet nichts, ein falscher Verwurf kostet den Datenpunkt fuer
+     immer. Vor 4.2.3 war genau das der Dauerzustand. */
+  {
+    const R = loadResolver(); R.reset();
+    const now = Date.UTC(2026, 8, 3, 18, 0, 0);
+    const ts = now - 180 * 60_000;
+    const { db, state } = fakeDb({
+      due: [{ id: 1, ts, symbol: 'AAPL', source: 'server', asset_type: 'stock', obs_n: null }],
+    });
+    state.meta.set('obs_log:server:stock', { value: '{kaputt', ts: 0 });
+    const out = await R.d1ResolveDue({ DB: db }, now);
+    assert.equal(out.obsLogUnreadable, undefined,
+      'NK70: Unlesbares JSON gilt als leeres, aber lesbares Protokoll');
+    assert.equal(out.dropped, 1, 'NK70: … und die Zeile ohne Beleg wird verworfen');
+  }
+
+  /* NK71 · Die Aufbewahrung des Protokolls deckt den Horizont ab. Waere sie
+     kuerzer, verloere eine Zeile ihren Nachweis, bevor sie faellig wird — und
+     der Verwurf saehe wie ein Abdeckungsproblem aus, obwohl er eine
+     Aufraeumregel waere. */
+  {
+    const R = loadResolver();
+    assert.ok(R.OBS_LOG_RETENTION_MS > 180 * 60_000,
+      'NK71: Das Protokoll muss laenger vorhalten als der Lernhorizont');
+    assert.equal(R.OBS_LOG_BUCKET_MS, 5 * 60_000,
+      'NK71: Die Raste ist derselbe 5-Minuten-Takt wie `bucket5`');
+    const R2 = loadResolver(); R2.reset();
+    const { db } = fakeDb();
+    const t0 = Date.UTC(2026, 8, 3, 12, 0, 0);
+    await R2.d1NoteObservations({ DB: db }, 'server', 'stock', ['AAPL'], t0);
+    await R2.d1NoteObservations({ DB: db }, 'server', 'stock', ['MSFT'], t0 + R2.OBS_LOG_RETENTION_MS + 60_000);
+    const log = await R2.d1ReadObsLog({ DB: db }, 'server', 'stock');
+    assert.ok(!log.AAPL, 'NK71: Was aelter als die Aufbewahrung ist, wird ausgeraeumt');
+    assert.ok(log.MSFT, 'NK71: Das Frische bleibt');
   }
 }
 
@@ -456,8 +576,14 @@ console.log('✓ FusionPulse v4.1.6 Schreibbudget und Hochrechnung (ausgefuehrt)
   assert.ok(store.indexOf('d1WriteBudget') < store.indexOf('LIMIT 3000'),
     'NK62: die Obergrenze muss VOR der 3.000-Zeilen-Leseabfrage stehen');
   const resolve = worker.slice(worker.indexOf('async function d1ResolveDue'));
-  assert.ok(resolve.indexOf('d1WriteBudget') < resolve.indexOf('SELECT id,obs_n'),
+  /* v4.2.3: Der Aufloeser liest seit dem Beobachtungsprotokoll mehr Spalten;
+     der Anker ist die Faelligkeitsabfrage selbst, nicht ihre Spaltenliste. */
+  assert.ok(resolve.indexOf('d1WriteBudget') < resolve.indexOf('FROM market_snapshots'),
     'NK62: im Aufloeser ebenso');
+  /* Und das Protokoll wird ebenfalls erst NACH der Bremse gelesen — sonst
+     kostete ein gebremster Lauf weiterhin Lesevorgaenge. */
+  assert.ok(resolve.indexOf('d1WriteBudget') < resolve.indexOf('d1ReadObsLog'),
+    'NK62: auch das Beobachtungsprotokoll steht hinter der Bremse');
 
   /* Eine Bremse, die ihre eigene Anzeige mit anhaelt, ist keine. Der
      Zaehler-Flush und die Zustandsschreiber in fp_meta duerfen NICHT gedrosselt
@@ -505,7 +631,6 @@ console.log('✓ FusionPulse v4.1.6 Schreibbudget und Hochrechnung (ausgefuehrt)
    Aufloeser mit erreichter Obergrenze AUSGEFUEHRT: kein Schreibvorgang, keine
    Leseabfrage, und ein erkennbarer Grund im Rueckgabewert. */
 {
-  const { loadResolver } = await import('./d1-harness.mjs');
   const R = loadResolver();
   const { db, state } = fakeDb({ due: [{ id:1, obs_n:12 }, { id:2, obs_n:12 }] });
   const offen = await R.d1ResolveDue({ DB: db }, now);
@@ -531,3 +656,131 @@ console.log('✓ FusionPulse v4.1.6 Schreibbudget und Hochrechnung (ausgefuehrt)
 }
 
 console.log('✓ FusionPulse v4.2.1 Tagesobergrenze für Schreibvorgänge (ausgefuehrt): OK');
+
+/* ── NK72 · v4.2.3 · EIN SCHREIBER OHNE AUFRUFER IST KEIN SCHREIBER ─────────
+   Das ist die eigentliche Lehre aus 4.2.3, und sie ist teurer als der Fehler
+   selbst. `obs_n` wurde an genau einer Stelle beschrieben, diese Stelle war
+   getestet, und der Test war gruen — nur hatte die Funktion seit langem
+   keinen Aufrufer. Vier Suiten haben monatelang bestaetigt, dass eine Regel
+   im Quelltext STEHT, ohne je zu fragen, ob sie LAEUFT.
+
+   Diese Pruefung baut den Aufrufgraphen und traversiert ihn ab dem
+   Default-Export (fetch/scheduled). Jede Funktion, die in `market_snapshots`
+   schreibt oder den Lernzaehler bewegt, muss von dort aus erreichbar sein.
+   Sie ist bewusst allgemein gehalten: sie faengt den naechsten Fall dieser
+   Krankheit auch dann, wenn niemand an ihn gedacht hat. */
+{
+  /* KOMMENTARE MUESSEN WEG, BEVOR DER GRAPH ENTSTEHT. Ohne das zaehlt jede
+     blosse ERWAEHNUNG als Aufruf — und ausgerechnet die tote Funktion, um
+     die es hier geht, wird in zwei Kommentaren namentlich genannt. Die erste
+     Fassung dieser Pruefung ist genau daran vorbeigelaufen: Gegenprobe
+     eingebaut, Test blieb gruen. Ein Waechter, der den falschen Text liest,
+     ist schlimmer als keiner — er bescheinigt Sicherheit. */
+  const worker = stripComments(
+    fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8'));
+  /* Funktionsgrenzen: Deklaration bis zur naechsten Deklaration. Das ist bei
+     dieser Datei zulaessig — alle Funktionen stehen auf oberster Ebene — und
+     robuster als Klammerzaehlung, die an `${...}` in SQL-Vorlagen scheitert. */
+  const re = /(?:^|\n)(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*\(/g;
+  const marks = [];
+  let m;
+  while ((m = re.exec(worker))) marks.push({ name: m[1], at: m.index });
+  assert.ok(marks.length > 100, 'NK72: Der Quelltext muss sich in Funktionen zerlegen lassen');
+  const fns = marks.map((x, i) => ({
+    name: x.name,
+    body: worker.slice(x.at, i + 1 < marks.length ? marks[i + 1].at : worker.length),
+  }));
+  const byName = new Map(fns.map(f => [f.name, f]));
+
+  const calleesOf = (f) => {
+    const out = new Set();
+    const r = /([A-Za-z0-9_$]+)\s*\(/g;
+    let x;
+    while ((x = r.exec(f.body))) if (byName.has(x[1]) && x[1] !== f.name) out.add(x[1]);
+    return out;
+  };
+
+  /* Wurzeln: der Default-Export. Er enthaelt `fetch` und `scheduled`. */
+  const exportAt = worker.lastIndexOf('export default');
+  assert.ok(exportAt > 0, 'NK72: Der Default-Export muss auffindbar sein');
+  const exported = worker.slice(exportAt);
+  const roots = fns.filter(f => new RegExp(`\\b${f.name}\\s*\\(`).test(exported)).map(f => f.name);
+  assert.ok(roots.length > 0, 'NK72: Es muss mindestens einen Einstiegspunkt geben');
+
+  const live = new Set();
+  const stack = [...roots];
+  while (stack.length) {
+    const n = stack.pop();
+    if (live.has(n) || !byName.has(n)) continue;
+    live.add(n);
+    for (const c of calleesOf(byName.get(n))) stack.push(c);
+  }
+
+  /* Gegenprobe, damit die Traversierung selbst nicht stillschweigend kaputt
+     sein kann: der lebende Schreibpfad MUSS als erreichbar herauskommen. */
+  for (const must of ['d1StoreRows', 'd1ResolveDue', 'd1NoteObservations'])
+    assert.ok(live.has(must), `NK72: ${must} muss erreichbar sein — sonst misst diese Pruefung nichts`);
+
+  const critical = fns.filter(f =>
+    /INTO market_snapshots|UPDATE market_snapshots|learnCountersBump\(/.test(f.body));
+  assert.ok(critical.length >= 2, 'NK72: Es muss kritische Schreiber geben');
+  const orphaned = critical.filter(f => !live.has(f.name)).map(f => f.name);
+  assert.deepEqual(orphaned, [],
+    `NK72: Diese Funktionen schreiben in die Lernschicht, werden aber von niemandem aufgerufen: ${orphaned.join(', ')}. `
+    + 'Genau so ist der 4.2.3-Fehler entstanden — `obs_n` hatte einen getesteten Schreiber ohne Aufrufer, '
+    + 'und der Aufloeser hat daraufhin monatelang 100 % verworfen.');
+}
+
+/* ── NK73 · Beobachtet wird VOR der Schreibschwelle ─────────────────────────
+   Stuende `d1NoteObservations` hinter `onlyChanged`, zaehlte nur noch
+   Bewegung als Beobachtung. Die Lernbasis fuellte sich dann systematisch mit
+   Bewegern, und die ruhige Zeile — der Gegenfall, den jede Auswertung
+   braucht — verschwaende als „zu wenig beobachtet". Dieselbe Verzerrung wie
+   in R3, nur mit umgekehrtem Vorzeichen. */
+{
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const store = worker.slice(worker.indexOf('async function d1StoreRows'),
+                             worker.indexOf('function twinDistance('));
+  const noteAt = store.indexOf('await d1NoteObservations(');
+  const gateAt = store.indexOf('if(opts.onlyChanged)');
+  assert.ok(noteAt > 0, 'NK73: Der lebende Schreibpfad muss die Beobachtung protokollieren');
+  assert.ok(gateAt > 0, 'NK73: Die Schreibschwelle muss noch da sein');
+  assert.ok(noteAt < gateAt,
+    'NK73: Die Beobachtung muss VOR der Schreibschwelle protokolliert werden');
+}
+
+console.log('✓ FusionPulse v4.2.3 Beobachtungsprotokoll und Erreichbarkeit (ausgefuehrt): OK');
+
+/* ── NK74 · v4.2.3 · DER VERWURF MUSS SICHTBAR SEIN ────────────────────────
+   `learnCountersView` liefert `dropped`/`dropped24h` seit v3.32.10. Bis 4.2.2
+   hat `learningPayload` sie nicht in die Nutzlast uebernommen, und
+   `public/app.js` kannte das Wort nicht. Gezaehlt, transportiert, weggeworfen
+   — und damit war ein Verwurf von 100 % von einem stillstehenden Cron nicht
+   zu unterscheiden. Beides sah aus wie eine Null. */
+{
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const payload = worker.slice(worker.indexOf('async function learningPayload('),
+                               worker.indexOf('const RADAR_CADENCE_MIN'));
+  assert.match(payload, /dropped:counts\.dropped/,
+    'NK74: Die Verwurfszahl muss den Client erreichen');
+  assert.match(payload, /dropped24h:counts\.dropped24h/,
+    'NK74: … auch im 24-Stunden-Fenster');
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(app, /function coverageNote\(/, 'NK74: Der Client muss die Abdeckung benennen');
+  const render = app.slice(app.indexOf('function renderLearningReport('),
+                           app.indexOf('function renderLearningStatus('));
+  assert.match(render, /coverageNote\(/,
+    'NK74: … und sie im Lernbericht auch berechnen');
+  /* Die erste Fassung endete hier — und die Gegenprobe (Anzeige entfernt,
+     Berechnung stehen lassen) blieb gruen. „Wird berechnet" ist genau die
+     Zusage, die in dieser App schon zweimal zu wenig war: bei `dropped`, das
+     gezaehlt und nicht uebertragen wurde, und bei der VWAP-Kachel in 4.2.2.
+     Geprueft wird deshalb die AUSGABE. */
+  const tpl = render.slice(render.indexOf('el.innerHTML='));
+  assert.match(tpl, /\$\{esc\(cov\.label\)\}/,
+    'NK74: Die Abdeckung muss im Lernbericht AUSGEGEBEN werden, nicht nur berechnet');
+  assert.match(tpl, /cov\.tone/,
+    'NK74: … samt Ampel, sonst faellt ein Totalverwurf optisch nicht auf');
+}
+
+console.log('✓ FusionPulse v4.2.3 Verwurf sichtbar (ausgefuehrt): OK');

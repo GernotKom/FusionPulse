@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 03.09.2026, Version **4.2.2**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 03.09.2026, Version **4.2.3**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -189,6 +189,44 @@ Neuer Zustand `PENDING`: Platz bleibt sichtbar, Strich statt Zahl, und der Hilfe
 
 **Zusammenhang, der dabei sichtbar wurde:** Das D1-Schreiblimit hält nicht nur die Lernschicht an. Weil der angezeigte Scan über `fp_meta` persistiert und von dort ausgeliefert wird, friert bei blockierten Schreibvorgängen auch die **Anzeige samt Heatmap** ein — „0 aktualisiert", Kurse von vorgestern, identische Punktwolke bei jedem Start. Das ist kein Anzeigefehler, sondern dieselbe Ursache.
 
+### 4.2.3 · Die Lernschicht hat nichts gelernt, weil ein Draht durchtrennt war
+
+**Das ist der schwerwiegendste Befund seit Beginn dieser Übergabe.** Er ist statisch belegt und ausgeführt nachgestellt, nicht vermutet.
+
+**Die Kette.** Die einzige Anweisung im gesamten Worker, die je `obs_n` beschrieben hat, stand in `d1UpdateOutcomes`. Diese Funktion hatte genau einen Aufrufer, `d1StoreSnapshotRow` — und der hatte keinen. Das ist der bisherige offene Punkt 8, dort aber nur als aufzuräumender Altbestand geführt. Der lebende Schreibpfad ist seit langem `d1StoreRows`, und der führt `obs_n` weder im INSERT noch im UPDATE mit.
+
+Folge: **jede Zeile in `market_snapshots` trug dauerhaft `obs_n IS NULL`.** `d1ResolveDue` verlangt `obs >= LEARN_MIN_OBS` (6). Ausgeführt gegen den Prüfstand mit `obs_n:null`:
+
+```
+{ due: 3, resolved: 0, dropped: 3 }
+```
+
+Null Prozent ausgewertet, hundert Prozent `dropped_ts`, und `dropped_ts` ist unwiderruflich. **Damit hängen die offenen Punkte 6 und 7 an einer Tabelle, in der nichts auswertbar steht.**
+
+**Zweiter durchtrennter Draht, gleiche Ursache.** `learnCountersBump({snapshots})` stand ebenfalls ausschließlich in `d1StoreSnapshotRow`. Der lebende Pfad hat eingefügt und nie gezählt; die Beobachtungszahl im Bericht konnte gar nicht wachsen.
+
+**Dritter, eine Ebene weiter.** `learnCountersView` liefert `dropped` und `dropped24h` seit v3.32.10. `learningPayload` hat sie nie in die Nutzlast übernommen, und `public/app.js` kannte das Wort `dropped` kein einziges Mal. Gezählt, transportiert, weggeworfen.
+
+**Warum es niemandem auffiel — der teuerste Teil.** Ein Verwurf ist ein legitimer Zustand. Er liest sich als „zu wenig beobachtet", also als Abdeckungsproblem, das man mit dichterem Scannen löst. Genau diese Diagnose stand auch im Kommentar zur Radar-Kadenz: *„Der Deep Scan wird nicht gedrosselt: er ist es, der `obs_n` füllt."* Eine richtige Schlussfolgerung aus einer falschen Prämisse — die unangenehmste Sorte, weil sie jede Nachfrage beantwortet. Dazu erzeugte das gerissene D1-Schreiblimit dieselben Nullen. Zwei Ursachen, ein Symptombild, und die eine Zahl, die sie unterschieden hätte, kam nie im Browser an.
+
+**Warum KEIN Zähler in der Zeile.** Naheliegend wäre, `obs_n` in das UPDATE von `d1StoreRows` aufzunehmen. Das ist genau der Widerspruch, der den Fehler überleben ließ: ein persistierter Zähler kann nur wachsen, wenn die Zeile geschrieben wird — und 4.1.3/4.1.6 existieren, um die unveränderte Zeile *nicht* zu schreiben. Beides zusammen ergäbe wieder die Schleife mit 3.333 Zeilen/min. **Zähler und Schreibschwelle schließen einander konstruktiv aus.**
+
+**Deshalb wird die Abdeckung hergeleitet.** `d1NoteObservations` führt je Quelle und Anlageklasse ein Protokoll in `fp_meta` (`obs_log:{source}:{assetType}`): welches Symbol wann gesehen wurde, auf `bucket5` gerastert und auf Horizont + 60 min beschnitten. Höchstens ein Schreibvorgang je 5-Minuten-Takt und Pfad — rund 288/Tag statt 1.440, also ein niedriger vierstelliger Anteil des Tagesbudgets von 90.000. Der Auflöser liest daraus (`obsCountFor`) und nimmt den höheren Wert aus Protokoll und `obs_n`, falls die Spalte je wieder gefüllt wird.
+
+**Die Reihenfolge im Aufrufer ist der Punkt.** Protokolliert wird **vor** `onlyChanged`. Beobachtet wurde jedes abgerufene Symbol, auch das ruhige. Stünde das Protokoll hinter der Schwelle, zählte nur noch Bewegung als Beobachtung, und die Lernbasis füllte sich systematisch mit Bewegern — dieselbe Verzerrung, vor der R3 warnt, mit umgekehrtem Vorzeichen. NK73 prüft die Reihenfolge per Index.
+
+**Zwei Fehlerarten, die sich ähnlich anfühlen und getrennt behandelt werden.** Antwortet die Datenbank nicht, ist die Abdeckung unbekannt: der Auflöser entscheidet dann **gar nichts** und schiebt auf. Das ist ausdrücklich nicht „im Zweifel verwerfen" — `dropped_ts` ist unwiderruflich, der Auflöser läuft jede Minute, ein Aufschub kostet nichts. Ist dagegen der *Inhalt* unbrauchbar (kaputtes JSON), gilt er als lesbar und leer. Anders ginge auch der Schreiber nicht mehr an dem Wert vorbei, der ihn blockiert — er liest vor dem Schreiben —, und ein einziges Zeichen legte das Protokoll dauerhaft still.
+
+**Sichtbar gemacht.** Neue Zeile im Lernbericht: `Abdeckung 24 h: 61 ausgewertet · 18 verworfen (77 %)`, mit Ampel und vollem Hilfetext. Fail-closed in vier Fällen mit „nicht gemessen" und **ohne** Prozentwert. Der erste Testlauf hat dabei sofort ein Loch gefunden: `Number(null)` ist 0, eine fehlende Verwurfszahl galt also als „null Verwürfe" — Entwarnung aus Unwissen. Korrigiert.
+
+**Aufgeräumt.** `d1UpdateOutcomes` und `d1StoreSnapshotRow` entfernt (offener Punkt 8 erledigt), Snapshot-Zähler im lebenden Pfad verdrahtet, die zwei Kommentare mit falscher Prämisse korrigiert.
+
+### Zwei Entscheidungen, die dabei getroffen wurden
+
+**1. Der Altbestand wird nicht zurückgeholt.** Alles vor 4.2.3 trägt irrtümlich `dropped_ts`; die Rohdaten stehen noch da. Ein Zurücksetzen wäre technisch ein Einzeiler, brächte aber nichts: ohne Protokolleinträge für diese Zeitfenster verwürfe der Auflöser dieselben Zeilen sofort wieder, und der Versuch kostete Schreibzeilen aus dem knappen Budget. **Die Messung beginnt bei null.** Die erste auswertbare Basis entsteht damit frühestens nach einigen Handelstagen — das ist der Preis dafür, dass vorher nichts entstanden ist.
+
+**2. `LEARN_MIN_OBS` bleibt bei 6.** Der Wert war bis jetzt nie erreichbar und ist damit auch nie kalibriert worden. Ihn gleichzeitig mit dem Mechanismus zu ändern, hieße zwei Unbekannte auf einmal zu bewegen. Bei 5-Minuten-Raster über 180 Minuten sind bis zu 36 Beobachtungen möglich; im Watchlist-Modus realistisch fast alle, im Radar-Modus deutlich weniger, weil der Deep Scan nur jede zweite Minute läuft und nicht immer dieselben Titel wählt. **Nachkalibrieren nach dem ersten sauberen Tag anhand der neuen Abdeckungszeile.**
+
 ## 3. Verifikation
 
 `node --check` auf `src/worker.js`, `public/app.js`, `public/sw.js`; alle sechs Suiten grün (`safety`, `coinscope`, `provider`, `bandwidth`, `d1`, `sw`). Zusätzlich `npx wrangler deploy --dry-run` mit Wrangler 4.128.0 — derselbe Schritt, an dem der Build gescheitert war: sauber, keine Warnungen, `env.APP_VERSION ("4.0.6")`.
@@ -210,6 +248,30 @@ Neue ausgeführte Regressionstests in `tests/safety-regression.mjs`:
 - **v4.2.1 Tagesobergrenze** — NK62/NK63 prüfen Konfiguration, Rückfall bei Unsinn (`0`, `-5`, `viel`, leer → Vorgabe, nie 0), Reihenfolge und Herkunft. NK64 führt den Auflöser mit erreichter Grenze aus: nichts aufgelöst, nichts verworfen, **keine einzige zusätzliche Abfrage**, Lernzähler unberührt — und nach dem Zurücksetzen wieder frei.
 
 - **v4.2.2 Sichtbarkeit** — Kurzwert `DB 12k/90k` gegen die selbst gesetzte Grenze, Platz in der Systemleiste, `PENDING`-Zustand der VWAP-Kachel, und die Nichtmessung als eigener Kurzwert.
+
+**Neue ausgeführte Prüfungen zu 4.2.3:**
+- **NK66–NK71** (`tests/d1-usage.mjs`) — das Beobachtungsprotokoll ausgeführt: erste Beobachtung wird protokolliert und ist zählbar; ein zweiter Eintrag im selben 5-Minuten-Takt kostet **keine** Zeile; Aktie und Münze mit demselben Ticker teilen sich das Protokoll nicht; die vor 4.2.3 zwangsläufig verworfene Zeile wird bei belegter Abdeckung **aufgelöst**, die unbelegte bleibt ein Verwurf; kaputtes JSON gilt als leer statt als blockierend; die Aufbewahrung überdeckt den Lernhorizont.
+- **NK72 · Erreichbarkeit** — baut den Aufrufgraphen aus `src/worker.js` und traversiert ihn ab dem Default-Export. Jede Funktion, die in `market_snapshots` schreibt oder den Lernzähler bewegt, muss erreichbar sein. **Das ist die eigentliche Lehre**: vier Suiten haben monatelang bestätigt, dass eine Regel im Quelltext *steht*, ohne je zu fragen, ob sie *läuft*.
+- **NK73** — Beobachtung vor der Schreibschwelle, per Index.
+- **NK74** — `dropped`/`dropped24h` erreichen den Client und werden **ausgegeben**, nicht nur berechnet.
+- **v4.2.3 Abdeckung** (`tests/safety-regression.mjs`) — `coverageNote` ausgeführt über Normalfall, den Totalverwurf-Befund selbst, vier Nichtmessungs-Zweige, das leere Fenster und das unvollständige 24-Stunden-Fenster.
+
+**Negativkontrollen zu 4.2.3**, alle neun haben gefeuert und wurden zurückgesetzt:
+- Beobachtung hinter die Schreibschwelle geschoben → NK73 fällt.
+- Toten Schreiber wieder eingesetzt → NK72 fällt.
+- Auflöser wieder allein auf `obs_n` gestellt → NK69 fällt.
+- Taktraste entfernt → NK67 fällt (jeder Aufruf schriebe wieder).
+- Snapshot-Zähler entfernt → NK53 fällt.
+- `dropped` aus der Nutzlast genommen → NK74 fällt.
+- Abdeckungszeile aus dem Bericht entfernt → NK74 fällt.
+- Fehlende Zahl wieder als 0 verbucht → der Fail-closed-Test fällt.
+- Leeres Fenster als Totalverwurf ausgegeben → der Ampel-Test fällt.
+
+**Zwei Prüfungen mussten dabei selbst repariert werden — beide Male dieselbe Krankheit:**
+1. **NK72 lief an der eigenen Gegenprobe vorbei.** Der Aufrufgraph entstand aus dem ungefilterten Quelltext, also zählte jede bloße *Erwähnung* als Aufruf — und ausgerechnet die tote Funktion wird in zwei Kommentaren namentlich genannt. Erst mit `stripComments` feuert der Wächter. Ein Wächter, der den falschen Text liest, ist schlimmer als keiner: er bescheinigt Sicherheit.
+2. **NK74 prüfte die Berechnung statt der Anzeige.** Die Gegenprobe „Anzeigezeile entfernen, Berechnung stehen lassen" blieb grün. Geprüft wird jetzt die Ausgabe im Template. Das ist derselbe Anspruch wie bei der VWAP-Kachel in 4.2.2, nur eine Ebene tiefer.
+
+**Anker in den Suiten nachgezogen**, weil zwei Funktionen entfernt wurden: `tests/d1-harness.mjs` (`loadResolver` endet jetzt bei `d1BatchChunks`, dadurch liegen die Protokollfunktionen **mit** im ausgeführten Ausschnitt), NK53 zeigt auf `d1StoreRows` statt auf den toten Pfad, NK54 prüft den Auflöser ausgeführt statt per Muster, NK62 und NK64 auf neue Ankertexte. In `tests/safety-regression.mjs` wurde die feste Zahl 3 für `snapshotPayload(row)` ersetzt: geprüft wird jetzt, dass **jedes** `INSERT INTO market_snapshots` durch denselben Payload-Bauer geht. Eine feste Zahl hätte einen neuen, abweichenden Bauer nicht bemerkt, solange die Summe stimmt.
 
 **Negativkontrollen zu 4.2.2**, alle vier haben gefeuert und wurden zurückgesetzt:
 - `vwapNote` wieder `null` zurückgeben lassen → die Sichtbarkeitsprüfung fällt.
@@ -270,7 +332,13 @@ Eine ältere Regex-Zusicherung auf die Inline-Formel (`safety-regression.mjs`, Z
 6. **Der Vorrang wäre auch inhaltlich zu verbessern** — nachgezogen aus dem erledigten Punkt 4. Die Beschriftung ist seit 4.1.5 ehrlich, die Formel bleibt schwach: der CRV-Term unterscheidet fast nichts (siehe 4.1.5), das Volumen zählt doppelt. Eine bessere Rangfolge wäre denkbar, **aber sie braucht einen Beleg** — welche Reihenfolge trifft im Nachhinein besser? Die Daten dafür liegen in `snapshots` (Modul 0, `/api/attribution`). Ohne diese Auswertung wäre jede neue Gewichtung nur eine andere Meinung, und die Titelauswahl änderte sich ohne Grund.
 
 7. **Die erste belastbare Messung der Schreibrate steht noch aus.** Alles bis 03.09. ist unbrauchbar, weil das Kontingent vor dem Deploy von 4.1.3/4.1.4 erschöpft war (siehe 4.1.6). Der nächste Reset um 00:00 UTC ist der erste ehrliche Lauf. Seit 4.1.7 steht die Antwort im **Lernbericht** der App, Rohwerte weiterhin unter `/api/health` → `d1` → `atLeastRowsWrittenPerMin` gegen `sustainableRowsWrittenPerMin` (69,4) und `writeBudgetHoldsToday`. Fällt die Rate nicht deutlich unter die 3.333/min vom 03.09., wirkt 4.1.3 nicht und der nächste Schritt ist `topQueries` im selben Zweig — der Zähler weist seit 3.32.9 nach Abfrageform aus, welche Form verbraucht.
-8. **`d1StoreSnapshotRow` und `d1UpdateOutcomes` haben keinen Aufrufer mehr.** Gefunden bei der 4.1.6-Analyse. `d1UpdateOutcomes` trägt eine eigene `LIMIT 500`-Abfrage **pro Symbol** und liest wie ein zweiter, lebender Auflöser neben `d1StoreRows` — genau die Sorte Fund, die beim nächsten Bandbreitenproblem falsch verdächtigt wird. Bewusst nicht gelöscht: totes Entfernen ist eine eigene Änderung mit eigenem Risiko, und die Suite deckt diesen Pfad nicht ab. Vor dem Löschen prüfen, ob die Aufrufer wirklich alle weg sind (`grep -n 'd1StoreSnapshotRow('`).
+8. ~~**`d1StoreSnapshotRow` und `d1UpdateOutcomes` haben keinen Aufrufer mehr.**~~ **Erledigt in 4.2.3 — und der Punkt war unterschätzt.** Hier stand, totes Entfernen sei „eine eigene Änderung mit eigenem Risiko". Das stimmte, aber der eigentliche Schaden war nicht das Herumliegen: `d1UpdateOutcomes` war der **einzige** `obs_n`-Schreiber und `d1StoreSnapshotRow` der einzige Snapshot-Zähler. Beide Zahlen waren damit seit dem Wegfall des Aufrufers tot. Wer die Funktionen nur gelöscht hätte, ohne den Ersatz zu bauen, hätte den Befund mitgelöscht.
+
+9. **Die erste Abdeckungsmessung steht aus.** Sie ist ab dem ersten vollen Handelstag nach dem Deploy von 4.2.3 im Lernbericht ablesbar (`Abdeckung 24 h`). Erwartung: im Watchlist-Modus deutlich über 60 %, im Radar-Modus niedriger. Steht der Wert nahe null, wirkt das Protokoll nicht — dann zuerst prüfen, ob `obs_log:server:stock` in `fp_meta` überhaupt Einträge trägt, bevor an `LEARN_MIN_OBS` gedreht wird.
+
+10. **`LEARN_MIN_OBS = 6` ist erstmals eine echte Hürde und nie kalibriert worden.** Nach der ersten Messung anhand des Verhältnisses ausgewertet/verworfen nachziehen — nicht vorher, sonst bewegen sich zwei Unbekannte gleichzeitig.
+
+11. **Der Altbestand bleibt verworfen.** Bewusste Entscheidung (siehe 4.2.3). Falls er je zurückgeholt werden soll: die Rohdaten stehen noch in `market_snapshots`, aber ohne Protokolleinträge für die betreffenden Zeitfenster verwirft der Auflöser sie sofort erneut. Ein Zurückholen wäre nur zusammen mit einer rückwirkenden Abdeckungsschätzung sinnvoll — und die wäre geraten.
 
 **Erledigt in 4.1.5:** der frühere Punkt 4 („Reife %" liest sich wie eine zweite Meinung).
 **Erledigt in 4.1.6:** die Änderungsschwelle greift auf allen fünf Schreibpfaden, nicht nur im Watchlist-Zweig.

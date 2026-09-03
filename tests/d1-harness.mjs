@@ -17,7 +17,12 @@ const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'ut
    und muss AUSGEFUEHRT geprueft werden, nicht per Muster. */
 export function loadResolver() {
   const from = worker.indexOf('async function d1ResolveDue(');
-  const to = worker.indexOf('async function d1StoreSnapshotRow(');
+  /* v4.2.3 · Endanker war `d1StoreSnapshotRow` — eine Funktion ohne Aufrufer,
+     die inzwischen entfernt ist. Neuer Anker ist `d1BatchChunks`; dadurch
+     liegen `d1ReadObsLog`, `d1NoteObservations` und `obsCountFor` MIT im
+     Ausschnitt und werden ausgefuehrt statt gestubbt. Genau um sie geht es:
+     die Abdeckung entsteht seit 4.2.3 dort und nicht mehr in `obs_n`. */
+  const to = worker.indexOf('async function d1BatchChunks(');
   if (from < 0 || to <= from) throw new Error('d1ResolveDue nicht gefunden');
   const consts = 'const LEARN_HORIZON_MS = 180*60_000, LEARN_MIN_OBS = 6, LEARN_RESOLVE_BUDGET = 400;\n';
   /* v4.2.1: `d1ResolveDue` fragt seit der Tagesobergrenze zuerst das
@@ -29,7 +34,9 @@ export function loadResolver() {
     + 'async function d1WriteBudget(){ return capState; }\n'
     + 'function cronLog(){}\n'
     + worker.slice(from, to)
-    + '\nreturn { d1ResolveDue, LEARN_MIN_OBS, setCap(c){ capState = { ...capState, ...c }; },'
+    + '\nreturn { d1ResolveDue, d1NoteObservations, d1ReadObsLog, obsCountFor,'
+    + ' LEARN_MIN_OBS, OBS_LOG_RETENTION_MS, OBS_LOG_BUCKET_MS, obsLogKey,'
+    + ' setCap(c){ capState = { ...capState, ...c }; },'
     + ' get bumped(){return bumped;}, reset(){bumped=[]; capState={cap:90000,spent:0,exhausted:false,measured:true};} };';
   return new Function(src)();
 }

@@ -3245,8 +3245,24 @@ console.log('✓ FusionPulse v3.16.1 manual-earnings-editor regressions: OK');
   // ---- Der Situationstyp wird ab jetzt mitgeschrieben. Er FEHLTE bisher —
   //      deshalb konnte Modul 0 ueber die neun Situationstypen nie etwas lernen.
   assert.match(w, /function snapshotPayload\(row\)\{/, 'Eine Stelle fuer den Payload, nicht zwei');
-  assert.equal((w.match(/snapshotPayload\(row\)/g) || []).length, 3,
-    'Beide Schreibpfade muessen denselben Payload benutzen (Lehre aus v3.10.0)');
+  /* v4.2.3 · Bis 4.2.2 stand hier die Zahl 3: eine Definition und ZWEI
+     Schreibpfade. Der zweite (`d1StoreSnapshotRow`) hatte seit langem keinen
+     Aufrufer mehr und ist entfernt. Statt die Zahl stillschweigend auf 2 zu
+     senken — was den Anspruch verwaessert hätte — wird jetzt das geprueft,
+     was gemeint war: JEDES `INSERT ... INTO market_snapshots` muss durch
+     `snapshotPayload` gehen. Eine feste Zahl haette einen neuen, abweichenden
+     Payload-Bauer nicht bemerkt, solange er die Summe nicht veraendert. */
+  assert.equal((w.match(/function snapshotPayload\(/g) || []).length, 1,
+    'Es darf genau EINE Stelle geben, die den Payload baut');
+  {
+    const inserts = [...w.matchAll(/INSERT[^;]*?INTO market_snapshots/g)];
+    assert.ok(inserts.length >= 1, 'Es muss mindestens einen Snapshot-Schreiber geben');
+    for (const m of inserts) {
+      const tail = w.slice(m.index, m.index + 2000);
+      assert.match(tail, /snapshotPayload\(/,
+        'Jeder Snapshot-Schreiber muss denselben Payload-Bauer benutzen (Lehre aus v3.10.0)');
+    }
+  }
   for (const k of ['situation', 'lifecycle', 'maturity'])
     assert.ok(new RegExp(`${k}:`).test(w.slice(w.indexOf('function snapshotPayload'), w.indexOf('async function d1StoreRows'))),
       `Der Snapshot muss "${k}" mitschreiben`);
@@ -5998,3 +6014,60 @@ console.log('✓ FusionPulse v4.2.0 Session-VWAP je Symbol (ausgefuehrt): OK');
 }
 
 console.log('✓ FusionPulse v4.2.2 Schreibbudget und VWAP sichtbar (ausgefuehrt): OK');
+
+/* ══ v4.2.3 · DIE ABDECKUNG WIRD BENANNT, NICHT VERSCHWIEGEN ═══════════════
+   Ausgefuehrt, nicht per Muster gesucht. Schwerpunkt liegt auf den Faellen,
+   in denen NICHTS behauptet werden darf — das ist die Richtung, in der der
+   4.2.3-Fehler jahrelang unsichtbar blieb. */
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+
+  /* Normalfall: die Quote steht da, mit beiden Zahlen. */
+  const gut = C.coverageNote({ exact:true, resolved24h:80, dropped24h:20, windowComplete:true });
+  assert.equal(gut.measured, true, 'v4.2.3: mit beiden Zahlen wird gemessen');
+  assert.equal(gut.tone, 'ok', 'v4.2.3: 80 % ausgewertet ist unauffaellig');
+  assert.match(gut.label, /80/, 'v4.2.3: die ausgewerteten Zeilen stehen da');
+  assert.match(gut.label, /20/, 'v4.2.3: … und die verworfenen ebenso');
+
+  /* DER BEFUND VON 4.2.3 SELBST. Genau dieses Bild — alles faellig, nichts
+     ausgewertet — war monatelang der Dauerzustand und stand nirgends. */
+  const befund = C.coverageNote({ exact:true, resolved24h:0, dropped24h:412, windowComplete:true });
+  assert.equal(befund.tone, 'bad',
+    'v4.2.3: 0 % ausgewertet MUSS auffallen — das war der unsichtbare Dauerzustand');
+  assert.match(befund.label, /412/, 'v4.2.3: die Zahl der Verwuerfe muss dastehen');
+  assert.ok(!/nicht gemessen/.test(befund.label),
+    'v4.2.3: ein gemessener Totalverwurf ist kein „nicht gemessen“');
+
+  /* Fail-closed, vier Wege. In keinem darf ein Prozentwert erscheinen. */
+  const stumm = {
+    'Zaehler nicht bewertbar': { exact:false, countsReason:'D1 nicht lesbar' },
+    'Verwurfszahl fehlt':      { exact:true, resolved24h:5, dropped24h:null },
+    'beide fehlen':            { exact:true },
+    'gar nichts geliefert':    undefined,
+  };
+  for (const [name, st] of Object.entries(stumm)) {
+    const n = C.coverageNote(st);
+    assert.equal(n.measured, false, `v4.2.3 (${name}): hier darf nichts gemessen sein`);
+    assert.ok(!/%/.test(n.label), `v4.2.3 (${name}): KEIN Prozentwert ohne Messung`);
+    assert.match(n.detail, /NICHT geschlossen/,
+      `v4.2.3 (${name}): es muss dastehen, dass daraus keine Entwarnung folgt`);
+    assert.ok(n.short && /n\. gem\./.test(n.short),
+      `v4.2.3 (${name}): die Kurzform darf keine Leerstelle sein`);
+  }
+
+  /* Ein leeres Fenster ist KEIN Totalverwurf. Null faellige Zeilen heisst
+     „nichts zu entscheiden gehabt", nicht „alles verworfen" — sonst faerbte
+     sich die Anzeige jede Nacht rot, und ein echter Befund ginge darin unter. */
+  const leer = C.coverageNote({ exact:true, resolved24h:0, dropped24h:0, windowComplete:true });
+  assert.equal(leer.tone, 'idle', 'v4.2.3: ein leeres Fenster ist kein Alarm');
+  assert.ok(!/%/.test(leer.label), 'v4.2.3: … und traegt keine erfundene Quote');
+
+  /* Ein unvollstaendiges 24-Stunden-Fenster sagt das dazu — dieselbe Zusage
+     wie bei den Zaehlern seit NK55. */
+  const jung = C.coverageNote({ exact:true, resolved24h:3, dropped24h:1, windowComplete:false });
+  assert.match(jung.detail, /nicht vollständig/,
+    'v4.2.3: ein junges Fenster darf sich nicht als volles ausgeben');
+}
+
+console.log('✓ FusionPulse v4.2.3 Abdeckung sichtbar (ausgefuehrt): OK');

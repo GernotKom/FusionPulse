@@ -503,6 +503,27 @@ H2('Lernbericht')
 P('Wie oft ein erkanntes Muster anschließend das erste Ziel erreicht hat, wie oft den Stop. '
   'Angegeben mit Fallzahl — eine Trefferquote aus sieben Fällen ist keine Quote.')
 
+H2('Abdeckung (seit v4.2.3)')
+P('Eine Zeile unter den Beobachtungszahlen, zum Beispiel '
+  '<b>Abdeckung 24 h: 61 ausgewertet · 18 verworfen (77 %)</b>. '
+  'Jede aufgezeichnete Situation wird nach drei Stunden fällig, und die App entscheidet '
+  'dann eines von beiden: auswerten oder verwerfen.')
+P('<b>Verworfen</b> heißt nicht „schlecht gelaufen“, sondern „zu selten hingesehen“. '
+  'Der höchste erreichte Kurs einer Situation wächst nur, wenn der Titel erneut abgerufen '
+  'wird. Wurde er im Zeitraum kaum wieder angesehen, stünde dort ein Höchststand nahe null '
+  '— und das hieße aufgezeichnet „hat sich nicht bewegt“, obwohl es „wir haben nicht '
+  'hingesehen“ bedeutet. Solche Zeilen werden ausdrücklich verworfen und gezählt, statt '
+  'die Auswertung mit Scheinverlierern zu füllen.')
+P('<b>Was der Wert Ihnen sagt:</b> Steht die Quote dauerhaft nahe null, hilft kein '
+  'dichteres Scannen neuer Titel — es fehlt das Wiedersehen der bereits aufgezeichneten. '
+  'Im Watchlist-Modus ist die Abdeckung naturgemäß höher als im Radar-Modus, weil dort '
+  'jede Minute dieselben Titel abgerufen werden.')
+P('<b>Warum es diese Zeile gibt:</b> Bis v4.2.2 zeigte der Bericht ausschließlich die '
+  'ausgewerteten Zeilen. Ein Verwurf von 100 % sah damit genauso aus wie ein stillstehender '
+  'Hintergrundlauf — beides eine Null. Genau dieser blinde Fleck hat verdeckt, dass die '
+  'Lernschicht über längere Zeit gar nichts ausgewertet hat. Steht statt einer Quote '
+  '„nicht gemessen“, ist das kein Entwarnungszeichen, sondern heißt genau das.')
+
 H2('Muster-Labor')
 P('Vergleich der Setup-Typen untereinander. Zeigt, welche Muster bei Ihnen tragen und '
   'welche nicht. Setups, die nichts bringen, können in den Einstellungen stummgeschaltet '

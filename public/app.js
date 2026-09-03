@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.2.2 — Frontend
+   FusionPulse v4.2.3 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2670,6 +2670,50 @@ function vwapNote(r, expectedSymbol){
        kein Guetemass — und der Score benutzt sie ohnehin nicht. */
     detail:`Volumengewichteter Durchschnittspreis der laufenden regulären US-Sitzung.${basis}${quelle}${relTxt} Ein größerer Abstand ist NICHT besser: weit über dem VWAP ist ein Neueinstieg eher ungünstiger. Dieser Wert verändert Score und Ampel derzeit nicht.` };
 }
+/* ══ v4.2.3 · WAS AUS DER BEOBACHTUNG WURDE ════════════════════════════════
+   Der Auflöser trifft je fälliger Zeile eine von zwei Entscheidungen:
+   ausgewertet oder verworfen („zu wenig beobachtet"). Bis 4.2.2 zeigte der
+   Bericht ausschließlich die ausgewerteten. Ein Verwurf von 100 % sah damit
+   genauso aus wie ein stillstehender Cron — nämlich wie eine Null. Genau
+   dieser blinde Fleck hat den Fehler monatelang getragen.
+
+   Fail-closed wie bei `d1Note`: fehlen die Zahlen, steht hier „nicht
+   gemessen" und KEIN Prozentwert. Eine Leerstelle sähe aus wie „alles in
+   Ordnung", und eine erfundene 0 im Nenner sähe aus wie „noch nichts
+   aufgezeichnet". Beides wäre eine Behauptung ohne Deckung. */
+function coverageNote(stats){
+  const st=stats||{};
+  const nope=(why)=>({ measured:false, tone:'warn', short:'Abdeckung n. gem.',
+    label:'Abdeckung: nicht gemessen',
+    detail:`${why} Daraus darf NICHT geschlossen werden, dass nichts verworfen wurde.` });
+  if(st.exact===false) return nope(st.countsReason||'Die Lernzähler sind nicht bewertbar.');
+  /* `Number(null)` ist 0. Wuerde hier nur auf Endlichkeit geprueft, gaelte
+     eine FEHLENDE Verwurfszahl als „null Verwuerfe" — also als bestmoegliche
+     Abdeckung. Das ist dieselbe Falle, die `learningPayload` beim Nenner der
+     Lernreife bereits benennt, und in dieser Richtung ist sie am
+     gefaehrlichsten: sie erzeugt Entwarnung aus Unwissen. Der Test hat sie
+     beim ersten Lauf gefunden. */
+  const num=(v)=>(v===null||v===undefined||v==='') ? NaN : Number(v);
+  const res=num(st.resolved24h), dr=num(st.dropped24h);
+  if(!Number.isFinite(res)||!Number.isFinite(dr)) return nope('Der Server liefert die Verwurfszahl nicht.');
+  const total=res+dr;
+  if(total<=0) return { measured:true, tone:'idle', short:'Abdeckung –',
+    label:'Abdeckung: noch keine Entscheidung in 24 h',
+    detail:'In den letzten 24 Stunden wurde keine Zeile fällig. Weder ausgewertet noch verworfen — das ist kein Befund, sondern ein leeres Fenster.'
+      +(st.windowComplete?'':' Das 24-Stunden-Fenster ist zudem noch nicht vollständig.') };
+  const pct=Math.round(res/total*100);
+  /* Die Schwellen sind bewusst grob und begründen sich aus dem Befund von
+     4.2.3: unter 25 % ausgewerteten Zeilen ist die Lernbasis wertlos, und
+     genau 0 % war der Dauerzustand, den niemand sah. */
+  const tone = pct>=60 ? 'ok' : pct>=25 ? 'warn' : 'bad';
+  return { measured:true, tone, short:`Abdeckung ${pct}%`,
+    label:`Abdeckung 24 h: ${res} ausgewertet · ${dr} verworfen (${pct} %)`,
+    detail:'„Verworfen" heißt: die Zeile war fällig, wurde aber im Lernhorizont zu selten wiedergesehen, '
+      +'um ihren Höchststand als gemessen gelten zu lassen. Ein Verwurf ist kein Verlust an Kursdaten, '
+      +'sondern an Auswertbarkeit. Steht der Wert dauerhaft nahe 0 %, ist nicht die Datenmenge das Problem, '
+      +'sondern das Wiedersehen der bereits aufgezeichneten Titel.'
+      +(st.windowComplete?'':' Das 24-Stunden-Fenster ist noch nicht vollständig.') };
+}
 function d1Note(meta){
   if(authDenied){
     return { measured:false, tone:'warn', short:'DB n. v.', label:'Schreibbudget: nicht abrufbar',
@@ -2891,7 +2935,8 @@ function renderLearningReport(){
   /* v4.1.7: Das Schreibbudget entscheidet, ob ueberhaupt noch etwas dazukommt.
      Es gehoert deshalb neben die Beobachtungszahlen und nicht in ein Roh-JSON. */
   const d1n=d1Note(health);
-  el.innerHTML=`<b>🧠 Nacht-/Learning-Bericht</b> <small>serverseitig · verändert keine Tradingregel automatisch</small><div class="lr-grid"><span><b>${Number(st.snapshots24h||0)}</b>Beobachtungen 24 h</span><span><b>${Number(st.resolved24h||0)}</b>ausgewertet 24 h</span><span><b>${Number(st.expansions24h||0)}</b>Expansionen 24 h</span><span><b>${last}</b>letztes Learning</span></div><div class="lr-d1" data-tone="${d1n.tone}" title="${esc(d1n.detail)}">${esc(d1n.label)}</div><small>Warum sinnvoll? FusionPulse soll nicht nur nachts laufen, sondern sichtbar machen, was gespeichert und später ausgewertet wurde. „Expansion“ bedeutet nur: Nach einer gespeicherten Situation folgte eine relevante Bewegung – noch kein Beweis für ein gutes Kaufsignal.</small>`;
+  const cov=coverageNote(st);
+  el.innerHTML=`<b>🧠 Nacht-/Learning-Bericht</b> <small>serverseitig · verändert keine Tradingregel automatisch</small><div class="lr-grid"><span><b>${Number(st.snapshots24h||0)}</b>Beobachtungen 24 h</span><span><b>${Number(st.resolved24h||0)}</b>ausgewertet 24 h</span><span><b>${Number(st.expansions24h||0)}</b>Expansionen 24 h</span><span><b>${last}</b>letztes Learning</span></div><div class="lr-d1" data-tone="${cov.tone}" title="${esc(cov.detail)}">${esc(cov.label)}</div><div class="lr-d1" data-tone="${d1n.tone}" title="${esc(d1n.detail)}">${esc(d1n.label)}</div><small>Warum sinnvoll? FusionPulse soll nicht nur nachts laufen, sondern sichtbar machen, was gespeichert und später ausgewertet wurde. „Expansion“ bedeutet nur: Nach einer gespeicherten Situation folgte eine relevante Bewegung – noch kein Beweis für ein gutes Kaufsignal.</small>`;
 }
 function renderLearningStatus(){
   const el=$('#learningState'); if(!el)return;
