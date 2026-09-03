@@ -616,6 +616,52 @@ function analyse({ pair, c5, btc5, book, fee, mode = 'composite', comp, minCrv =
     };
   })();
 
+  /* ══ v4.2.3 · WELCHES GATTER WIRKLICH BINDET ═════════════════════════════
+     Nutzerbefund vom 03.09.: „keine Coin-BUY-Signale, das funktioniert gar
+     nicht." Nachgerechnet mit der Formel von oben, bei typischer Geometrie
+     (R1 = 1,0, R2 = 2,2, Stop = 5,8x Kosten):
+
+       Qualitaet 6,6 (= die dort geforderte Untergrenze)  EV = -0,13R
+       Qualitaet 7,5                                      EV = -0,01R
+       Qualitaet 8,0                                      EV = +0,07R
+       Qualitaet 8,4                                      EV = +0,12R  <- erste Freigabe
+
+     `modeQuality >= 6.6` ist damit als Gatter WIRKUNGSLOS. Die echte Huerde
+     liegt bei rund 8,4, weil `p1` erst dort seinen Deckel von 0,66 erreicht.
+     Alles dazwischen scheitert ausschliesslich am Erwartungswert — und die
+     Meldung „Erwartungswert -0,03R < +0,10R" liest sich dabei wie ein knappes
+     Verfehlen, obwohl fast zwei Qualitaetspunkte fehlen.
+
+     DIESER BLOCK STEHT BEWUSST AUSSERHALB DES VERRIEGELTEN ABSCHNITTS.
+     Der erste Versuch hat den Hinweis in den `claude`-Block hineingeschrieben;
+     die SHA-Verriegelung aus v3.5.3 hat sofort gefeuert. Sie hatte recht: der
+     Riegel schuetzt die Methodik, und auch ein reiner Textzusatz veraendert
+     die Pruefsumme, mit der jede spaetere Aenderung verglichen wird. Wer den
+     SHA nachzieht, um Text zu ergaenzen, hat den Riegel abgeschafft. Deshalb
+     bleibt der Block byte-identisch und die Ergaenzung haengt sich hier an.
+
+     DIE ZAHLEN AENDERN SICH NICHT. Eine gelockerte Schwelle wuerde Signale
+     herstellen statt finden. Geaendert wird nur, was der Blocker BEHAUPTET.
+     `qNeeded` loest dieselbe EV-Formel numerisch nach `modeQuality` auf, bei
+     sonst gleichen Groessen — hergeleitet, nicht gemessen. Ist keine
+     erreichbare Qualitaet dabei, wird das gesagt statt eine Zahl erfunden. */
+  if (Number(claude?.expectancyR) < 0.10 && Array.isArray(claude?.blockers)) {
+    const R1c = (tp1 - entry) / riskPerUnit, R2c = (tp2 - entry) / riskPerUnit;
+    const costRc = (cost / riskPerUnit) * 1.2;
+    let qNeeded = null;
+    for (let q = 6.6; q <= 10.0001; q += 0.1) {
+      const t1 = Math.max(0.40, Math.min(0.66,
+        0.44 + (q - 5) * 0.045 + (setupFit - 5) * 0.02 - Math.max(0, exhaustion - 5) * 0.02));
+      const t2 = Math.max(0.35, Math.min(0.55, 0.42 + (q - 6) * 0.02));
+      if (t1 * 0.5 * R1c + t1 * t2 * 0.5 * R2c - (1 - t1) - costRc >= 0.10) { qNeeded = r1(q); break; }
+    }
+    claude.expectancyQualityNeeded = qNeeded;
+    const i = claude.blockers.findIndex((b) => /Erwartungswert/.test(String(b)));
+    if (i >= 0) claude.blockers[i] = qNeeded != null
+      ? `Erwartungswert ${claude.expectancyR}R < +0,10R — dafuer Qualitaet ${qNeeded} noetig (jetzt ${r1(modeQuality)}), nicht 6,6`
+      : `Erwartungswert ${claude.expectancyR}R < +0,10R — bei dieser Kosten-/Zielgeometrie in KEINER Qualitaetsstufe erreichbar`;
+  }
+
   // Sparkline: letzte 48 Closes normalisiert 0..100
   const sp = cl.slice(-48);
   const spLo = minOf(sp), spHi = maxOf(sp);
@@ -1300,6 +1346,57 @@ async function writeWatchlist(env, mode, symbols){
   }
   watchlistMemo={ts:Date.now(),mode:m,symbols:clean};
   return watchlistMemo;
+}
+/* ══ v4.2.3 · COIN-FAVORITEN MUESSEN DEM CRON BEKANNT SEIN ═════════════════
+   Befund aus dem Betrieb: 216 EUR-Paare, davon werden `deep` (20) tief
+   gescannt. `runScan` waehlt nach Umsatz x Tagesrange. Ein Favorit ohne
+   Umsatzdruck faellt heraus und existiert danach in `rows` schlicht nicht —
+   der Filter „★ Coin-Favoriten" hat nichts zu filtern, die Suche nichts zu
+   finden, die Heatmap zeichnet nichts. Von aussen sieht das aus, als fehle
+   die Favoritenfunktion.
+
+   Der Browser kann das allein nicht heilen. Der Cron ruft `getSnapshot(env,
+   {}, true)` mit LEEREN Optionen und schreibt das Ergebnis nach
+   `crypto_scan:last`; die Oberflaeche wird zwischen zwei eigenen Scans genau
+   aus diesem persistierten Stand bedient. Ein reiner Browser-Parameter waere
+   fuer den Cron unsichtbar — **exakt dieselbe Lehre wie beim Watchlist-Modus
+   in v4.1.0**, deshalb hier auch dasselbe Muster: der Zustand liegt in
+   `fp_meta`, nicht im Browser.
+
+   Kein neues Schema, ein Schluessel, und der Schreibvorgang faellt nur beim
+   Setzen eines Favoriten an — nicht im Takt. */
+let coinWatchMemo={ts:0,pairs:[]};
+const COIN_WATCH_KEY='focus:coinwatch';
+function normalizeCoinWatch(list){
+  return [...new Set((list||[])
+    .map(x=>String(x).trim().toUpperCase())
+    .map(x=>x.includes('-')?x:`${x}-EUR`)
+    .filter(x=>/^[A-Z0-9]{2,12}-EUR$/.test(x)))].slice(0,24);
+}
+async function readCoinWatch(env, maxAgeMs=60_000){
+  if(Date.now()-coinWatchMemo.ts<maxAgeMs) return coinWatchMemo.pairs;
+  if(!env?.DB) return coinWatchMemo.pairs;
+  try{
+    const row=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind(COIN_WATCH_KEY).first();
+    coinWatchMemo={ts:Date.now(),pairs:row?.value?normalizeCoinWatch(JSON.parse(row.value)?.pairs):[]};
+  }catch(e){
+    /* FAIL-OPEN, wie bei `readWatchlist`: ein Lesefehler darf den Scan nicht
+       anhalten. Ohne Favoriten laeuft die normale Umsatzrangfolge weiter —
+       schlechter, aber nicht kaputt. */
+    console.warn(JSON.stringify({event:'coinwatch_read_failed',message:String(e?.message||e),ts:Date.now()}));
+  }
+  return coinWatchMemo.pairs;
+}
+async function writeCoinWatch(env, pairs){
+  const clean=normalizeCoinWatch(pairs);
+  if(env?.DB){
+    await ensureD1Schema(env);
+    await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
+      .bind(COIN_WATCH_KEY,JSON.stringify({pairs:clean}),Date.now()).run();
+  }
+  coinWatchMemo={ts:Date.now(),pairs:clean};
+  return clean;
 }
 const STOCK_SNAPSHOT_LIVE_MS = 4*60_000;
 const STOCK_SNAPSHOT_MAX_AGE_MS = 72*60*60_000;
@@ -6587,7 +6684,10 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
   // mit Whole-Market-Radar oder Aktien-Deep-Scan im selben CPU-Budget.
   if(env.FUSION_API_KEY && cryptoMinute){
     try{
-      const snap=await getSnapshot(env,{},true);
+      /* v4.2.3 · Die Favoriten des Nutzers gehen in den Cron-Scan ein. Ohne
+         das schreibt der Cron einen Stand ohne sie nach `crypto_scan:last`,
+         und genau der bedient die Oberflaeche zwischen zwei Browser-Scans. */
+      const snap=await getSnapshot(env,{ watch: await readCoinWatch(env) },true);
       await d1StoreRows(env,snap.rows||[],{source:'Bitpanda Fusion',assetType:'coin',now,onlyChanged:true});
       await persistCoinLive(env,snap.rows||[]);
       setApiState('crypto','ok'); await persistApiState(env,'crypto','ok',`${snap.rows?.length||0} Rows`,now);
@@ -8264,6 +8364,32 @@ export default {
        unsichtbar und der Modus damit wirkungslos.
        Geschrieben wird nur beim Umschalten. Der Aufruf ist bewusst schmal:
        ein Modus, eine Symbolliste, sonst nichts. */
+    /* v4.2.3 · Gegenstueck zu /api/watchlist fuer Krypto. Nur Lesen und
+       Setzen der Paare — KEIN Modusschalter: bei Coins gibt es keinen
+       Watchlist-Betrieb, die Favoriten werden dem normalen Scan lediglich
+       vorangestellt. Sie ersetzen die Entdeckung nicht. */
+    if (url.pathname === '/api/coinwatch') {
+      try{
+        if(req.method==='POST'){
+          const body=await req.json().catch(()=>({}));
+          const pairs=await writeCoinWatch(env, body?.pairs);
+          return json({pairs, saved:true, version:APP_VERSION},200,{ 'cache-control':'no-store' });
+        }
+        return json({pairs: await readCoinWatch(env,0), version:APP_VERSION},200,{ 'cache-control':'no-store' });
+      }catch(e){
+        /* Dieselbe Lehre wie in 4.1.2: ein gescheiterter Schreibvorgang darf
+           nicht als Erfolg zurueckkommen. Der Grund wird benannt. */
+        const msg=String(e?.message||e);
+        const writeBlocked=/rows_written|daily limit|exceeded your .*limit|D1_ERROR.*limit/i.test(msg);
+        return json({state:'error',saved:false,error:msg,
+          reason:writeBlocked?'d1_write_limit':'unknown',
+          hint:writeBlocked
+            ? 'Das taegliche D1-Schreiblimit ist erreicht. Die Coin-Favoriten werden serverseitig gespeichert und brauchen dafuer genau einen Schreibvorgang. Bis zum Zuruecksetzen um 00:00 UTC bleiben sie nur im Browser aktiv — der Cron-Scan kennt sie dann nicht.'
+            : 'Die Coin-Favoriten konnten serverseitig nicht gespeichert werden. Im Browser bleiben sie erhalten.',
+          version:APP_VERSION},502,{ 'cache-control':'no-store' });
+      }
+    }
+
     if (url.pathname === '/api/watchlist') {
       try{
         if(req.method==='POST'){

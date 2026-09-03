@@ -152,6 +152,10 @@ header{
 #map .dot .hit{fill:transparent;stroke:none}
 #map .dot .core{fill:var(--dim2);stroke:#0a0f18;stroke-width:1.7;paint-order:stroke;transition:r .25s,fill .25s}
 #map .dot text{fill:#fff;font-size:5.8px;text-anchor:middle;font-weight:850;pointer-events:none;paint-order:stroke;stroke:#08101a;stroke-width:1.35px}
+/* v4.2.3: Punkt ohne Aufschrift. Er bleibt vollwertig — Farbe, Klickflaeche
+   und Mouseover sind unveraendert; nur der Name haette hier keinen lesbaren
+   Platz. Der Innenpunkt macht sichtbar, dass es kein leerer Kreis ist. */
+#map .dot .unnamed{fill:#0a0f18;opacity:.55;pointer-events:none}
 #map .dot.light-green .core{fill:var(--green)} #map .dot.light-yellow .core{fill:var(--yellow)} #map .dot.light-red .core{fill:#52647d}
 #map .dot.sel .core{stroke:#fff;stroke-width:3}
 #map .trail{fill:none;stroke-width:1.35;stroke-linecap:round;stroke-linejoin:round;opacity:.28;stroke:#7f91aa}
@@ -565,6 +569,9 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--dim);
 
 /* ═════════════════════════════════════════════════ v3.0.7 Suche + Favoriten ═══ */
 .searchgo{min-width:38px;padding:7px 9px;font-size:14px}
+.coin-search-note{color:var(--dim);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34ch}
+.coin-search-note.bad{color:var(--yellow)}
+
 .favbtn{border:0;background:transparent;color:var(--dim);padding:2px 4px;min-width:22px;font-size:17px;line-height:1;cursor:pointer}
 .favbtn:hover,.favbtn.on{color:var(--yellow);transform:scale(1.06)}
 .c-sym{display:flex;align-items:center;gap:3px}.c-sym .favbtn{margin-left:-3px}
@@ -724,7 +731,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"4.2.3";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"4.2.4";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.

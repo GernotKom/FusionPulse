@@ -503,6 +503,33 @@ H2('Lernbericht')
 P('Wie oft ein erkanntes Muster anschließend das erste Ziel erreicht hat, wie oft den Stop. '
   'Angegeben mit Fallzahl — eine Trefferquote aus sieben Fällen ist keine Quote.')
 
+H2('Coin-Suche und Coin-Favoriten (seit v4.2.4)')
+P('Über der Coin-Trefferliste steht eine Leiste mit <b>Suchfeld</b>, <b>Filter</b> und '
+  '<b>Scan-Intervall</b>; darüber die Leiste <b>★ Coin-Favoriten</b>. Beide sind über die '
+  'Sprungleiste erreichbar („Favoriten“ und „Suche“).')
+P('<b>Was ein Coin-Favorit bewirkt:</b> Von rund 216 handelbaren EUR-Paaren wird nur eine '
+  'zweistellige Zahl tief gescannt — ausgewählt nach Umsatz und Tagesspanne. Ein Favorit wird '
+  'dieser Auswahl <b>vorangestellt</b> und ist damit immer dabei, auch wenn er an diesem Tag '
+  'wenig Umsatz hat. Die Markierung wird zusätzlich auf dem Server gespeichert, damit auch der '
+  'Hintergrundlauf sie kennt. Gelingt das Speichern nicht (etwa bei erreichtem Schreibbudget), '
+  'sagt die App das — der Favorit bleibt dann nur im Browser aktiv.')
+P('<b>Suche über den Scan hinaus:</b> Enter oder 🔎 lädt ein Paar auch dann, wenn der laufende '
+  'Durchlauf es nicht ausgewählt hat. Eine so geladene Zeile ist bewusst <b>nie</b> eine '
+  'Kauf-Freigabe: die Einzelabfrage arbeitet ohne die Referenz- und Orderbuchdaten des vollen '
+  'Scans. Sie dient dem Nachsehen, nicht dem Handeln.')
+
+H2('Warum manche Punkte in der Heatmap keinen Namen tragen (seit v4.2.4)')
+P('In einem Feld von zwanzig Punkten passen nicht zwanzig Namen nebeneinander. Die App '
+  'schiebt die Punkte deshalb leicht auseinander und vergibt die Aufschrift danach nach '
+  'Rang: erst der ausgewählte Coin, dann Ihre Favoriten, dann Kauf-Freigaben, dann die '
+  'höchste Qualität. Wer keinen lesbaren Platz hat, behält Punkt, Farbe, Klickfläche und '
+  'Mouseover — nur der aufgedruckte Name entfällt. <b>Ein Name unter zwei anderen ist keine '
+  'Information.</b> Wer einen bestimmten Coin dauerhaft beschriftet sehen will, markiert ihn '
+  'mit ★ oder klickt ihn an.')
+P('<b>Wichtig zur Deutung:</b> Beide Achsen sind technisch — Musterqualität und '
+  'Handelbarkeit. Die Tagesbewegung geht in keine der beiden ein. Ein Coin mit starkem '
+  'Tagesplus steht deshalb nicht automatisch oben rechts.')
+
 H2('Abdeckung (seit v4.2.3)')
 P('Eine Zeile unter den Beobachtungszahlen, zum Beispiel '
   '<b>Abdeckung 24 h: 61 ausgewertet · 18 verworfen (77 %)</b>. '

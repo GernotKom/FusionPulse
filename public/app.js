@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.2.3 — Frontend
+   FusionPulse v4.2.4 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -476,11 +476,53 @@ function moveFavorite(from,to){
   const rest=(S.stockOrder||[]).filter(x=>!a.includes(x)); saveStockOrder([...a,...rest]); renderStocks();
 }
 
+/* v4.2.3 · Die zuletzt gesehene Zeile jedes Favoriten wird gemerkt, damit ein
+   Favorit, den der naechste Scan nicht mehr auswaehlt, nicht spurlos aus Liste
+   und Heatmap verschwindet. Sie wird als GEMERKT gekennzeichnet (`_remembered`
+   samt Zeitstempel) und nie als frischer Stand ausgegeben — dieselbe Regel wie
+   bei `mergeFavoriteRows` auf der Aktienseite. */
+const coinFavMemory = new Map();
+function rememberCoinRows(list) {
+  for (const r of list || []) if (r?.pair && isFavPair(r.pair)) coinFavMemory.set(r.pair, { ...r, _rememberedTs: Date.now() });
+}
+function mergeFavoriteCoinRows(list) {
+  const have = new Set((list || []).map((r) => r.pair));
+  const add = [];
+  for (const pair of S.favoritePairs || []) {
+    if (have.has(pair)) continue;
+    const kept = coinFavMemory.get(pair);
+    /* Aelter als der Lernhorizont wird nicht mehr gezeigt. Ein Kurs von
+       vorgestern in einer Liste, die frische Kurse verspricht, waere
+       schlechter als eine Luecke. */
+    if (kept && Date.now() - kept._rememberedTs < 180 * 60_000) add.push({ ...kept, _remembered: true });
+  }
+  return add.length ? [...list, ...add] : list;
+}
+/* Serverseitig ablegen, damit der Cron die Favoriten mitscannt. Scheitert das
+   (z. B. D1-Schreiblimit), bleibt der Favorit im Browser aktiv — der Cron
+   kennt ihn dann aber nicht, und genau das sagt der Hinweis auch. */
+let coinWatchSyncTs = 0;
+async function syncCoinWatch() {
+  const now = Date.now();
+  if (now - coinWatchSyncTs < 3000) return;
+  coinWatchSyncTs = now;
+  try {
+    const q = new URLSearchParams(); if (S.token) q.set('t', S.token);
+    const r = await fetchWithTimeout(`/api/coinwatch?${q}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pairs: S.favoritePairs || [] }),
+    }, 8000);
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d?.saved !== true) setSys('#sysCrypto', 'warn', d?.hint || 'Coin-Favoriten konnten serverseitig nicht gespeichert werden.');
+  } catch { /* Der Browser-Favorit bleibt; der naechste Wechsel versucht es erneut. */ }
+}
 function togglePairFavorite(pair, ev) {
   ev?.stopPropagation();
   const set = new Set(S.favoritePairs || []);
   if (set.has(pair)) set.delete(pair); else set.add(pair);
-  S.favoritePairs = [...set]; saveSettings(); render();
+  S.favoritePairs = [...set];
+  rememberCoinRows(rows); rows = mergeFavoriteCoinRows(rows);
+  saveSettings(); syncCoinWatch(); render();
 }
 function toggleStockFavorite(symbol, ev) {
   ev?.stopPropagation();
@@ -528,6 +570,14 @@ function applyAnalysisView() {
 }
 
 function buyReady(r) {
+  /* v4.2.3 · FAIL-CLOSED FUER GEMERKTE ZEILEN. `mergeFavoriteCoinRows` haelt
+     einen Favoriten sichtbar, den der laufende Scan nicht ausgewaehlt hat.
+     Diese Zeile stammt aus einem frueheren Durchlauf — sie darf ANGEZEIGT
+     werden, aber niemals eine Freigabe tragen. Sonst erzeugte ausgerechnet
+     die Sichtbarkeitshilfe ein gruenes Signal auf einem alten Kurs, und das
+     ist die eine Richtung, die diese App nirgends erlaubt (dieselbe Regel wie
+     `stale`/`cached` in `getSnapshot`). */
+  if (r?._remembered) return false;
   const minCrv = (S.claudeMode && r.claude) ? CLAUDE_MIN_CRV_COIN : Number(S.minCrvCoin || DEFAULTS.minCrvCoin);
   return r.light === 'green' && r.inZone && Number(r.netCRV || 0) >= minCrv;
 }
@@ -1555,8 +1605,33 @@ async function scan(force = false) {
   $('#status').dataset.state = 'busy';
 
   try {
+    /* ══ v4.2.3 · DER FAVORIT MUSS IM SCAN SEIN, NICHT NUR IM FILTER ═══════
+       Befund: 216 EUR-Paare, davon werden `deep` (hier 20) tief gescannt.
+       Die Auswahl trifft `runScan` nach Umsatz x Tagesrange — ein Favorit
+       ohne Umsatzdruck faellt heraus und existiert danach in `rows` nicht.
+       Der Filter „★ Coin-Favoriten" hat dann nichts zu filtern, die Suche
+       nichts zu finden, und die Heatmap zeichnet ihn nicht. Von aussen sieht
+       das aus, als waere die Favoritenfunktion kaputt; tatsaechlich kam der
+       Titel nie am Server vorbei.
+       `runScan` kennt seit jeher einen `watch`-Parameter und setzt diese Paare
+       VOR die Umsatzrangfolge (`['BTC-EUR', ...watch, ...liquid, ...rest]`).
+       Er war nur nie mit den Favoriten verdrahtet — bisher stand dort
+       ausschliesslich das Feld aus den Einstellungen.
+       Die Favoriten stehen ZUERST: `slice(0, deepMax)` schneidet am Ende ab,
+       und was der Nutzer ausdruecklich markiert hat, darf nicht der
+       Umsatzrangfolge zum Opfer fallen. BTC-EUR bleibt davor — es ist die
+       Referenzreihe fuer `btcTrend` und wird ohnehin immer gebraucht. */
+    /* `runScan` vergleicht gegen die vollstaendigen Paarnamen aus /tickers
+       (`eur.some(t => t.pair === p)`). Ein Eintrag „SOL" aus dem
+       Einstellungsfeld faellt dort still durch — ohne Meldung, weil der Filter
+       unbekannte Paare kommentarlos verwirft. Deshalb hier ergaenzen. */
+    const toPair = (x) => (x.includes('-') ? x : `${x}-EUR`);
+    const watchList = [...new Set([
+      ...String(S.watch || '').split(',').map(x => x.trim().toUpperCase()).filter(Boolean).map(toPair),
+      ...(S.favoritePairs || []).map(x => String(x).toUpperCase()).map(toPair),
+    ])];
     const q = new URLSearchParams({
-      deep: S.deep, watch: S.watch, mode: S.analysisMode, comp: S.components.join(','), minCrv: S.minCrvCoin,
+      deep: S.deep, watch: watchList.join(','), mode: S.analysisMode, comp: S.components.join(','), minCrv: S.minCrvCoin,
     });
     if (S.token) q.set('t', S.token);
     if (force) q.set('force', '1');
@@ -1581,6 +1656,12 @@ async function scan(force = false) {
     }
 
     rows = data.rows || [];
+    /* v4.2.3 · Erst merken, dann ergaenzen. Waehlt der naechste Scan einen
+       Favoriten nicht aus (Umsatzrangfolge, `deep`-Schnitt), bleibt er als
+       gemerkte Zeile sichtbar statt spurlos zu verschwinden — die Lehre aus
+       4.2.2, hier auf die Coin-Liste angewandt. */
+    rememberCoinRows(rows);
+    rows = mergeFavoriteCoinRows(rows);
     rows.forEach(claudeOverlayRow);
     meta = data;
     /* v3.25.0: Quittung fuer die Selbstheilung ganz oben in dieser Datei. Erst
@@ -2253,6 +2334,75 @@ function renderPortfolioRisk(){
     `<small class="pf-note" title="Was diese Kachel bewusst NICHT tut.">Grundlage sind deine erfassten realen Positionen und die technischen Stops aus der Analyse. Die Klumpung ist eine <b>Sektor-Naeherung</b>: zwei Titel im selben Sektor koennen gegenlaeufig laufen, zwei aus verschiedenen Sektoren am selben Zins- oder Dollarfaktor haengen. Eine echte Preisreihen-Korrelation ist noch nicht gerechnet.${px.guard?'':' Die Budget-Sperre ist derzeit AUS: diese Kachel warnt, blockiert aber nichts.'}</small>`;
 }
 
+/* v4.2.3 · Gegenstueck zu `renderDepotStrip`. Die Coin-Favoriten existierten
+   als Zustand (`S.favoritePairs`), als Sternchen in der Zeile und als
+   Filteroption — aber ohne eigene Anzeige. Ein Zustand ohne Anzeige ist fuer
+   den Nutzer kein Zustand. Die Leiste sagt zusaetzlich, was ein Favorit
+   BEWIRKT: er wird dem Scan vorangestellt. */
+/* ══ v4.2.3 · DIE SUCHE FAND NUR, WAS OHNEHIN SCHON DA WAR ═════════════════
+   `visible()` filtert `rows` — und `rows` sind die 20 tief gescannten von 216
+   EUR-Paaren. Wer nach einem Coin suchte, den die Umsatzrangfolge diesmal
+   nicht gewaehlt hatte, bekam eine leere Liste ohne Erklaerung. Das ist der
+   Unterschied zur Aktienseite, die seit jeher „Enter oder 🔎 laedt auch Titel
+   ausserhalb des Standardradars" kann.
+
+   Der Server konnte es die ganze Zeit: `/api/pair/{PAAR}` liefert ein
+   einzelnes Paar frisch (2 Unterabfragen) und laeuft durch dieselbe
+   `analyse()`-Funktion wie der Scan. Es fehlte nur die Verdrahtung.
+
+   ZWEI DINGE BLEIBEN FAIL-CLOSED:
+   1. Die geladene Zeile wird als `_remembered` gefuehrt, solange sie nicht
+      aus einem regulaeren Scan stammt — `buyReady()` gibt darauf niemals eine
+      Freigabe. Eine Einzelabfrage umgeht die BTC-Referenz und das Orderbuch
+      des Scans; sie darf zeigen, aber nicht freigeben.
+   2. Findet der Server nichts, wird das GESAGT. Eine stumme leere Liste war
+      genau der Befund. */
+let coinSearchBusy = false, coinSearchLastTs = 0;
+async function searchCoinNow(pairOverride) {
+  const input = $('#q'), note = $('#coinSearchNote');
+  const raw = String(pairOverride || input?.value || '').trim().toUpperCase();
+  if (!raw) return;
+  if (!pairOverride && (coinSearchBusy || Date.now() - coinSearchLastTs < 800)) return;
+  const pair = raw.includes('-') ? raw : `${raw}-EUR`;
+  if (!/^[A-Z0-9]{2,12}-EUR$/.test(pair)) { if (note) { note.textContent = `„${raw}" ist kein gültiges Paar.`; note.className = 'coin-search-note bad'; } return; }
+  if (rows.some((r) => r.pair === pair)) { select(pair, true); if (note) { note.textContent = 'bereits geladen'; note.className = 'coin-search-note'; } return; }
+  coinSearchBusy = true; coinSearchLastTs = Date.now();
+  if (note) { note.textContent = 'lädt …'; note.className = 'coin-search-note'; }
+  try {
+    const q = new URLSearchParams({ mode: S.analysisMode, comp: S.components.join(','), minCrv: S.minCrvCoin });
+    if (S.token) q.set('t', S.token);
+    const res = await fetchWithTimeout(`/api/pair/${encodeURIComponent(pair)}?${q}`, { cache: 'no-store' }, 12_000);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.row) {
+      if (note) { note.textContent = res.status === 404 ? `${sym(pair)}: zu wenig Daten bei Bitpanda.` : (data?.error || `${sym(pair)} nicht ladbar.`); note.className = 'coin-search-note bad'; }
+      return;
+    }
+    const row = { ...data.row, _remembered: true, _rememberedTs: Date.now() };
+    claudeOverlayRow(row);
+    rows = [...rows.filter((r) => r.pair !== pair), row];
+    selected = pair; pinned = true;
+    if (input) input.value = '';
+    if (note) { note.textContent = `${sym(pair)} einzeln geladen — keine Freigabe aus Einzelabfragen.`; note.className = 'coin-search-note'; }
+    render();
+  } catch (e) {
+    if (note) { note.textContent = `${sym(pair)}: ${String(e?.message || e)}`; note.className = 'coin-search-note bad'; }
+  } finally { coinSearchBusy = false; }
+}
+function renderCoinFavStrip() {
+  const el = $('#coinFavStrip'); if (!el) return;
+  const favs = S.favoritePairs || [];
+  if (!favs.length) { el.innerHTML = '<span><b>★ Coin-Favoriten</b> · noch leer — Stern neben einem Coin antippen. Favoriten werden im Scan bevorzugt geladen.</span>'; return; }
+  el.innerHTML = `<b>★ Coin-Favoriten (${favs.length})</b>` + favs.map((pair) => {
+    const row = rows.find((r) => r.pair === pair);
+    /* Ein gemerkter Favorit wird als solcher gekennzeichnet. Er darf sichtbar
+       sein, aber nicht wie ein frischer Stand aussehen. */
+    const state = !row ? 'nicht im laufenden Scan' : row._remembered ? 'gemerkt, nicht in diesem Durchlauf' : `Q ${row.quality} · H ${row.executability}`;
+    return `<button class="depotchip${row && !row._remembered ? '' : ' stale'}" data-coinfav="${esc(pair)}" title="${esc(`${sym(pair)} — ${state}. Klick öffnet den Coin.`)}">${esc(sym(pair))}</button>`;
+  }).join('');
+  el.querySelectorAll('[data-coinfav]').forEach((b) => {
+    b.onclick = () => { const p = b.dataset.coinfav; if (rows.some((r) => r.pair === p)) select(p, true); else searchCoinNow(p); };
+  });
+}
 function renderDepotStrip() {
   const el=$('#depotStrip'); if(!el) return;
   const favs=S.favoriteStocks||[];
@@ -4387,12 +4537,76 @@ function renderMap() {
   const svg = $('#map');
   const g = (x) => 12 + (x / 10) * 176;
   const pts = rows.map((r) => ({ r, x: g(r.executability), y: 200 - g(r.quality), baseX: g(r.executability), baseY: 200 - g(r.quality), rad: 4.5 + Math.max(0, Math.min(3.2, (Number(r.quality || 0) - 5) * .75)) }));
-  // leichte Kollisionstrennung: analytische Position bleibt Basis, Kreise werden nur wenige Pixel auseinandergezogen
-  for (let it = 0; it < 18; it++) for (let i = 0; i < pts.length; i++) for (let j = i+1; j < pts.length; j++) {
-    const a=pts[i], b=pts[j], dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy)||.01, min=a.rad+b.rad+2.5;
-    if (d < min) { const push=(min-d)*.18, ux=dx/d, uy=dy/d; a.x-=ux*push; a.y-=uy*push; b.x+=ux*push; b.y+=uy*push; }
+  /* ══ v4.2.3 · DIE TRENNUNG GALT DEM KREIS, GELESEN WIRD DIE SCHRIFT ══════
+     Befund aus dem Betrieb (03.09., Coin-Heatmap): BTC war gezeichnet und
+     trotzdem nicht auffindbar — die Beschriftung lag unter APT und XRP.
+     Der Nutzerbefund „BTC wird nicht mal erwaehnt" beschreibt also nicht
+     fehlende Daten. BTC-EUR steht in `runScan` sogar an erster Stelle der
+     Auswahl und ist immer im Scan.
+
+     Ursache ist ein Massstabsfehler in der Trennung: der Mindestabstand war
+     `radA + radB + 2,5`, also rund 12–17 Einheiten — gerechnet fuer Kreise mit
+     Radius 4,5 bis 7,7. Die Beschriftung darunter ist aber bis zu fuenf
+     Zeichen breit und bei `font-size: 5.8px` rund 18 Einheiten breit und nur
+     etwa 6 hoch. Zwei Punkte konnten also sauber getrennt sein und ihre
+     Namen trotzdem vollstaendig uebereinander liegen. Genau das war zu sehen.
+
+     Die Trennung rechnet jetzt mit einem LIEGENDEN Rechteck je Punkt: breit
+     wie der laengere von Kreis und Beschriftung, hoch wie der Kreis plus
+     Textzeile. Verglichen wird im normierten Raum, dadurch weichen die Punkte
+     bevorzugt SEITLICH aus — die Richtung, in der Platz gebraucht wird.
+
+     Die analytische Position bleibt die Basis; verschoben wird nur so weit
+     wie noetig. Beide Achsen behalten ihre Bedeutung. */
+  const CHAR_W = 3.55, LABEL_H = 5.8;
+  pts.forEach((p) => {
+    const chars = Math.min(5, sym(p.r.pair).length);
+    p.halfW = Math.max(p.rad, (chars * CHAR_W) / 2) + 1.2;
+    p.halfH = p.rad + LABEL_H * 0.5;
+  });
+  for (let it = 0; it < 26; it++) for (let i = 0; i < pts.length; i++) for (let j = i+1; j < pts.length; j++) {
+    const a=pts[i], b=pts[j];
+    const needX=a.halfW+b.halfW, needY=a.halfH+b.halfH;
+    const dx=b.x-a.x, dy=b.y-a.y;
+    /* Normierter Abstand: 1 bedeutet „beruehrt sich gerade". Unter 1 wird
+       auseinandergeschoben, und zwar entlang der normierten Richtung — das
+       ergibt bei breiten, flachen Rechtecken automatisch mehr Seitwaerts- als
+       Hoehenversatz. */
+    const nx=dx/needX, ny=dy/needY, d=Math.hypot(nx,ny);
+    if (d >= 1 || d === 0) continue;
+    const push=(1-d)*.30, ux=(nx/d)*needX, uy=(ny/d)*needY;
+    a.x-=ux*push*.5; a.y-=uy*push*.5; b.x+=ux*push*.5; b.y+=uy*push*.5;
   }
   pts.forEach((p) => { p.x = Math.max(10, Math.min(190, p.x)); p.y = Math.max(10, Math.min(190, p.y)); });
+
+  /* ══ v4.2.3 · WER KEINEN PLATZ HAT, BEKOMMT KEINEN NAMEN ════════════════
+     Die Trennung oben loest BTC aus seinem Cluster, aber sie kann das
+     Grundproblem nicht loesen: 20 fuenfstellige Namen passen in ein Feld von
+     200x200 Einheiten nicht ueberschneidungsfrei, ohne die Punkte so weit zu
+     verschieben, dass die Achsen ihre Bedeutung verlieren. Gemessen bleiben
+     nach der Trennung rund 26 sich beruehrende Beschriftungspaare, und mehr
+     Iterationen oder staerkerer Druck verbessern das nicht — sie vergroessern
+     nur den Versatz.
+
+     Deshalb wird die Beschriftung nach Rang vergeben und nur gesetzt, wenn sie
+     frei steht. Reihenfolge: der ausgewaehlte Coin, dann Favoriten, dann
+     Kauf-Freigaben, dann absteigende Qualitaet. Was keinen Platz hat, behaelt
+     Punkt, Farbe, Klickflaeche und Mouseover — nur der aufgedruckte Name
+     entfaellt.
+
+     Das ist bewusst KEIN stilles Verschwinden im Sinne von 4.2.2: der Coin
+     bleibt vollstaendig vorhanden und benannt, lediglich die Aufschrift
+     weicht. Ein Name, der unter zwei anderen liegt, ist keine Information —
+     er sieht nur wie eine aus. Genau das war der Befund zu BTC. */
+  const rank = (p) => (p.r.pair === selected ? 0 : isFavPair(p.r.pair) ? 1 : buyReady(p.r) ? 2 : 3);
+  const placed = [];
+  [...pts].sort((a, b) => rank(a) - rank(b) || (Number(b.r.quality) || 0) - (Number(a.r.quality) || 0))
+    .forEach((p) => {
+      const clash = placed.some((o) =>
+        (p.halfW + o.halfW) - Math.abs(o.x - p.x) > 0 && (p.halfH + o.halfH) - Math.abs(o.y - p.y) > 0);
+      p.label = !clash;
+      if (!clash) placed.push(p);
+    });
 
   /* v3.9.3: Gleicher Befund wie in der Aktien-Heatmap — die Spuren wurden aus
      Rohkoordinaten gezeichnet, die Punkte aber vorher auseinandergeschoben und
@@ -4411,7 +4625,7 @@ function renderMap() {
     const points=raw.map((p)=>`${(p.x+ox).toFixed(1)},${(p.y+oy).toFixed(1)}`).join(' ');
     return `<polyline class="trail ${r.light}" points="${points}"/>`;
   }).join('');
-  const dots = pts.map(({r,x,y,rad}) => {
+  const dots = pts.map(({r,x,y,rad,label}) => {
     const sel=r.pair===selected, ready=buyReady(r);
     /* v3.6.1: Punktfarbe folgt der Kopf-Bewertung, nicht mehr allein r.light.
        Sonst leuchtet ein Coin gruen im Feld "STARK", waehrend die Karte
@@ -4420,10 +4634,10 @@ function renderMap() {
     return `<g class="dot light-${hl.light} ${sel?'sel':''} ${ready?'buy-ready':''} ${hl.kind==='economic'?'econ-weak':''}" data-pair="${r.pair}" transform="translate(${x.toFixed(1)} ${y.toFixed(1)})">
       <circle class="hit" cx="0" cy="0" r="${rad+7}"/>
       <circle class="core" cx="0" cy="0" r="${sel?rad+1.5:rad}"/>
-      <text x="0" y="2.2">${sym(r.pair).slice(0,5)}</text>
+      ${label?`<text x="0" y="2.2">${sym(r.pair).slice(0,5)}</text>`:'<circle class="unnamed" cx="0" cy="0" r="1.5"/>'}
       <title>${sym(r.pair)} · ${hl.icon} ${hl.text}
 Qualität ${r.quality}/10 · Handelbarkeit ${r.executability}/10 · CRV ${r.netCRV}:1${sz?` · Plan netto ${eur(sz.planNet,0)}`:''}
-Achtung: beide Achsen sind TECHNISCH. Ob sich der Trade lohnt, steht in der Farbe und im Text oben.</title>
+Achtung: beide Achsen sind TECHNISCH. Ob sich der Trade lohnt, steht in der Farbe und im Text oben.${label?'':'\nOhne Aufschrift, weil an dieser Stelle kein lesbarer Platz ist — mit ★ markieren oder anklicken, dann wird der Name gesetzt.'}</title>
     </g>`;
   }).join('');
 
@@ -5605,7 +5819,7 @@ function render() {
 function select(pair, byUser) {
   selected = pair;
   if (byUser) pinned = true;
-  renderFocus(); renderMap(); renderList();
+  renderFocus(); renderMap(); renderList(); renderCoinFavStrip();
   rowNodes.get(pair)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
@@ -5979,7 +6193,10 @@ $('#sReset').onclick = hardReload;
 $('#sCompAll').onclick = () => $$('#sComponents input[data-comp]').forEach((c) => { c.checked = true; });
 $('#sCompElliott').onclick = () => $$('#sComponents input[data-comp]').forEach((c) => { c.checked = c.dataset.comp === 'elliott'; });
 $('#sClose').onclick = () => $('#settings').classList.remove('open');
-$('#q').oninput = () => render();
+$('#q').oninput = () => { const n=$('#coinSearchNote'); if(n && n.textContent){n.textContent='';n.className='coin-search-note';} render(); };
+/* v4.2.3: Enter und 🔎 laden ein Paar auch ausserhalb des laufenden Scans. */
+$('#q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); searchCoinNow(); } });
+$('#coinSearchGo').onclick = () => searchCoinNow();
 $('#f').onchange = () => render();
 $('#stockQ').oninput = () => { $('#stockSearchClear')?.classList.toggle('hidden',!$('#stockQ').value); previewStockSearchLive(); };
 $('#stockQ').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); searchStockNow(); } });
@@ -6173,6 +6390,17 @@ const VIEW_SECTIONS = {
     ['#topPicksCoin',     'Top Picks',    'Rangfolge nach erwartetem Netto-Euro je Tag, aus aufgezeichneten Fällen.'],
     ['#cryptoMovers',     'Mover',        'Coins mit der stärksten gemessenen Bewegung der letzten Stunde.'],
     ['#sentimentCard',    'Stimmung',     'Fear-&-Greed-Index. Reine Einordnung, 0 % BUY-Gewicht.'],
+    /* v4.2.3 · DIE SUCHE HATTE KEIN SPRUNGZIEL. `.coinbar` traegt Coin-Suche,
+       Coin-Filter (samt „★ Coin-Favoriten") und Scan-Intervall — und stand in
+       dieser Liste nicht. Wer auf „Coin-Liste" tippte, sprang auf `main` und
+       damit GENAU AN DER LEISTE VORBEI: sie liegt unmittelbar darueber und war
+       nach dem Sprung nach oben aus dem Bild. Der Nutzerbefund lautete
+       folgerichtig „eine Coin-Suche fehlt komplett". Sie war da, nur nie
+       erreichbar. Das Aktien-Pendant hatte sein Ziel von Anfang an
+       (`#stockGroups` liegt unter der Suchleiste, aber die Aktienleiste steht
+       im sichtbaren Kopfbereich). */
+    ['#coinFavStrip',     'Favoriten',    'Deine mit ★ markierten Coins. Sie werden dem Scan vorangestellt.'],
+    ['.coinbar',          'Suche',        'Coin-Suche, Filter (auch ★ Favoriten) und Scan-Intervall.'],
     ['main',              'Coin-Liste',   'Die vollständige Trefferliste unterhalb von Fokus und Heatmap.'],
   ],
   stocks: [

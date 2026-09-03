@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 03.09.2026, Version **4.2.3**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 03.09.2026, Version **4.2.4**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -221,6 +221,43 @@ Null Prozent ausgewertet, hundert Prozent `dropped_ts`, und `dropped_ts` ist unw
 
 **Aufgeräumt.** `d1UpdateOutcomes` und `d1StoreSnapshotRow` entfernt (offener Punkt 8 erledigt), Snapshot-Zähler im lebenden Pfad verdrahtet, die zwei Kommentare mit falscher Prämisse korrigiert.
 
+### 4.2.4 · Vier Betriebsbefunde aus der Coin-Seite
+
+Gemeldet wurden drei Dinge. Zwei bestätigten sich, eines traf anders zu als vermutet. Alle vier Befunde sind gerechnet oder ausgeführt belegt.
+
+**1. „Die Coin-Suche fehlt komplett."** Sie fehlte nicht — sie war unerreichbar. Das Feld `#q` und die Filteroption `★ Coin-Favoriten` stehen seit langem in `index.html`. Nur hatte `.coinbar` kein Sprungziel in `VIEW_SECTIONS.coins`: „Coin-Liste" springt auf `main` und damit **an der Leiste unmittelbar darüber vorbei**, die danach oben aus dem Bild ist.
+
+**2. Ein Favorit kam nie am Server vorbei.** Von 216 EUR-Paaren werden `deep` (20) tief gescannt, ausgewählt nach Umsatz × Tagesrange. Ein Favorit ohne Umsatzdruck fällt heraus und existiert in `rows` nicht — der Filter hat nichts zu filtern, die Suche nichts zu finden, die Heatmap zeichnet nichts. `runScan` kennt seit jeher `watch` und setzt diese Paare vor die Umsatzrangfolge; verdrahtet war der Parameter nur mit dem Einstellungsfeld.
+
+Ein reiner Browser-Parameter hätte nicht gereicht: der Cron rief `getSnapshot(env, {}, true)` mit leeren Optionen auf und schreibt den Stand nach `crypto_scan:last`, aus dem die Oberfläche zwischen zwei eigenen Scans bedient wird. **Dieselbe Lehre wie beim Watchlist-Modus in 4.1.0**, deshalb dasselbe Muster: `focus:coinwatch` in `fp_meta`, Route `/api/coinwatch`, Cron liest mit. Dazu `mergeFavoriteCoinRows`, damit ein Favorit sichtbar bleibt, den der laufende Durchlauf nicht gewählt hat — **`buyReady()` gibt auf `_remembered` niemals frei**, sonst erzeugte ausgerechnet die Sichtbarkeitshilfe ein grünes Signal auf altem Kurs.
+
+**3. „BTC trendet mit >5 % und steht nicht in der Heatmap."** BTC stand darin — unter APT und XRP. `runScan` setzt `BTC-EUR` an die **erste** Stelle der Auswahl; es ist immer im Scan. Die Ursache ist ein Maßstabsfehler in der Kollisionstrennung: der Mindestabstand war `radA + radB + 2,5` (12–17 Einheiten, gerechnet für Kreise mit Radius 4,5–7,7), die Aufschrift darunter ist bei `font-size: 5.8px` aber bis zu **18 Einheiten breit und nur 6 hoch**. Punkte konnten sauber getrennt sein und ihre Namen vollständig übereinander liegen.
+
+Die Trennung rechnet jetzt mit einem liegenden Rechteck je Punkt. Das allein genügt nicht: gemessen bleiben rund 26 sich berührende Paare, und **mehr Iterationen oder stärkerer Druck verbessern das nicht** — sie vergrößern nur den Versatz. Deshalb zusätzlich eine Vergaberegel nach Rang (ausgewählt → Favorit → Freigabe → Qualität): wer keinen freien Platz hat, behält Punkt, Farbe, Klickfläche und Mouseover, nur die Aufschrift entfällt. Ein Name unter zwei anderen ist keine Information, er sieht nur wie eine aus.
+
+**Zur Erwartung dahinter:** beide Achsen sind Musterqualität × Handelbarkeit. Ein Tag mit +5,34 % geht in keine der beiden ein. Auch ein perfekt lesbares BTC säße dort, wo sein Setup es hinstellt. Ob die Coin-Heatmap eine Bewegungsachse braucht, ist eine offene Frage, keine erledigte.
+
+**4. „Keine Coin-BUY-Signale."** Nachgerechnet mit der EV-Formel des Claude-Modus, bei typischer Geometrie (R1 = 1,0, R2 = 2,2, Stop = 5,8× Kosten):
+
+| Qualität | Erwartungswert | |
+|---|---|---|
+| 6,6 (= die geforderte Untergrenze) | −0,13 R | blockiert |
+| 7,5 | −0,01 R | blockiert |
+| 8,0 | +0,07 R | blockiert |
+| **8,4** | **+0,12 R** | **erste Freigabe** |
+
+**`modeQuality >= 6.6` ist als Gatter wirkungslos.** Die echte Hürde liegt bei rund 8,4, weil `p1` erst dort seinen Deckel von 0,66 erreicht. Alles dazwischen scheitert ausschließlich am Erwartungswert — und „Erwartungswert −0,03R < +0,10R" liest sich dabei wie ein knappes Verfehlen, obwohl fast zwei Qualitätspunkte fehlen.
+
+**Die Zahlen sind unverändert.** Eine gelockerte Schwelle würde Signale herstellen statt finden. Geändert ist nur, was der Blocker behauptet: er nennt die nötige Qualität, hergeleitet durch numerisches Auflösen derselben Formel.
+
+**Der SHA-Riegel hat dabei gefeuert und hatte recht.** Der erste Versuch schrieb den Hinweis in den verriegelten `claude`-Block. Auch ein reiner Textzusatz verändert die Prüfsumme, gegen die jede spätere Änderung verglichen wird — wer sie für Text nachzieht, hat den Riegel abgeschafft. Der Block bleibt byte-identisch, die Ergänzung hängt sich dahinter.
+
+**Drittes Mal an einem Tag: ein Test las den falschen Text.** Die Heatmap-Prüfung hatte `CHAR_W`/`LABEL_H` eingetippt statt aus `app.js` zu lesen; die Gegenprobe blieb grün, weil der Test seine eigene Zweitwahrheit rechnete. Er liest die Konstanten jetzt aus der Quelle. Nach NK72 und NK74 ist das der dritte Fall — die Krankheit ist offenbar strukturell und nicht zufällig.
+
+**Sechs Negativkontrollen**, alle gefeuert und zurückgesetzt: Sprungziel entfernt · Cron ohne `watch` · gemerkte Zeile freigeben lassen · Trennung zurück auf den Kreis · Vergaberegel abgeschaltet · Hinweis zurück in den verriegelten Block.
+
+**Nachgezogen:** Die Coin-Suche lädt jetzt auch Paare außerhalb des Scans über `/api/pair/{PAAR}` — der Endpunkt existierte seit jeher, nur die Verdrahtung im Client fehlte. Einzeln geladene Zeilen sind `_remembered` und geben nie frei: die Einzelabfrage umgeht BTC-Referenz und Orderbuch des Scans.
+
 ### Zwei Entscheidungen, die dabei getroffen wurden
 
 **1. Der Altbestand wird nicht zurückgeholt.** Alles vor 4.2.3 trägt irrtümlich `dropped_ts`; die Rohdaten stehen noch da. Ein Zurücksetzen wäre technisch ein Einzeiler, brächte aber nichts: ohne Protokolleinträge für diese Zeitfenster verwürfe der Auflöser dieselben Zeilen sofort wieder, und der Versuch kostete Schreibzeilen aus dem knappen Budget. **Die Messung beginnt bei null.** Die erste auswertbare Basis entsteht damit frühestens nach einigen Handelstagen — das ist der Preis dafür, dass vorher nichts entstanden ist.
@@ -342,6 +379,12 @@ Eine ältere Regex-Zusicherung auf die Inline-Formel (`safety-regression.mjs`, Z
 
 **Erledigt in 4.1.5:** der frühere Punkt 4 („Reife %" liest sich wie eine zweite Meinung).
 **Erledigt in 4.1.6:** die Änderungsschwelle greift auf allen fünf Schreibpfaden, nicht nur im Watchlist-Zweig.
+
+12. **Die Coin-Heatmap kennt keine Bewegungsachse.** Beide Achsen sind technisch (Qualität × Handelbarkeit). Der Nutzerbefund „BTC trendet und steht nicht da" war zwar ein Lesbarkeitsproblem, zeigt aber eine echte Lücke: die Tagesbewegung ist in der Karte nirgends codiert, obwohl es auf der Aktienseite eigene Mover-Kacheln gibt. Kandidat für eine dritte Codierung (Punktrand, Größe) — **aber erst mit einer Entscheidung, welche Größe genau**, nicht nebenbei.
+
+13. **`modeQuality >= 6.6` im Claude-Coin-Modus ist eine tote Schwelle.** Sie steht zwei Punkte unter der Hürde, die tatsächlich bindet (rund 8,4 über den Erwartungswert). Die Beschriftung ist seit 4.2.4 ehrlich, die Schwelle selbst bleibt — sie zu heben wäre kosmetisch, sie zu senken wäre eine Methodikänderung hinter dem SHA-Riegel. Wenn, dann als eigene, begründete Änderung mit neuem SHA.
+
+14. **Die Coin-Suche über `/api/pair/` kostet zwei Unterabfragen je Aufruf** und umgeht das Orderbuch des Scans. Für den Einzelblick ist das richtig; falls sie häufig genutzt wird, im Bandbreitenzweig von `/api/health` nachsehen.
 
 ## 5. Kosten und Cloudflare-Plan
 

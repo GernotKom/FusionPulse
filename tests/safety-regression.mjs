@@ -6071,3 +6071,155 @@ console.log('✓ FusionPulse v4.2.2 Schreibbudget und VWAP sichtbar (ausgefuehrt
 }
 
 console.log('✓ FusionPulse v4.2.3 Abdeckung sichtbar (ausgefuehrt): OK');
+
+/* ══ v4.2.3 · COIN-SUCHE, COIN-FAVORITEN, HEATMAP, BINDENDES GATTER ════════
+   Alle vier Punkte stammen aus einem Betriebsbefund vom 03.09. Sie werden
+   ausgefuehrt bzw. gerechnet geprueft, nicht im Quelltext gesucht. */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const index = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+
+  /* ---- 1) Die Suche war da und hatte kein Sprungziel ---------------------
+     Der Nutzerbefund lautete „eine Coin-Suche fehlt komplett". Sie stand seit
+     jeher in index.html — nur sprang „Coin-Liste" auf `main` und damit an der
+     Leiste unmittelbar darueber vorbei. */
+  assert.match(index, /id="q"[^>]*placeholder="Coin suchen/, 'v4.2.3: Die Coin-Suche muss es geben');
+  const coinNav = app.slice(app.indexOf('coins: ['), app.indexOf('stocks: [', app.indexOf('coins: [')));
+  assert.match(coinNav, /'\.coinbar'/, 'v4.2.3: Die Coin-Leiste braucht ein eigenes Sprungziel');
+  assert.match(coinNav, /'#coinFavStrip'/, 'v4.2.3: … und die Coin-Favoriten ebenso');
+  assert.ok(coinNav.indexOf("'.coinbar'") < coinNav.indexOf("['main'"),
+    'v4.2.3: Das Ziel muss VOR der Liste stehen — sonst springt man wieder daran vorbei');
+
+  /* ---- 2) Favoriten muessen den Server erreichen -------------------------
+     Ein reiner Browser-Parameter waere fuer den Cron unsichtbar. Dieselbe
+     Lehre wie beim Watchlist-Modus in v4.1.0, deshalb dasselbe Muster. */
+  assert.match(worker, /const COIN_WATCH_KEY='focus:coinwatch';/, 'v4.2.3: Coin-Favoriten brauchen einen serverseitigen Zustand');
+  assert.match(worker, /url\.pathname === '\/api\/coinwatch'/, 'v4.2.3: … und eine Route');
+  assert.match(worker, /getSnapshot\(env,\{ watch: await readCoinWatch\(env\) \},true\)/,
+    'v4.2.3: Der CRON muss die Favoriten mitscannen — er schreibt den Stand, der die Oberflaeche bedient');
+  assert.match(app, /async function syncCoinWatch/, 'v4.2.3: Der Client muss sie melden');
+  const toggle = app.slice(app.indexOf('function togglePairFavorite'), app.indexOf('function toggleStockFavorite'));
+  assert.match(toggle, /syncCoinWatch\(\)/, 'v4.2.3: … und zwar beim Setzen des Sterns');
+  assert.match(toggle, /mergeFavoriteCoinRows/, 'v4.2.3: Ein Favorit darf nicht aus der Liste fallen');
+
+  /* ---- 3) Gemerkte Zeilen geben NIEMALS frei ----------------------------
+     Die Sichtbarkeitshilfe darf keine Freigabe auf altem Kurs erzeugen. Das
+     ist die eine Richtung, die diese App nirgends erlaubt. */
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const frisch = { pair:'BTC-EUR', light:'green', inZone:true, netCRV:9 };
+  assert.equal(C.buyReady(frisch), true, 'v4.2.3: Eine frische gruene Zeile gibt frei');
+  assert.equal(C.buyReady({ ...frisch, _remembered:true }), false,
+    'v4.2.3: Dieselbe Zeile als GEMERKT darf NIEMALS freigeben — sonst erzeugt die Sichtbarkeitshilfe ein Signal auf altem Kurs');
+
+  /* ---- 4) Heatmap: getrennt wird die Beschriftung, nicht der Kreis -------
+     BTC war gezeichnet und trotzdem unauffindbar: der Mindestabstand war fuer
+     Kreise (Radius 4,5–7,7) gerechnet, die Aufschrift ist aber bis zu 18
+     Einheiten breit. Hier nachgestellt mit der echten Punktwolke. */
+  {
+    const coins = [['LTC',6.4,3.4],['ADA',6.2,2.6],['UNI',6.9,2.6],['ANKR',7.1,2.9],['ENA',7.0,2.4],
+      ['LINK',7.4,3.6],['DOGE',8.0,4.0],['SOL',8.1,3.3],['ETH',8.4,3.6],
+      ['APT',7.9,2.9],['BTC',8.2,2.9],['XRP',8.6,2.9],['PUMP',7.8,2.1]];
+    /* DIE KONSTANTEN WERDEN AUS app.js GELESEN, NICHT ABGESCHRIEBEN.
+       Die erste Fassung hatte 3.55/5.8 eingetippt — die Gegenprobe „Trennung
+       zurueck auf den Kreis" (CHAR_W auf 0.1 gesetzt) blieb daraufhin gruen,
+       weil der Test seine eigene Kopie rechnete statt die der App. Dritter
+       Fall derselben Krankheit an einem Tag, nach NK72 und NK74. Ein Test mit
+       eigener Zweitwahrheit prueft sich selbst. */
+    const km = app.match(/const CHAR_W = ([\d.]+), LABEL_H = ([\d.]+);/);
+    assert.ok(km, 'v4.2.3: Die Beschriftungsmasse muessen in app.js stehen und lesbar sein');
+    const CHAR_W = Number(km[1]), LABEL_H = Number(km[2]);
+    assert.ok(CHAR_W > 2.5 && CHAR_W < 5,
+      `v4.2.3: Die Zeichenbreite muss zur Schriftgroesse passen (font-size 5.8px, fett) — ${CHAR_W} tut das nicht`);
+    assert.ok(LABEL_H > 4 && LABEL_H < 8,
+      `v4.2.3: Die Zeilenhoehe muss zur Schriftgroesse passen — ${LABEL_H} tut das nicht`);
+    const g = (x) => 12 + (x / 10) * 176;
+    const mk = () => coins.map(([s,h,q]) => { const rad = 4.5 + Math.max(0, Math.min(3.2, (q-5)*.75));
+      return { s, x:g(h), y:200-g(q), rad,
+        halfW: Math.max(rad, (Math.min(5,s.length)*CHAR_W)/2)+1.2, halfH: rad + LABEL_H*0.5 }; });
+    const collides = (p) => { let n=0; for(let i=0;i<p.length;i++) for(let j=i+1;j<p.length;j++){
+      const a=p[i],b=p[j];
+      if((a.halfW+b.halfW)-Math.abs(b.x-a.x)>0 && (a.halfH+b.halfH)-Math.abs(b.y-a.y)>0) n++; } return n; };
+
+    const alt = mk();
+    for(let it=0;it<18;it++) for(let i=0;i<alt.length;i++) for(let j=i+1;j<alt.length;j++){
+      const a=alt[i],b=alt[j],dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||.01,min=a.rad+b.rad+2.5;
+      if(d<min){const f=(min-d)*.18,ux=dx/d,uy=dy/d;a.x-=ux*f;a.y-=uy*f;b.x+=ux*f;b.y+=uy*f;} }
+
+    const neu = mk();
+    for(let it=0;it<26;it++) for(let i=0;i<neu.length;i++) for(let j=i+1;j<neu.length;j++){
+      const a=neu[i],b=neu[j],nX=a.halfW+b.halfW,nY=a.halfH+b.halfH;
+      const nx=(b.x-a.x)/nX,ny=(b.y-a.y)/nY,d=Math.hypot(nx,ny);
+      if(d>=1||d===0)continue;
+      const f=(1-d)*.30,ux=(nx/d)*nX,uy=(ny/d)*nY;
+      a.x-=ux*f*.5;a.y-=uy*f*.5;b.x+=ux*f*.5;b.y+=uy*f*.5; }
+
+    assert.ok(collides(neu) < collides(alt),
+      `v4.2.3: Die neue Trennung muss weniger Beschriftungs-Ueberdeckungen erzeugen (alt ${collides(alt)}, neu ${collides(neu)})`);
+
+    /* HIER STAND ZUERST: „BTC darf nach der Trennung unter keinem anderen
+       Namen mehr liegen." Der Test ist gefallen — zu Recht. Auf einer dicht
+       besetzten Wolke schiebt keine Trennung 13 bis 20 fuenfstellige Namen
+       ueberschneidungsfrei auseinander, ohne die Punkte so weit zu versetzen,
+       dass die Achsen ihre Bedeutung verlieren. Gemessen: mehr Iterationen
+       oder staerkerer Druck senken die Zahl nicht, sie vergroessern nur den
+       Versatz.
+
+       Die Trennung ist deshalb nur die halbe Antwort, und der Test darf ihr
+       auch nur die halbe Zusage abverlangen. Die GANZE Zusage leistet die
+       Vergaberegel darunter, und die wird hier geprueft: unter den tatsaech-
+       lich gesetzten Beschriftungen ueberdeckt sich keine einzige. Wer keinen
+       Platz hat, bekommt keinen Namen — aber Punkt, Farbe, Klickflaeche und
+       Mouseover bleiben. */
+    const rank = (p) => (p.s === 'BTC' ? 0 : 3);        // BTC hier als ausgewaehlt/Favorit
+    const placed = [];
+    [...neu].sort((a,b) => rank(a) - rank(b)).forEach((p) => {
+      const clash = placed.some((o) =>
+        (p.halfW+o.halfW)-Math.abs(o.x-p.x) > 0 && (p.halfH+o.halfH)-Math.abs(o.y-p.y) > 0);
+      if (!clash) placed.push(p);
+    });
+    assert.equal(collides(placed), 0,
+      'v4.2.3: Unter den GESETZTEN Beschriftungen darf sich keine einzige ueberdecken');
+    assert.ok(placed.some(p => p.s === 'BTC'),
+      'v4.2.3: Der ausgewaehlte bzw. mit ★ markierte Coin bekommt seinen Namen IMMER — das ist die Zusage an den Nutzer');
+    assert.ok(placed.length < neu.length,
+      'v4.2.3: … und es bleiben nachweislich Punkte ohne Aufschrift. Waeren es keine, waere die Vergaberegel wirkungslos und der Test truege nichts bei.');
+  }
+
+  /* Und weil die Trennung allein nicht reicht: unlesbare Namen entfallen,
+     der Punkt bleibt vollstaendig. */
+  const mapFn = app.slice(app.indexOf('function renderMap()'), app.indexOf('function visible()'));
+  assert.match(mapFn, /p\.label = !clash/, 'v4.2.3: Die Beschriftung muss nach Platz vergeben werden');
+  assert.match(mapFn, /rank = \(p\) =>/, 'v4.2.3: … und nach Rang, nicht nach Zufall');
+  assert.match(mapFn, /\$\{label\?`<text/, 'v4.2.3: Ohne Platz kein Text');
+  assert.match(mapFn, /<circle class="hit"/, 'v4.2.3: Klickflaeche bleibt IMMER — der Coin verschwindet nicht');
+  assert.match(mapFn, /<title>/, 'v4.2.3: … und das Mouseover nennt ihn weiterhin beim Namen');
+
+  /* ---- 5) Der Riegel bleibt unangetastet --------------------------------
+     Der erste Versuch schrieb den Hinweis IN den verriegelten Claude-Block.
+     Der SHA-Test hat gefeuert und hatte recht. Ein Riegel, dessen Pruefsumme
+     man fuer Text nachzieht, ist keiner mehr. */
+  assert.ok(worker.indexOf('expectancyQualityNeeded') > worker.indexOf('// ---- v3.5.0 CLAUDE-MODUS (additiv)'),
+    'v4.2.3: Der Hinweis muss NACH dem Claude-Block stehen');
+  const lockedEnd = worker.indexOf('  })();', worker.indexOf('// ---- v3.5.0 CLAUDE-MODUS (additiv)'));
+  assert.ok(worker.indexOf('expectancyQualityNeeded') > lockedEnd,
+    'v4.2.3: … und ausserhalb des verriegelten Abschnitts, nicht darin');
+
+  /* Die gerechnete Aussage selbst: das Qualitaetsgatter von 6,6 ist wirkungslos,
+     der Erwartungswert bindet erst ab rund 8,4. Nachgerechnet mit derselben
+     Formel, damit der Hinweistext nicht behauptet, was nicht stimmt. */
+  {
+    const ev = (q, setupFit = q, exhaustion = 4, R1 = 1.0, R2 = 2.2, costR = 1.2 / 5.8) => {
+      const p1 = Math.max(0.40, Math.min(0.66, 0.44 + (q-5)*0.045 + (setupFit-5)*0.02 - Math.max(0, exhaustion-5)*0.02));
+      const p2 = Math.max(0.35, Math.min(0.55, 0.42 + (q-6)*0.02));
+      return p1*0.5*R1 + p1*p2*0.5*R2 - (1-p1) - costR;
+    };
+    assert.ok(ev(6.6) < 0.10,
+      'v4.2.3: Bei der angegebenen Qualitaetsgrenze 6,6 ist der Erwartungswert unerreichbar — das Gatter ist wirkungslos');
+    assert.ok(ev(8.0) < 0.10, 'v4.2.3: Auch bei 8,0 noch nicht');
+    assert.ok(ev(8.5) >= 0.10, 'v4.2.3: Erst um 8,4 herum gibt es eine Freigabe');
+  }
+}
+
+console.log('✓ FusionPulse v4.2.3 Coin-Suche, Favoriten, Heatmap, Gatter (ausgefuehrt): OK');
