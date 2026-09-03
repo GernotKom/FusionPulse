@@ -326,7 +326,10 @@ console.log('✓ FusionPulse v3.5.1 deep-scan/quota regressions: OK');
   assert.match(app,/Number\(S\.minNetProfitStock\)===75[\s\S]*S\.minNetProfitStock=30/,'v3.5.3 must migrate the former 75-EUR default to a risk-calibrated reachable floor');
   assert.match(workerText,/const lifecycle=decelerating\?'LATE':ignition\?'IGNITION':prep\?'PREP'/,'Radar must model opportunity lifecycle states');
   assert.match(workerText,/NEU: \$\{prevSituation\} -> \$\{situation\}/,'Fresh state transitions must be explicitly visible in why-now reasons');
-  assert.match(workerText,/lifeBonus=life==='IGNITION'\?16:life==='PREP'\?10/,'Deep-scan maturity must prioritize ignition\/prep over late continuation');
+  // v4.1.5: Die Formel steht jetzt in maturityBreakdown() statt inline im
+  // Deep-Scan. Der Anspruch bleibt derselbe, die Leerzeichen duerfen sich
+  // aendern — die Werte selbst prueft der v4.1.5-Block ausgefuehrt nach.
+  assert.match(workerText,/lifeBonus\s*=\s*life\s*===\s*'IGNITION'\s*\?\s*16\s*:\s*life\s*===\s*'PREP'\s*\?\s*10/,'Deep-scan maturity must prioritize ignition\/prep over late continuation');
 }
 
 console.log('✓ FusionPulse v3.5.3 adaptive/target/economic regressions: OK');
@@ -867,7 +870,9 @@ console.log('✓ FusionPulse v3.6.1 coin-headline/heatmap/crowd/glossary regress
   // -- Im Fokusfenster sind die Begriffe einzeln markiert, nicht als ein Block.
   assert.match(app, /class="sf-tags"/, 'Die Kennzahlenzeile braucht eine eigene, erklaerbare Struktur');
   assert.match(app, /gl\('Score '\+num\(top\.score,1\),'score'\)/, 'Score im Fokus muss erklaert sein');
-  assert.match(app, /gl\('Reife '\+Math\.round\(top\.preSignalMaturity\)\+'%','maturity'\)/, 'Reife im Fokus muss erklaert sein');
+  // v4.1.5: aus „Reife %" wurde „Vorrang"; erklaert wird der Wert weiterhin,
+  // jetzt ueber maturityTag() mit offengelegter Zerlegung statt ueber gl(...,'maturity').
+  assert.match(app, /maturityTag\(top\)/, 'Der Vorrang im Fokus muss erklaert sein');
   assert.match(app, /glossForSituation\(top\.situationType\)/, 'Der Situationstyp im Fokus muss erklaert sein');
   assert.match(app, /gl\(top\.sector,'sectorTag'\)/, 'Die Branche im Fokus muss erklaert sein');
   assert.doesNotMatch(app, /<span>\$\{esc\(top\.sector\)\} · Score/, 'Die alte Zeile ohne Mouseover darf nicht zurueckkehren');
@@ -5281,10 +5286,12 @@ console.log('✓ FusionPulse v4.0.6 Plan-Alter / Coin-Link / Kartengeometrie (au
     'v4.1.0: Watchlist ohne Symbole muss auf Radar zurueckfallen — ein Scanner ohne Titel scannt nichts');
 
   /* Die Aenderungsschwelle ist der eigentliche Zeilensparer. Fehlt ein
-     Vergleichswert, MUSS geschrieben werden. */
+     Vergleichswert, MUSS geschrieben werden.
+     v4.1.6: die Entscheidung steht jetzt in snapshotWriteDecision() und wird
+     im 4.1.6-Block AUSGEFUEHRT geprueft, nicht mehr nur per Muster. */
   assert.match(w, /if\(opts\.onlyChanged\)\{/,
     'v4.1.0: Schreibfilter muss existieren');
-  assert.match(w, /const moved=!prev \|\| !\(prev\.price>0\) \|\| Math\.abs\(c\.price\/prev\.price-1\)\*100>=0\.15/,
+  assert.match(w, /const moved=!prev \|\| !\(prev\.price>0\) \|\| Math\.abs\(price\/prev\.price-1\)\*100>=0\.15/,
     'v4.1.0: unbekannter Zustand gilt als geaendert, nicht als unveraendert');
   assert.match(w, /onlyChanged:true/,
     'v4.1.0: der Cron muss den Schreibfilter im Watchlist-Modus auch benutzen');
@@ -5473,3 +5480,176 @@ console.log('✓ FusionPulse v4.1.3 Resolver-Schreibschleife (ausgefuehrt): OK')
 }
 
 console.log('✓ FusionPulse v4.1.4 Auslieferung Handbuch/Uebergabe (ausgefuehrt): OK');
+
+/* ══ v4.1.5 · DER VORRANG IST KEINE ZWEITE MEINUNG ══════════════════════════
+   Offener Punkt 4 der Uebergabe. Die Kachel „Reife %" stand neben Score, CRV
+   und Situation und las sich wie eine unabhaengige Bestaetigung — sie ist aber
+   ueberwiegend eine Umgewichtung genau dieser Zahlen. Wer zwei uebereinstimm-
+   ende Werte sieht, liest darin eine zweite Quelle; hier ist es dieselbe
+   Aussage zweimal, und das ist die gefaehrlichere Sorte Fehler, weil sie
+   Sicherheit erzeugt statt Unsicherheit.
+
+   DIE ZAHL DARF SICH NICHT AENDERN. Sie sortiert und schneidet die Titelliste
+   auf 100; eine neue Formel waere eine andere Auswahl ohne Beleg. Der Test
+   rechnet die Formel aus 4.1.4 unabhaengig nach und vergleicht ueber ein
+   Raster — das ist der eigentliche Beweis dieser Version. */
+{
+  const { maturityBreakdown } = await import('../src/worker.js');
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+
+  // -- Die Formel aus v4.1.4, woertlich abgeschrieben. Bewusst DUPLIZIERT:
+  //    ein Test, der dieselbe Funktion aufruft, koennte keine Drift sehen.
+  const alt = (row, life) => {
+    const q=Math.max(0,Math.min(10,Number(row.score)||0)),crv=Math.max(0,Number(row.netCRV)||0),
+          rv=Math.max(0,Number(row.relVol)||0),sit=Math.max(0,Math.min(100,Number(row.situationScore)||0));
+    const lifeBonus=life==='IGNITION'?16:life==='PREP'?10:life==='CONFIRM'?6:life==='LATE'?-14:0;
+    const triggerProx=row.triggerDistancePct==null?0:Math.max(0,10-Math.min(10,Math.abs(Number(row.triggerDistancePct))*12));
+    return Math.round(Math.max(0,Math.min(100,q/8*38 + Math.min(1,crv/3)*20 + Math.min(1,rv/1.8)*10 + sit*0.18 + lifeBonus + triggerProx)));
+  };
+
+  let faelle = 0;
+  for (const score of [0, 3.2, 6.5, 8, 9.7, 10])
+  for (const netCRV of [0, 1.4, 2.9, 3.35, 7])
+  for (const relVol of [0, 0.9, 1.8, 4.2])
+  for (const situationScore of [0, 37, 99])
+  for (const triggerDistancePct of [null, 0, 0.35, 1.2, -0.8])
+  for (const life of ['WATCH','PREP','IGNITION','CONFIRM','LATE']) {
+    const row = { score, netCRV, relVol, situationScore, triggerDistancePct };
+    const b = maturityBreakdown(row, life);
+    assert.strictEqual(b.value, alt(row, life),
+      `v4.1.5: der Vorrang hat sich veraendert (${JSON.stringify(row)} / ${life}) — die Umstellung darf NUR die Beschriftung betreffen`);
+    // Die Zerlegung muss den Wert erklaeren, nicht nur begleiten.
+    const rekonstruiert = Math.max(0, Math.min(100, b.echo + b.fresh));
+    assert.ok(Math.abs(rekonstruiert - b.value) <= 1,
+      `v4.1.5: „bekannt + neu" (${b.echo}+${b.fresh}) rekonstruiert den Vorrang ${b.value} nicht`);
+    faelle++;
+  }
+  assert.ok(faelle >= 1000, `v4.1.5: das Raster muss breit sein, gepruefte Faelle: ${faelle}`);
+
+  // -- Der neue Teil ist wirklich der neue Teil: ohne Phase und ohne
+  //    Auslesernaehe darf NICHTS uebrig bleiben, was nicht schon dasteht.
+  const neutral = maturityBreakdown({score:8,netCRV:3.4,relVol:2,situationScore:50,triggerDistancePct:null},'WATCH');
+  assert.strictEqual(neutral.fresh, 0, 'v4.1.5: ohne Phase und ohne Auslesernaehe darf der „neue" Anteil 0 sein');
+  assert.ok(maturityBreakdown({score:8,netCRV:3.4,relVol:2,situationScore:50},'LATE').fresh < 0,
+    'v4.1.5: LATE muss den Vorrang senken duerfen — sonst waere die Phase folgenlos');
+
+  // -- BEFUND, der die Umbenennung ueberhaupt rechtfertigt: der CRV-Anteil
+  //    steht am Deckel, sobald netCRV >= 3. Die Zielgeometrie ist fest
+  //    (tp2 = entry + 3,35 · risk), also gilt das fuer nahezu jede Zeile.
+  const crvNiedrig = maturityBreakdown({score:0,netCRV:3.0,relVol:0,situationScore:0},'WATCH').echo;
+  const crvHoch    = maturityBreakdown({score:0,netCRV:9.9,relVol:0,situationScore:0},'WATCH').echo;
+  assert.strictEqual(crvNiedrig, crvHoch,
+    'v4.1.5: der CRV-Anteil ist ab CRV 3 konstant — genau das muss die Erklaerung sagen duerfen');
+
+  // -- Die Oberflaeche darf die alte Behauptung nicht mehr aufstellen.
+  assert.doesNotMatch(app, /Reife '\+Math\.round\(top\.preSignalMaturity\)/,
+    'v4.1.5: die alte Beschriftung „Reife %" darf nicht zurueckkehren');
+  assert.doesNotMatch(app, /Reife \$\{Math\.round\(r\.preSignalMaturity\)\}%/,
+    'v4.1.5: auch die Listenzeile darf nicht auf „Reife %" zurueckfallen');
+  assert.match(C.gloss('maturity'), /KEINE ZWEITE MEINUNG/,
+    'v4.1.5: die Erklaerung muss ausdruecklich sagen, dass der Wert keine unabhaengige Bestaetigung ist');
+  assert.match(C.gloss('maturity'), /kein Kaufsignal/,
+    'v4.1.5: die Klarstellung aus v3.6.3 darf dabei nicht verlorengehen');
+
+  // -- AUSGEFUEHRT: die Anzeige selbst.
+  const mitZerlegung = C.maturityTag({preSignalMaturity:78, maturityEcho:62, maturityFresh:16});
+  assert.match(mitZerlegung.label, /^Vorrang 78 · 62 bekannt \+ 16 neu$/,
+    `v4.1.5: die Zerlegung muss in der Beschriftung stehen, war: "${mitZerlegung.label}"`);
+  assert.match(C.maturityTag({preSignalMaturity:40, maturityEcho:54, maturityFresh:-14}).label, /54 bekannt − 14 neu/,
+    'v4.1.5: ein negativer Phasenanteil muss als Abzug lesbar sein, nicht als Zugewinn');
+
+  // -- FAIL-CLOSED: eine Zeile aus einem persistierten Scan vor 4.1.5 hat die
+  //    Felder nicht. Dann wird nichts nachgerechnet und nichts behauptet.
+  const ohne = C.maturityTag({preSignalMaturity:78});
+  assert.strictEqual(ohne.label, 'Vorrang 78',
+    'v4.1.5: ohne gelieferte Zerlegung darf keine erfunden werden');
+  assert.match(ohne.detail, /nicht verfügbar/,
+    'v4.1.5: die fehlende Zerlegung muss benannt werden, nicht verschwiegen');
+  assert.doesNotMatch(ohne.label, /bekannt|neu/,
+    'v4.1.5: aus einer fehlenden Zerlegung darf keine Zahl entstehen');
+  assert.strictEqual(C.maturityTag({}), null, 'v4.1.5: ohne Vorrang keine Kachel');
+
+  // -- Die Zerlegung muss den Weg bis zur Zeile finden, sonst greift oben
+  //    dauerhaft der Rueckfallzweig und niemand merkt es.
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url),'utf8');
+  assert.match(worker, /row\.maturityEcho\s*=\s*mb\.echo/, 'v4.1.5: der bekannte Anteil muss an der Zeile haengen');
+  assert.match(worker, /row\.maturityFresh\s*=\s*mb\.fresh/, 'v4.1.5: der neue Anteil muss an der Zeile haengen');
+  assert.doesNotMatch(worker, /q\/8\*38 \+ Math\.min\(1,crv\/3\)\*20[\s\S]{0,40}lifeBonus/,
+    'v4.1.5: die Formel darf nur noch an EINER Stelle stehen');
+}
+
+console.log('✓ FusionPulse v4.1.5 Vorrang statt Reife (ausgefuehrt): OK');
+
+/* ══ v4.1.6 · DIE SCHWELLE HING NUR AN EINEM VON FUENF SCHREIBPFADEN ════════
+   Befund aus zwei Dashboard-Aufnahmen vom 03.09. (06:55 und 09:03 UTC): die
+   100.000 Schreibzeilen waren schon vor dem Deploy von 4.1.4 verbraucht, der
+   Rest des Tages ist ein Rinnsal hinter einem geschlossenen Kontingent. Der
+   Effekt von 4.1.3 ist damit noch gar nicht gemessen.
+
+   Beim Nachsehen fiel etwas anderes auf, das nicht gemessen werden muss, weil
+   es im Code steht: `onlyChanged` war NUR im Watchlist-Zweig verdrahtet. Der
+   Radar-Deep-Scan, Krypto, Opening und Twelve Data schrieben unveraendert
+   weiter — also gerade die Pfade, die im Radar-Modus laufen, und Radar ist der
+   Ausfallzustand von `readWatchlist`. Die Schwelle war seit 4.1.0 vorhanden,
+   getestet und wirkungslos, sobald der Nutzer nicht ausdruecklich umgeschaltet
+   hatte.
+
+   Vorbedingung dafuer war der Schluessel des Memos: er bestand nur aus dem
+   Symbol. Fuer einen einzigen Pfad reicht das; sobald Aktie und Muenze
+   denselben Ticker tragen koennen, unterdrueckt die eine die andere.        */
+{
+  const { snapshotWriteDecision } = await import('../src/worker.js');
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url),'utf8');
+
+  // -- AUSGEFUEHRT: unbekannt schreibt, unveraendert nicht, Bewegung wieder.
+  const t = 1_760_000_000_000;
+  assert.strictEqual(snapshotWriteDecision('Tiingo IEX','stock','AAA',100,'green',t).write, true,
+    'v4.1.6: ein unbekannter Zustand ist kein unveraenderter — er MUSS geschrieben werden');
+  assert.strictEqual(snapshotWriteDecision('Tiingo IEX','stock','AAA',100.05,'green',t).write, false,
+    'v4.1.6: 0,05 % ist unter der Schwelle und darf keine Zeile kosten');
+  assert.strictEqual(snapshotWriteDecision('Tiingo IEX','stock','AAA',100.2,'green',t).write, true,
+    'v4.1.6: 0,2 % liegt ueber der Schwelle und muss geschrieben werden');
+  assert.strictEqual(snapshotWriteDecision('Tiingo IEX','stock','AAA',100.2,'yellow',t).write, true,
+    'v4.1.6: ein Ampelwechsel muss auch ohne Kursbewegung schreiben');
+
+  /* -- Die Vergleichsbasis ist der zuletzt GESCHRIEBENE Zustand, nicht der
+        zuletzt gesehene. Sonst waere jeder Einzelschritt unter der Schwelle
+        und ein Titel koennte beliebig weit laufen, ohne je erfasst zu werden.
+        Drei Schritte zu je rund 0,05 %: die ersten beiden schweigen, der
+        dritte muss ausloesen, weil er von 100 aus 0,16 % entfernt ist. */
+  snapshotWriteDecision('Tiingo IEX','stock','DRIFT',100,'green',t);       // setzt die Basis
+  assert.strictEqual(snapshotWriteDecision('Tiingo IEX','stock','DRIFT',100.05,'green',t).write, false,
+    'v4.1.6: 0,05 % darf nicht schreiben');
+  assert.strictEqual(snapshotWriteDecision('Tiingo IEX','stock','DRIFT',100.10,'green',t).write, false,
+    'v4.1.6: 0,10 % ab der Basis darf immer noch nicht schreiben');
+  assert.strictEqual(snapshotWriteDecision('Tiingo IEX','stock','DRIFT',100.16,'green',t).write, true,
+    'v4.1.6: die Basis muss der zuletzt GESCHRIEBENE Zustand sein — sonst summieren sich beliebig viele Schritte unter der Schwelle zu nichts');
+
+  // -- Der Schluessel: gleicher Ticker, andere Anlageklasse = anderer Eintrag.
+  const s1 = snapshotWriteDecision('Tiingo IEX','stock','LINK',20,'green',t);
+  const c1 = snapshotWriteDecision('Bitpanda Fusion','coin','LINK',20,'green',t);
+  assert.strictEqual(s1.write, true, 'v4.1.6: die Aktie muss geschrieben werden');
+  assert.strictEqual(c1.write, true,
+    'v4.1.6: die Muenze darf NICHT durch die gleichnamige Aktie unterdrueckt werden');
+  assert.notStrictEqual(s1.key, c1.key, 'v4.1.6: die Schluessel muessen sich unterscheiden');
+  assert.match(s1.key, /stock/, 'v4.1.6: der Schluessel muss die Anlageklasse tragen');
+  assert.match(c1.key, /Bitpanda/, 'v4.1.6: der Schluessel muss die Quelle tragen');
+
+  // -- Und dieselbe Quelle/Klasse teilt sich weiterhin einen Eintrag, sonst
+  //    waere die Schwelle wirkungslos.
+  assert.strictEqual(snapshotWriteDecision('Tiingo IEX','stock','LINK',20.01,'green',t).write, false,
+    'v4.1.6: derselbe Titel aus derselben Quelle darf sich den Vergleichswert teilen');
+
+  /* -- JEDER Schreibpfad des Crons traegt die Schwelle. Das ist der Kern
+        dieser Version: ein vorhandener, getesteter Filter, der an vier von
+        fuenf Stellen nicht angeschlossen war. */
+  const aufrufe = [...worker.matchAll(/await d1StoreRows\(env,[^;]*?\);/g)].map(m=>m[0]);
+  assert.ok(aufrufe.length >= 5, `v4.1.6: es muessen alle Schreibpfade gefunden werden, gefunden: ${aufrufe.length}`);
+  for(const a of aufrufe){
+    assert.match(a, /onlyChanged:true/,
+      `v4.1.6: dieser Schreibpfad umgeht die Aenderungsschwelle: ${a.slice(0,110)}`);
+  }
+}
+
+console.log('✓ FusionPulse v4.1.6 Schreibschwelle auf allen Pfaden (ausgefuehrt): OK');

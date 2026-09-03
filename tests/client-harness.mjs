@@ -149,6 +149,10 @@ export function loadClient(overrides = {}) {
      Genau diese Luecke hat drei Fehlversionen durchgelassen. Ein Muster im
      Quelltext beweist, dass etwas dasteht — nicht, dass es das Richtige tut. */
   crvGeometry, crvGeometryRow,
+  /* v4.1.5: Die Zerlegung des Vorrangs muss AUSGEFUEHRT prueffbar sein — vor
+     allem der Fall ohne Zerlegung (Zeilen aus einem Scan vor 4.1.5). Ein
+     Regex im Quelltext koennte nicht zeigen, dass dort nichts erfunden wird. */
+  maturityTag,
   /* v3.32.10 · Twin-Auswertung. Der lokale Zweig zaehlte auf die alte
      5-%-Marke, der D1-Zweig auf 2,04 % — dieselbe Kachel bedeutete je nach
      Quelle etwas anderes. Das ist nur AUSGEFUEHRT nachweisbar. */

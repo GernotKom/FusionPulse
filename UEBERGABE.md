@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 03.09.2026, Version **4.1.4**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 03.09.2026, Version **4.1.6**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -86,6 +86,42 @@ Dazu die Schreibschwelle `opts.onlyChanged` in `d1StoreRows`: ein Snapshot wird 
 ### 4.1.4 · Handbuch und Übergabe werden mitgeliefert
 Neue Auslieferungsregel (siehe Kapitel 0). `scripts/build-handbuch.py` erzeugt `docs/FusionPulse_Handbuch.pdf` aus `package.json` (Version) und `public/app.js` (Glossar, 72 Einträge). Neue npm-Befehle `handbuch` und `release`. Der Testlauf prüft, dass beide Dokumente vorhanden sind, dass die Version gelesen statt eingetippt wird, dass der Bau bei kaputtem Glossar-Parsing abbricht — und dass die vier Deploy-Fallen (`src/worker.js`, Free-Plan, `sync-version`, `package-lock.json`) in dieser Übergabe stehen.
 
+### 4.1.5 · „Reife %" hieß, als wäre sie eine zweite Meinung
+Erledigt offenen Punkt 4 der 4.1.4-Übergabe. Die Kachel stand neben Score, CRV und Situation und las sich wie eine unabhängige Bestätigung. Sie ist aber der **Sortierschlüssel** — sie entscheidet die Reihenfolge und den Schnitt auf 100 Titel, sonst nichts.
+
+**Die Zahl ist bitgenau unverändert.** Eine neue Formel wäre eine andere Titelauswahl ohne Beleg gewesen. Geändert wurde nur, was der Wert behauptet: `maturityBreakdown(row, lifecycle)` in `src/worker.js` (exportiert, eine Stelle statt inline) liefert zusätzlich `echo` und `fresh`; die Oberfläche zeigt über `maturityTag()` „Vorrang 78 · 62 bekannt + 16 neu" statt „Reife 78 %".
+
+**Fail-closed:** Zeilen aus einem persistierten Scan vor 4.1.5 tragen die Aufteilung nicht. Sie wird dann **weggelassen und nicht im Client nachgerechnet** — eine zweite Formel im Browser wäre genau die stille Zweitwahrheit, die beim Glossar bereits beseitigt wurde.
+
+**Zwei Befunde aus der Zerlegung, die vorher nicht sichtbar waren.** Die alte Formulierung „dieselben Größen wie im Score" war zu milde:
+1. **Der CRV-Term ist praktisch eine Konstante.** `tp2 = entry + 3,35 · risk` ist feste Geometrie, das Brutto-CRV also *immer* 3,35; abgezogen werden nur Kosten. `min(1, crv/3)` steht damit bei nahezu jedem Kandidaten am Deckel — 20 Punkte, die die Skala anheben und nichts unterscheiden. Der Test hält das fest: CRV 3,0 und CRV 9,9 ergeben denselben Anteil.
+2. **Das Volumen zählt doppelt.** `relVol` ist im Score bereits mit 20 % enthalten (`volScore`) und bekommt hier weitere 10 Punkte.
+
+Von 100 Punkten tragen realistisch nur Phase (−14 bis +16) und Auslöserabstand (0 bis 10) etwas bei, das nicht schon daneben steht. **Das ist ein Kandidat für eine echte Formeländerung — aber erst, wenn es einen Beleg gibt, welche Rangfolge besser trifft.** Bis dahin bleibt die Zahl, wie sie ist, und sagt nur ehrlicher, was sie ist.
+
+Nebenbefund miterledigt: „Reife" hieß auch der Bestätigungs-Streak in der Coin-Zeile — zwei verschiedene Dinge, ein Wort. Umbenannt in „Bestätigungen".
+
+### 4.1.6 · Die Schwelle hing an einem von fünf Schreibpfaden
+**Ausgangspunkt waren zwei Dashboard-Aufnahmen vom 03.09.** (06:55 und 09:03 UTC). Die Rekonstruktion gegen den Reset um 00:00 UTC:
+
+| | Schreiben | Lesen | Abfragen |
+|---|---|---|---|
+| Mittel bis 06:55 UTC | 247/min | 2.699/min | 77/min |
+| zwischen den Aufnahmen (128 min) | **7,8/min** | 156/min | 9,5/min |
+| tragfähig für 24 h | 69/min | 3.472/min | — |
+
+Die späte Rate über die 385 Minuten seit 00:30 UTC erklärt 3.008 Zeilen; beobachtet wurden 2.670. Das passt, und daraus folgt der eigentliche Befund: **die 100.000 Zeilen waren in den ersten ~30 Minuten nach dem Reset verbraucht — 3.333/min, exakt der 4.1.3-Befund.** Zu diesem Zeitpunkt lief noch der alte Code; 4.1.4 ging erst um 05:20 UTC live.
+
+**Daraus folgt, was diese Zahlen NICHT zeigen: ob 4.1.3 wirkt.** Das Kontingent war vor dem Deploy erschöpft, alles danach ist ein Rinnsal hinter einer geschlossenen Tür. Die erste belastbare Messung ist der nächste Reset. Das Rinnsal von 7,8/min bei geschlossenem Kontingent zeigt übrigens, dass Cloudflare nicht hart abriegelt, sondern durchsickern lässt — verlässlich ist die Sperre trotzdem.
+
+**Was beim Nachsehen auffiel und nicht gemessen werden muss, weil es im Code steht:** `opts.onlyChanged` war seit 4.1.0 vorhanden, getestet — und **nur im Watchlist-Zweig verdrahtet**. Radar-Deep-Scan, Krypto, Opening und Twelve Data schrieben unverändert weiter. Radar ist der Ausfallzustand von `readWatchlist`, also lief die Schwelle bei jedem Nutzer ins Leere, der nicht ausdrücklich umgeschaltet hatte. Jetzt tragen alle fünf Pfade sie; ein Test läuft über **alle** `d1StoreRows`-Aufrufe und fällt beim ersten ohne Schwelle.
+
+**Nebenwirkung auf der Leseseite, die den Aufwand mit rechtfertigt:** greift die Schwelle, kehrt `d1StoreRows` vor der `LIMIT 3000`-Abfrage zurück. Ein übersprungener Schreibvorgang spart damit auch bis zu 3.000 gelesene Zeilen.
+
+**Vorbedingung war der Schlüssel des Memos.** `snapshotWriteMemo` war nur nach Symbol geschlüsselt. Für einen einzigen Pfad reicht das; sobald Krypto dazukommt, wären „LINK" die Aktie und „LINK" die Münze derselbe Eintrag und die eine unterdrückte den Schreibvorgang der anderen. Der Schlüssel trägt jetzt Quelle und Anlageklasse — dieselbe Zusammensetzung wie der UNIQUE-Index von `market_snapshots`. Die Entscheidung selbst steht in `snapshotWriteDecision()` und ist damit ausgeführt prüfbar.
+
+**Der Zähler maß die falsche Seite.** Seit 3.32.9 wies `/api/health` nur `readShareOfFreeLimit` aus. Gerissen ist zweimal das *Schreib*-Limit — die Kennzahl, die die App angehalten hat, stand nirgends, und „Lesequote 22 %" liest sich dabei wie Entwarnung. Neu: `freeLimitRowsWritten`, `writeShareOfFreeLimit`, `atLeastRowsWrittenPerMin` neben `sustainableRowsWrittenPerMin` (69,4), `atLeastProjectedRowsWritten`, `writeBudgetMinutesLeft` und `writeBudgetHoldsToday`. Gerechnet wird gegen 00:00 UTC, nicht gegen die Ortszeit. Alle Projektionsfelder heißen `atLeast…`, weil die Eigenmessung `.first()`-Abfragen nicht erfasst und deshalb eine **Untergrenze** bleibt.
+
 ## 3. Verifikation
 
 `node --check` auf `src/worker.js`, `public/app.js`, `public/sw.js`; alle sechs Suiten grün (`safety`, `coinscope`, `provider`, `bandwidth`, `d1`, `sw`). Zusätzlich `npx wrangler deploy --dry-run` mit Wrangler 4.128.0 — derselbe Schritt, an dem der Build gescheitert war: sauber, keine Warnungen, `env.APP_VERSION ("4.0.6")`.
@@ -94,19 +130,47 @@ Neue ausgeführte Regressionstests in `tests/safety-regression.mjs`:
 - **v4.0.2 Gap-Bezugstag** — mit den echten MRNA-Zahlen (154,27 statt 137,40; `gapPct ≈ −2,2`), nicht mit runden Platzhaltern.
 - **v4.0.6 Plan-Alter / Coin-Link / Kartengeometrie** — `planFreshness` wird ausgeführt, nicht per Regex gesucht; `bitpandaUrl()` wird gegen erfundene Paar-Pfade geprüft; die CSS-Geometrie beider Karten wird verglichen und die alte feste Höhe ausdrücklich ausgeschlossen.
 
-Dafür exportiert `src/worker.js` zusätzlich `alpacaPrevClose` und `momentumFromAlpaca`; `tests/client-harness.mjs` reicht `planFreshness`, `bitpandaUrl`, `bitpandaTitle`, `googleFinanceUrl` durch.
+- **v4.1.5 Vorrang statt Reife** — 3.000 Rasterfälle vergleichen `maturityBreakdown` gegen eine **bewusst duplizierte** wörtliche Abschrift der 4.1.4-Formel. Die Duplikation ist der Punkt: ein Test, der dieselbe Funktion aufruft, könnte keine Drift sehen. Dazu Rekonstruktion `echo + fresh ≈ value`, der CRV-Deckel-Befund, der negative Phasenanteil als Abzug, und der Fail-closed-Fall ohne gelieferte Zerlegung.
+
+- **v4.1.6 Schreibschwelle und Schreibbudget** — `snapshotWriteDecision` ausgeführt: unbekannt schreibt, 0,05 % nicht, 0,2 % wieder, Ampelwechsel auch ohne Kursbewegung. Die Vergleichsbasis ist der zuletzt **geschriebene** Zustand, nicht der zuletzt gesehene (drei Schritte zu 0,05 % lösen beim dritten aus, weil er von der Basis aus 0,16 % entfernt ist). Aktie und Münze mit demselben Ticker erhalten getrennte Einträge. Ein Durchlauf über **alle** `d1StoreRows`-Aufrufe im Worker fällt beim ersten ohne `onlyChanged`. Der Zähler wird in `tests/d1-usage.mjs` (NK60/NK61) gegen einen festen Ablesezeitpunkt gerechnet, unter `TZ=Europe/Vienna` und `TZ=America/Chicago` geprüft.
+
+**Negativkontrollen zu 4.1.6**, alle fünf haben gefeuert und wurden zurückgesetzt:
+- `onlyChanged` im Radar-Pfad entfernt → der Durchlauf über die Schreibpfade fällt.
+- Memo-Schlüssel zurück auf nur das Symbol → die Münze wird von der gleichnamigen Aktie unterdrückt, der Test fällt.
+- Vergleichsbasis bei verworfenem Abruf mitwandern lassen → die Schwellentests fallen.
+- Hochrechnung auf feste 1.440 Minuten statt verstrichener Zeit → NK60 fällt.
+- `writeBudgetHoldsToday` fest auf `true` → NK61 fällt.
+
+Dafür exportiert `src/worker.js` zusätzlich `alpacaPrevClose`, `momentumFromAlpaca`, `maturityBreakdown` und `snapshotWriteDecision`; `tests/client-harness.mjs` reicht `planFreshness`, `bitpandaUrl`, `bitpandaTitle`, `googleFinanceUrl` und `maturityTag` durch.
+
+**Negativkontrollen zu 4.1.5** (Regel 6 aus dem README), alle drei haben gefeuert und wurden zurückgesetzt:
+- Koeffizient `q/8*38` → `q/8*39` im Worker → der Rastertest fällt („der Vorrang hat sich verändert").
+- `const split = true` im Client erzwungen → der Fail-closed-Test fällt („ohne gelieferte Zerlegung darf keine erfunden werden").
+- `row.maturityEcho=mb.echo` entfernt → der Verdrahtungstest fällt („der bekannte Anteil muss an der Zeile hängen").
+
+Eine ältere Regex-Zusicherung auf die Inline-Formel (`safety-regression.mjs`, Zeile 329) musste leerzeichentolerant werden, weil die Formel jetzt in einer Funktion steht. Der Anspruch bleibt derselbe; die Werte prüft der 4.1.5-Block ausgeführt nach.
 
 ## 4. Offene Punkte
 
 1. **Der Aktienfeed liefert während der Sitzung nicht.** Am 02.09. um 11:05 ET, mitten im regulären Handel, war die neueste Zeile 19 Stunden alt; Kopfzeile „Letzter guter Stand · Reconnect läuft", Aktien-Lampe gelb. Das ist die eigentliche Störung — die Anzeigefixes behandeln nur das Symptom. **Zuerst `/api/health` aufrufen und `bandwidth` ansehen.** Verdacht: das Tiingo-Bandbreitenkontingent (40 GB), das am 30.08. schon mit HTTP 429 zugemacht hat. Der `d1`-Zweig derselben Antwort liefert seit 4.0.5 wieder echte Zahlen statt `true`.
 2. **Tiingo-`prevClose` auf denselben Fehler prüfen wie Alpaca.** `iexRadarQuote` (~Zeile 6713) nimmt `x.prevClose ?? x.previousClose`. Ob Tiingo dieselbe Rollover-Eigenheit im Premarket hat, lässt sich nur mit einem echten Abruf zwischen 04:00 und 09:30 ET belegen, nicht aus dem Code. Offen, nicht behauptet.
 3. **Kaltstart-Lücke im Premarket.** `analyseStock` braucht ≥24 Fünf-Minuten-Bars; IEX bildet 04:00–08:00 ET kaum ab. Ohne analysierbare Bars bleibt `rows` leer, und `persistStockScan` schreibt bei leerem Array nichts. Bewusst nicht angefasst — ein künstlicher Seed wäre eine Zahl ohne Deckung. Seit 4.0.1 ist das Symptom entschärft, weil der Vortagesstand sichtbar bleibt.
-4. **„Reife %" ist keine zweite Meinung.** `preSignalMaturity` summiert Score, CRV, RVOL, Situationsscore und Lebenszyklus-Bonus — dieselben Größen, die auch in den Score eingehen. Die Kachel liest sich wie eine unabhängige Bestätigung, ist aber dieselbe Aussage doppelt. Kandidat für eine ehrlichere Beschriftung.
-5. **Bandbreite gegen den echten Kontostand prüfen**, nicht gegen `/api/health`. Die Eigenmessung ist eine *untere* Schranke; am 02.09. zeigte der reale Tiingo-Stand das 3,3-fache.
+4. **Bandbreite gegen den echten Kontostand prüfen**, nicht gegen `/api/health`. Die Eigenmessung ist eine *untere* Schranke; am 02.09. zeigte der reale Tiingo-Stand das 3,3-fache.
+5. **Der Vorrang wäre auch inhaltlich zu verbessern** — nachgezogen aus dem erledigten Punkt 4. Die Beschriftung ist seit 4.1.5 ehrlich, die Formel bleibt schwach: der CRV-Term unterscheidet fast nichts (siehe 4.1.5), das Volumen zählt doppelt. Eine bessere Rangfolge wäre denkbar, **aber sie braucht einen Beleg** — welche Reihenfolge trifft im Nachhinein besser? Die Daten dafür liegen in `snapshots` (Modul 0, `/api/attribution`). Ohne diese Auswertung wäre jede neue Gewichtung nur eine andere Meinung, und die Titelauswahl änderte sich ohne Grund.
+
+6. **Die erste belastbare Messung der Schreibrate steht noch aus.** Alles bis 03.09. ist unbrauchbar, weil das Kontingent vor dem Deploy von 4.1.3/4.1.4 erschöpft war (siehe 4.1.6). Der nächste Reset um 00:00 UTC ist der erste ehrliche Lauf. Seit 4.1.6 beantwortet die App das selbst: `/api/health` → `d1` → `atLeastRowsWrittenPerMin` gegen `sustainableRowsWrittenPerMin` (69,4) und `writeBudgetHoldsToday`. Fällt die Rate nicht deutlich unter die 3.333/min vom 03.09., wirkt 4.1.3 nicht und der nächste Schritt ist `topQueries` im selben Zweig — der Zähler weist seit 3.32.9 nach Abfrageform aus, welche Form verbraucht.
+7. **`d1StoreSnapshotRow` und `d1UpdateOutcomes` haben keinen Aufrufer mehr.** Gefunden bei der 4.1.6-Analyse. `d1UpdateOutcomes` trägt eine eigene `LIMIT 500`-Abfrage **pro Symbol** und liest wie ein zweiter, lebender Auflöser neben `d1StoreRows` — genau die Sorte Fund, die beim nächsten Bandbreitenproblem falsch verdächtigt wird. Bewusst nicht gelöscht: totes Entfernen ist eine eigene Änderung mit eigenem Risiko, und die Suite deckt diesen Pfad nicht ab. Vor dem Löschen prüfen, ob die Aufrufer wirklich alle weg sind (`grep -n 'd1StoreSnapshotRow('`).
+
+**Erledigt in 4.1.5:** der frühere Punkt 4 („Reife %" liest sich wie eine zweite Meinung).
+**Erledigt in 4.1.6:** die Änderungsschwelle greift auf allen fünf Schreibpfaden, nicht nur im Watchlist-Zweig.
 
 ## 5. Kosten und Cloudflare-Plan
 
-Aktuell **Workers Free**: es gibt keine Abrechnung, bei Erreichen der Limits wird abgewiesen. Kostenrisiko null — aber am 02.09. wurde das tägliche D1-Schreiblimit gerissen, weshalb der Watchlist-Modus aus 4.1.0 entstanden ist. Auf Paid wären 50 Mio. Writes/Monat enthalten; der Betrieb liegt bei geschätzt 6–9 Mio., also bei 15–18 % des Enthaltenen. Die Rechnung bliebe bei 5 $.
+Aktuell **Workers Free**: es gibt keine Abrechnung, bei Erreichen der Limits wird abgewiesen. Kostenrisiko null — aber am 02.09. wurde das tägliche D1-Schreiblimit gerissen, weshalb der Watchlist-Modus aus 4.1.0 entstanden ist.
+
+**Korrektur in 4.1.6 zur bisherigen Aufstiegsrechnung.** Hier stand, der Betrieb liege bei geschätzt 6–9 Mio. Writes/Monat und damit bei 15–18 % der auf Paid enthaltenen 50 Mio. **Diese Zahl war nie gemessen.** Die einzige tatsächlich gemessene Rate ist die vom 03.09.: 3.333 geschriebene Zeilen pro Minute. Ungebremst hochgerechnet sind das rund 144 Mio. pro Monat — knapp das Dreifache des Enthaltenen, und auf Paid würde die Überschreitung ohne Rückfrage abgerechnet. Ob 4.1.3 und 4.1.6 das auf ein tragfähiges Maß drücken, ist noch nicht gemessen (offener Punkt 6).
+
+**Praktische Folge: vor dem Aufstieg auf Paid erst die echte Rate messen.** Auf Free ist ein Fehler ein Stillstand, auf Paid ist derselbe Fehler eine Rechnung — und genau diese Sorte Schreibschleife ist in dieser App innerhalb einer Woche zweimal aufgetreten. Der Reihenfolge nach: erst eine saubere Tagesmessung unter 69 Zeilen/min, dann der `limits`-Block, dann der Aufstieg.
 
 Bei einem Upgrade auf Workers Paid (5 USD Mindestgebühr) wird Überschreitung **automatisch abgerechnet, ohne Rückfrage**. Budget-Alerts sind ausdrücklich nur informativ und deckeln nichts. Die einzigen harten Bremsen sind der auskommentierte `limits`-Block (`cpu_ms` deckelt Rechenzeit, `subrequests` deckelt Zugriffe — letzteres ist die wichtigere, weil D1-Wartezeit nicht zur CPU-Zeit zählt) und strukturell der Minutentakt des Crons: rund 43.200 Aufrufe im Monat.
 

@@ -1206,7 +1206,31 @@ let stockMemo = { ts: 0, rows: [], cycle: -1, sig: '' };
    kostet. Faellt das Lesen aus, gilt `radar` — der bisherige Zustand. Ein
    Fehler darf niemals still in einen eingeschraenkten Scan kippen, sonst
    verschwinden Titel ohne erkennbaren Grund. */
-const snapshotWriteMemo=new Map();   // v4.1.0: letzter geschriebener Zustand je Symbol
+/* v4.1.0: letzter geschriebener Zustand je Titel.
+   v4.1.6 · DER SCHLUESSEL WAR NUR DAS SYMBOL. Solange die Schwelle allein im
+   Watchlist-Zweig hing, fiel das nicht auf — dort gibt es genau eine Quelle und
+   genau eine Anlageklasse. Ab 4.1.6 greift sie auch fuer Krypto, Opening und
+   Radar, und dann waere „LINK" die Aktie und „LINK" die Muenze derselbe
+   Eintrag: die eine Bewegung wuerde den Schreibvorgang der anderen
+   unterdruecken, und in der Lernschicht fehlte eine Beobachtung, die niemand
+   vermisst, weil sie nie protokolliert wurde. Der Schluessel traegt deshalb
+   Quelle und Anlageklasse mit — dieselbe Zusammensetzung wie der UNIQUE-Index
+   von `market_snapshots`. */
+const snapshotWriteMemo=new Map();
+const snapshotMemoKey=(source,assetType,symbol)=>`${source}|${assetType}|${symbol}`;
+/* Die Entscheidung selbst, damit sie AUSGEFUEHRT prueffbar ist statt nur per
+   Regex sichtbar. Sie merkt sich den neuen Zustand nur, wenn sie zum Schreiben
+   raet — sonst driftete die Vergleichsbasis mit jedem verworfenen Abruf mit,
+   und aus vielen Bewegungen unter 0,15 % wuerde nie eine ueber 0,15 %. */
+function snapshotWriteDecision(source,assetType,symbol,price,light,now=Date.now()){
+  const key=snapshotMemoKey(source,assetType,String(symbol||'').toUpperCase());
+  const prev=snapshotWriteMemo.get(key);
+  const moved=!prev || !(prev.price>0) || Math.abs(price/prev.price-1)*100>=0.15;
+  const flipped=!prev || String(prev.light||'')!==String(light||'');
+  const write=moved||flipped;
+  if(write) snapshotWriteMemo.set(key,{price,light:light||'',ts:now});
+  return {write,key,reason:!prev?'unbekannt':moved?'bewegt':flipped?'ampel':'unveraendert'};
+}
 let watchlistMemo={ts:0,mode:'radar',symbols:[]};
 const WATCHLIST_KEY='focus:watchlist';
 function normalizeWatchlist(list){
@@ -2924,12 +2948,47 @@ async function d1MeterView(env, now=Date.now()){
     const acc = JSON.parse(row.value) || {};
     const top = Object.entries(acc.byQuery||{}).map(([k,v])=>({ query:k, ...v })).sort((a,b)=>b.r-a.r).slice(0,8);
     const paths = Object.entries(acc.byPath||{}).map(([k,v])=>({ path:k, ...v })).sort((a,b)=>b.r-a.r).slice(0,8);
-    return { day, measured:true, rowsRead:Number(acc.rowsRead)||0, rowsWritten:Number(acc.rowsWritten)||0,
+    const rowsRead=Number(acc.rowsRead)||0, rowsWritten=Number(acc.rowsWritten)||0;
+    /* ══ v4.1.6 · DIE GEMESSENE SEITE WAR DIE FALSCHE ═══════════════════════
+       Der Zaehler lief seit 3.32.9 und wies bisher nur die LESE-Quote aus.
+       Gerissen wurde aber zweimal das SCHREIB-Limit — am 02.09. und erneut am
+       03.09. um 00:30 UTC. Die Kennzahl, die zweimal die App angehalten hat,
+       stand nirgends.
+
+       Dazu die Hochrechnung. Ein Tagesstand allein beantwortet die einzige
+       wirklich interessante Frage nicht: reicht das Budget bis Mitternacht?
+       Das D1-Tagesfenster beginnt um 00:00 UTC, also wird gegen genau diesen
+       Nullpunkt gerechnet.
+
+       Beide Zahlen bleiben eine UNTERGRENZE — nicht messbare `.first()`-
+       Abfragen fehlen. Eine Hochrechnung, die unter dem Limit landet, ist
+       deshalb keine Entwarnung, sondern nur „nicht widerlegt". Die Felder
+       heissen entsprechend `atLeast...`, damit sich das nicht wegliest. */
+    const dayStart = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), new Date(now).getUTCDate());
+    const minutes = Math.max(1, (now - dayStart) / 60_000);
+    const wPerMin = rowsWritten / minutes, rPerMin = rowsRead / minutes;
+    const restMin = Math.max(0, 1440 - minutes);
+    return { day, measured:true, rowsRead, rowsWritten,
       queries:Number(acc.queries)||0, unmetered:Number(acc.unmetered)||0,
       freeLimitRowsRead: 5_000_000,
+      freeLimitRowsWritten: 100_000,
       /* Die Quote ist eine UNTERGRENZE: nicht messbare `.first()`-Abfragen
          fehlen darin. Sie darf nie als „noch viel Luft" gelesen werden. */
-      readShareOfFreeLimit: (Number(acc.rowsRead)||0) / 5_000_000,
+      readShareOfFreeLimit: rowsRead / 5_000_000,
+      writeShareOfFreeLimit: rowsWritten / 100_000,
+      minutesIntoUtcDay: Math.round(minutes),
+      atLeastRowsWrittenPerMin: Math.round(wPerMin * 10) / 10,
+      atLeastRowsReadPerMin: Math.round(rPerMin * 10) / 10,
+      sustainableRowsWrittenPerMin: Math.round(100_000 / 1440 * 10) / 10,
+      sustainableRowsReadPerMin: Math.round(5_000_000 / 1440 * 10) / 10,
+      atLeastProjectedRowsWritten: Math.round(rowsWritten + wPerMin * restMin),
+      atLeastProjectedRowsRead: Math.round(rowsRead + rPerMin * restMin),
+      /* Minuten bis zum Schreiblimit bei der aktuellen Rate. 0 = bereits
+         erreicht. Groesser als `writeBudgetMinutesLeftInDay` heisst: heute
+         nicht mehr. null = keine Rate messbar. */
+      writeBudgetMinutesLeft: wPerMin > 0 ? Math.max(0, Math.round((100_000 - rowsWritten) / wPerMin)) : null,
+      writeBudgetMinutesLeftInDay: Math.round(restMin),
+      writeBudgetHoldsToday: wPerMin > 0 ? (rowsWritten + wPerMin * restMin) <= 100_000 : true,
       complete: (Number(acc.unmetered)||0) === 0,
       topQueries: top, topPaths: paths, updatedTs: Number(row.updated_ts)||null };
   }catch{ return null; }
@@ -3315,10 +3374,8 @@ async function d1StoreRows(env, rows, opts={}){
   if(opts.onlyChanged){
     const kept=[];
     for(const c of clean){
-      const prev=snapshotWriteMemo.get(c.symbol);
-      const moved=!prev || !(prev.price>0) || Math.abs(c.price/prev.price-1)*100>=0.15;
-      const flipped=!prev || String(prev.light||'')!==String(c.row?.light||'');
-      if(moved||flipped){ kept.push(c); snapshotWriteMemo.set(c.symbol,{price:c.price,light:c.row?.light||'',ts:now}); }
+      const d=snapshotWriteDecision(source,assetType,c.symbol,c.price,c.row?.light,now);
+      if(d.write) kept.push(c);
     }
     if(!kept.length) return;
     clean.length=0; clean.push(...kept);
@@ -6198,7 +6255,7 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
   if(env.FUSION_API_KEY && cryptoMinute){
     try{
       const snap=await getSnapshot(env,{},true);
-      await d1StoreRows(env,snap.rows||[],{source:'Bitpanda Fusion',assetType:'coin',now});
+      await d1StoreRows(env,snap.rows||[],{source:'Bitpanda Fusion',assetType:'coin',now,onlyChanged:true});
       await persistCoinLive(env,snap.rows||[]);
       setApiState('crypto','ok'); await persistApiState(env,'crypto','ok',`${snap.rows?.length||0} Rows`,now);
     }catch(e){
@@ -6210,7 +6267,7 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
   if(!cryptoMinute && env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY&&minsET>=480&&minsET<=1020&&phase.key!=='closed'){
     try{
       const op=await openingMomentum(env,true);
-      if(Math.floor(now/60_000)%5===0) await d1StoreRows(env,op.rows||[],{source:alpacaFeed(env)==='sip'?'Alpaca SIP':'Alpaca IEX',assetType:'opening',now});
+      if(Math.floor(now/60_000)%5===0) await d1StoreRows(env,op.rows||[],{source:alpacaFeed(env)==='sip'?'Alpaca SIP':'Alpaca IEX',assetType:'opening',now,onlyChanged:true});
       setApiState('alpaca','ok',`${op.rows?.length||0} Rows`);
       await persistApiState(env,'alpaca','ok',`${op.rows?.length||0} Rows`,now);
     }catch(e){
@@ -6277,7 +6334,7 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
     }else if(stockMinute%2===0){
       try{
         const st=await tiingoStockSnapshot(env,false,new Set(ALL_ON),3,[],'server');
-        await d1StoreRows(env,st.rows||[],{source:'Tiingo IEX',assetType:'stock',now});
+        await d1StoreRows(env,st.rows||[],{source:'Tiingo IEX',assetType:'stock',now,onlyChanged:true});
         setApiState('stocks','ok',`${st.rows?.length||0} Rows · Radar ${st.discovery?.radar?.universe||0}`);
         await persistApiState(env,'stocks','ok',`${st.rows?.length||0} Rows · Radar ${st.discovery?.radar?.universe||0}`,now);
       }catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('stocks',state,e?.message);}
@@ -6285,7 +6342,7 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
   } else if(!cryptoMinute && !primaryStocks && env.TWELVE_API_KEY && stockMinute%10===1){
     try{
       const st=await stockSnapshot(env,false,new Set(ALL_ON),3);
-      await d1StoreRows(env,st.rows||[],{source:'Twelve Data',assetType:'stock',now});
+      await d1StoreRows(env,st.rows||[],{source:'Twelve Data',assetType:'stock',now,onlyChanged:true});
       setApiState('stocks','ok',`${st.rows?.length||0} Rows`);
       await persistApiState(env,'stocks','ok',`${st.rows?.length||0} Rows`,now);
     }catch(e){const state=classifyError(e);setApiState('stocks',state,e?.message);await persistApiState(env,'stocks',state,e?.message,now);cronLog('stocks',state,e?.message);}
@@ -7168,6 +7225,49 @@ function deepRecheckRank(r){
   // v3.4.3: SituationScore priorisiert, WANN erneut hingesehen wird; Elliott/Qualitaet/CRV entscheiden weiterhin, OB ein Trade freigegeben werden kann.
   return ell*18 + score*6 + Math.min(18,sit*0.18) + Math.min(26,Math.max(0,crv-1)*7) + Math.min(14,Math.max(0,rv-1)*5) + Math.min(10,Math.max(0,ret15)*1.5) + Math.min(12,Math.max(0,structure));
 }
+/* ══ v4.1.5 · Der Vorrang sagt, was er ist ══════════════════════════════════
+   Bis 4.1.4 hiess dieser Wert „Reife %" und stand als eigene Kachel neben dem
+   Score. Er las sich damit wie eine zweite, unabhaengige Meinung — ist aber zu
+   82 von 100 Punkten eine Umgewichtung derselben Zahlen, die daneben ohnehin
+   stehen: Score (38), CRV (20), RVOL (10), Situation (18). Nur die restlichen
+   Punkte tragen etwas bei, das nirgends sonst steht: die Lebenszyklus-Phase
+   des Radars (-14 bis +16) und der Abstand zum Auslesepunkt (0 bis 10).
+
+   ZWEI BEFUNDE AUS DER ZERLEGUNG, die vorher nicht sichtbar waren:
+   · Der CRV-Term ist praktisch eine Konstante. `netCRV` entsteht aus einer
+     festen Geometrie (tp2 = entry + 3,35 · risk), das Brutto-CRV ist damit
+     IMMER 3,35; abgezogen werden nur Kosten. `min(1, crv/3)` steht deshalb
+     bei fast jedem Kandidaten am Deckel — 20 Punkte, die die Skala anheben
+     und nichts unterscheiden.
+   · Der RVOL-Term ist im Score bereits mit 20 % enthalten (`volScore`).
+     Dieselbe Groesse zaehlt hier ein zweites Mal.
+
+   GEAENDERT WIRD DIE ZAHL NICHT. Sie ist Sortierschluessel im Worker (Top 100)
+   und in der Oberflaeche; eine neue Formel waere eine andere Titelauswahl ohne
+   Beleg. Geaendert wird nur, was der Wert BEHAUPTET: Beschriftung, Erklaerung
+   und die offengelegte Zerlegung in „schon bekannt" und „neu".
+
+   `echo`  — Anteil aus Groessen, die der Nutzer daneben ohnehin sieht.
+   `fresh` — Anteil aus Phase und Auslesernaehe; kann negativ sein (LATE).
+   Beide sind gerundete Anzeigewerte; `value` bleibt bitgenau die alte Formel. */
+function maturityBreakdown(row, lifecycle) {
+  const q   = Math.max(0, Math.min(10,  Number(row?.score)          || 0));
+  const crv = Math.max(0,              Number(row?.netCRV)         || 0);
+  const rv  = Math.max(0,              Number(row?.relVol)         || 0);
+  const sit = Math.max(0, Math.min(100, Number(row?.situationScore) || 0));
+  const life = String(lifecycle ?? row?.radarLifecycle ?? 'WATCH');
+  const lifeBonus = life==='IGNITION' ? 16 : life==='PREP' ? 10 : life==='CONFIRM' ? 6 : life==='LATE' ? -14 : 0;
+  const td = row?.triggerDistancePct;
+  const triggerProx = td==null ? 0 : Math.max(0, 10 - Math.min(10, Math.abs(Number(td)) * 12));
+  const echoRaw  = q/8*38 + Math.min(1, crv/3)*20 + Math.min(1, rv/1.8)*10 + sit*0.18;
+  const freshRaw = lifeBonus + triggerProx;
+  return {
+    value: Math.round(Math.max(0, Math.min(100, echoRaw + freshRaw))),
+    echo:  Math.round(echoRaw),
+    fresh: Math.round(freshRaw),
+    lifecycle: life,
+  };
+}
 async function tiingoIexSeries(env,symbol){
   const start=new Date(Date.now()-36*60*60_000).toISOString().slice(0,10);
   const path=`/iex/${encodeURIComponent(symbol)}/prices?startDate=${start}&resampleFreq=5min&columns=open,high,low,close,volume`;
@@ -7531,13 +7631,15 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       const rm=radarMap.get(sym),bm=boatsMap.get(sym);
       if(rm){ row.discovery={type:'iex-radar',...rm,buyWeight:0}; row.securityVerified=rm.securityVerified===true; row.securityName=rm.securityName||row.name; row.companyDescription=rm.companyDescription||''; row.exchange=rm.exchange||''; }
       else if(bm){ row.discovery={type:'boats',...bm,buyWeight:0}; row.securityVerified=bm.securityVerified===true; row.securityName=bm.securityName||row.name; row.companyDescription=bm.companyDescription||''; row.exchange=bm.exchange||''; }
-      const q=Math.max(0,Math.min(10,Number(row.score)||0)),crv=Math.max(0,Number(row.netCRV)||0),rv=Math.max(0,Number(row.relVol)||0),sit=Math.max(0,Math.min(100,Number(row.situationScore)||0));
-      // Reife bleibt reine Vorwarnung: Situation kann frueh Aufmerksamkeit erzeugen,
-      // aber weder Score noch CRV noch BUY-Gates verbessern.
+      // Der Vorrang bleibt reine Vorwarnung und Reihenfolge: Situation kann frueh
+      // Aufmerksamkeit erzeugen, aber weder Score noch CRV noch BUY-Gates verbessern.
+      // v4.1.5: eine Funktion, drei Felder — die Zahl ist unveraendert, ihre
+      // Herkunft ist ab jetzt offengelegt (siehe maturityBreakdown).
       const life=String(rm?.lifecycle||'WATCH');
-      const lifeBonus=life==='IGNITION'?16:life==='PREP'?10:life==='CONFIRM'?6:life==='LATE'?-14:0;
-      const triggerProx=row.triggerDistancePct==null?0:Math.max(0,10-Math.min(10,Math.abs(Number(row.triggerDistancePct))*12));
-      row.preSignalMaturity=Math.round(Math.max(0,Math.min(100,q/8*38 + Math.min(1,crv/3)*20 + Math.min(1,rv/1.8)*10 + sit*0.18 + lifeBonus + triggerProx)));
+      const mb=maturityBreakdown(row,life);
+      row.preSignalMaturity=mb.value;
+      row.maturityEcho=mb.echo;
+      row.maturityFresh=mb.fresh;
       row.whyNow=[...(rm?.reasons||[]),...(row.situationReasons||[])].filter(Boolean).slice(0,5);
       row.radarRank=Number(rm?.situationScore??rm?.score)||0;
       row.radarSituation=rm?.situation||null;
@@ -7639,7 +7741,7 @@ async function tiingoStockLookup(env,raw,comp,minCrv=3,force=false){
   stockLookupMemo.set(info.symbol,{ts:Date.now(),row});const old=new Map(stockMemo.rows.map(r=>[r.symbol,r]));old.set(row.symbol,row);stockMemo.rows=[...old.values()].sort((a,b)=>b.score-a.score).slice(0,80);
   return {configured:true,state:'ok',cached:false,lookup:true,row,source:'Tiingo IEX',provider:'Tiingo',version:APP_VERSION};
 }
-export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation, alpacaPrevClose, momentumFromAlpaca };
+export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation, alpacaPrevClose, momentumFromAlpaca, maturityBreakdown, snapshotWriteDecision };
 
 export default {
   async fetch(request, env, ctx) {

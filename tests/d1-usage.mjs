@@ -350,3 +350,78 @@ console.log('✓ FusionPulse v3.32.9 D1-Zaehler/Telemetrie (ausgefuehrt): OK');
 }
 
 console.log('✓ FusionPulse v3.32.10 R3 Aufloeser (ausgefuehrt): OK');
+
+/* ── NK60 · v4.1.6 · Der Zaehler mass die falsche Seite ─────────────────────
+   Seit 3.32.9 wies die Bilanz nur `readShareOfFreeLimit` aus. Gerissen wurde
+   aber zweimal das SCHREIB-Limit: am 02.09. und erneut am 03.09. um 00:30 UTC.
+   Die Kennzahl, die die App zweimal angehalten hat, stand nirgends — und
+   „Lesequote 22 %" liest sich dabei wie Entwarnung.
+
+   Dazu die Hochrechnung gegen das D1-Tagesfenster (00:00 UTC). Ein Tagesstand
+   allein beantwortet nicht, ob das Budget bis Mitternacht reicht; genau das
+   ist aber die einzige Frage, die zaehlt.                                    */
+{
+  D.reset();
+  const { db } = fakeDb({ rowsRead: 10 });
+  const env = { DB: D.d1Wrap(db) };
+  /* `d1MeterStart` stempelt mit Date.now(); der Tagesschluessel kommt also
+     vom HEUTIGEN UTC-Datum. Der Ablesezeitpunkt muss deshalb im selben Tag
+     liegen — sonst prueft der Test an einem Datumswechsel etwas anderes als
+     an jedem anderen Tag. Sechs Stunden in den UTC-Tag hinein = 360 Minuten. */
+  const d = new Date();
+  const t6 = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 6, 0, 0);
+  D.d1MeterStart('/cron');
+  for (let i = 0; i < 30; i++) await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)').bind('k'+i, 'v', t6).run();
+  await D.d1MeterFlush(env, '/cron');
+  const v = await D.d1MeterView(env, t6);
+
+  assert.equal(v.freeLimitRowsWritten, 100_000,
+    'NK60: das Schreiblimit gehoert neben die geschriebenen Zeilen — es ist das, was zweimal gerissen ist');
+  assert.ok(v.writeShareOfFreeLimit > 0,
+    'NK60: die Schreibquote muss ausgewiesen werden, nicht nur die Lesequote');
+  assert.equal(v.minutesIntoUtcDay, 360,
+    `NK60: gerechnet wird gegen 00:00 UTC, nicht gegen die Ortszeit (war ${v.minutesIntoUtcDay})`);
+
+  // Die Hochrechnung muss aus der VERSTRICHENEN Zeit kommen, nicht geraten sein.
+  const erwartet = Math.round(v.rowsWritten / 360 * 1440);
+  assert.equal(v.atLeastProjectedRowsWritten, erwartet,
+    `NK60: die Hochrechnung muss ${erwartet} sein, war ${v.atLeastProjectedRowsWritten}`);
+  assert.ok(v.atLeastRowsWrittenPerMin > 0, 'NK60: die Rate gehoert dazu, sonst ist die Projektion nicht nachrechenbar');
+  assert.equal(v.sustainableRowsWrittenPerMin, 69.4,
+    'NK60: der tragfaehige Takt (100.000/1440) gehoert danebengestellt, sonst fehlt der Massstab');
+}
+
+/* ── NK61 · Die Projektion muss auch NEIN sagen koennen ─────────────────────
+   Eine Kennzahl, die nur beruhigen kann, ist keine. Bei einer Rate, die das
+   Tageslimit reisst, muss `writeBudgetHoldsToday` falsch werden und die
+   Restlaufzeit endlich sein. */
+{
+  D.reset();
+  const { db } = fakeDb({ rowsRead: 1 });
+  const env = { DB: D.d1Wrap(db) };
+  const d1 = new Date();
+  const t1 = Date.UTC(d1.getUTCFullYear(), d1.getUTCMonth(), d1.getUTCDate(), 1, 0, 0);  // 60 Minuten im Tag
+  D.d1MeterStart('/cron');
+  // 60 Minuten, 20.000 Zeilen = 333/min. Tragfaehig waeren 69/min.
+  for (let i = 0; i < 20_000; i++) await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)').bind('k', 'v', t1).run();
+  await D.d1MeterFlush(env, '/cron');
+  const v = await D.d1MeterView(env, t1);
+
+  assert.equal(v.rowsWritten, 20_000, `NK61: Vorbedingung, waren ${v.rowsWritten}`);
+  assert.strictEqual(v.writeBudgetHoldsToday, false,
+    'NK61: 333 Zeilen/min reissen das Tageslimit — die Bilanz MUSS das sagen');
+  assert.ok(v.writeBudgetMinutesLeft > 0 && v.writeBudgetMinutesLeft < v.writeBudgetMinutesLeftInDay,
+    `NK61: die Restlaufzeit muss vor Tagesende liegen, war ${v.writeBudgetMinutesLeft} von ${v.writeBudgetMinutesLeftInDay}`);
+  assert.equal(v.writeBudgetMinutesLeft, 240,
+    `NK61: bei 333/min und 80.000 Rest sind es 240 Minuten, waren ${v.writeBudgetMinutesLeft}`);
+
+  /* Die Bilanz bleibt eine UNTERGRENZE. Ein „haelt heute" darf deshalb nie
+     wie eine Zusage klingen — die Felder heissen `atLeast…`, und die
+     Unvollstaendigkeit steht weiterhin daneben. */
+  assert.ok('complete' in v && 'unmetered' in v,
+    'NK61: die Unvollstaendigkeit muss neben der Projektion sichtbar bleiben');
+  assert.ok(Object.keys(v).some(k => k.startsWith('atLeast')),
+    'NK61: die Projektionsfelder muessen sich als Untergrenze zu erkennen geben');
+}
+
+console.log('✓ FusionPulse v4.1.6 Schreibbudget und Hochrechnung (ausgefuehrt): OK');

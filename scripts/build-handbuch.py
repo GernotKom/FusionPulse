@@ -196,10 +196,10 @@ toc = [
         'Frische-Kennzeichnungen', 'Grenzen und Kontingente']),
     ('8', 'Wenn etwas nicht stimmt', [
         'Keine Aktien sichtbar', 'Plan auf altem Kurs', 'Springende Heatmap',
-        'Umschalten schlägt fehl', 'Version ändert sich nicht']),
+        'Umschalten schlägt fehl', 'Lerngedächtnis steht', 'Version ändert sich nicht']),
     ('9', 'Glossar', [
         'Setup-Typen', 'Bausteine der Analyse', 'Geld und Risiko',
-        'Qualität und Reife', 'Daten und Betrieb']),
+        'Qualität und Vorrang', 'Daten und Betrieb']),
     ('10', 'Sicherheitsregeln der App', []),
 ]
 for num, title, subs in toc:
@@ -375,15 +375,37 @@ BOX('„PLAN AUF ALTEM KURS"', [
 ], warn=True)
 
 H3('Die Bewertungszeile')
-P('Eine Zeile wie <i>„Discovery · Score 8,0 · Reife 100 % · Situation PULLBACK HOLD '
-  '73/100 · Phase IGNITION"</i>.')
+P('Eine Zeile wie <i>„Discovery · Score 8,0 · Vorrang 86 · 70 bekannt + 16 neu · '
+  'Situation PULLBACK HOLD 73/100 · Phase IGNITION"</i>.')
 G('score'); G('maturity'); G('situationScore'); G('lifecyclePhase')
-BOX('Ein ehrlicher Hinweis zur „Reife"', [
-    'Die Reife ist <b>keine unabhängige zweite Meinung</b>. Sie summiert Score, '
-    'Chance-Risiko-Verhältnis, Relativvolumen, Situationsscore und Lebenszyklus-Bonus — '
-    'also weitgehend dieselben Größen, die schon in den Score eingehen. Ein hoher Score '
-    'zieht eine hohe Reife fast zwangsläufig nach sich. Lesen Sie beide Zahlen als eine '
-    'Aussage, nicht als zwei.',
+BOX('Warum der Vorrang seit v4.1.5 aufgeteilt dasteht', [
+    'Bis v4.1.4 hieß dieser Wert <b>„Reife %"</b> und stand als eigene Kachel neben dem '
+    'Score. Damit las er sich wie eine unabhängige Bestätigung — und genau das ist er '
+    'nicht. Er entscheidet ausschließlich über die <b>Reihenfolge</b>: welche Titel oben '
+    'stehen und welche hundert überhaupt behalten werden.',
+
+    '86 seiner 100 Punkte sind eine Umgewichtung von Zahlen, die in derselben Zeile '
+    'ohnehin stehen: Score (38 Punkte), Chance-Risiko-Verhältnis (20), Relativvolumen '
+    '(10), Situationsscore (18). Nur die Lebenszyklus-Phase (−14 bis +16) und der '
+    'Abstand zum Auslösepunkt (0 bis 10) tragen etwas bei, das nirgends sonst steht. '
+    'Deshalb wird der Wert seit v4.1.5 aufgeteilt angezeigt: <i>„70 bekannt + 16 neu"</i>.',
+
+    'Zwei Dinge, die diese Zerlegung sichtbar gemacht hat und die Sie kennen sollten. '
+    '<b>Erstens:</b> Der CRV-Anteil ist praktisch eine Konstante. Die Zielgeometrie ist '
+    'fest (zweites Ziel = Einstieg + 3,35 × Risiko), das Brutto-CRV ist damit immer 3,35 '
+    'und der Anteil steht bei fast jedem Kandidaten am Deckel — 20 Punkte, die die Skala '
+    'anheben und nichts unterscheiden. <b>Zweitens:</b> Das Volumen zählt doppelt, es '
+    'steckt mit 20 % bereits im Score.',
+
+    '<b>Praktisch heißt das:</b> Ein hoher Vorrang neben einem hohen Score sind nicht '
+    'zwei Stimmen, sondern eine. Und ein hoher Vorrang ist kein Kaufsignal und kein '
+    'Fortschrittsbalken in Richtung Freigabe — er heißt nur, dass dieser Titel zuerst '
+    'angesehen wird.',
+
+    'Steht in einer Zeile nur <i>„Vorrang 86"</i> ohne Aufteilung, stammt sie aus einem '
+    'gespeicherten Durchlauf von vor v4.1.5. Die Aufteilung wird dann '
+    '<b>weggelassen und nicht nachgerechnet</b> — eine im Browser nachgerechnete Zahl '
+    'wäre eine zweite, stille Wahrheit neben der des Servers.',
 ])
 
 H2('Premarket / Opening')
@@ -623,6 +645,28 @@ P('Der Watchlist-Modus wird serverseitig gespeichert und braucht dafür genau ei
   'nennt die App den Grund ausdrücklich, statt einen Fehlschlag als Umschaltung zu melden. '
   'Abhilfe: bis nach Mitternacht (UTC) warten.')
 
+H2('Das Lerngedächtnis steht — nichts wird mehr gespeichert')
+P('Die Oberfläche läuft weiter, aber es kommen keine neuen Auswertungen dazu. Das ist '
+  'fast immer das tägliche Schreiblimit der Datenbank. Es setzt sich um <b>00:00 UTC</b> '
+  'zurück, also um 2 Uhr mitteleuropäischer Sommerzeit — nicht um Mitternacht Ortszeit.')
+P('Nachsehen lässt sich das seit v4.1.6 in der App selbst. Der Abschnitt <i>d1</i> unter '
+  '<i>/api/health</i> nennt vier Zahlen, die zusammen die ganze Antwort geben:')
+BUL([
+    '<b>writeShareOfFreeLimit</b> — wie viel des Tagesbudgets bereits verbraucht ist.',
+    '<b>atLeastRowsWrittenPerMin</b> — der aktuelle Takt, daneben steht mit '
+    '<b>sustainableRowsWrittenPerMin</b> der Takt, den ein ganzer Tag verträgt (rund 69).',
+    '<b>writeBudgetMinutesLeft</b> — wie lange das Budget bei diesem Takt noch reicht.',
+    '<b>writeBudgetHoldsToday</b> — ob es bis Mitternacht UTC trägt.',
+])
+BOX('Warum diese Zahlen eine Untergrenze sind', [
+    'Die App misst ihren eigenen Verbrauch, aber nicht lückenlos: Abfragen, die genau eine '
+    'Zeile holen, liefern keine Messwerte zurück und fehlen in der Summe. Alle '
+    'Projektionsfelder heißen deshalb <b>atLeast…</b>, und daneben steht <b>complete</b>. '
+    'Ein „hält heute" ist also nicht widerlegt, aber auch nicht zugesagt — der echte '
+    'Verbrauch liegt immer bei oder über dem gemessenen. Maßgeblich bleibt der Kontostand '
+    'im Cloudflare-Dashboard.',
+])
+
 H2('Die Version ändert sich nach einer Aktualisierung nicht')
 P('Vergleichen Sie die beiden Nummern in der Kopfzeile. Sind beide alt, wurde nichts '
   'ausgeliefert. Ist nur die linke alt, hält Ihr Browser die alte Oberfläche fest — ein '
@@ -645,7 +689,7 @@ groups = [
     ('Geld, Größe und Risiko',
      ['crv','rewardRisk','planEff','rMultiple','expectancy','notional','sizeModeRisk',
       'sizeModeFixed','stopDistance','maxLoss','slippage','spread','tradeModeA']),
-    ('Qualität, Reife und Lebenszyklus',
+    ('Qualität, Vorrang und Lebenszyklus',
      ['score','maturity','situationScore','lifecyclePhase']),
     ('Markt, Daten und Betrieb',
      ['fearGreed','contrarian','breadth','dataFreshness','quoteAge','tradingHours',
