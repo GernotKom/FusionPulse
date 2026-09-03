@@ -1,0 +1,56 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "fusionpulse",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-08-23",
+  "assets": { "directory": "./public", "binding": "ASSETS" },
+
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+
+  /* v4.0.5 · DEAKTIVIERT — BELEGT DURCH DAS BUILD-PROTOKOLL VOM 02.09.
+     Der Deploy scheiterte reproduzierbar am versions-Endpunkt:
+       „CPU limits are not supported for the Free plan" [code: 100328]
+     Ein `limits`-Block ist auf dem Free-Plan nicht erlaubt — auch nicht der
+     Subrequest-Teil, das ganze Feld wird abgelehnt. Die Zeile blieb drei
+     Versionen lang drin und hat jeden Build gekillt, waehrend die App
+     unveraendert weiterlief und dadurch voellig normal aussah.
+
+     WIEDER EINSCHALTEN, sobald auf Workers Paid umgestellt ist. Beide Werte
+     sind dann sinnvoll und wurden bereits durchgerechnet:
+       cpu_ms      30000 · deckelt RECHENZEIT. Cron-Trigger duerfen sonst bis
+                           zu 15 Minuten CPU ziehen — Faktor 30 gegen einen
+                           Amoklauf. Der schwerste Job (Whole-Market-Radar,
+                           ~11 MB JSON ranken) bleibt weit darunter.
+       subrequests  1000 · deckelt ZUGRIFFE und ist die wichtigere der beiden.
+                           Wartezeit auf fetch(), KV oder D1 zaehlt NICHT zur
+                           CPU-Zeit; eine Schleife, die Millionen Zeilen nach
+                           D1 schreibt, verbraucht fast keine CPU und liefe am
+                           CPU-Deckel vorbei. Jede D1-Query ist aber ein
+                           Subrequest. Der Cron liegt mit ~150 weit darunter.
+     Auf dem Free-Plan braucht es sie ohnehin nicht: dort wird nicht
+     abgerechnet, sondern bei Erreichen der Limits schlicht abgewiesen.
+
+  "limits": { "cpu_ms": 30000, "subrequests": 1000 },
+  */
+
+  // Nur Diagnose. Die verbindliche Version steht in src/version.js und wird
+  // von scripts/sync-version.mjs aus package.json hierher gespiegelt.
+  "vars": { "APP_VERSION": "4.1.4", "ALPACA_FEED": "iex", "TIINGO_STOCKS_MODE": "primary" },
+
+  // v3.2: Cron läuft jede Minute. Im Worker selbst wird gedrosselt:
+  // Krypto 5-minütig, Alpaca im Opening-Fenster, Aktien-Learning im Primary-Modus über Tiingo.
+  "triggers": { "crons": ["* * * * *"] },
+
+  // Cloudflare Wrangler >=4.45 kann D1 beim Deploy automatisch provisionieren.
+  // Das Binding ist im Worker als env.DB verfügbar. Die Tabellen werden in
+  // v3.0 beim ersten Zugriff per CREATE TABLE IF NOT EXISTS initialisiert.
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "fusionpulse-learning",
+    "database_id": "4c63a0fd-d478-46b9-bf6a-e904bbbd738e",
+    "migrations_dir": "migrations"
+  }]
+
+  // Optional weiterhin möglich:
+  // "kv_namespaces": [{ "binding": "SNAP", "id": "<KV_NAMESPACE_ID>" }]
+}

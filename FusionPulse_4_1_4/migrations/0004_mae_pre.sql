@@ -1,0 +1,15 @@
+-- v3.21.0 · Gegenbewegung VOR dem Erreichen der wirtschaftlichen Schwelle.
+--
+-- min_pct ist das Minimum ueber das GANZE Lernfenster, auch nach dem Ziel.
+-- Damit liess sich die entscheidende Frage nicht beantworten: welchen Stop
+-- haette man gebraucht, um einen Gewinner zu BEHALTEN? Ein Titel, der +3 %
+-- lief und danach -5 % fiel, sah dort aus wie ein Katastrophentrade.
+--
+-- mae_pre laeuft mit, solange reach_ts NULL ist, und wird danach eingefroren.
+-- Erst damit laesst sich trennen zwischen "bewegt sich nicht weit genug" und
+-- "bewegt sich, schuettelt einen aber vorher heraus" — zwei voellig
+-- verschiedene Probleme mit verschiedenen Konsequenzen.
+--
+-- Nicht rueckwirkend fuellbar: der Kursverlauf zwischen den Aufzeichnungen ist
+-- nicht gespeichert. Der Worker zieht die Spalte beim Start selbst nach.
+ALTER TABLE market_snapshots ADD COLUMN mae_pre REAL;

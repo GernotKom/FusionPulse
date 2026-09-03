@@ -1,0 +1,27 @@
+{
+  "name": "fusionpulse",
+  "version": "4.1.4",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync-version": "node scripts/sync-version.mjs",
+    "predev": "npm run sync-version",
+    "dev": "wrangler dev",
+    "predeploy": "npm run sync-version",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "check": "node --check public/app.js && node --check src/worker.js && node --check public/sw.js && npm run test:safety && npm run test:coinscope && npm run test:provider && npm run test:bandwidth && npm run test:sw && npm run test:d1",
+    "test:safety": "node tests/safety-regression.mjs",
+    "audit:reach": "node tests/reachability-audit.mjs",
+    "test:sw": "node tests/sw-fault.mjs",
+    "test:coinscope": "node tests/coin-scope.mjs",
+    "test:provider": "node tests/provider-breadth.mjs",
+    "test:bandwidth": "node tests/bandwidth-feed.mjs",
+    "test:d1": "node tests/d1-usage.mjs",
+    "handbuch": "python3 scripts/build-handbuch.py",
+    "release": "npm run sync-version && npm run check && npm run handbuch"
+  },
+  "devDependencies": {
+    "wrangler": "^4.68.0"
+  }
+}
