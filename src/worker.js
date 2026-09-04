@@ -8374,6 +8374,10 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       row.maturityFresh=mb.fresh;
       row.whyNow=[...(rm?.reasons||[]),...(row.situationReasons||[])].filter(Boolean).slice(0,5);
       row.radarRank=Number(rm?.situationScore??rm?.score)||0;
+      /* v4.3.5 · Zeitstempel der Analyse. Ohne ihn laesst sich eine frisch
+         gemessene Zeile nicht von einer drei Tage mitgeschleppten
+         unterscheiden — und genau das war das Problem. */
+      row.analyzedTs=Date.now();
       row.radarSituation=rm?.situation||null;
       row.radarLifecycle=life;
       // v3.15.0: nur Kennzeichnung. Kein Score, kein Gate, keine Ampel haengt daran.
@@ -8412,7 +8416,42 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   }
   for(const r of fresh)safeCarry.set(r.symbol,r);
   // Hohe Radar-/Setup-Relevanz oben halten; Freshness-Gates bleiben unveraendert.
-  const rows=[...safeCarry.values()].sort((a,b)=>(Number(b.preSignalMaturity)||0)-(Number(a.preSignalMaturity)||0)||(Number(b.situationScore)||0)-(Number(a.situationScore)||0)||(Number(b.radarRank)||0)-(Number(a.radarRank)||0)||(Number(b.score)||0)-(Number(a.score)||0)).slice(0,100);
+  /* ══ v4.3.5 · DER RANG ALTERT, DER DATENSATZ NICHT ══════════════════════
+     BEFUND, ausgefuehrt gemessen: Bei 74 mitgeschleppten und 20 frisch
+     analysierten Zeilen schafft es KEINE EINZIGE frische Zeile in die
+     angezeigten zwoelf Punkte. Der beste frische Titel landet auf Rang 68.
+     Selbst einer mit Reife 6,5 kommt nur auf Rang 49 — die zwoelfte Zeile
+     hat 8,43.
+
+     Ursache ist eine Unwucht im Vergleich, nicht in den Zahlen: `safeCarry`
+     traegt jede je gesehene Katalogzeile unbegrenzt weiter, und sie behaelt
+     die Werte ihres LETZTEN GUTEN Standes — also aus einem Moment, in dem sie
+     stark genug war, um angezeigt zu werden. Ein neu analysierter Titel wird
+     dagegen mit den Zahlen von HEUTE bewertet, oft in einem ruhigen Markt.
+     Alt schlaegt neu, dauerhaft. Das ist die zweite, vom Cron unabhaengige
+     Ursache dafuer, dass die Karte immer gleich aussieht: selbst bei perfekt
+     laufendem Scan aendert sie sich nicht.
+
+     GEALTERT WIRD DAS RANGGEWICHT, NICHT DER DATENSATZ. Die Zeile bleibt
+     sichtbar und bleibt beschriftet — sie verliert nur ihren Vorrang. Bis
+     15 Minuten volles Gewicht, danach linear abfallend bis auf ein Viertel
+     nach sechs Stunden. Der Boden von 0,25 ist Absicht: er haelt die
+     Reihenfolge der alten Zeilen UNTEREINANDER stabil, sodass eine ruhende
+     Anzeige nicht zufaellig umspringt, waehrend jede frische Messung sie
+     ueberholen kann.
+
+     Was NICHT geaendert wird: die Reife selbst, die Kriterienfolge und alle
+     Gatter. Ein gealterter Rang macht keine Kauf-Freigabe und keinen Score. */
+  const RANK_GRACE_MS=15*60_000, RANK_DECAY_MS=6*3600_000, RANK_FLOOR=0.25;
+  const rankFreshness=(r)=>{
+    const t=Number(r?.analyzedTs);
+    if(!Number.isFinite(t)) return RANK_FLOOR;            // Herkunft unbekannt → Altbestand
+    const age=Math.max(0,Date.now()-t);
+    if(age<=RANK_GRACE_MS) return 1;
+    return Math.max(RANK_FLOOR, 1-(1-RANK_FLOOR)*Math.min(1,(age-RANK_GRACE_MS)/RANK_DECAY_MS));
+  };
+  const rankValue=(r)=>(Number(r?.preSignalMaturity)||0)*rankFreshness(r);
+  const rows=[...safeCarry.values()].sort((a,b)=>rankValue(b)-rankValue(a)||(Number(b.situationScore)||0)-(Number(a.situationScore)||0)||(Number(b.radarRank)||0)-(Number(a.radarRank)||0)||(Number(b.score)||0)-(Number(a.score)||0)).slice(0,100);
   applySectorLag(rows);   // v3.10.0 FIX: fehlte auf dem primaeren Pfad komplett
   /* v3.13.0 FIX: Der Deep-Scan hat NIE einen Live-Quote geholt — jede Zeile aus
      dem Scanner hatte `liveQuoteOk` undefiniert, die Oberflaeche zeigte deshalb

@@ -201,3 +201,97 @@ console.log('✓ FusionPulse v4.3.2 Grund fuer leeren Tiefenscan (ausgefuehrt): 
 }
 
 console.log('✓ FusionPulse v4.3.4 Leerer Scan meldet sich als Fehler (ausgefuehrt): OK');
+
+/* ══ v4.3.5 · DER RANG ALTERT, DER DATENSATZ NICHT ═════════════════════════
+   Die zweite, vom Cron unabhaengige Ursache dafuer, dass die Aktien-Heatmap
+   immer gleich aussieht. Gemessen mit der echten Sortierung:
+   Bei 74 mitgeschleppten und 20 frisch analysierten Zeilen schaffte es vor
+   4.3.5 KEINE EINZIGE frische Zeile in die zwoelf angezeigten Punkte. Der
+   beste frische Titel landete auf Rang 68.
+
+   Grund war eine Unwucht im Vergleich: `safeCarry` behaelt die Werte des
+   LETZTEN GUTEN Standes — aus einem Moment, in dem die Zeile stark genug war,
+   um angezeigt zu werden. Neu analysierte Titel werden mit den Zahlen von
+   HEUTE bewertet. Alt schlaegt neu, dauerhaft. */
+{
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const from = w.indexOf('  const RANK_GRACE_MS=');
+  const to = w.indexOf('  applySectorLag(rows);   // v3.10.0 FIX');
+  assert.ok(from > 0 && to > from, 'v4.3.5: Die Rangbildung muss auffindbar sein');
+  const sortiere = new Function('safeCarry', w.slice(from, to) + '\nreturn rows;');
+
+  const now = Date.now();
+  const mk = (praefix, n, alter, reifeVon, reifeBis) => {
+    let seed = 7;
+    const rnd = () => ((seed = seed * 16807 % 2147483647) - 1) / 2147483646;
+    return Array.from({ length: n }, (_, i) => ({
+      symbol: `${praefix}${i}`, frisch: alter === 0, analyzedTs: now - alter,
+      preSignalMaturity: reifeVon + rnd() * (reifeBis - reifeVon),
+      situationScore: 40 + rnd() * 50, radarRank: rnd() * 80, score: 5 + rnd() * 4,
+    }));
+  };
+  const lauf = (arr) => sortiere(new Map(arr.map((r) => [r.symbol, r])));
+
+  /* 1 · Drei Tage alt gegen frisch: die frischen muessen durchkommen. */
+  {
+    const alt = mk('ALT', 74, 3 * 86400_000, 4, 9);
+    const neu = mk('NEU', 20, 0, 1, 5);
+    const top12 = lauf([...alt, ...neu]).slice(0, 12);
+    assert.ok(top12.filter((r) => r.frisch).length >= 6,
+      `v4.3.5: Frisch analysierte Zeilen muessen sichtbar werden — es waren ${top12.filter((r) => r.frisch).length} von 12`);
+  }
+
+  /* 2 · INNERHALB einer Sitzung darf die Reihenfolge NICHT umkippen. Eine
+     Zeile von vor zwei Stunden mit klar besserer Reife muss vorn bleiben —
+     sonst waere aus der Alterung ein Zufallsgenerator geworden. */
+  {
+    const zweiStunden = mk('SESSION', 1, 2 * 3600_000, 8, 8)[0];
+    const frischSchwach = mk('JETZT', 1, 0, 5, 5)[0];
+    const r = lauf([zweiStunden, frischSchwach]);
+    assert.equal(r[0].symbol, 'SESSION0',
+      'v4.3.5: Innerhalb der Sitzung schlaegt die deutlich bessere Reife die blosse Frische');
+  }
+
+  /* 3 · Ruht der Scan, muss die Anzeige RUHEN. Ein Boden im Abschlag haelt
+     die Reihenfolge der alten Zeilen untereinander stabil — sonst spraenge
+     die Karte bei jedem Abruf um, ohne dass neue Daten da waeren. */
+  {
+    const alt = mk('ALT', 40, 3 * 86400_000, 4, 9);
+    const a = lauf(alt).slice(0, 12).map((r) => r.symbol).join(' ');
+    const b = lauf(alt).slice(0, 12).map((r) => r.symbol).join(' ');
+    assert.equal(a, b, 'v4.3.5: Ohne frische Zeilen muss die Reihenfolge stabil bleiben');
+
+    /* Die erste Fassung endete hier — und die Gegenprobe „Boden auf 0 setzen"
+       blieb gruen. Zu Recht: bei Boden 0 bekommen ALLE alten Zeilen den
+       Rangwert 0, sie sind gleichauf, und das naechste Kriterium entscheidet
+       deterministisch. Zweimal derselbe Ablauf ergibt also zweimal dasselbe
+       Ergebnis — der Test hat Determinismus geprueft, nicht Stabilitaet.
+
+       Was der Boden wirklich schuetzt: die Reihenfolge der alten Zeilen bleibt
+       ihre REIFENFOLGE. Ohne ihn kippt die ruhende Anzeige stillschweigend auf
+       `situationScore` um, also auf ein anderes Kriterium, ohne dass eine
+       einzige neue Zahl eingetroffen waere. */
+    const nurAlt = lauf(alt);
+    const reifen = nurAlt.map((r) => Number(r.preSignalMaturity));
+    const absteigend = reifen.every((v, i) => i === 0 || reifen[i - 1] >= v - 1e-9);
+    assert.ok(absteigend,
+      'v4.3.5: Unter gleich alten Zeilen muss die Reife die Reihenfolge bestimmen — sonst kippt die ruhende Anzeige auf ein anderes Kriterium um');
+  }
+
+  /* 4 · Eine Zeile ohne Zeitstempel gilt als Altbestand, nicht als frisch.
+     Andernfalls waere jede Zeile aus einer aelteren Programmversion beim
+     ersten Lauf nach dem Deploy schlagartig ganz oben. */
+  {
+    const ohne = { symbol: 'OHNE', preSignalMaturity: 9, situationScore: 90, radarRank: 90, score: 9 };
+    const neu = mk('NEU', 1, 0, 4, 4)[0];
+    const r = lauf([ohne, neu]);
+    assert.equal(r[0].symbol, 'NEU0',
+      'v4.3.5: Ohne Zeitstempel gilt Altbestand — sonst ueberholt jede Zeile aus der Vorversion die frische Messung');
+  }
+
+  /* 5 · Der Zeitstempel muss beim Analysieren ueberhaupt gesetzt werden. */
+  assert.match(w, /row\.analyzedTs=Date\.now\(\);/,
+    'v4.3.5: Jede frisch analysierte Zeile braucht ihren Zeitstempel — ohne ihn ist die Alterung wirkungslos');
+}
+
+console.log('✓ FusionPulse v4.3.5 Rangalterung der Heatmap (ausgefuehrt): OK');

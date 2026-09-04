@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 04.09.2026, Version **4.3.4**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 04.09.2026, Version **4.3.5**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -453,6 +453,26 @@ Der stumme Schutz in `persistStockScan` bleibt unveraendert und ist durch eine Z
 **Vier Negativkontrollen**, alle gefeuert: leerer Scan wieder als `ok` · Grund durch Ersatztext ersetzt · Grund nicht persistiert · Watchlist-Zweig wieder immer `ok`.
 
 **Was nach dem Deploy zu erwarten ist:** Steht die Aktien-Ampel auf Rot mit einem konkreten Grund, ist die Ursache endlich benannt und behebbar. Bleibt sie gruen und die Zeilenzahl steigt, hat der Scan ohnehin wieder gearbeitet. Beides ist ein Fortschritt gegenueber drei Tagen stiller Wiederholung.
+
+### 4.3.5 · Die zweite, unabhängige Ursache der immer gleichen Heatmap
+
+4.3.4 hat den Cron zum Reden gebracht. Damit war die Frage offen, ob sich die Karte überhaupt ändern WÜRDE, sobald der Scan wieder liefert. **Sie hätte es nicht.**
+
+**Gemessen mit der echten Sortierung** aus `tiingoStockSnapshot`: bei 74 mitgeschleppten und 20 frisch analysierten Zeilen schafft es **keine einzige** frische Zeile in die zwölf angezeigten Punkte. Der beste frische Titel landet auf **Rang 68 von 94**. Selbst einer mit Reife 6,5 kommt nur auf Rang 49 — die zwölfte Zeile hat 8,43.
+
+**Die Ursache ist eine Unwucht im Vergleich, nicht in den Zahlen.** `safeCarry` trägt jede je gesehene Katalogzeile unbegrenzt weiter, und sie behält die Werte ihres LETZTEN GUTEN Standes — aus einem Moment, in dem sie stark genug war, um angezeigt zu werden. Ein neu analysierter Titel wird dagegen mit den Zahlen von HEUTE bewertet, oft in einem ruhigen Markt. Alt schlägt neu, dauerhaft und systematisch.
+
+**Gealtert wird das Ranggewicht, nicht der Datensatz.** Die Zeile bleibt sichtbar und beschriftet, sie verliert nur ihren Vorrang: volles Gewicht bis 15 Minuten, danach linear abfallend bis auf ein Viertel nach sechs Stunden. Jede frisch analysierte Zeile bekommt dafür `analyzedTs`.
+
+**Der Boden von 0,25 ist Absicht.** Ohne ihn fallen alle alten Zeilen auf den Rangwert 0, sind gleichauf, und das nächste Kriterium entscheidet — die ruhende Anzeige kippt still von der Reifenfolge auf `situationScore` um, ohne dass eine einzige neue Zahl eingetroffen wäre.
+
+Wirkung, ausgeführt gemessen: aus 0 von 12 werden 12 von 12 frische Zeilen. Innerhalb einer Sitzung bleibt die Reihenfolge erhalten — eine Zeile von vor zwei Stunden mit Reife 8 schlägt weiterhin eine frische mit Reife 5. Über Tage hinweg gewinnt die Messung von heute.
+
+**Was NICHT geändert wurde:** die Reife selbst, die Kriterienfolge und sämtliche Gatter. Ein gealterter Rang erzeugt keine Kauf-Freigabe und keinen Score.
+
+**Fünf Negativkontrollen**, alle gefeuert: Alterung abgeschaltet · Boden entfernt · fehlender Zeitstempel gilt als frisch · Zeitstempel nicht gesetzt · Abklingzeit auf eine Minute verkürzt (Frische schlüge dann jede Reife).
+
+**Und wieder ein zu schwacher Test:** Die erste Fassung der Stabilitätsprüfung verglich zwei Läufe desselben Eingangs. Die Gegenprobe „Boden auf 0" blieb grün — zu Recht, denn bei Gleichstand entscheidet das nächste Kriterium deterministisch. Der Test prüfte Determinismus, nicht Stabilität. Er verlangt jetzt, dass unter gleich alten Zeilen die Reife die Reihenfolge bestimmt.
 
 ### Zwei Entscheidungen, die dabei getroffen wurden
 
