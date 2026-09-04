@@ -6895,8 +6895,15 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
       try{
         const st=await tiingoStockSnapshot(env,true,new Set(ALL_ON),3,wl.symbols,'server',{onlySymbols:wl.symbols});
         await d1StoreRows(env,st.rows||[],{source:'Tiingo IEX · Watchlist',assetType:'stock',now,onlyChanged:true});
-        setApiState('stocks','ok',`Watchlist · ${st.rows?.length||0} von ${wl.symbols.length} Titeln`);
-        await persistApiState(env,'stocks','ok',`Watchlist · ${st.rows?.length||0} von ${wl.symbols.length} Titeln`,now);
+        /* v4.3.4 · Gleiche Regel wie im Radar-Zweig: null Titel sind kein Erfolg. */
+        const wlAnzahl=st.rows?.length||0;
+        const wlTop=(st.deepScanErrors||[])[0];
+        const wlText = wlAnzahl>0
+          ? `Watchlist · ${wlAnzahl} von ${wl.symbols.length} Titeln`
+          : (wlTop ? `Watchlist · 0 von ${wl.symbols.length} analysierbar. Haeufigster Grund (${wlTop.count}x): ${wlTop.message}`
+                   : `Watchlist · 0 von ${wl.symbols.length} analysierbar — kein Fehler gemeldet.`);
+        setApiState('stocks',wlAnzahl>0?'ok':'error',wlText);
+        await persistApiState(env,'stocks',wlAnzahl>0?'ok':'error',wlText,now);
       }catch(e){ await noteProviderFailure(env,'stocks',e,now,'watchlist'); }
     } else if(radarDueNow(phase.key, stockMinute)){
       try{
@@ -6909,8 +6916,47 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
       try{
         const st=await tiingoStockSnapshot(env,false,new Set(ALL_ON),3,[],'server');
         await d1StoreRows(env,st.rows||[],{source:'Tiingo IEX',assetType:'stock',now,onlyChanged:true});
-        setApiState('stocks','ok',`${st.rows?.length||0} Rows · Radar ${st.discovery?.radar?.universe||0}`);
-        await persistApiState(env,'stocks','ok',`${st.rows?.length||0} Rows · Radar ${st.discovery?.radar?.universe||0}`,now);
+        /* ══ v4.3.4 · EIN LEERER SCAN IST KEIN ERFOLG ═══════════════════════
+           HIER endete die Kette, die die Heatmap seit dem 01.09. einfriert:
+
+             1. Frischer Isolate → `stockMemo` leer. Der persistierte Zweig ist
+                fuer `execution==='server'` ausgenommen, der Cron scannt also
+                wirklich.
+             2. Scheitern alle Tiefenanalysen, ist `fresh` leer — und weil
+                `safeCarry` im frischen Isolate nichts zum Weitertragen hat,
+                ist auch `rows` leer.
+             3. `persistStockScan` beginnt mit
+                `if(!env?.DB || !rows?.length) return stockPersistState;`
+                — bei leeren Zeilen also KEIN Schreibvorgang, KEIN Fehler,
+                KEINE Zustandsaenderung. Das ist als Schutz richtig (guter
+                Stand darf nicht mit Nichts ueberschrieben werden), aber es
+                ist stumm.
+             4. Und hier stand `setApiState('stocks','ok', '0 Rows …')`.
+                Null Zeilen wurden als ERFOLG gemeldet.
+
+           Ergebnis: Der Cron laeuft, meldet gruen, speichert nichts, und die
+           Oberflaeche bekommt weiter den Stand vom 01.09. Kein Alarm, keine
+           Spur — genau das Bild „die Heatmap ist immer gleich".
+
+           Der Fehlerhaufen aus 4.3.2 (`deepScanErrors`) entsteht auf genau
+           diesem Pfad, wurde aber verworfen, weil niemand die Cron-Antwort
+           liest. Ab jetzt wandert er in den Anbieterzustand — die eine
+           Stelle, die auch ohne Nutzeranfrage ueberlebt und in der App
+           sichtbar ist. */
+        const anzahl=st.rows?.length||0;
+        if(anzahl>0){
+          setApiState('stocks','ok',`${anzahl} Rows · Radar ${st.discovery?.radar?.universe||0}`);
+          await persistApiState(env,'stocks','ok',`${anzahl} Rows · Radar ${st.discovery?.radar?.universe||0}`,now);
+        }else{
+          const top=(st.deepScanErrors||[])[0];
+          const grund = top
+            ? `${st.deepScanAttempted||0} Titel angesetzt, 0 analysierbar. Haeufigster Grund (${top.count}x${top.symbols?.length?', z.B. '+top.symbols.join(', '):''}): ${top.message}`
+            : `${st.deepScanAttempted||0} Titel angesetzt, 0 Zeilen — und kein Fehler gemeldet.`;
+          setApiState('stocks','error',grund);
+          await persistApiState(env,'stocks','error',grund,now);
+          cronLog('stocks','deep_scan_empty',
+            `${grund} Der letzte gespeicherte Stand bleibt unveraendert — die Anzeige friert darauf ein.`);
+        }
       }catch(e){ await noteProviderFailure(env,'stocks',e,now,'stocks'); }
     }
   } else if(!cryptoMinute && !primaryStocks && env.TWELVE_API_KEY && stockMinute%10===1){

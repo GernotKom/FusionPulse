@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 04.09.2026, Version **4.3.3**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 04.09.2026, Version **4.3.4**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -432,6 +432,27 @@ Ab 4.3.3 tragen alle vier Antwortpfade ein Feld `servedBy` (`live` · `memo` · 
 **Und ein Fehler, der mir beim Schreiben unterlaufen ist:** die neuen Zweige enden mit `return`. Ich hatte sie in einen bloßen Block `{ … }` gesetzt — das wäre ein Rücksprung aus `renderStocks()` gewesen, und Zähler, Liste und sämtliche Kacheln wären ausgefallen. Beim Nachlesen aufgefallen, in eine sofort aufgerufene Funktion umgebaut, und eine Zusicherung dafür ergänzt. Die Gegenprobe musste dafür syntaktisch gültig gebaut werden, sonst hätte nur `node --check` angeschlagen und nicht die Zusicherung selbst.
 
 **Drei Negativkontrollen**, alle gefeuert: `persist` aus dem persistierten Pfad entfernt · Alter weggelassen · Block statt Funktion.
+
+### 4.3.4 · Warum die Aktien-Heatmap seit dem 01.09. eingefroren war
+
+**Vier Stellen, jede fuer sich vertretbar, zusammen ein System das gruen meldet und nichts tut.**
+
+1. Frischer Isolate → `stockMemo` ist leer. Der persistierte Cache-Zweig ist fuer `execution==='server'` ausgenommen — der Cron scannt also tatsaechlich, das war nie das Problem.
+2. Scheitern alle Tiefenanalysen, ist `fresh` leer. Und weil `safeCarry` im frischen Isolate nichts zum Weitertragen hat, ist auch `rows` leer.
+3. `persistStockScan` beginnt mit `if(!env?.DB || !rows?.length) return stockPersistState;` — **kein Schreibvorgang, kein Fehler, keine Zustandsaenderung.** Als Schutz richtig (ein guter Stand darf nicht mit Nichts ueberschrieben werden), aber vollstaendig stumm.
+4. Und der Cron meldete `setApiState('stocks','ok', '0 Rows · Radar …')`. **Null Zeilen als Erfolg.**
+
+Ergebnis: Der Cron laeuft im Zweiminutentakt, meldet gruen, speichert nichts, und die Oberflaeche bekommt weiter den Stand vom 01.09. 19:55. Kein Alarm, keine Spur. Genau das Bild „die Heatmap ist immer gleich".
+
+**Warum es mehrfach besprochen und nie gefunden wurde:** jeder einzelne Verdacht war plausibel und pruefbar — Bandbreite (Tiingo hat 28 von 40 GB frei), Kadenz (rechnerisch korrekt, 68 Abrufe/Tag), Rotation (existiert, cycle-basiert), Marktphase (erklaerte nur die Nacht). Alle vier waren falsch, weil der eigentliche Befund als Erfolg gemeldet wurde und deshalb in keiner Statusanzeige auftauchte.
+
+**Ab 4.3.4** entscheidet die Zeilenzahl: `anzahl > 0` heisst `ok`, sonst `error` — mit dem tatsaechlichen Grund aus `deepScanErrors` (seit 4.3.2 vorhanden, aber bis hier verworfen, weil niemand die Cron-Antwort liest). Der Grund geht durch `persistApiState`, ueberlebt also den Lauf und erscheint im Anbieterzustand der App. Dieselbe Regel im Watchlist-Zweig — sonst gaelte sie nur im halben Cron.
+
+Der stumme Schutz in `persistStockScan` bleibt unveraendert und ist durch eine Zusicherung festgehalten: ein guter Stand darf weiterhin nicht mit Nichts ueberschrieben werden. Er darf nur nicht die einzige Reaktion sein.
+
+**Vier Negativkontrollen**, alle gefeuert: leerer Scan wieder als `ok` · Grund durch Ersatztext ersetzt · Grund nicht persistiert · Watchlist-Zweig wieder immer `ok`.
+
+**Was nach dem Deploy zu erwarten ist:** Steht die Aktien-Ampel auf Rot mit einem konkreten Grund, ist die Ursache endlich benannt und behebbar. Bleibt sie gruen und die Zeilenzahl steigt, hat der Scan ohnehin wieder gearbeitet. Beides ist ein Fortschritt gegenueber drei Tagen stiller Wiederholung.
 
 ### Zwei Entscheidungen, die dabei getroffen wurden
 

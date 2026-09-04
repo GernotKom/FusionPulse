@@ -153,3 +153,51 @@ console.log('✓ FusionPulse v4.2.9 Verlauf der Kauf-Freigaben (ausgefuehrt): OK
 }
 
 console.log('✓ FusionPulse v4.3.2 Grund fuer leeren Tiefenscan (ausgefuehrt): OK');
+
+/* ══ v4.3.4 · NULL ZEILEN SIND KEIN ERFOLG ═════════════════════════════════
+   Die Kette, die die Aktien-Heatmap seit dem 01.09. eingefroren hat, und der
+   Grund, warum sie mehrfach besprochen und nie gefunden wurde:
+
+     1. Frischer Isolate → `stockMemo` leer. Der persistierte Cache-Zweig ist
+        fuer `execution==='server'` ausgenommen — der Cron scannt also wirklich.
+     2. Scheitern alle Tiefenanalysen, ist `fresh` leer, und weil `safeCarry`
+        im frischen Isolate nichts zum Weitertragen hat, ist `rows` leer.
+     3. `persistStockScan` beginnt mit `if(!env?.DB || !rows?.length) return` —
+        kein Schreibvorgang, kein Fehler, keine Zustandsaenderung. Als Schutz
+        richtig, aber stumm.
+     4. Und der Cron meldete `setApiState('stocks','ok','0 Rows …')`.
+
+   Vier Stellen, jede fuer sich vertretbar; zusammen ein System, das gruen
+   meldet, nichts speichert und eine drei Tage alte Karte anzeigt. */
+{
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const zweig = w.slice(w.indexOf('}else if(stockMinute%2===0){'), w.indexOf("} else if(!cryptoMinute && !primaryStocks"));
+  assert.ok(zweig.length > 500, 'v4.3.4: Der Deep-Scan-Zweig des Cron muss auffindbar sein');
+
+  /* Kein unbedingtes 'ok' mehr. Das ist der Kern. */
+  assert.doesNotMatch(zweig, /setApiState\('stocks','ok',`\$\{st\.rows\?\.length\|\|0\} Rows/,
+    'v4.3.4: Ein Scan darf sich nicht unabhaengig von der Zeilenzahl als „ok" melden');
+  assert.match(zweig, /const anzahl=st\.rows\?\.length\|\|0;/,
+    'v4.3.4: Die Zeilenzahl muss die Entscheidung tragen');
+  assert.match(zweig, /setApiState\('stocks','error',grund\)/,
+    'v4.3.4: Null Zeilen muessen als Fehler gemeldet werden');
+  assert.match(zweig, /st\.deepScanErrors/,
+    'v4.3.4: … und zwar MIT dem tatsaechlichen Grund aus dem Scan, nicht mit einem Ersatztext');
+  assert.match(zweig, /persistApiState\(env,'stocks','error',grund,now\)/,
+    'v4.3.4: Der Grund muss den Cron-Lauf ueberleben — sonst sieht ihn wieder niemand');
+  assert.ok(zweig.indexOf('anzahl>0') < zweig.indexOf("'error'"),
+    'v4.3.4: Erst pruefen, dann melden');
+
+  /* Und dieselbe Regel im Watchlist-Zweig — sonst gilt sie nur im halben Cron. */
+  const wlZweig = w.slice(w.indexOf("} else if(wl.mode==='watchlist'){"), w.indexOf('}else if(radarDueNow('));
+  assert.match(wlZweig, /wlAnzahl>0\?'ok':'error'/,
+    'v4.3.4: Auch im Watchlist-Modus sind null analysierbare Titel kein Erfolg');
+
+  /* Der stumme Schutz in persistStockScan bleibt — er ist richtig. Aber er
+     darf nicht die EINZIGE Reaktion auf einen leeren Scan sein. */
+  const persist = w.slice(w.indexOf('async function persistStockScan'), w.indexOf('async function readLatestPersistedStockScan'));
+  assert.match(persist, /if\(!env\?\.DB \|\| !rows\?\.length\) return stockPersistState;/,
+    'v4.3.4: Ein guter Stand darf weiterhin NICHT mit Nichts ueberschrieben werden');
+}
+
+console.log('✓ FusionPulse v4.3.4 Leerer Scan meldet sich als Fehler (ausgefuehrt): OK');
