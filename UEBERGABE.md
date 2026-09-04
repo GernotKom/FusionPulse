@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 04.09.2026, Version **4.3.1**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 04.09.2026, Version **4.3.2**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -389,6 +389,31 @@ Nebenbei belegt der Fehler, dass 4.3.0 funktioniert: der Ablauf war im Zweig „
 **Die erste Fassung war selbst unbrauchbar** und ist es wert, festgehalten zu werden: sie entfernte Zeichenketten und Kommentare per regulärem Ausdruck und meldete daraufhin **162 „Fehler"** — darunter `Handelszeit()`, `Basispunkt()` und `ffnung()`, also deutsche Wörter aus Meldungstexten. Gleichzeitig verschwanden echte Definitionen, weil das Stripping den Quelltext zerschnitt; `loadAladdin` galt als undefiniert, obwohl es dasteht. **Ein Prüfwerkzeug, das seinen Eingabetext falsch zerlegt, irrt in beide Richtungen zugleich.** Ersetzt durch einen echten Zeichenscanner mit Zustand, der Anführungszeichen, Backticks samt verschachteltem Ausdruck, beide Kommentarformen und Regex-Literale kennt. Ergebnis: null Fehlalarme.
 
 **Zwei Negativkontrollen**, beide gefeuert: der echte Fehler wieder eingebaut · ein frei erfundener Tippfehler in einem anderen Aufruf.
+
+### 4.3.2 · Zwei Tage Fehlersuche, weil der Grund weggeworfen wurde
+
+**Was die neuen Messungen ausschließen:** Tiingo meldet am 04.09. **27,97 GB von 40 GB frei** — verbraucht sind 12 GB im Monat. Tagesanfragen 1.390 von 100.000, Stundenanfragen 50 von 10.000. **Die Bandbreiten- und Kontingenttheorie ist damit tot.** Und die Kadenz stimmt rechnerisch (68 Radar-Abrufe/Tag, Minute für Minute nachgerechnet). Beides waren plausible Verdächtigungen — beide falsch.
+
+**Was tatsächlich fehlt:** Bei LIVE laufender US-Sitzung steht weiterhin `0 aktualisiert`, die Aktiendaten stammen vom 01.09. 19:55 UTC.
+
+**Warum das zwei Tage gekostet hat.** In `tiingoStockSnapshot` steht seit jeher:
+
+```js
+}catch(e){ console.warn(...); return null; }
+```
+
+Jeder Symbolfehler landete ausschließlich im Worker-Log und wurde zu `null`. Der Zustand `stale` trägt daraufhin die Begründung „Tiingo lieferte keine analysierbaren Bars" — **eine Vermutung, fest im Code, nicht aus dem tatsächlichen Fehler gebildet.** Ob 401, 429, 404, Zeitüberschreitung oder Parse-Fehler: von außen sah alles identisch aus. Und identisch zu einem geschlossenen Markt.
+
+**Neunter Fall derselben Krankheit in dieser Reihe:** die App kennt den Grund, transportiert ihn nicht, und die Diagnose wird zum Ratespiel.
+
+Ab 4.3.2 werden die Fehler gesammelt, nach Meldung zusammengefasst (20 Titel mit demselben 429 sind EIN Befund, nicht zwanzig) und als `deepScanErrors` mitgeliefert, zusammen mit `deepScanAttempted`. Die Oberfläche zeigt sie im Skope-Fenster und unterscheidet dabei drei Fälle, die vorher alle „0" hießen:
+- **nichts angesetzt** — kein Fehler, etwa bei geschlossener Börse;
+- **angesetzt und gescheitert** — häufigste Meldung mit Anzahl und Beispielsymbolen;
+- **angesetzt, nichts aktualisiert, kein Fehler gemeldet** — selbst ein Befund, und ausdrücklich als solcher benannt.
+
+Kein Verhalten ändert sich, nur die Sichtbarkeit. **Drei Negativkontrollen**, alle gefeuert.
+
+**Offen und wichtig:** Cloudflare meldet für die aktive Bereitstellung **61,8 % Fehlerrate** (670 Fehler/24 h). Vorher 0,6 %. Das ist der nächste Verdächtige und möglicherweise dieselbe Ursache. Der entscheidende Beleg ist das Worker-Log (`wrangler tail` oder Reiter „Beobachtbarkeit"), nicht ein weiterer Screenshot.
 
 ### Zwei Entscheidungen, die dabei getroffen wurden
 

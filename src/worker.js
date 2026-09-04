@@ -2496,6 +2496,10 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3, favoriteSymbo
   return {
     configured: true, state: 'ok', cached: false, rows, ts: stockMemo.ts, cycle,
     universe: STOCK_UNIVERSE.length, scanned: rows.length, updatedThisCycle: fresh.length, refreshedSymbols: fresh.map(r=>r.symbol), favoritePriority: favs.length,
+    /* v4.3.2 · Warum nichts aktualisiert wurde. Nur gefuellt, wenn es
+       tatsaechlich Fehler gab; eine leere Liste heisst „keine Fehler", nicht
+       „nicht gemessen" — deshalb steht `deepScanAttempted` daneben. */
+    deepScanAttempted: syms.length, deepScanErrors: scanErrorSummary,
     fxUsdPerEur: fx || null, fxApprox: !!fx, quota: quotaView(), version: APP_VERSION,
     market: usMarketPhase(new Date(), null), note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs',
   };
@@ -8282,11 +8286,30 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
      die der Nutzer sehen will. Eine still gekuerzte Liste waere der
      schlimmste Fall: er glaubt, ein Titel werde beobachtet, und er wird es nicht. */
   const radarMap=new Map((radar.rows||[]).map(x=>[x.symbol,x])), boatsMap=new Map((boats.rows||[]).map(x=>[x.symbol,x]));
+  /* ══ v4.3.2 · DIE SCAN-FEHLER WURDEN WEGGEWORFEN ═══════════════════════
+     BEFUND aus zwei Tagen Fehlersuche: Wenn alle Titel scheitern, meldet die
+     Oberflaeche „0 aktualisiert" und der Zustand `stale` mit der Begruendung
+     „Tiingo lieferte keine analysierbaren Bars". Diese Begruendung ist eine
+     VERMUTUNG, keine Messung — sie steht fest im Code und wird nicht aus dem
+     tatsaechlichen Fehler gebildet.
+
+     Der echte Grund je Titel landete ausschliesslich in `console.warn` und
+     danach im Worker-Log, das niemand ansieht. Ob 401 (Token), 429
+     (Drosselung), 404 (Symbol), Zeitueberschreitung oder Parse-Fehler — von
+     aussen sah alles gleich aus. Genau deshalb wurde erst die Bandbreite
+     verdaechtigt (Tiingo meldet 27,97 GB von 40 GB frei) und dann die
+     Kadenz (die rechnerisch stimmt).
+
+     Neunter Fall derselben Krankheit in dieser Reihe: die App kennt den
+     Grund, transportiert ihn nicht, und die Diagnose wird zum Ratespiel.
+     Die Fehler werden ab hier gesammelt, nach Meldung zusammengefasst und
+     mitgeliefert. Kein Verhalten aendert sich — nur die Sichtbarkeit. */
+  const scanErrors=[];
   const fresh=(await pool(syms,6,async sym=>{
     const inf=STOCK_SEARCH_BY_SYMBOL.get(sym)||{sector:'Discovery',name:sym};
     try{
       const row=await tiingoAnalyseOne(env,sym,inf.sector,comp,minCrv,fx);
-      if(!row)return null;
+      if(!row){ scanErrors.push({symbol:sym,message:'keine analysierbaren Bars (tiingoAnalyseOne lieferte nichts)'}); return null; }
       // v4.2.0: relative Staerke gegen den Benchmark. Der Abruf ist gecacht,
       // dieser Aufruf kostet daher nichts pro Titel.
       attachRelativeVwap(row, await benchmarkSessionVwap(env, now));
@@ -8312,8 +8335,24 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       // v3.18.0: Aufmerksamkeit aus dem Katalog ist KEINE Radar-Nominierung.
       if(sectorFromCatalog.has(sym)) row.sectorFillFromCatalog=true;
       return row;
-    }catch(e){console.warn(JSON.stringify({event:'tiingo_stock_failed',symbol:sym,message:String(e?.message||e),ts:Date.now()}));return null;}
+    }catch(e){
+      const msg=String(e?.message||e);
+      scanErrors.push({symbol:sym,message:msg});
+      console.warn(JSON.stringify({event:'tiingo_stock_failed',symbol:sym,message:msg,ts:Date.now()}));
+      return null;
+    }
   })).filter(Boolean);
+  /* Nach Meldung zusammengefasst: 20 Titel mit demselben 429 sind EIN Befund,
+     nicht zwanzig. Die Zahl daneben sagt, wie breit es traf. */
+  const scanErrorSummary=(()=>{
+    const byMsg=new Map();
+    for(const e of scanErrors){
+      const key=String(e.message).slice(0,180);
+      if(!byMsg.has(key)) byMsg.set(key,{message:key,count:0,symbols:[]});
+      const g=byMsg.get(key); g.count++; if(g.symbols.length<5) g.symbols.push(e.symbol);
+    }
+    return [...byMsg.values()].sort((a,b)=>b.count-a.count).slice(0,3);
+  })();
   // v3.3.4: Bereits erfolgreich tief analysierte Radar-Titel bleiben sichtbar, solange
   // sie im AKTUELL verifizierten Discovery-Pool stehen. Das ist fail-closed, weil
   // unbestätigte/alte Discovery-Titel weiterhin herausfallen, verhindert aber, dass

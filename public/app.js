@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.3.1 — Frontend
+   FusionPulse v4.3.2 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -4114,6 +4114,28 @@ function renderStocks() {
     +`\n\nAußerhalb der regulären US-Börsenzeit sind Analysen Vorbereitung und keine Live-BUY-Freigabe. Angezeigte Kurse stammen dann aus der letzten Sitzung — der Zeitstempel der Abfrage sagt nur, wann zuletzt nachgesehen wurde.`;
   }
   trackRefresh(stockMeta?.refreshedSymbols||[]); // v3.6.1: Frequenz je Titel mitzaehlen
+  /* ══ v4.3.2 · WARUM 0 AKTUALISIERT? ═══════════════════════════════════
+     „0 aktualisiert" stand seit Tagen da, ohne Grund. Der Server kennt ihn
+     jetzt (`deepScanErrors`), und hier wird er ausgegeben. Zwei Faelle sind
+     ausdruecklich verschieden:
+       · gar nicht versucht (`deepScanAttempted === 0`) — kein Fehler, es gab
+         nichts zu tun, etwa bei geschlossener Boerse.
+       · versucht und gescheitert — dann steht die HAEUFIGSTE Meldung da,
+         mit Anzahl und Beispielsymbolen.
+     Eine Null ohne Grund war zwei Tage lang nicht von einem geschlossenen
+     Markt zu unterscheiden. Genau das hat die Fehlersuche gekostet. */
+  {
+    const el=$('#deepScanReason');
+    if(el){
+      const errs=stockMeta.deepScanErrors||[], versucht=Number(stockMeta.deepScanAttempted);
+      if(Number(stockMeta.updatedThisCycle)>0 || !Number.isFinite(versucht)){ el.textContent=''; el.className='dsr hidden'; }
+      else if(versucht===0){ el.textContent='Kein Titel zur Tiefenanalyse angesetzt — nichts zu aktualisieren, kein Fehler.'; el.className='dsr'; }
+      else if(!errs.length){ el.textContent=`${versucht} Titel angesetzt, keiner aktualisiert — und KEIN Fehler gemeldet. Das ist selbst ein Befund.`; el.className='dsr bad'; }
+      else { const e=errs[0];
+        el.textContent=`${versucht} Titel angesetzt, 0 aktualisiert. Häufigster Grund (${e.count}×${e.symbols?.length?', z.B. '+e.symbols.join(', '):''}): ${e.message}`;
+        el.className='dsr bad'; el.title=errs.map(x=>`${x.count}× ${x.message}`).join('\n'); }
+    }
+  }
   if(counts){const rc=stockMeta.discovery?.radar?.candidates?.length||0,bc=stockMeta.discovery?.boats?.candidates?.length||0;counts.textContent=`${stockMeta.updatedThisCycle!=null?stockMeta.updatedThisCycle+' aktualisiert · ':''}${scanned} geladen / ${universeLabel} Universum · ${shown.length} angezeigt · ${rc?'RADAR '+rc+' · ':''}${bc?'BOATS '+bc+' · ':''}★ ${(S.favoriteStocks||[]).length} · Abfrage ${clock(stockMeta.ts)}`;}
   /* v3.31.0 · §28: die alte Zeile behauptete bei JEDER Nicht-Tiingo-Quelle
      „Twelve Data" — auch bei Alpaca, auch bei leerem Feld. Jetzt eine Quelle

@@ -113,3 +113,43 @@ const gruen = (symbol, ts, extra = {}) => ({ ts, symbol, source: 'Bitpanda Fusio
 }
 
 console.log('✓ FusionPulse v4.2.9 Verlauf der Kauf-Freigaben (ausgefuehrt): OK');
+
+/* ══ v4.3.2 · EIN LEERER TIEFENSCAN MUSS SEINEN GRUND NENNEN ═══════════════
+   Zwei Tage Fehlersuche gingen dafuer drauf, dass „0 aktualisiert" ohne Grund
+   dastand. Der Server kannte ihn je Titel und warf ihn in `console.warn` —
+   also ins Worker-Log, das niemand liest. Von aussen sahen 401, 429, 404,
+   Zeitueberschreitung und geschlossene Boerse identisch aus. */
+{
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const a = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  assert.match(w, /scanErrors\.push\(\{symbol:sym,message:msg\}\)/,
+    'v4.3.2: Ein geworfener Fehler muss gesammelt werden, nicht nur geloggt');
+  assert.match(w, /scanErrors\.push\(\{symbol:sym,message:'keine analysierbaren Bars/,
+    'v4.3.2: … und ein leeres Ergebnis ohne Wurf ebenso — das ist ein eigener Fall');
+  assert.match(w, /deepScanErrors: scanErrorSummary/, 'v4.3.2: Die Zusammenfassung muss den Client erreichen');
+  assert.match(w, /deepScanAttempted: syms\.length/,
+    'v4.3.2: … samt der Zahl der ANGESETZTEN Titel. Ohne sie ist „keine Fehler" nicht von „nichts versucht" zu unterscheiden');
+
+  /* Die Zusammenfassung ausgefuehrt: 20 Titel mit demselben 429 sind EIN
+     Befund, nicht zwanzig Zeilen. */
+  {
+    const src = w.slice(w.indexOf('const scanErrorSummary=(()=>{'), w.indexOf('// v3.3.4: Bereits erfolgreich tief analysierte'));
+    const fn = new Function('scanErrors', src + '; return scanErrorSummary;');
+    const viele = Array.from({ length: 20 }, (_, i) => ({ symbol: `S${i}`, message: 'HTTP 429 rate limited' }));
+    const eins = fn([...viele, { symbol: 'X', message: 'HTTP 401 unauthorized' }]);
+    assert.equal(eins.length, 2, 'v4.3.2: Zwei verschiedene Meldungen ergeben zwei Zeilen');
+    assert.equal(eins[0].count, 20, 'v4.3.2: … die haeufigste steht oben, mit ihrer Anzahl');
+    assert.equal(eins[0].symbols.length, 5, 'v4.3.2: … und hoechstens fuenf Beispielsymbole');
+    assert.deepEqual(fn([]), [], 'v4.3.2: Ohne Fehler bleibt die Liste leer');
+  }
+
+  const render = a.slice(a.indexOf("const el=$('#deepScanReason')"), a.indexOf('if(counts){const rc='));
+  assert.match(render, /versucht===0/,
+    'v4.3.2: „nichts angesetzt" muss von „alles gescheitert" unterschieden werden');
+  assert.match(render, /KEIN Fehler gemeldet/,
+    'v4.3.2: Angesetzt, nichts aktualisiert, kein Fehler — das ist selbst ein Befund und muss dastehen');
+  assert.match(render, /e\.message/, 'v4.3.2: Die tatsaechliche Meldung muss ausgegeben werden, nicht ein Ersatztext');
+}
+
+console.log('✓ FusionPulse v4.3.2 Grund fuer leeren Tiefenscan (ausgefuehrt): OK');

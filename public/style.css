@@ -731,7 +731,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"4.3.1";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"4.3.2";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1731,3 +1731,9 @@ table.sighist tr[data-tone="ok"] td:last-child{color:var(--green)}
 table.sighist tr[data-tone="warn"] td:last-child{color:var(--yellow)}
 table.sighist tr[data-tone="idle"] td:last-child{color:var(--dim)}
 .op-note{display:block;margin-top:8px;color:var(--dim);font-size:10.5px;line-height:1.5}
+
+/* v4.3.2 · Grund fuer einen leeren Tiefenscan */
+.dsr{grid-column:1/-1;margin:0 0 2px;padding:8px 11px;border-radius:11px;font-size:11.5px;line-height:1.45;
+  background:var(--panel);border:1px solid var(--line);color:var(--dim)}
+.dsr.bad{color:var(--yellow);border-color:color-mix(in srgb,var(--yellow) 45%,var(--line))}
+.dsr.hidden{display:none!important}
