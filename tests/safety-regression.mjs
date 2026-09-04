@@ -6233,3 +6233,51 @@ console.log('✓ FusionPulse v4.2.3 Abdeckung sichtbar (ausgefuehrt): OK');
 }
 
 console.log('✓ FusionPulse v4.2.3 Coin-Suche, Favoriten, Heatmap, Gatter (ausgefuehrt): OK');
+
+/* ══ v4.2.9 · DIE EINGEFRORENE HEATMAP HATTE EINEN STUMMEN GRUND ═══════════
+   Nutzerbefund: „die Heatmap zeigt auch bei Neustart der App immer dieselben
+   Aktien." Die Rotation ist in Ordnung — sie haengt an `cycle` und dreht
+   Favoriten, Sektorreserve und Exploration bei jedem Deep Scan weiter.
+
+   Der Fehler lag darunter: die Oberflaeche startet den Scan nicht selbst,
+   sie liest `stock_scan:last` aus `fp_meta`. Schlug dessen Speicherung fehl,
+   fror die Anzeige unbegrenzt ein — und der `catch` in `persistStockScan`
+   hat den Grund in eine Konsolenzeile geschrieben, die niemand liest.
+   Angezeigt wurde stattdessen „Daten veraltet · US-Markt geschlossen": wahr,
+   aber nicht der Grund. */
+{
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const fn = w.slice(w.indexOf('async function persistStockScan'), w.indexOf('\n}', w.indexOf('async function persistStockScan')));
+  assert.ok(!/catch\(e\)\{\s*console\.warn/.test(fn),
+    'v4.2.9: Der Fehlschlag darf nicht mehr nur in die Konsole gehen — davon haengt die gesamte Aktienanzeige ab');
+  assert.match(fn, /stockPersistState\s*=\s*\{\s*ok:false/,
+    'v4.2.9: Ein gescheiterter Schreibvorgang muss festgehalten werden');
+  assert.match(fn, /d1_write_limit/,
+    'v4.2.9: Das Schreiblimit muss von anderen Fehlern unterschieden werden — nur es repariert sich um 00:00 UTC von selbst');
+
+  /* Beide Antwortpfade. Der Cache-Zweig ist der wichtigere: genau dann, wenn
+     nichts mehr gespeichert wird, antwortet die App aus dem Cache — und genau
+     dann darf der Hinweis nicht fehlen. */
+  const live = w.slice(w.indexOf("return {configured:true,state:fresh.length?'ok':'stale'"), w.indexOf('Tiingo Primary: Large-Cap'));
+  /* Zeilenweise statt per Endanker: der Rueckgabewert steht auf EINER Zeile,
+     und ein Endanker mitten in einem so langen Objektliteral ist genau die
+     Sorte sproeder Griff, die in dieser Serie schon fuenfmal danebengelangt
+     hat. */
+  const cached = w.split('\n').find((z) => z.includes("configured:true,state:'ok',cached:true,rows:cleanMemo")) || '';
+  assert.ok(cached.length > 200, 'v4.2.9: Der Cache-Pfad muss auffindbar sein');
+  assert.match(live, /persist:stockPersistState/, 'v4.2.9: Der Live-Pfad muss den Speicherstatus mitliefern');
+  assert.match(cached, /persist:stockPersistState/, 'v4.2.9: Der Cache-Pfad erst recht — dort zaehlt er');
+
+  /* Und er muss ANGEZEIGT werden, nicht nur ankommen. Die Marktphase darf den
+     echten Grund nicht ueberschreiben. */
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const rs = app.slice(app.indexOf('const box=$(\'#stockGroups\')'), app.indexOf('trackRefresh(stockMeta?.refreshedSymbols'));
+  assert.match(rs, /stockMeta\.persist/, 'v4.2.9: Der Client muss den Speicherstatus lesen');
+  assert.match(rs, /Scan nicht gespeichert/, 'v4.2.9: … und ihn benennen');
+  assert.ok(rs.indexOf('persistBroken') < rs.indexOf("STATE_TEXT[stateKey]"),
+    'v4.2.9: Der echte Grund muss VOR der Marktphase geprueft werden — sonst ueberschreibt „Markt geschlossen" ihn wieder');
+  assert.match(rs, /NICHT der Grund/,
+    'v4.2.9: Der Hinweis muss ausdruecklich sagen, dass die Marktphase nicht die Ursache ist');
+}
+
+console.log('✓ FusionPulse v4.2.9 Eingefrorener Aktienscan wird benannt (ausgefuehrt): OK');

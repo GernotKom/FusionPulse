@@ -8,9 +8,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/style.css?v=4.2.8">
+<link rel="stylesheet" href="/style.css?v=4.2.9">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
-<script src="/version.js?v=4.2.8"></script>
+<script src="/version.js?v=4.2.9"></script>
 <!-- ══════════════════════════════════════════════ v3.24.0 · BOOT-WÄCHTER ═══
      ANLASS: Am 29.08. stand die Oberfläche still — Statusampeln grau, Version
      "v–", Taktuhr "--:--". Alles stand auf den STATISCHEN Startwerten aus
@@ -66,13 +66,13 @@
   });
 })();
 </script>
-<title>FusionPulse 4.2.8</title>
+<title>FusionPulse 4.2.9</title>
 <!-- v3.14.1: Versionsstempel der SHELL (index.html). Wird von sync-version.mjs
      gesetzt und beim Start gegen FP_VERSION aus version.js verglichen. Weichen
      die beiden ab, ist eine halb aktualisierte Auslieferung im Umlauf: neues
      app.js/style.css auf altem index.html. Das erzeugt Fehler, die wie
      Layout-Probleme aussehen, aber keine sind — und kostet beim Suchen Stunden. -->
-<meta name="fp-shell-version" content="4.2.8">
+<meta name="fp-shell-version" content="4.2.9">
 </head>
 <body>
 <!-- v3.24.0 · Wird nur sichtbar, wenn app.js nicht startet. -->
@@ -264,6 +264,10 @@
 
 <section id="sentimentCard" data-tile="sentiment" class="sentiment-card" data-domain="coin" title="Krypto-Stimmungsindex (Fear &amp; Greed) von alternative.me. Misst die Marktstimmung, nicht die Qualität eines Trades — und gilt ausschließlich für Krypto, nicht für Aktien. 0 % Gewicht in Score und Kauf-Freigabe."></section>
 
+<!-- v4.2.9: Verlauf der Kauf-Freigaben. Zeigt FAELLE, keine Statistik —
+     aufeinanderfolgende gruene Takte sind EINE Gelegenheit. -->
+<div id="signalHistoryCoin" data-tile="sigHistCoin" class="openingpanel" data-domain="coin" title="Die letzten Kauf-Freigaben dieses Bereichs mit ihrem tatsächlichen Ausgang. Aus den Aufzeichnungen, nicht aus dem laufenden Scan. 0 % Gewicht in Score, Ampel und Freigabe."></div>
+
 
 <main>
 
@@ -403,6 +407,8 @@
       <small class="hint">Warum überhaupt von Hand? Der automatische Terminkalender ist im gebuchten Tarif möglicherweise nicht enthalten. Ein selbst eingetragener Termin funktioniert unabhängig davon — und du siehst die Termine bei Google Finance ohnehin. Ein Termin ist <b>keine Richtungsaussage</b>: Er sagt nur, dass der Kurs danach in beide Richtungen weit laufen kann.</small>
     </section>
     <div id="gateFunnel" data-tile="gate" class="openingpanel gate-funnel" title="Zählt, woran die Kauf-Freigaben im aktuellen Durchlauf hängen. Reine Zählung — verändert nichts."></div>
+    <!-- v4.2.9: Gegenstueck zur Krypto-Verlaufsliste. -->
+    <div id="signalHistoryStock" data-tile="sigHistStock" class="openingpanel" data-domain="stock" title="Die letzten Kauf-Freigaben dieses Bereichs mit ihrem tatsächlichen Ausgang. Aus den Aufzeichnungen, nicht aus dem laufenden Scan. 0 % Gewicht in Score, Ampel und Freigabe."></div>
     <div id="crowdStatus" class="crowd-status" title="Zustand des Crowd/Search-Sensors. Der Tacho bleibt bewusst leer, statt Werte zu erfinden, wenn keine Daten abrufbar sind."></div>
     <section id="portfolioRisk" data-tile="portfolio" class="portfolio-card" title="Modul 2: Gesamt-Risiko ueber alle offenen Positionen und Klumpungswarnung. Rechnet zusammen, was das Einzeltrade-Risiko fuer sich nicht zeigt. Veraendert keinen Score."></section>
     <p class="stocknote" id="stockNote">
@@ -590,6 +596,6 @@
      Muss das LETZTE Element im Fluss bleiben. Hoehe kommt aus derselben
      Messung wie alles andere (--fp-foot-h). -->
 <div class="foot-spacer" aria-hidden="true"></div>
-<script src="/app.js?v=4.2.8"></script>
+<script src="/app.js?v=4.2.9"></script>
 </body>
 </html>

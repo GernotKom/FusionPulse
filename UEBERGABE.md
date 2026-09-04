@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 04.09.2026, Version **4.2.8**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 04.09.2026, Version **4.2.9**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -325,6 +325,26 @@ Dafür musste die Coin-Liste aus `<main>` heraus in einen eigenen Abschnitt `#co
 
 **Fünfter Fall derselben Krankheit in dieser Serie** — nach NK72 (Kommentare als Aufrufe), NK74 (Berechnung statt Anzeige), den abgeschriebenen Heatmap-Konstanten und dem mehrdeutigen `class="stocktools"`-Anker. Der gemeinsame Nenner: **der Test hat nicht das gelesen, was tatsächlich wirkt.**
 
+### 4.2.9 · Verlauf der Kauf-Freigaben — die Daten lagen seit Monaten bereit
+
+Anlass war eine Nutzerfrage: *„USELESS wurde vor Tagen 2x empfohlen und ist heute um 74 % gestiegen — spezielles Muster oder Zufall?"*
+
+Die Frage war nicht beantwortbar, obwohl **alle** Daten dafür seit Langem aufgezeichnet werden. `market_snapshots` hält `light`, den Kurs zum Zeitpunkt und seit v3.32.x auch den Ausgang (`max_pct`, `min_pct`, `mae_pre`, `success_ts`, `reach_ts`). Es fehlte nur die Abfrage. **Fünfte Wiederholung der Lehre aus 4.2.3, mit umgekehrtem Vorzeichen: aufgezeichnet war alles, gelesen wurde es nie.**
+
+**Episoden statt Zeilen.** Eine grüne Lage steht typischerweise über viele 5-Minuten-Takte. Jede Zeile einzeln zu zeigen ergäbe hundert „Empfehlungen" für eine einzige Gelegenheit — und wer die zählt, hält eine ruhige Phase für viele Treffer. Aufeinanderfolgende grüne Takte desselben Symbols werden zu EINER Episode zusammengefasst; erst eine Lücke von 45 Minuten beginnt eine neue. Das ist auch die Zählweise, die der Nutzer meint, wenn er sagt „zweimal empfohlen".
+
+**Was bewusst NICHT drinsteht:**
+- **Keine Trefferquote.** Bei einer Handvoll Episoden wäre sie eine Zahl ohne Aussage — dieselbe Regel wie im Musterlabor („eine Trefferquote aus sieben Fällen ist keine Quote"). Ein Test prüft, dass kein Feld dieser Art im Ergebnis auftaucht.
+- **Kein Urteil über den Einzelfall.** Die Liste stellt ihn neben die anderen; die Einordnung macht der Mensch.
+
+**„Ohne Beleg" ist kein Fehlschlag.** Eine verworfene Zeile heißt „zu selten nachgesehen" — sie als Misserfolg zu zählen wäre genau die Verzerrung, vor der R3 warnt. Der Ausgang wird deshalb in vier Zuständen benannt: Ziel erreicht · ausgewertet · offen · ohne Beleg.
+
+**Fail-closed:** Ein Lesefehler kommt als Fehler zurück, nicht als leere Liste. „Keine Freigaben gefunden" und „konnte nicht nachsehen" dürfen nicht gleich aussehen — das erste ist eine Behauptung.
+
+**Kosten:** ein D1-Lesevorgang je Abruf, geholt beim Start und danach alle 15 Minuten. Ein Abruf im Scan-Takt wäre Dauerlast ohne Erkenntnisgewinn.
+
+**Neue Suite** `tests/signal-history.mjs`, acht ausgeführte Prüfungen: Zusammenfassung, echte Lücke, Grenzfall knapp unter/über der Lückengrenze, Symboltrennung, alle vier Ausgänge, bester/schlechtester Ausschlag über die ganze Episode, Fail-closed, keine Quote. **Vier Negativkontrollen**, alle gefeuert: Lesefehler als leere Liste · Episodenbildung abgeschaltet · Ausschlag nur aus dem ersten Takt · Symbole zusammengeworfen.
+
 ### Zwei Entscheidungen, die dabei getroffen wurden
 
 **1. Der Altbestand wird nicht zurückgeholt.** Alles vor 4.2.3 trägt irrtümlich `dropped_ts`; die Rohdaten stehen noch da. Ein Zurücksetzen wäre technisch ein Einzeiler, brächte aber nichts: ohne Protokolleinträge für diese Zeitfenster verwürfe der Auflöser dieselben Zeilen sofort wieder, und der Versuch kostete Schreibzeilen aus dem knappen Budget. **Die Messung beginnt bei null.** Die erste auswertbare Basis entsteht damit frühestens nach einigen Handelstagen — das ist der Preis dafür, dass vorher nichts entstanden ist.
@@ -458,6 +478,12 @@ Eine ältere Regex-Zusicherung auf die Inline-Formel (`safety-regression.mjs`, Z
 16. **Die Aktien-Heatmap zeigt immer dieselben Titel — noch nicht abschließend geklärt.** Bei geschlossener US-Börse ist das erwartbar: `0 aktualisiert`, `Daten veraltet`, die Oberfläche wird aus dem serverseitig persistierten Scan bedient, und ein Neustart der App ändert daran nichts. Die Rotation im Code ist vorhanden und hängt an `cycle = Math.floor(minuteSlot/2)`, also alle zwei Minuten — sowohl für Favoriten (`(cycle*2)%favs.length`) als auch für die Sektorreserve und die Exploration (`(cycle*7)%KATALOG`). **Offen ist, ob sie während der US-Sitzung tatsächlich greift.** Zu prüfen an einem Screenshot bei offener Börse: ändert sich die Punktwolke zwischen zwei Deep-Scans, und was steht in `queue` (favorites/recheck/gainers/radar/boats/explore) aus `/api/stocks`? Steht dort `explore: 0`, verfällt die Rotationsquelle, weil die vorherigen Töpfe `deepLimit` bereits füllen.
 
 17. **Alle Punkte der Heatmap liegen im Quadranten „Muster stark / gut handelbar".** Eine Karte, auf der alles in einer Ecke sitzt, trägt keine Information. Unabhängig von Punkt 16 zu klären, ob Qualität und Handelbarkeit sättigen oder ob die Skalierung zu eng ist.
+
+18. **Die Tiingo-Bandbreite reißt das Kontingent.** Gemessen am 04.09.: 1,91 GB/Tag, hochgerechnet 57 GB/Monat gegen die im Kadenz-Kommentar angenommenen 40 GB. Die Größe je Abruf stimmt exakt (10,8 MB gegen 11,2 MB angenommen) — es ist die ANZAHL, die nicht stimmt: 232 Radar- und 180 BOATS-Abrufe gegen erwartete rund 70. Entweder greift `radarDueNow` nicht wie gedacht, oder der Zähler läuft über mehr Tage als angenommen. **Erst prüfen, dann drosseln** — die Kadenztabelle ist sorgfältig hergeleitet, ein blindes Absenken beschädigt die Marktbreite.
+
+19. **Seit 01.09. 19:55 UTC kein erfolgreicher Aktien-Deep-Scan.** `updatedThisCycle: 0` über zwei Handelstage, `state: 'stale'`, Begründung „Tiingo lieferte keine analysierbaren Bars". Zusammen mit Punkt 18 der wahrscheinliche Grund für die eingefrorene Aktien-Heatmap. Zu belegen am Tiingo-Zweig von `/api/health`: HTTP-Status und Fehlertext der letzten Abrufe.
+
+20. **`safeCarry` kennt keine Altersgrenze.** Jede je gesehene Katalogzeile wird unbegrenzt mitgeschleppt und mit ihren EINGEFRORENEN Werten (`preSignalMaturity`, `situationScore`, `radarRank`, `score`) gegen frisch gemessene Titel sortiert. Ein neu explorierter Titel muss sich gegen bis zu 100 alte Zeilen durchsetzen, die nach ihrem letzten guten Stand bewertet sind. **Damit ist die Rotation der Scan-Warteschlange in der Anzeige unsichtbar** — sie wählt andere Symbole, aber die Rangliste ändert sich nicht. Vorschlag (noch nicht umgesetzt, weil es die täglich gelesene Reihenfolge verändert): das Ranggewicht altern lassen, nicht den Datensatz. Die Zeile bleibt sichtbar und beschriftet, verliert aber mit der Zeit ihren Vorrang.
 
 ## 5. Kosten und Cloudflare-Plan
 

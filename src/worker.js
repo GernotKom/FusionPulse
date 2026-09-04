@@ -1398,13 +1398,124 @@ async function writeCoinWatch(env, pairs){
   coinWatchMemo={ts:Date.now(),pairs:clean};
   return clean;
 }
+/* ══ v4.2.9 · VERLAUF DER KAUF-FREIGABEN ═══════════════════════════════════
+   Anlass: „USELESS wurde vor Tagen 2x empfohlen und ist heute 74 % gestiegen —
+   Muster oder Zufall?" Diese Frage war bis hier nicht beantwortbar, obwohl
+   ALLE Daten dafuer seit Langem aufgezeichnet werden. `market_snapshots` haelt
+   `light`, den Kurs zum Zeitpunkt, und seit v3.32.x auch den AUSGANG
+   (`max_pct`, `min_pct`, `mae_pre`, `success_ts`, `reach_ts`). Es fehlte nur
+   die Abfrage. Fuenfte Wiederholung der Lehre aus 4.2.3 mit umgekehrtem
+   Vorzeichen: aufgezeichnet war alles, gelesen wurde es nie.
+
+   EPISODEN STATT ZEILEN. Eine gruene Lage steht typischerweise ueber viele
+   5-Minuten-Takte. Jede Zeile einzeln zu zeigen ergaebe hundert „Empfehlungen"
+   fuer eine einzige Gelegenheit — und wer die zaehlt, haelt eine lange ruhige
+   Phase fuer viele Treffer. Aufeinanderfolgende gruene Takte desselben Symbols
+   werden deshalb zu EINER Episode zusammengefasst; erst eine Lücke von
+   `SIGNAL_EPISODE_GAP_MS` beginnt eine neue. Das ist auch die Zaehlweise, die
+   der Nutzer meint, wenn er sagt „zweimal empfohlen".
+
+   WAS BEWUSST NICHT DRINSTEHT: eine Trefferquote. Bei einer Handvoll Episoden
+   waere sie eine Zahl ohne Aussage — dieselbe Regel wie im Musterlabor
+   („eine Trefferquote aus sieben Faellen ist keine Quote"). Die Liste zeigt
+   Faelle, keine Statistik. */
+const SIGNAL_EPISODE_GAP_MS = 45*60_000;
+const SIGNAL_HISTORY_MAX_ROWS = 4000;
+async function signalHistory(env, assetType='coin', days=7, limit=25){
+  const out={configured:!!env?.DB, assetType, days, episodes:[], version:APP_VERSION};
+  if(!env?.DB){ out.state='nodb'; out.reason='Ohne D1 gibt es keine Aufzeichnung.'; return out; }
+  const since=Date.now()-Math.max(1,Math.min(30,days))*86400_000;
+  let rows;
+  try{
+    await ensureD1Schema(env);
+    rows=(await env.DB.prepare(
+      `SELECT ts,symbol,source,price,score,crv,max_pct,min_pct,mae_pre,success_ts,reach_ts,resolved_ts,dropped_ts,payload
+       FROM market_snapshots
+       WHERE light='green' AND asset_type=? AND ts>=?
+       ORDER BY ts ASC LIMIT ?`).bind(assetType,since,SIGNAL_HISTORY_MAX_ROWS).all()).results||[];
+  }catch(e){
+    /* FAIL-CLOSED: keine leere Liste zurueckgeben. „Nichts gefunden" und
+       „konnte nicht nachsehen" sehen sonst identisch aus — und das erste
+       hiesse „es gab keine Freigaben", was eine Behauptung waere. */
+    out.state='error'; out.reason=String(e?.message||e); return out;
+  }
+  out.truncated = rows.length>=SIGNAL_HISTORY_MAX_ROWS;
+  const bySym=new Map();
+  for(const r of rows){
+    const s=String(r.symbol||'').toUpperCase(); if(!s) continue;
+    if(!bySym.has(s)) bySym.set(s,[]);
+    bySym.get(s).push(r);
+  }
+  const eps=[];
+  for(const [symbol,list] of bySym){
+    let cur=null;
+    for(const r of list){
+      const ts=Number(r.ts);
+      if(!cur || ts-cur.lastTs>SIGNAL_EPISODE_GAP_MS){
+        if(cur) eps.push(cur);
+        const p=(()=>{ try{ return r.payload?JSON.parse(String(r.payload)):null; }catch{ return null; } })();
+        cur={ symbol, source:r.source||null, firstTs:ts, lastTs:ts, buckets:1,
+              entryPrice:dbNum(r.price), score:dbNum(r.score), crv:dbNum(r.crv),
+              setup:p?.setup||null, situation:p?.situation||null, lifecycle:p?.lifecycle||null,
+              maxPct:dbNum(r.max_pct), minPct:dbNum(r.min_pct), maePre:dbNum(r.mae_pre),
+              reached:!!r.success_ts||!!r.reach_ts, resolved:!!r.resolved_ts, dropped:!!r.dropped_ts };
+      }else{
+        cur.lastTs=ts; cur.buckets++;
+        const mx=dbNum(r.max_pct), mn=dbNum(r.min_pct);
+        if(Number.isFinite(mx)) cur.maxPct=Math.max(cur.maxPct??-Infinity,mx);
+        if(Number.isFinite(mn)) cur.minPct=Math.min(cur.minPct??Infinity,mn);
+        if(r.success_ts||r.reach_ts) cur.reached=true;
+        if(r.resolved_ts) cur.resolved=true;
+        if(r.dropped_ts) cur.dropped=true;
+      }
+    }
+    if(cur) eps.push(cur);
+  }
+  eps.sort((a,b)=>b.firstTs-a.firstTs);
+  out.episodes=eps.slice(0,Math.max(1,Math.min(60,limit))).map(e=>({
+    ...e,
+    minutes: Math.max(5, Math.round((e.lastTs-e.firstTs)/60_000)+5),
+    /* Der Ausgang wird BENANNT, nicht geraten. „offen" heisst: der Horizont
+       ist noch nicht abgelaufen. „ohne Beleg" heisst: die Zeile wurde
+       verworfen, weil zu selten nachgesehen wurde — das ist KEIN Verlust,
+       sondern eine fehlende Messung, und darf nicht als Misserfolg zaehlen. */
+    outcome: e.dropped ? 'ohne Beleg' : e.reached ? 'Ziel erreicht' : e.resolved ? 'ausgewertet' : 'offen',
+  }));
+  out.state='ok';
+  out.counted=eps.length;
+  return out;
+}
 const STOCK_SNAPSHOT_LIVE_MS = 4*60_000;
 const STOCK_SNAPSHOT_MAX_AGE_MS = 72*60*60_000;
 let fxMemo = { ts: 0, usdPerEur: null };
 const stockLookupMemo = new Map();
 
+/* ══ v4.2.9 · DER STUMME FEHLSCHLAG, DER DIE HEATMAP EINGEFROREN HAT ═══════
+   Nutzerbefund: „die Heatmap zeigt auch bei Neustart der App immer dieselben
+   Aktien." Untersucht: die Rotation ist in Ordnung. Sie haengt an
+   `cycle = Math.floor(minuteSlot/2)` und dreht Favoriten, Sektorreserve und
+   Exploration bei jedem Deep Scan weiter.
+
+   Der Fehler liegt eine Ebene tiefer. Die Oberflaeche startet den Scan seit
+   v3.x NICHT mehr selbst — sie liest ausschliesslich `stock_scan:last` aus
+   `fp_meta`. Schlaegt das Schreiben dieser einen Zeile fehl, friert die
+   Anzeige auf dem letzten erfolgreichen Stand ein, und zwar unbegrenzt. Ein
+   Neustart der App kann daran nichts aendern: die Daten liegen serverseitig.
+
+   Genau das ist am 02./03.09. passiert. Das taegliche D1-Schreiblimit war
+   gerissen (gemessen 99k gegen die eigene Obergrenze von 90k), D1 hat den
+   Schreibvorgang abgelehnt — und der `catch` hier hat ihn in eine
+   Konsolenzeile geschrieben, die niemand liest. Angezeigt wurden weiter die
+   Kurse vom 01.09., 19:55 UTC. Die Oberflaeche nannte als Grund „Daten
+   veraltet · US-Markt geschlossen". Das war zwar wahr, aber es war nicht der
+   Grund — und deshalb hat die Erklaerung in die Irre gefuehrt.
+
+   Ein stiller `catch` um den einzigen Schreibvorgang, von dem die gesamte
+   Aktienanzeige abhaengt, ist die teuerste Sorte Fehlerbehandlung. Der Fehler
+   wird ab jetzt festgehalten und bis in die Oberflaeche durchgereicht. */
+let stockPersistState = { ok: true, ts: 0, reason: null, message: null };
 async function persistStockScan(env, sig, cycle, rows, meta={}) {
-  if(!env?.DB || !rows?.length) return;
+  if(!env?.DB || !rows?.length) return stockPersistState;
   try {
     await ensureD1Schema(env);
     const ts=Date.now();
@@ -1412,7 +1523,20 @@ async function persistStockScan(env, sig, cycle, rows, meta={}) {
     await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
       .bind('stock_scan:last',payload,ts).run();
-  } catch(e){ console.warn(JSON.stringify({event:'fusionpulse_stock_cache_write_failed',message:String(e?.message||e),ts:Date.now()})); }
+    stockPersistState = { ok:true, ts, reason:null, message:null };
+  } catch(e){
+    const msg=String(e?.message||e);
+    /* Dieselbe Erkennung wie in /api/watchlist und /api/coinwatch. Das
+       Schreiblimit ist der einzige Grund, der sich von selbst repariert —
+       um 00:00 UTC. Alles andere braucht einen Blick. */
+    const limit=/rows_written|daily limit|exceeded your .*limit|D1_ERROR.*limit/i.test(msg);
+    stockPersistState = { ok:false, ts:Date.now(), reason: limit?'d1_write_limit':'unknown', message: msg };
+    cronLog('stocks','persist_failed',
+      limit ? 'Aktienscan nicht gespeichert — D1-Schreiblimit erreicht. Die Anzeige friert auf dem letzten Stand ein.'
+            : `Aktienscan nicht gespeichert: ${msg}`);
+    console.warn(JSON.stringify({event:'fusionpulse_stock_cache_write_failed',message:msg,ts:Date.now()}));
+  }
+  return stockPersistState;
 }
 async function readPersistedStockScan(env, sig, cycle) {
   if(!env?.DB) return null;
@@ -7956,7 +8080,7 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
     if(cleanMemo.length!==stockMemo.rows.length) stockMemo={...stockMemo,rows:cleanMemo};
     const memoRadar=verifiedCommonOnly(tiingoIexRadarMemo.rows||[]).slice(0,20);
     const memoBoats=verifiedCommonOnly(tiingoDiscoveryMemo.rows||[]).slice(0,15);
-    return {configured:true,state:'ok',cached:true,rows:cleanMemo,ts:stockMemo.ts,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:cleanMemo.length,updatedThisCycle:0,refreshedSymbols:Array.isArray(stockMemo.refreshedSymbols)?stockMemo.refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified cache only',ts:tiingoIexRadarMemo.ts,candidates:memoRadar,gainers:openingGainers(memoRadar),buyWeight:0,gate:{...radarGateStats}},boats:{...tiingoDiscoveryMemo,rows:memoBoats,candidates:memoBoats,buyWeight:0}},version:APP_VERSION};
+    return {configured:true,state:'ok',cached:true,rows:cleanMemo,ts:stockMemo.ts,cycle,universe:tiingoIexRadarMemo.universe||12000,universeLabel:`${tiingoIexRadarMemo.universe||'12.000+'} Tiingo/IEX`,scanned:cleanMemo.length,updatedThisCycle:0,refreshedSymbols:Array.isArray(stockMemo.refreshedSymbols)?stockMemo.refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),persist:stockPersistState,discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified cache only',ts:tiingoIexRadarMemo.ts,candidates:memoRadar,gainers:openingGainers(memoRadar),buyWeight:0,gate:{...radarGateStats}},boats:{...tiingoDiscoveryMemo,rows:memoBoats,candidates:memoBoats,buyWeight:0}},version:APP_VERSION};
   }
 
   // Browser/PWA darf den autonomen Markt-Scan nicht mehr selbst starten.
@@ -8193,7 +8317,7 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   stockMemo={ts:Date.now(),rows,cycle,sig}; setApiState('stocks',fresh.length?'ok':'stale',fresh.length?null:'Tiingo lieferte keine analysierbaren Bars');
   stockMemo.liveQuoteHits=liveQuoteHits;   // v3.13.0: stiller Ausfall soll sichtbar sein
   await persistStockScan(env,sig,cycle,rows,{provider:'Tiingo IEX',fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol),queue:{favorites:favPick,recheck:recheckPick,gainers:gainerPick,radar:radarPick,boats:boatsPick,explore},verifiedRadar:(radar.rows||[]).slice(0,20),verifiedBoats:(boats.rows||[]).slice(0,12)});
-  return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:radar.universe||12000,universeLabel:`${radar.universe||'12.000+'} Tiingo/IEX`,scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:phase,queue:{favorites:favPick.length,recheck:recheckPick.length,gainers:gainerPick.length,radar:radarPick.length,boats:boatsPick.length,explore:explore.length},discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar.ts,universe:radar.universe,candidates:(radar.rows||[]).slice(0,20),gainers:openingGainers(radar.rows||[]),buyWeight:0,gate:{...radarGateStats}},boats:{source:'Tiingo BOATS',ts:boats.ts,session:boats.session,candidates:(boats.rows||[]).slice(0,15),buyWeight:0}},version:APP_VERSION,note:'Tiingo Primary: Large-Cap Opportunity Lifecycle Radar + BOATS Discovery (beide 0 % direktes BUY-Gewicht) -> adaptive Deep-Scan-Queue -> IEX 5-Min Analyse.'};
+  return {configured:true,state:fresh.length?'ok':'stale',cached:false,rows,ts:stockMemo.ts,cycle,universe:radar.universe||12000,universeLabel:`${radar.universe||'12.000+'} Tiingo/IEX`,scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:phase,queue:{favorites:favPick.length,recheck:recheckPick.length,gainers:gainerPick.length,radar:radarPick.length,boats:boatsPick.length,explore:explore.length},discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar.ts,universe:radar.universe,candidates:(radar.rows||[]).slice(0,20),gainers:openingGainers(radar.rows||[]),buyWeight:0,gate:{...radarGateStats}},boats:{source:'Tiingo BOATS',ts:boats.ts,session:boats.session,candidates:(boats.rows||[]).slice(0,15),buyWeight:0}},persist:stockPersistState,version:APP_VERSION,note:'Tiingo Primary: Large-Cap Opportunity Lifecycle Radar + BOATS Discovery (beide 0 % direktes BUY-Gewicht) -> adaptive Deep-Scan-Queue -> IEX 5-Min Analyse.'};
 }
 async function tiingoStockSuggest(env,raw){
   const query=String(raw||'').trim();
@@ -8382,6 +8506,17 @@ export default {
        Setzen der Paare — KEIN Modusschalter: bei Coins gibt es keinen
        Watchlist-Betrieb, die Favoriten werden dem normalen Scan lediglich
        vorangestellt. Sie ersetzen die Entdeckung nicht. */
+    /* v4.2.9 · Verlauf der Kauf-Freigaben. Reiner Lesevorgang aus den
+       vorhandenen Aufzeichnungen — kein Schreibvorgang, kein Gate, keine
+       Ampel haengt daran. */
+    if (url.pathname === '/api/signals/history') {
+      const at = url.searchParams.get('assetType') === 'stock' ? 'stock' : 'coin';
+      const days = Number(url.searchParams.get('days')) || 7;
+      const limit = Number(url.searchParams.get('limit')) || 25;
+      const d = await signalHistory(env, at, days, limit);
+      return json(d, d.state === 'error' ? 502 : 200, { 'cache-control': 'no-store' });
+    }
+
     if (url.pathname === '/api/coinwatch') {
       try{
         if(req.method==='POST'){

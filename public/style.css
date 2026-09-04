@@ -731,7 +731,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"4.2.8";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"4.2.9";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1719,3 +1719,15 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 #bandLab .domain-head b{font-size:15px;letter-spacing:.17em}
 #bandLab .domain-head small{font-size:11px}
 @media(max-width:900px){#bandLab{margin-top:34px;padding-top:14px}#bandLab .domain-head b{font-size:13px}}
+
+/* v4.2.9 · Verlauf der Kauf-Freigaben */
+table.sighist{width:100%;border-collapse:collapse;margin-top:8px;font-size:12px}
+table.sighist th{text-align:left;font-weight:600;color:var(--dim);font-size:10.5px;letter-spacing:.04em;padding:4px 8px 6px;border-bottom:1px solid var(--line)}
+table.sighist th.ta,table.sighist td.ta{text-align:right}
+table.sighist td{padding:7px 8px;border-bottom:1px solid var(--line2);vertical-align:top}
+table.sighist tr:last-child td{border-bottom:0}
+table.sighist td small{display:block;color:var(--dim);font-size:10px;margin-top:2px}
+table.sighist tr[data-tone="ok"] td:last-child{color:var(--green)}
+table.sighist tr[data-tone="warn"] td:last-child{color:var(--yellow)}
+table.sighist tr[data-tone="idle"] td:last-child{color:var(--dim)}
+.op-note{display:block;margin-top:8px;color:var(--dim);font-size:10.5px;line-height:1.5}

@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.2.8 — Frontend
+   FusionPulse v4.2.9 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2339,6 +2339,73 @@ function renderPortfolioRisk(){
     `<small class="pf-note" title="Was diese Kachel bewusst NICHT tut.">Grundlage sind deine erfassten realen Positionen und die technischen Stops aus der Analyse. Die Klumpung ist eine <b>Sektor-Naeherung</b>: zwei Titel im selben Sektor koennen gegenlaeufig laufen, zwei aus verschiedenen Sektoren am selben Zins- oder Dollarfaktor haengen. Eine echte Preisreihen-Korrelation ist noch nicht gerechnet.${px.guard?'':' Die Budget-Sperre ist derzeit AUS: diese Kachel warnt, blockiert aber nichts.'}</small>`;
 }
 
+/* ══ v4.2.9 · VERLAUF DER KAUF-FREIGABEN ═══════════════════════════════════
+   Anlass: „USELESS wurde 2x empfohlen und ist heute 74 % gestiegen — Muster
+   oder Zufall?" Die Frage war nicht beantwortbar, obwohl alle Daten dafür seit
+   Langem aufgezeichnet wurden. Es fehlte die Ansicht.
+
+   ZWEI DINGE STEHEN BEWUSST NICHT DRIN:
+   1. Keine Trefferquote. Bei einer Handvoll Episoden wäre sie eine Zahl ohne
+      Aussage — dieselbe Regel wie im Musterlabor.
+   2. Kein Urteil über einen einzelnen Fall. Ein Ausschlag von 74 % nach zwei
+      Freigaben ist ein Fall, kein Beleg. Die Liste stellt ihn neben die
+      anderen; die Einordnung macht der Mensch.
+
+   Fail-closed: Ein Lesefehler wird BENANNT, nicht als leere Liste gezeigt.
+   „Keine Freigaben" und „konnte nicht nachsehen" dürfen nicht gleich
+   aussehen. */
+const sigHist = { coin: null, stock: null, busy: {} };
+async function loadSignalHistory(domain) {
+  if (sigHist.busy[domain]) return;
+  sigHist.busy[domain] = true;
+  try {
+    const q = new URLSearchParams({ assetType: domain, days: '7', limit: '20' });
+    if (S.token) q.set('t', S.token);
+    const r = await fetchWithTimeout(`/api/signals/history?${q}`, { cache: 'no-store' }, 12_000);
+    sigHist[domain] = await r.json().catch(() => ({ state: 'error', reason: 'Antwort nicht lesbar' }));
+  } catch (e) {
+    sigHist[domain] = { state: 'error', reason: String(e?.message || e) };
+  } finally {
+    sigHist.busy[domain] = false;
+    renderSignalHistory(domain);
+  }
+}
+function renderSignalHistory(domain) {
+  const el = $(domain === 'coin' ? '#signalHistoryCoin' : '#signalHistoryStock');
+  if (!el) return;
+  const titel = domain === 'coin' ? '🧾 Verlauf der Kauf-Freigaben · Krypto' : '🧾 Verlauf der Kauf-Freigaben · Aktien';
+  const kopf = `<b>${titel}</b> <small>letzte 7 Tage · aus den Aufzeichnungen · 0 % Gewicht in Score, Ampel und Freigabe</small>`;
+  const d = sigHist[domain];
+  if (!d) { el.innerHTML = `${kopf}<div class="op-empty">wird geladen …</div>`; return; }
+  if (d.state === 'error' || d.state === 'nodb') {
+    el.innerHTML = `${kopf}<div class="op-empty" data-tone="warn"><b>Verlauf nicht abrufbar.</b> ${esc(d.reason || 'Grund unbekannt')} — daraus folgt NICHT, dass es keine Freigaben gab.</div>`;
+    return;
+  }
+  const eps = d.episodes || [];
+  if (!eps.length) {
+    el.innerHTML = `${kopf}<div class="op-empty">In den letzten 7 Tagen wurde in diesem Bereich keine Kauf-Freigabe aufgezeichnet. Das ist ein Befund, kein Fehler.</div>`;
+    return;
+  }
+  const pct = (v) => (Number.isFinite(Number(v)) ? `${Number(v) > 0 ? '+' : ''}${Number(v).toFixed(1)} %` : '–');
+  const zeilen = eps.map((e) => {
+    const ton = e.outcome === 'Ziel erreicht' ? 'ok' : e.outcome === 'ohne Beleg' ? 'warn' : e.outcome === 'offen' ? 'idle' : 'neutral';
+    const wann = new Date(e.firstTs).toLocaleString('de-AT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    return `<tr data-tone="${ton}">
+      <td><b>${esc(String(e.symbol).replace(/-EUR$/, ''))}</b><small>${esc(e.setup || e.situation || '–')}</small></td>
+      <td>${esc(wann)}<small>${e.minutes} min · ${e.buckets}×</small></td>
+      <td class="ta">${pct(e.maxPct)}<small>tiefster ${pct(e.minPct)}</small></td>
+      <td>${esc(e.outcome)}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `${kopf}
+    <table class="sighist"><thead><tr>
+      <th>Titel</th><th>erste Freigabe</th><th class="ta">bester Ausschlag danach</th><th>Ausgang</th>
+    </tr></thead><tbody>${zeilen}</tbody></table>
+    <small class="op-note">„Bester Ausschlag" ist die größte Bewegung nach der Freigabe, nicht ein erzielter Gewinn — ohne Ausstieg ist er nur eine Möglichkeit gewesen.
+    „Ohne Beleg" heißt: zu selten nachgesehen, um den Verlauf zu messen — das ist eine fehlende Messung und <b>kein</b> Fehlschlag.
+    Aufeinanderfolgende grüne Takte sind EINE Gelegenheit; die Zahl dahinter (z.\u00A0B. 12×) nennt die Takte.
+    ${d.truncated ? '<b>Die Abfrage wurde gekürzt</b> — es gab mehr Aufzeichnungen als abgerufen.' : ''}</small>`;
+}
 /* v4.2.3 · Gegenstueck zu `renderDepotStrip`. Die Coin-Favoriten existierten
    als Zustand (`S.favoritePairs`), als Sternchen in der Zeile und als
    Filteroption — aber ohne eigene Anzeige. Ein Zustand ohne Anzeige ist fuer
@@ -4005,7 +4072,7 @@ function renderStocks() {
   (stockRows||[]).forEach(claudeOverlayRow); // Claude-Modus-Ansicht idempotent anwenden
   (stockRows||[]).forEach(momentumOverlayRow); // v3.9.0: Modus A danach, ebenfalls idempotent
   const box=$('#stockGroups'),st=$('#stockState'),counts=$('#stockCounts'); if(!box||!st)return;
-  renderDepotStrip(); renderPortfolioRisk(); renderCrowdStatus(); renderMarketGainers(); renderExtendedWatch(); renderOpeningPanel(); renderSectorLaggards(); renderEarningsBoard(); renderEarningsEditor(); renderGateFunnel();
+  renderDepotStrip(); renderPortfolioRisk(); renderCrowdStatus(); renderMarketGainers(); renderExtendedWatch(); renderOpeningPanel(); renderSectorLaggards(); renderEarningsBoard(); renderEarningsEditor(); renderGateFunnel(); renderSignalHistory('stock');
   if(stockMeta.configured===false){box.innerHTML='';st.textContent='Aktien-Datenquelle fehlt';st.className='badge err';if(counts)counts.textContent='Aktienradar nicht konfiguriert';stockHeatmap([]);return;}
   const search=($('#stockQ')?.value||'').trim().toUpperCase(); const filter=$('#stockF')?.value||'';
   let stockFiltered=stockRows.filter(r=>(!search||r.symbol.toUpperCase().includes(search)||String(r.name||'').toUpperCase().includes(search)));
@@ -4016,11 +4083,36 @@ function renderStocks() {
   const scanned=stockMeta.scanned??stockRows.length, universeLabel=stockMeta.universeLabel||stockMeta.universe||21, stateKey=stockMeta.state||(stockRows.length?'ok':'unknown');
   const phase=stockMeta.market?.label||'';
   const phaseLocal=withLocalTime(phase); // v3.6.4: ET-Angaben um unsere Ortszeit ergaenzen
-  st.textContent=(stateKey==='ok'?'Aktienfeed':STATE_TEXT[stateKey]||'Status unbekannt')+(phaseLocal?` · ${phaseLocal}`:'');
-  st.className='badge '+(STATE_TONE[stateKey]==='ok'?'ok':STATE_TONE[stateKey]==='warn'?'warn':'err');
+  /* ══ v4.2.9 · WENN DER SCAN NICHT GESPEICHERT WERDEN KANN, IST DAS DER GRUND ══
+     Die Oberflaeche startet den Aktienscan nicht selbst — sie liest den
+     serverseitig gespeicherten Stand. Schlaegt dessen Speicherung fehl,
+     friert die Anzeige ein, und zwar unbegrenzt: ein Neustart der App hilft
+     nicht, weil die Daten nicht im Browser liegen.
+     Bis 4.2.8 stand daneben trotzdem „Daten veraltet · US-Markt geschlossen".
+     Das war wahr und trotzdem der falsche Grund — und hat die Suche nach der
+     eingefrorenen Heatmap in die Irre gefuehrt. Der echte Grund gewinnt. */
+  const pf = stockMeta.persist;
+  const persistBroken = pf && pf.ok === false;
+  if(persistBroken){
+    const limit = pf.reason === 'd1_write_limit';
+    st.textContent = limit ? 'Scan nicht gespeichert · Schreiblimit' : 'Scan nicht gespeichert';
+    st.className = 'badge err';
+    st.title = (limit
+      ? 'Der Aktienscan läuft, kann aber nicht gespeichert werden: das tägliche D1-Schreiblimit ist erreicht. '
+        + 'Die Anzeige bleibt deshalb auf dem letzten erfolgreich gespeicherten Stand stehen — auch nach einem Neustart der App, '
+        + 'denn die Daten liegen auf dem Server, nicht im Browser. Das Limit setzt um 00:00 UTC (2 Uhr MESZ) zurück.'
+      : `Der Aktienscan konnte nicht gespeichert werden: ${String(pf.message||'Grund unbekannt')}. `
+        + 'Die Anzeige bleibt auf dem letzten erfolgreich gespeicherten Stand stehen.')
+      + (phaseLocal ? `\n\nMarktphase: ${phaseLocal}. Sie ist NICHT der Grund für den veralteten Stand.` : '');
+  } else {
+    st.textContent=(stateKey==='ok'?'Aktienfeed':STATE_TEXT[stateKey]||'Status unbekannt')+(phaseLocal?` · ${phaseLocal}`:'');
+    st.className='badge '+(STATE_TONE[stateKey]==='ok'?'ok':STATE_TONE[stateKey]==='warn'?'warn':'err');
+  }
+  if(!persistBroken){
   st.title=withLocalTime(`${stockMeta.source||stockMeta.provider||'US-Aktienfeed'}. ${stockMeta.market?.help||''} ${phase||''}`)
     +`\n\nUS-Handelszeiten in unserer Zeit (${localTzLabel()}): Premarket ab ${etClockToLocal('04:00')}, Eröffnung ${etClockToLocal('09:30')}, regulärer Handel bis ${etClockToLocal('16:00')}, After Hours bis ${etClockToLocal('20:00')}.`
     +`\n\nAußerhalb der regulären US-Börsenzeit sind Analysen Vorbereitung und keine Live-BUY-Freigabe. Angezeigte Kurse stammen dann aus der letzten Sitzung — der Zeitstempel der Abfrage sagt nur, wann zuletzt nachgesehen wurde.`;
+  }
   trackRefresh(stockMeta?.refreshedSymbols||[]); // v3.6.1: Frequenz je Titel mitzaehlen
   if(counts){const rc=stockMeta.discovery?.radar?.candidates?.length||0,bc=stockMeta.discovery?.boats?.candidates?.length||0;counts.textContent=`${stockMeta.updatedThisCycle!=null?stockMeta.updatedThisCycle+' aktualisiert · ':''}${scanned} geladen / ${universeLabel} Universum · ${shown.length} angezeigt · ${rc?'RADAR '+rc+' · ':''}${bc?'BOATS '+bc+' · ':''}★ ${(S.favoriteStocks||[]).length} · Abfrage ${clock(stockMeta.ts)}`;}
   /* v3.31.0 · §28: die alte Zeile behauptete bei JEDER Nicht-Tiingo-Quelle
@@ -5831,7 +5923,7 @@ function render() {
 function select(pair, byUser) {
   selected = pair;
   if (byUser) pinned = true;
-  renderFocus(); renderMap(); renderList(); renderCoinFavStrip();
+  renderFocus(); renderMap(); renderList(); renderCoinFavStrip(); renderSignalHistory('coin');
   rowNodes.get(pair)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
@@ -6409,6 +6501,7 @@ const VIEW_SECTIONS = {
     ['#topPicksCoin',     'Top Picks',    'Rangfolge nach erwartetem Netto-Euro je Tag, aus aufgezeichneten Fällen.'],
     ['#cryptoMovers',     'Mover',        'Coins mit der stärksten gemessenen Bewegung der letzten Stunde.'],
     ['#sentimentCard',    'Stimmung',     'Fear-&-Greed-Index. Reine Einordnung, 0 % BUY-Gewicht.'],
+    ['#signalHistoryCoin','Verlauf',      'Die letzten Kauf-Freigaben mit ihrem tatsächlichen Ausgang.'],
   ],
   stocks: [
     /* v4.2.8 · Spiegelbild des Kryptobereichs: hinter dem Skope-Fenster kommen
@@ -6426,6 +6519,7 @@ const VIEW_SECTIONS = {
     ['#sectorLaggards',   'Nachzügler',   'Sektor läuft, Titel hinkt noch — Grund hinzusehen, kein Kaufsignal.'],
     ['#earningsBoard',    'Zahlen',       'Anstehende Quartalszahlen der beobachteten Titel, nach Sektor.'],
     ['#gateFunnel',       'Trichter',     'Woran die Kauf-Freigaben im aktuellen Durchlauf hängen.'],
+    ['#signalHistoryStock','Verlauf',     'Die letzten Kauf-Freigaben mit ihrem tatsächlichen Ausgang.'],
     ['#portfolioRisk',    'Risiko',       'Gesamtrisiko über alle offenen Positionen und Klumpungswarnung.'],
   ],
   lab: [
@@ -6531,6 +6625,12 @@ function applyPrimaryBlockOrder(){
 
 /* --------------------------------------------------------------------- Boot */
 applyPrimaryBlockOrder();
+/* v4.2.9: Der Verlauf wird EINMAL beim Start und danach alle 15 Minuten
+   geholt. Er aendert sich nicht sekuendlich, und jeder Abruf ist ein
+   D1-Lesevorgang — bei 90.000 Schreibzeilen Tagesbudget waere ein Abruf im
+   Scan-Takt eine unnoetige Dauerlast ohne jeden Erkenntnisgewinn. */
+loadSignalHistory('coin'); loadSignalHistory('stock');
+setInterval(() => { loadSignalHistory('coin'); loadSignalHistory('stock'); }, 15*60_000);
 applyTheme();
 renderSignalBanner();
 /* ==== v3.14.5 · Versionsanzeige im Kopf =====================================
