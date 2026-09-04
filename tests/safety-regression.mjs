@@ -2101,17 +2101,30 @@ console.log('✓ FusionPulse v3.12.0 chrome-measure/nav/trail-direction regressi
   assert.doesNotMatch(single, /alpacaJSON|tiingoIexSnapshot/,
     'Im Einzelabruf darf keine eigene Abfragelogik stehen');
 
-  // -- Kostennachweis: GENAU ZWEI Aufrufe, unabhängig von der Symbolzahl.
-  //    Das ist der Grund, warum der Fix überhaupt tragbar ist — deshalb gemessen
-  //    und nicht behauptet.
+  /* ══ v4.3.0 · DER KOSTENNACHWEIS ZAEHLTE AUFRUFE STATT BYTES ═════════════
+     Hier stand: „GENAU ZWEI Aufrufe, unabhaengig von der Symbolzahl" — und das
+     war richtig gezaehlt und trotzdem irrefuehrend. Der eine Tiingo-Aufruf
+     fiel auf ein blankes `/iex` zurueck, DEN GANZEN MARKT, 10,8 MB. Gemessen
+     am 04.09.: rund 122 Vollmarkt-Abrufe taeglich gegen 68, die das
+     Kadenzmodell vorsieht — 54 davon stammten aus dieser Funktion.
+     Zwei Aufrufe koennen 20 KB oder 22 MB sein. Ein Test, der nur zaehlt,
+     bemerkt den Unterschied nicht.
+
+     Geprueft wird ab jetzt die Eigenschaft, auf die es ankommt: Tiingo wird
+     hier GAR NICHT MEHR ueber das Netz gefragt. Live-Kurse kommen aus dem
+     Vorrat, den der Radar ohnehin gefuellt hat, oder von Alpaca — oder es
+     gibt keine, und die Zeile wird korrekt als „kein Live-Quote" beschriftet. */
   {
     const src = worker.slice(worker.indexOf('async function freshestStockQuotesBatch'),
                              worker.indexOf('/* Einzelabruf = Stapel'));
     assert.ok(src.length > 600, 'Die Stapelfunktion muss gefunden werden');
     let alpacaCalls = 0, tiingoCalls = 0, alpacaSymbolArg = null;
-    const fn = new Function(
+    const syms = Array.from({ length: 40 }, (_, i) => `SYM${i}`);
+    const memo = { ts: Date.now(), bySymbol: new Map(syms.map((s) => [s, { tngoLast: 101, timestamp: new Date().toISOString() }])) };
+    const mk = (rawMemo) => new Function(
       'safeRadarSymbol', 'alpacaFeed', 'alpacaFeedLabel', 'alpacaJSON',
       'tiingoIexSnapshot', 'usMarketPhase', 'classifyQuoteFreshness', 'console',
+      'iexRawMemo', 'iexRawFreshMs',
       src + '; return freshestStockQuotesBatch;'
     )(
       (x) => String(x || '').trim().toUpperCase() || null,
@@ -2123,19 +2136,38 @@ console.log('✓ FusionPulse v3.12.0 chrome-measure/nav/trail-direction regressi
       async () => { tiingoCalls++; return []; },
       () => ({ key: 'regular' }),
       (q) => ({ ...q, ageSec: 5, live: true }),
-      { warn() {} }
+      { warn() {} },
+      rawMemo,
+      () => 120_000,
     );
 
-    const syms = Array.from({ length: 40 }, (_, i) => `SYM${i}`);
-    const res = await fn({ ALPACA_API_KEY_ID: 'k', ALPACA_API_SECRET_KEY: 's', TIINGO_API_TOKEN: 't' }, syms);
+    const env = { ALPACA_API_KEY_ID: 'k', ALPACA_API_SECRET_KEY: 's', TIINGO_API_TOKEN: 't' };
+    const res = await mk(memo)(env, syms);
     assert.equal(alpacaCalls, 1, `40 Symbole duerfen GENAU 1 Alpaca-Abfrage kosten, waren ${alpacaCalls}`);
-    assert.equal(tiingoCalls, 1, `40 Symbole duerfen GENAU 1 Tiingo-Abfrage kosten, waren ${tiingoCalls}`);
+    assert.equal(tiingoCalls, 0,
+      'v4.3.0: Der Live-Quote-Stapel darf KEINEN Tiingo-Netzabruf ausloesen — der Rueckfall dort ist der ganze Markt mit 10,8 MB');
     assert.equal(String(alpacaSymbolArg).split(',').length, 40, 'Alle Symbole muessen in EINEN Aufruf gebuendelt werden');
     assert.equal(res.size, 40, 'Jedes Symbol muss ein Ergebnis bekommen');
 
+    /* Ist der Vorrat abgelaufen, wird ebenfalls NICHT nachgeladen. Genau das
+       war der teure Fall: der Radar fuellt den Vorrat nur 68x taeglich, der
+       Deep Scan lief bis zu 367x. */
+    alpacaCalls = 0; tiingoCalls = 0;
+    const alt = await mk({ ts: Date.now() - 10 * 60_000, bySymbol: memo.bySymbol })(env, syms);
+    assert.equal(tiingoCalls, 0, 'v4.3.0: Auch bei abgelaufenem Vorrat kein Nachladen — lieber eine ehrliche Luecke als 10,8 MB');
+    assert.equal(alt.size, 40, 'Alpaca traegt die Zeilen weiterhin');
+
+    /* Ohne Alpaca UND ohne Vorrat bleibt das Ergebnis leer — die Oberflaeche
+       beschriftet die Zeile dann als „kein Live-Quote". Das ist der
+       beabsichtigte Ausfallzustand, nicht ein Fehler. */
+    alpacaCalls = 0; tiingoCalls = 0;
+    const leer = await mk({ ts: 0, bySymbol: new Map() })({ TIINGO_API_TOKEN: 't' }, syms);
+    assert.equal(tiingoCalls, 0, 'v4.3.0: auch dann kein Vollmarkt-Abruf');
+    assert.equal(leer.size, 0, 'Ohne Quelle keine erfundene Quote');
+
     // Ohne Symbole darf gar nichts abgefragt werden.
     alpacaCalls = 0; tiingoCalls = 0;
-    const empty = await fn({ ALPACA_API_KEY_ID: 'k', ALPACA_API_SECRET_KEY: 's', TIINGO_API_TOKEN: 't' }, []);
+    const empty = await mk(memo)(env, []);
     assert.equal(empty.size, 0, 'Ohne Symbole kein Ergebnis');
     assert.equal(alpacaCalls + tiingoCalls, 0, 'Ohne Symbole darf keine Abfrage erfolgen');
   }
@@ -5402,8 +5434,40 @@ console.log('✓ FusionPulse v4.1.1 Zeitstempel/Isolate-Saat (ausgefuehrt): OK')
   const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
   const a = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 
-  assert.match(a, /if\(!r\.ok \|\| d\?\.saved!==true\)/,
-    'v4.1.2: Erfolg muss am ausdruecklichen saved-Feld haengen, nicht am Fehlen eines Feldes');
+  /* v4.3.0 · Die Zusicherung von v4.1.2 bleibt, wird aber praeziser: die
+     Oberflaeche darf einen Erfolg NIE aus dem Fehlen eines Feldes ableiten.
+     Neu ist die Unterscheidung zwischen GESPEICHERT und ANGEWENDET. Bis 4.2.9
+     galt „nicht gespeichert = nicht umgeschaltet" — und weil der Modus in D1
+     liegt, liess sich die Sparbremse ausgerechnet dann nicht ziehen, wenn D1
+     ueberlastet war. Beide Felder werden ausdruecklich geprueft, keines darf
+     implizit gelten. */
+  assert.match(a, /if\(!r\.ok && d\?\.applied!==true\)/,
+    'v4.3.0: Ein Fehlschlag muss an `applied` haengen — ausdruecklich, nicht am Fehlen eines Feldes');
+  assert.match(a, /if\(d\?\.saved!==true && d\?\.applied===true\)/,
+    'v4.3.0: Der angewendete, aber nicht gespeicherte Modus braucht einen EIGENEN Zweig');
+  assert.match(a, /NICHT gespeichert/,
+    'v4.3.0: … und muss ausdruecklich sagen, dass er nicht gespeichert ist');
+  assert.match(w, /applied:true/,
+    'v4.3.0: Der Server muss `applied` mitliefern, sonst kann die Oberflaeche nicht unterscheiden');
+  /* Der eigentliche Zweck: der Sparmodus muss auf dem Browser-Pfad wirken.
+     Bis 4.2.9 hat `tiingoStockSnapshot` dort NIE `onlySymbols` bekommen —
+     `watchlistMode` war immer false, der Radar lief trotz Umschaltung. */
+  assert.match(w, /q\.set\('wlMode','watchlist'\)|wlMode.*watchlist/,
+    'v4.3.0: Der Modus muss den Scan erreichen');
+  assert.match(a, /q\.set\('wl', watchlistState\.symbols\.join\(','\)\)/,
+    'v4.3.0: … und die Oberflaeche muss ihn bei jedem Abruf mitschicken');
+  {
+    const route = w.slice(w.indexOf("const favorites=(url.searchParams.get('favorites')"), w.indexOf('} catch (e) {', w.indexOf("const favorites=(url.searchParams.get('favorites')")));
+    /* Die erste Fassung prueffte nur, dass `stockOpts` im Text vorkommt. Die
+       Gegenprobe „Uebergabe auf ein leeres Objekt setzen" blieb daraufhin
+       gruen — der Name stand ja noch da. Geprueft wird deshalb die
+       VERDRAHTUNG: die gelesenen Symbole muessen tatsaechlich in
+       `onlySymbols` landen, und das Objekt muss an den Scan gehen. */
+    assert.match(route, /onlySymbols:\s*wlSyms/,
+      'v4.3.0: Die gelesenen Watchlist-Symbole muessen in onlySymbols landen — sonst ist der Sparschalter nur eine Beschriftung');
+    assert.ok(/tiingoStockSnapshot\([\s\S]{0,200}?stockOpts\)/.test(route),
+      'v4.3.0: … und das Objekt muss dem Scan auch uebergeben werden');
+  }
   /* Praeziser als eine Textsuche im ganzen Modul: zwischen dem POST und der
      Erfolgsmeldung MUSS die Fehlerpruefung liegen. Sonst kann die Meldung
      wieder vor der Pruefung stehen. */

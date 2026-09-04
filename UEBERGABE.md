@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 04.09.2026, Version **4.2.9**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 04.09.2026, Version **4.3.0**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -344,6 +344,35 @@ Die Frage war nicht beantwortbar, obwohl **alle** Daten dafür seit Langem aufge
 **Kosten:** ein D1-Lesevorgang je Abruf, geholt beim Start und danach alle 15 Minuten. Ein Abruf im Scan-Takt wäre Dauerlast ohne Erkenntnisgewinn.
 
 **Neue Suite** `tests/signal-history.mjs`, acht ausgeführte Prüfungen: Zusammenfassung, echte Lücke, Grenzfall knapp unter/über der Lückengrenze, Symboltrennung, alle vier Ausgänge, bester/schlechtester Ausschlag über die ganze Episode, Fail-closed, keine Quote. **Vier Negativkontrollen**, alle gefeuert: Lesefehler als leere Liste · Episodenbildung abgeschaltet · Ausschlag nur aus dem ersten Takt · Symbole zusammengeworfen.
+
+### 4.3.0 · Der Sparschalter war eine Beschriftung, und der teuerste Endpunkt hatte einen zweiten Aufrufer
+
+**Befund 1 · `freshestStockQuotesBatch` zog den ganzen Markt.**
+`tiingoIexSnapshot()` versucht zuerst `/iex?tickers=…`; steht `iexSubsetMode` auf `unsupported`, fällt es auf ein blankes `/iex` zurück — **10,8 MB**. In der Verbrauchstabelle des Nutzers steht **kein einziger `iex-symbols`-Abruf**: der sparsame Weg ist dauerhaft abgeschaltet, Tiingo hat den Parameter irgendwann ignoriert.
+
+Aufgerufen wurde das bei **jedem** Deep Scan (bis zu 367/Tag), geschützt nur durch den Radar-Vorrat mit 120 Sekunden Haltbarkeit — den der Radar aber nur 68× täglich füllt.
+
+| | Abrufe/Tag | GB/Tag |
+|---|---|---|
+| Radar laut Kadenzmodell | 68 | 0,72 |
+| gemessen `iex-wholemarket` | ~122 | 1,29 |
+| **Differenz, nicht vom Radar** | **54** | **0,57** |
+
+**Der Test hat das gedeckt statt gefunden.** Er sicherte zu: „GENAU ZWEI Aufrufe, unabhängig von der Symbolzahl." Richtig gezählt und trotzdem irreführend — zwei Aufrufe können 20 KB oder 22 MB sein. Er prüft jetzt, dass der Live-Quote-Stapel **gar keinen** Tiingo-Netzabruf mehr auslöst; Kurse kommen aus dem vorhandenen Vorrat oder von Alpaca, sonst gar nicht und die Zeile trägt korrekt „kein Live-Quote".
+
+**Befund 2 · Der Watchlist-Modus wirkte auf dem Browser-Pfad nie.**
+`tiingoStockSnapshot` schaltet nur über `opts.onlySymbols` um. Gesetzt wurde das an **genau einer** Stelle: im Cron. Die Route `/api/stocks` hat `opts` nie mitgegeben — `watchlistMode` war dort **immer false**, volle Entdeckung inklusive Radar-Abruf, unabhängig vom gespeicherten Zustand. Genau dieser Pfad läuft, wenn die Oberfläche offen ist, also gerade dann, wenn jemand Bandbreite sparen will.
+
+**Befund 3 · Die Sparbremse brauchte genau das, was klemmte.**
+Der Modus liegt in D1. Schlägt der Schreibvorgang fehl, ließ sich bis 4.2.9 gar nicht umschalten. Eine Bremse, die die überlastete Komponente voraussetzt, ist im Ernstfall keine.
+
+Ab 4.3.0 sind **gespeichert** und **angewendet** zwei Felder. Der Modus gilt für die Sitzung auch ohne Speicherung: die Oberfläche schickt ihn bei jedem Abruf als `wlMode`/`wl` mit, und der Deep Scan beachtet ihn dort. Was nicht geht, wird ausdrücklich gesagt — der Hintergrundlauf kennt ihn nicht. Kein stiller Halberfolg.
+
+**Und der Fehlertext sagte nichts.** Bei `reason: 'unknown'` stand „Der Modus konnte nicht gespeichert werden." Der tatsächliche Grund lag im Feld `error` daneben und wurde nie angezeigt, weil die Oberfläche `hint` bevorzugt. Beim bekannten Fall bleibt der erklärende Text, beim unbekannten gewinnt jetzt die Wahrheit.
+
+**Vier Negativkontrollen**, alle gefeuert: Vollmarkt-Rückfall wieder eingebaut · Watchlist-Modus nicht übergeben · angewendet und gespeichert zusammengeworfen · Modus nicht mehr mitgeschickt.
+
+**Und wieder ein zu schwacher Anker:** die erste Fassung der Verdrahtungsprüfung suchte nur den Namen `stockOpts` im Text. Die Gegenprobe „Übergabe auf ein leeres Objekt setzen" blieb grün, weil der Name noch dastand. Geprüft wird jetzt, dass `wlSyms` tatsächlich in `onlySymbols` landet.
 
 ### Zwei Entscheidungen, die dabei getroffen wurden
 

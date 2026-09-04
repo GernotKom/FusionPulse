@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.2.9 — Frontend
+   FusionPulse v4.3.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -4258,6 +4258,17 @@ async function scanStocks(force = false) {
   const req=++stockReqSeq;
   try {
     const q = new URLSearchParams({ comp: S.components.join(','), minCrv: S.minCrvStock, favorites: (S.favoriteStocks||[]).join(',') });
+    /* v4.3.0 · Der Modus wird MITGESCHICKT, nicht nur serverseitig
+       nachgeschlagen. Zwei Gründe: der Deep Scan auf dem Browser-Pfad hat den
+       gespeicherten Zustand bis 4.2.9 überhaupt nie beachtet, und eine
+       Sparbremse muss auch dann greifen, wenn die Ablage in D1 klemmt —
+       gerade dann. `wlMode=radar` wird ebenfalls gesendet, damit ein
+       Zurückschalten nicht am gespeicherten Zustand hängen bleibt. */
+    if (watchlistState.mode === 'watchlist' && (watchlistState.symbols||[]).length) {
+      q.set('wlMode','watchlist'); q.set('wl', watchlistState.symbols.join(','));
+    } else if (watchlistState.sessionOnly) {
+      q.set('wlMode','radar');
+    }
     if (S.token) q.set('t', S.token);
     if (force) q.set('force', '1');
     const res = await fetchWithTimeout('/api/stocks?' + q, {cache:'no-store'}, force ? 26_000 : 12_000);
@@ -6361,8 +6372,23 @@ async function toggleWatchlist(){
        wieder aktiv". Der Nutzer las eine Bestaetigung, wo ein Fehler stand.
        Erfolg wird jetzt am ausdruecklichen `saved` erkannt, nicht daran, dass
        ein Feld fehlt. */
-    if(!r.ok || d?.saved!==true){
+    /* ══ v4.3.0 · GESPEICHERT UND ANGEWENDET SIND ZWEI DINGE ══════════════
+       Bis 4.2.9 galt: nicht gespeichert = nicht umgeschaltet. Das ist der
+       Konstruktionsfehler aus v4.1.0 — der Modus liegt in D1, und eine
+       Sparbremse, die genau das braucht, was gerade überlastet ist, lässt
+       sich im Ernstfall nicht ziehen. Genau dann will man sie ziehen.
+       Ab jetzt gilt der Modus für DIESE Sitzung auch ohne Speicherung: die
+       Oberfläche schickt ihn bei jedem Abruf mit (`wlMode`/`wl`), und der
+       Deep Scan beachtet ihn dort. Was NICHT geht, wird ausdrücklich
+       gesagt — der Hintergrundlauf kennt ihn nicht. Kein stiller Halberfolg. */
+    if(!r.ok && d?.applied!==true){
       wlSay(`Umschalten fehlgeschlagen. ${d?.hint||d?.error||'Der Server hat den Modus nicht gespeichert.'} Der bisherige Zustand bleibt: ${watchlistState.mode==='watchlist'?'Watchlist':'Whole-Market-Radar'}.`);
+      return;
+    }
+    if(d?.saved!==true && d?.applied===true){
+      watchlistState={mode:want, symbols:syms, sessionOnly:true};
+      paintWatchlist(); loadStocks(true);
+      wlSay(`${want==='watchlist'?`Watchlist-Modus für diese Sitzung aktiv · ${syms.length} Titel`:'Whole-Market-Radar für diese Sitzung aktiv'} — aber NICHT gespeichert: ${d?.hint||d?.error||'Grund unbekannt'}`);
       return;
     }
     watchlistState={mode:d.mode==='watchlist'?'watchlist':'radar',symbols:d.symbols||[]};

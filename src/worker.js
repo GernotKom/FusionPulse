@@ -7980,15 +7980,42 @@ async function freshestStockQuotesBatch(env,rawSymbols){
     }catch(e){console.warn(JSON.stringify({event:'stock_fresh_quote_alpaca_failed',count:syms.length,message:String(e?.message||e),ts:Date.now()}));}
   }
 
-  // --- Tiingo: EIN Aufruf, /iex liefert ohnehin den ganzen Markt -------------
-  if(env.TIINGO_API_TOKEN){
+  /* ══ v4.3.0 · DER TEUERSTE ENDPUNKT HATTE EINEN ZWEITEN AUFRUFER ═════════
+     BEFUND, nachgerechnet gegen die Eigenmessung vom 04.09.:
+       Radar laut Kadenzmodell   68 Abrufe/Tag  = 0,72 GB
+       gemessen `iex-wholemarket` ~122 Abrufe/Tag = 1,29 GB
+       Differenz                  54 Abrufe/Tag, NICHT vom Radar
+
+     Die kamen von hier. `tiingoIexSnapshot()` versucht zuerst den sparsamen
+     Weg `/iex?tickers=…`; steht `iexSubsetMode` auf `unsupported`, faellt es
+     auf ein blankes `/iex` zurueck — DEN GANZEN MARKT, 10,8 MB. In der
+     Verbrauchstabelle des Nutzers steht kein einziger `iex-symbols`-Abruf:
+     der sparsame Weg ist dauerhaft abgeschaltet, Tiingo hat den Parameter
+     irgendwann ignoriert.
+
+     Aufgerufen wurde das bei JEDEM Deep Scan (bis zu 367/Tag), geschuetzt nur
+     durch den Radar-Vorrat mit 120 Sekunden Haltbarkeit. Der Radar fuellt ihn
+     aber nur 68x taeglich — dazwischen lief jedes Mal ein Vollmarktabruf.
+
+     Der Kommentar an dieser Stelle nannte das „GENAU ZWEI Aufrufe pro
+     Zyklus". Richtig gezaehlt, aber die KOSTEN des zweiten sind nie in die
+     Kadenzrechnung eingegangen. Zwei Aufrufe koennen 20 KB oder 11 MB sein.
+
+     AB HIER: Tiingo liefert Live-Kurse nur noch aus dem VORHANDENEN Vorrat.
+     Ein 10,8-MB-Abruf, um eine Kursanzeige zu schmuecken, steht in keinem
+     Verhaeltnis — zumal Alpaca dieselben Kurse in einem kleinen Aufruf
+     liefert. Faellt beides aus, beschriftet die Oberflaeche die Zeile
+     korrekt mit „KEIN LIVE-QUOTE\". Eine ehrliche Luecke ist billiger als
+     ein halbes Gigabyte pro Tag. */
+  if(env.TIINGO_API_TOKEN && iexRawMemo.bySymbol && Date.now()-iexRawMemo.ts < iexRawFreshMs()){
     try{
-      const arr=await tiingoIexSnapshot(env,syms.join(','));
-      for(const x of (arr||[])){
-        const sym=String(x?.ticker||x?.symbol||'').toUpperCase();
-        if(!sym) continue;
+      let hits=0;
+      for(const sym of syms){
+        const x=iexRawMemo.bySymbol.get(sym); if(!x) continue;
         add(sym,x.tngoLast??x.last??x.lastPrice,x.timestamp||x.lastSaleTimestamp||x.quoteTimestamp||x.lastUpdated,'Tiingo IEX','IEX-Teilmarkt');
+        hits++;
       }
+      if(!hits) console.warn(JSON.stringify({event:'stock_fresh_quote_tiingo_memo_empty',count:syms.length,ts:Date.now()}));
     }catch(e){console.warn(JSON.stringify({event:'stock_fresh_quote_tiingo_failed',count:syms.length,message:String(e?.message||e),ts:Date.now()}));}
   }
 
@@ -8544,7 +8571,7 @@ export default {
         if(req.method==='POST'){
           const body=await req.json().catch(()=>({}));
           const wl=await writeWatchlist(env, body?.mode, body?.symbols);
-          return json({...wl, saved:true, version:APP_VERSION},200,{ 'cache-control':'no-store' });
+          return json({...wl, saved:true, applied:true, version:APP_VERSION},200,{ 'cache-control':'no-store' });
         }
         const wl=await readWatchlist(env,0);
         return json({...wl, version:APP_VERSION},200,{ 'cache-control':'no-store' });
@@ -8561,9 +8588,18 @@ export default {
         return json({state:'error',saved:false,
           error:msg,
           reason:writeBlocked?'d1_write_limit':'unknown',
+          /* v4.3.0 · Bei `unknown` stand hier ein Satz, der NICHTS sagt: „Der
+             Modus konnte nicht gespeichert werden." Der tatsaechliche Grund
+             lag im Feld `error` daneben und wurde nie angezeigt, weil die
+             Oberflaeche `hint` bevorzugt. Genau so bleibt ein Fehler tagelang
+             unerklaert. Beim bekannten Fall bleibt der erklaerende Text, beim
+             unbekannten gewinnt die Wahrheit. */
           hint:writeBlocked
             ? 'Das taegliche D1-Schreiblimit ist erreicht. Der Modus wird serverseitig gespeichert und braucht dafuer genau einen Schreibvorgang — der geht erst nach dem Zuruecksetzen des Limits um 00:00 UTC wieder, oder sofort nach einem Upgrade auf Workers Paid.'
-            : 'Der Modus konnte nicht gespeichert werden. Der bisherige Zustand bleibt unveraendert.',
+            : `Der Modus konnte serverseitig nicht gespeichert werden: ${msg}. Fuer DIESE Sitzung gilt er trotzdem — die Oberflaeche schickt ihn ab jetzt bei jedem Abruf mit. Der Hintergrundlauf kennt ihn allerdings nicht.`,
+          /* Der Modus ist ANGEWENDET, auch wenn er nicht GESPEICHERT ist.
+             Zwei verschiedene Dinge, die bis 4.2.9 in einem Feld steckten. */
+          applied:true,
           mode:watchlistMemo.mode, symbols:watchlistMemo.symbols,
           version:APP_VERSION},502,{ 'cache-control':'no-store' });
       }
@@ -8722,7 +8758,37 @@ export default {
           return json(await stockLookup(env, lookup, comp, minCrv), 200, { 'cache-control':'no-store' });
         }
         const favorites=(url.searchParams.get('favorites')||'').split(',').filter(Boolean);
-        return json(tiingoStocksMode(env)==='primary' ? await tiingoStockSnapshot(env,url.searchParams.get('force')==='1',comp,minCrv,favorites,'client') : await stockSnapshot(env,url.searchParams.get('force')==='1',comp,minCrv,favorites),200,{ 'cache-control':'no-store' });
+        /* ══ v4.3.0 · DER SPARMODUS WIRKTE AUF DEM BROWSER-PFAD NIE ═════════
+           BEFUND: `tiingoStockSnapshot` schaltet auf Watchlist NUR ueber
+           `opts.onlySymbols`. Gesetzt wurde das an genau EINER Stelle — im
+           Cron (Zeile 6892). Diese Route hier hat `opts` nie mitgegeben, also
+           war `watchlistMode` auf dem Browser-Pfad IMMER false: volle
+           Entdeckung, Radar-Abruf inklusive, egal was gespeichert war.
+
+           Genau dieser Pfad laeuft, wenn die Oberflaeche offen ist — also
+           gerade dann, wenn der Nutzer zusieht und Bandbreite sparen will.
+           Der Schalter war damit kein Sparschalter, sondern eine Beschriftung.
+
+           ZWEI QUELLEN, in dieser Reihenfolge:
+           1. `wl` aus der Abfrage — der Browser darf den Modus mitschicken.
+              Das ist der Ausweg aus dem Konstruktionsfehler von v4.1.0: der
+              Modus liegt in D1, und wenn D1 klemmt, laesst sich die Bremse
+              nicht mehr ziehen. Eine Sparbremse, die genau das braucht, was
+              gerade ueberlastet ist, ist keine Bremse.
+           2. Sonst der serverseitig gespeicherte Zustand — er gilt weiterhin
+              als Wahrheit fuer den Cron und als Vorgabe fuer neue Sitzungen.
+           FAIL-OPEN: ist der Zustand nicht lesbar, laeuft der Radar wie
+           bisher. Eine unlesbare Einstellung darf keine Titel unsichtbar
+           machen — das waere die teurere Richtung. */
+        let wlSyms=[];
+        const wlParam=(url.searchParams.get('wl')||'').split(',').map(x=>x.trim().toUpperCase()).filter(Boolean);
+        if(url.searchParams.get('wlMode')==='watchlist' && wlParam.length){
+          wlSyms=wlParam.slice(0,40);
+        }else if(url.searchParams.get('wlMode')!=='radar'){
+          try{ const wl=await readWatchlist(env); if(wl?.mode==='watchlist') wlSyms=wl.symbols||[]; }catch{ /* fail-open */ }
+        }
+        const stockOpts = wlSyms.length ? { onlySymbols: wlSyms } : {};
+        return json(tiingoStocksMode(env)==='primary' ? await tiingoStockSnapshot(env,url.searchParams.get('force')==='1',comp,minCrv,favorites,'client',stockOpts) : await stockSnapshot(env,url.searchParams.get('force')==='1',comp,minCrv,favorites),200,{ 'cache-control':'no-store' });
       } catch (e) {
         const state = classifyError(e);
         setApiState('stocks', state, e?.message);
