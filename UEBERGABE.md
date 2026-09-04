@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 03.09.2026, Version **4.2.4**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 03.09.2026, Version **4.2.5**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -258,6 +258,23 @@ Die Trennung rechnet jetzt mit einem liegenden Rechteck je Punkt. Das allein gen
 
 **Nachgezogen:** Die Coin-Suche lädt jetzt auch Paare außerhalb des Scans über `/api/pair/{PAAR}` — der Endpunkt existierte seit jeher, nur die Verdrahtung im Client fehlte. Einzeln geladene Zeilen sind `_remembered` und geben nie frei: die Einzelabfrage umgeht BTC-Referenz und Orderbuch des Scans.
 
+### 4.2.5 · Beide Marktbereiche sind ab jetzt gleich gebaut
+
+Nutzeranmerkung vom 03.09.: *„die Sektionen sollten gleich aufgebaut sein … das hatten wir schon extrem oft besprochen."* Der Zusatz ist der eigentliche Befund — es war mehrfach besprochen und trotzdem jedes Mal zurückgefallen. Der Grund steht im Testverzeichnis.
+
+**Die Abweichung war getestet — und zwar falsch herum.** `tests/coin-scope.mjs` verlangte die Coin-Suche zwischen Stimmung und Trefferliste, also ganz unten, während die Aktiensuche seit jeher direkt unter der Überschrift steht. Ein Test, der eine Asymmetrie festschreibt, macht sie unsichtbar: **jede Änderung in Richtung Symmetrie ließ ihn rot werden und sah damit nach einem Fehler aus.** Genau so überlebt eine Abweichung mehrere Gespräche.
+
+**Die alte Coin-Reihenfolge:** Band → Fokus → Top Picks → Mover → Stimmung → Suche → Liste.
+**Die Aktien-Reihenfolge:** Band → Überschrift → Suche → Fokus → Kacheln → ★-Leiste → Liste.
+
+**Ab 4.2.5 gilt die zweite für beide.** Neu im Kryptobereich: `<h2>Coin-Radar</h2>` mit `#coinCounts` (Gegenstück zu `#stockCounts`), darunter `#coinTools` mit Suchfeld, Löschknopf, Ladeknopf, Rückmeldung, Filter und Intervall — dieselben Klassen wie `.stocktools`, damit auch das Aussehen nicht auseinanderläuft. Die ★-Leiste steht wie `#depotStrip` unmittelbar über der Liste.
+
+**Der Stern fehlte im großen Fokusfenster.** Die Aktien-Fokuskarte trug ihn seit jeher, die Coin-Fokuskarte nicht. Wer einen Coin im Fokus hatte, musste zum Markieren erst in der Liste danach suchen — obwohl der Fokus die Stelle ist, an der man sich für einen Titel entscheidet. Er hängt am selben Umschalter wie der in der Zeile; ein eigener Pfad wäre die nächste stille Zweitwahrheit, und der Test zählt die Aufrufe.
+
+**Der Test prüft ab jetzt die Bauform BEIDER Bereiche gegeneinander**, nicht mehr eine feste Liste je Bereich. Weicht einer ab, fällt er — gleich welcher. Das ist die einzige Formulierung, die verhindert, dass die Seiten wieder auseinanderlaufen; eine Liste je Bereich hätte auch diesmal wieder nur den Ist-Zustand zementiert. Geprüft werden Reihenfolge, Suchfeld, Löschknopf, Ladeknopf, Rückmeldung, Favoritenfilter und der Fokus-Stern — beidseitig.
+
+**Vier Negativkontrollen**, alle gefeuert und zurückgesetzt: Coin-Suche zurück ans Ende · Stern aus dem Coin-Fokus · Löschknopf entfernt · **Stern aus dem Aktien-Fokus** (die Symmetrie muss in beide Richtungen greifen, sonst prüft der Test nur eine Seite).
+
 ### Zwei Entscheidungen, die dabei getroffen wurden
 
 **1. Der Altbestand wird nicht zurückgeholt.** Alles vor 4.2.3 trägt irrtümlich `dropped_ts`; die Rohdaten stehen noch da. Ein Zurücksetzen wäre technisch ein Einzeiler, brächte aber nichts: ohne Protokolleinträge für diese Zeitfenster verwürfe der Auflöser dieselben Zeilen sofort wieder, und der Versuch kostete Schreibzeilen aus dem knappen Budget. **Die Messung beginnt bei null.** Die erste auswertbare Basis entsteht damit frühestens nach einigen Handelstagen — das ist der Preis dafür, dass vorher nichts entstanden ist.
@@ -385,6 +402,8 @@ Eine ältere Regex-Zusicherung auf die Inline-Formel (`safety-regression.mjs`, Z
 13. **`modeQuality >= 6.6` im Claude-Coin-Modus ist eine tote Schwelle.** Sie steht zwei Punkte unter der Hürde, die tatsächlich bindet (rund 8,4 über den Erwartungswert). Die Beschriftung ist seit 4.2.4 ehrlich, die Schwelle selbst bleibt — sie zu heben wäre kosmetisch, sie zu senken wäre eine Methodikänderung hinter dem SHA-Riegel. Wenn, dann als eigene, begründete Änderung mit neuem SHA.
 
 14. **Die Coin-Suche über `/api/pair/` kostet zwei Unterabfragen je Aufruf** und umgeht das Orderbuch des Scans. Für den Einzelblick ist das richtig; falls sie häufig genutzt wird, im Bandbreitenzweig von `/api/health` nachsehen.
+
+15. **Wenn eine Anforderung mehrfach zurückfällt, zuerst im Testverzeichnis nachsehen.** Die Bereichs-Symmetrie war „extrem oft besprochen" und kam jedes Mal zurück, weil eine Suite die Abweichung festgeschrieben hatte. Das ist ein Muster, kein Einzelfall: heute sind vier Prüfungen aufgefallen, die grün blieben, während das Geprüfte falsch war (NK72, NK74, die Heatmap-Konstanten, und diese hier). Vor der nächsten „das hatten wir doch schon"-Meldung lohnt die Frage, welcher Test den alten Zustand verteidigt.
 
 ## 5. Kosten und Cloudflare-Plan
 

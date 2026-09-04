@@ -6086,9 +6086,9 @@ console.log('✓ FusionPulse v4.2.3 Abdeckung sichtbar (ausgefuehrt): OK');
      Leiste unmittelbar darueber vorbei. */
   assert.match(index, /id="q"[^>]*placeholder="Coin suchen/, 'v4.2.3: Die Coin-Suche muss es geben');
   const coinNav = app.slice(app.indexOf('coins: ['), app.indexOf('stocks: [', app.indexOf('coins: [')));
-  assert.match(coinNav, /'\.coinbar'/, 'v4.2.3: Die Coin-Leiste braucht ein eigenes Sprungziel');
+  assert.match(coinNav, /'#coinTools'/, 'v4.2.3: Die Coin-Leiste braucht ein eigenes Sprungziel');
   assert.match(coinNav, /'#coinFavStrip'/, 'v4.2.3: … und die Coin-Favoriten ebenso');
-  assert.ok(coinNav.indexOf("'.coinbar'") < coinNav.indexOf("['main'"),
+  assert.ok(coinNav.indexOf("'#coinTools'") < coinNav.indexOf("['main'"),
     'v4.2.3: Das Ziel muss VOR der Liste stehen — sonst springt man wieder daran vorbei');
 
   /* ---- 2) Favoriten muessen den Server erreichen -------------------------

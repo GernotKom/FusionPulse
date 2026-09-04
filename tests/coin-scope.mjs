@@ -34,27 +34,55 @@ const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8'
     return i;
   };
 
-  const abfolge = [
-    ['id="bandCoin"',        'Überschrift Krypto'],
-    ['class="stage"',        'Fokus + Heatmap'],
-    ['id="topPicksCoin"',    'Top Picks'],
-    ['id="cryptoMovers"',    'Mover'],
-    ['id="sentimentCard"',   'Stimmung'],
-    ['class="coinbar"',      'Suche/Filter'],
-    ['<section id="list"',   'Coin-Liste'],
+  /* ══ v4.2.4 · BEIDE BEREICHE SIND GLEICH GEBAUT ═════════════════════════
+     Nutzeranmerkung vom 03.09.: „die Sektionen sollten gleich aufgebaut sein
+     … das hatten wir schon extrem oft besprochen."
+
+     Bis 4.2.3 war die Abfolge tatsaechlich verschieden, und dieser Test hat
+     die Abweichung sogar FESTGESCHRIEBEN: er verlangte die Coin-Suche
+     zwischen Stimmung und Liste, also ganz unten — waehrend die Aktiensuche
+     seit jeher direkt unter der Ueberschrift steht. Ein Test, der eine
+     Asymmetrie zementiert, macht sie unsichtbar: jede Aenderung in Richtung
+     Symmetrie liess ihn rot werden, und das sah nach einem Fehler aus.
+
+     Deshalb wird ab hier nicht mehr eine feste Liste je Bereich geprueft,
+     sondern die BAUFORM BEIDER BEREICHE GEGENEINANDER. Weicht einer ab, faellt
+     der Test — egal welcher. Das ist die einzige Formulierung, die verhindert,
+     dass die beiden Seiten wieder auseinanderlaufen. */
+  const BAUFORM = [
+    ['Band',        'id="bandCoin"',       'id="bandStock"'],
+    ['Überschrift', '<h2>Coin-Radar</h2>', '<h2>Aktienradar</h2>'],
+    ['Suche',       'id="coinTools"',      'id="stockQ"'],
+    ['Fokus',       'class="stage"',       'class="stockstage"'],
+    ['Top Picks',   'id="topPicksCoin"',   'id="topPicks"'],
+    ['★-Leiste',    'id="coinFavStrip"',   'id="depotStrip"'],
+    ['Liste',       '<section id="list"',  'id="stockGroups"'],
   ];
-  let vorher = -1, vorLabel = 'Anfang';
-  for (const [needle, label] of abfolge) {
-    const pos = at(needle, label);
-    assert.ok(pos > vorher, `Abfolge Kryptobereich verletzt: „${label}" muss NACH „${vorLabel}" stehen`);
-    vorher = pos; vorLabel = label;
+  for (const spalte of [1, 2]) {
+    const markt = spalte === 1 ? 'Krypto' : 'Aktien';
+    let vorher = -1, vorLabel = 'Anfang';
+    for (const zeile of BAUFORM) {
+      const pos = at(zeile[spalte], `${markt}: ${zeile[0]}`);
+      assert.ok(pos > vorher,
+        `${markt}: „${zeile[0]}" muss NACH „${vorLabel}" stehen. Beide Bereiche haben dieselbe Bauform — `
+        + 'Band, Überschrift, Suche, Fokus, Kacheln, ★-Leiste, Liste.');
+      vorher = pos; vorLabel = zeile[0];
+    }
   }
 
-  /* Zwischen Band und Fokus darf NICHTS Krypto-Bezogenes stehen. Sonst waere
-     „an erster Stelle" wieder Auslegungssache. */
-  const zwischenraum = idx.slice(at('id="bandCoin"', 'Band'), at('class="stage"', 'Fokus'));
-  assert.ok(!/data-domain="coin"/.test(zwischenraum.replace(/id="bandCoin"[\s\S]*?<\/div>\s*<\/div>/, '')),
-    'Zwischen Krypto-Band und Fokusfenster darf keine weitere Krypto-Kachel liegen');
+  /* Die Suche steht in BEIDEN Bereichen VOR dem Fokusfenster. Das war der
+     konkrete Unterschied: im Kryptobereich lag sie hinter Top Picks, Movern
+     und Stimmung — wer den Bereich wechselte, suchte sie jedes Mal woanders. */
+  assert.ok(at('id="coinTools"', 'Coin-Suche') < at('class="stage"', 'Coin-Fokus'),
+    'Die Coin-Suche muss VOR dem Fokusfenster stehen, so wie die Aktiensuche auch');
+  assert.ok(at('id="stockQ"', 'Aktiensuche') < at('class="stockstage"', 'Aktien-Fokus'),
+    'Und die Aktiensuche ebenso — sonst ist die Symmetrie in die andere Richtung gebrochen');
+
+  /* Die Trefferliste steht in beiden Bereichen UNTER dem Fokusfenster. */
+  assert.ok(at('class="stage"', 'Coin-Fokus') < at('<section id="list"', 'Coin-Liste'),
+    'Die Coin-Liste gehoert unter das Fokusfenster');
+  assert.ok(at('class="stockstage"', 'Aktien-Fokus') < at('id="stockGroups"', 'Aktienliste'),
+    'Die Aktienliste ebenso');
 
   /* Der Fokus steht vor dem Aktienbereich — sonst waere er nicht „zuerst". */
   assert.ok(at('class="stage"', 'Fokus') < at('<section id="stocks"', 'Aktienabschnitt'),
@@ -272,3 +300,46 @@ function coin(over = {}) {
 }
 
 console.log('✓ FusionPulse v3.30.0 coin-scope (R1) regressions: OK');
+
+/* ══ v4.2.4 · GLEICHE BAUFORM HEISST AUCH GLEICHE BEDIENELEMENTE ══════════
+   Die Reihenfolge oben ist die halbe Symmetrie. Die andere Haelfte sind die
+   Bedienelemente an den entsprechenden Stellen — sonst sind die Bereiche
+   gleich aufgebaut und trotzdem verschieden bedienbar. */
+{
+  const at = (needle, label) => { const i = idx.indexOf(needle); assert.ok(i > 0, `${label} fehlt: ${needle}`); return i; };
+
+  /* 1 · Suchfeld, Loeschknopf, Ladeknopf, Rueckmeldung — beidseitig. */
+  for (const [markt, feld, clear, go, note] of [
+    ['Krypto', 'id="q"',      'id="coinSearchClear"',  'id="coinSearchGo"',  'id="coinSearchNote"'],
+    ['Aktien', 'id="stockQ"', 'id="stockSearchClear"', 'id="stockSearchGo"', 'id="stockSearchPreview"'],
+  ]) {
+    at(feld, `${markt}: Suchfeld`); at(clear, `${markt}: Löschknopf`);
+    at(go, `${markt}: Ladeknopf`);  at(note, `${markt}: Rückmeldung`);
+  }
+
+  /* 2 · Beide Filter bieten die Favoritenansicht an. */
+  const fCoin = idx.slice(at('id="f"', 'Coin-Filter'), at('id="iv"', 'Intervall'));
+  const fStock = idx.slice(at('id="stockF"', 'Aktienfilter'), at('id="watchlistToggle"', 'Watchlist-Schalter'));
+  assert.match(fCoin, /value="favorites"/, 'Der Coin-Filter muss die Favoritenansicht anbieten');
+  assert.match(fStock, /value="favorites"/, 'Der Aktienfilter ebenso');
+
+  /* 3 · DER STERN IM GROSSEN FOKUSFENSTER, BEIDSEITIG.
+     Er stand bis 4.2.3 nur in der Aktien-Fokuskarte. Wer einen Coin im Fokus
+     hatte, musste zum Markieren erst in der Liste danach suchen — obwohl der
+     Fokus die Stelle ist, an der man sich fuer einen Titel entscheidet. */
+  const app2 = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const coinFocus = app2.slice(app2.indexOf('function renderFocus()'), app2.indexOf('function renderMap()'));
+  const stockFocus = app2.slice(app2.indexOf('topBox.innerHTML=`<div class="stockfocus-card'), app2.indexOf('topBox.innerHTML=`<div class="stockfocus-card') + 4000);
+  assert.match(coinFocus, /<h2><button class="favbtn/,
+    'v4.2.4: Das Coin-Fokusfenster braucht die Favoritenmarkierung — die Aktienseite hat sie seit jeher');
+  assert.match(stockFocus, /<h3><button class="favbtn/,
+    'v4.2.4: … und die Aktienseite muss sie behalten');
+  assert.match(coinFocus, /\$\('#focus \[data-favpair\]'\)\?\.addEventListener/,
+    'v4.2.4: Der Stern im Fokus muss auch wirklich schalten, nicht nur dastehen');
+  /* Eine Wirkung, zwei Stellen: der Fokus-Stern ruft denselben Umschalter wie
+     die Listenzeile. Ein eigener Pfad waere die naechste stille Zweitwahrheit. */
+  assert.equal((coinFocus.match(/togglePairFavorite\(/g) || []).length, 1,
+    'v4.2.4: Der Fokus-Stern muss denselben Umschalter benutzen wie die Liste');
+}
+
+console.log('✓ FusionPulse v4.2.4 Symmetrie beider Marktbereiche (ausgefuehrt): OK');

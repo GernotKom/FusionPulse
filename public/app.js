@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.2.4 — Frontend
+   FusionPulse v4.2.5 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1688,6 +1688,11 @@ async function scan(force = false) {
     $('#status').dataset.state = 'ok';
     lastSuccessfulScanTs = Date.now(); reconnectAttempt = 0; authDenied = false;
     $('#stamp').textContent = new Date(data.ts).toLocaleTimeString('de-AT');
+    /* v4.2.4 · Gegenstueck zu `#stockCounts`. Die Coin-Seite nannte ihren
+       Umfang bisher nur in der Systemzeile ganz oben; im Bereich selbst stand
+       er nicht. */
+    { const cc=$('#coinCounts');
+      if(cc) cc.textContent=`${Number(data.scanned ?? rows.length)} gescannt / ${Number(data.universe ?? rows.length)} Universum · ${visible().length} angezeigt · ★ ${(S.favoritePairs||[]).length}`; }
   } catch (e) {
     if (e.name === 'AbortError' && localController.signal.aborted && req !== scanReqSeq) return;
     const msg = String(e.message || e);
@@ -2364,17 +2369,17 @@ async function searchCoinNow(pairOverride) {
   if (!raw) return;
   if (!pairOverride && (coinSearchBusy || Date.now() - coinSearchLastTs < 800)) return;
   const pair = raw.includes('-') ? raw : `${raw}-EUR`;
-  if (!/^[A-Z0-9]{2,12}-EUR$/.test(pair)) { if (note) { note.textContent = `„${raw}" ist kein gültiges Paar.`; note.className = 'coin-search-note bad'; } return; }
-  if (rows.some((r) => r.pair === pair)) { select(pair, true); if (note) { note.textContent = 'bereits geladen'; note.className = 'coin-search-note'; } return; }
+  if (!/^[A-Z0-9]{2,12}-EUR$/.test(pair)) { if (note) { note.textContent = `„${raw}" ist kein gültiges Paar.`; note.className = 'stock-search-preview bad'; } return; }
+  if (rows.some((r) => r.pair === pair)) { select(pair, true); if (note) { note.textContent = 'bereits geladen'; note.className = 'stock-search-preview'; } return; }
   coinSearchBusy = true; coinSearchLastTs = Date.now();
-  if (note) { note.textContent = 'lädt …'; note.className = 'coin-search-note'; }
+  if (note) { note.textContent = 'lädt …'; note.className = 'stock-search-preview'; }
   try {
     const q = new URLSearchParams({ mode: S.analysisMode, comp: S.components.join(','), minCrv: S.minCrvCoin });
     if (S.token) q.set('t', S.token);
     const res = await fetchWithTimeout(`/api/pair/${encodeURIComponent(pair)}?${q}`, { cache: 'no-store' }, 12_000);
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data?.row) {
-      if (note) { note.textContent = res.status === 404 ? `${sym(pair)}: zu wenig Daten bei Bitpanda.` : (data?.error || `${sym(pair)} nicht ladbar.`); note.className = 'coin-search-note bad'; }
+      if (note) { note.textContent = res.status === 404 ? `${sym(pair)}: zu wenig Daten bei Bitpanda.` : (data?.error || `${sym(pair)} nicht ladbar.`); note.className = 'stock-search-preview bad'; }
       return;
     }
     const row = { ...data.row, _remembered: true, _rememberedTs: Date.now() };
@@ -2382,10 +2387,10 @@ async function searchCoinNow(pairOverride) {
     rows = [...rows.filter((r) => r.pair !== pair), row];
     selected = pair; pinned = true;
     if (input) input.value = '';
-    if (note) { note.textContent = `${sym(pair)} einzeln geladen — keine Freigabe aus Einzelabfragen.`; note.className = 'coin-search-note'; }
+    if (note) { note.textContent = `${sym(pair)} einzeln geladen — keine Freigabe aus Einzelabfragen.`; note.className = 'stock-search-preview'; }
     render();
   } catch (e) {
-    if (note) { note.textContent = `${sym(pair)}: ${String(e?.message || e)}`; note.className = 'coin-search-note bad'; }
+    if (note) { note.textContent = `${sym(pair)}: ${String(e?.message || e)}`; note.className = 'stock-search-preview bad'; }
   } finally { coinSearchBusy = false; }
 }
 function renderCoinFavStrip() {
@@ -4417,7 +4422,11 @@ function renderFocus() {
     <div class="fmain">
       <div class="fhead">
         <div>
-          <h2>${sym(r.pair)} <small>${num(r.price)}</small><a class="gfinance focus-link" href="${bitpandaUrl()}" target="_blank" rel="noopener" title="${esc(bitpandaTitle(r.pair))}">Bitpanda Fusion ↗</a></h2>
+          <!-- v4.2.4: Der Stern stand nur in der Listenzeile, nicht im grossen
+               Fokusfenster — die Aktienseite hatte ihn dort seit jeher. Wer den
+               Coin im Fokus hatte, musste zum Markieren erst in der Liste danach
+               suchen. Gleiche Bauform heisst auch: gleiche Bedienelemente. -->
+          <h2><button class="favbtn ${isFavPair(r.pair)?'on':''}" data-favpair="${r.pair}" title="${isFavPair(r.pair)?'Aus Coin-Favoriten entfernen':'Zu Coin-Favoriten hinzufügen — wird im Scan bevorzugt geladen'}">${isFavPair(r.pair)?'★':'☆'}</button>${sym(r.pair)} <small>${num(r.price)}</small><a class="gfinance focus-link" href="${bitpandaUrl()}" target="_blank" rel="noopener" title="${esc(bitpandaTitle(r.pair))}">Bitpanda Fusion ↗</a></h2>
           <p class="fsetup" title="${esc(explainSetup(r))}">${r.orderType === 'stop' ? '▲ Stop-Buy' : '▼ Limit-Buy'} · ${esc(r.setup)}</p>
         </div>
         <div class="fpins">
@@ -4479,6 +4488,9 @@ function renderFocus() {
   $('#fqty').onclick = (e) => copy(s ? String(s.qty) : '0', e.target);
   $('#fdet').onclick = () => openDetail(r.pair);
   $('#fmute').onclick = (e) => togglePairMute(r.pair, e);
+  /* v4.2.4: Der Stern im Fokusfenster. Er haengt am selben Umschalter wie der
+     in der Listenzeile — eine Wirkung, zwei Stellen, keine zweite Wahrheit. */
+  $('#focus [data-favpair]')?.addEventListener('click', (e) => togglePairFavorite(r.pair, e));
 
   $('#dsym').textContent = sym(r.pair);
   $('#dplan').textContent = `${r.orderType === 'stop' ? 'Stop' : 'Limit'} ${num(r.entry)} · SL ${num(r.stop)} · ${s ? eur(s.notional, 0) : '–'}`;
@@ -6193,7 +6205,8 @@ $('#sReset').onclick = hardReload;
 $('#sCompAll').onclick = () => $$('#sComponents input[data-comp]').forEach((c) => { c.checked = true; });
 $('#sCompElliott').onclick = () => $$('#sComponents input[data-comp]').forEach((c) => { c.checked = c.dataset.comp === 'elliott'; });
 $('#sClose').onclick = () => $('#settings').classList.remove('open');
-$('#q').oninput = () => { const n=$('#coinSearchNote'); if(n && n.textContent){n.textContent='';n.className='coin-search-note';} render(); };
+$('#q').oninput = () => { $('#coinSearchClear')?.classList.toggle('hidden', !$('#q').value); const n=$('#coinSearchNote'); if(n && n.textContent){n.textContent='';n.className='stock-search-preview';} render(); };
+$('#coinSearchClear').onclick = () => { $('#q').value=''; $('#coinSearchClear').classList.add('hidden'); const n=$('#coinSearchNote'); if(n){n.textContent='';n.className='stock-search-preview';} render(); };
 /* v4.2.3: Enter und 🔎 laden ein Paar auch ausserhalb des laufenden Scans. */
 $('#q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); searchCoinNow(); } });
 $('#coinSearchGo').onclick = () => searchCoinNow();
@@ -6386,21 +6399,17 @@ const VIEW_SECTIONS = {
    von oben nach unten durchlaeuft und den letzten Treffer nimmt. */
   coins: [
     ['#bandCoin',          'Krypto', 'Anfang des Kryptobereichs.'],
+    /* v4.2.4 · Die Suche steht jetzt DORT, wo sie auf der Aktienseite auch
+       steht: direkt unter der Überschrift und VOR dem Fokusfenster. Bis 4.2.3
+       lag sie ganz unten hinter Top Picks, Movern und Stimmung — und hatte
+       überhaupt kein Sprungziel. Diese Liste MUSS der DOM-Reihenfolge folgen
+       (siehe oben), deshalb wandert der Eintrag mit. */
+    ['#coinTools',        'Suche', 'Coin-Suche, Filter (auch ★ Favoriten) und Scan-Intervall.'],
     ['.stage',            'Fokus',        'Krypto-Fokusfenster mit Heatmap — der ausgewählte Coin im Detail.'],
     ['#topPicksCoin',     'Top Picks',    'Rangfolge nach erwartetem Netto-Euro je Tag, aus aufgezeichneten Fällen.'],
     ['#cryptoMovers',     'Mover',        'Coins mit der stärksten gemessenen Bewegung der letzten Stunde.'],
     ['#sentimentCard',    'Stimmung',     'Fear-&-Greed-Index. Reine Einordnung, 0 % BUY-Gewicht.'],
-    /* v4.2.3 · DIE SUCHE HATTE KEIN SPRUNGZIEL. `.coinbar` traegt Coin-Suche,
-       Coin-Filter (samt „★ Coin-Favoriten") und Scan-Intervall — und stand in
-       dieser Liste nicht. Wer auf „Coin-Liste" tippte, sprang auf `main` und
-       damit GENAU AN DER LEISTE VORBEI: sie liegt unmittelbar darueber und war
-       nach dem Sprung nach oben aus dem Bild. Der Nutzerbefund lautete
-       folgerichtig „eine Coin-Suche fehlt komplett". Sie war da, nur nie
-       erreichbar. Das Aktien-Pendant hatte sein Ziel von Anfang an
-       (`#stockGroups` liegt unter der Suchleiste, aber die Aktienleiste steht
-       im sichtbaren Kopfbereich). */
     ['#coinFavStrip',     'Favoriten',    'Deine mit ★ markierten Coins. Sie werden dem Scan vorangestellt.'],
-    ['.coinbar',          'Suche',        'Coin-Suche, Filter (auch ★ Favoriten) und Scan-Intervall.'],
     ['main',              'Coin-Liste',   'Die vollständige Trefferliste unterhalb von Fokus und Heatmap.'],
   ],
   stocks: [
