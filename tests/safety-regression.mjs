@@ -1641,8 +1641,15 @@ console.log('✓ FusionPulse v3.9.1 ui-reachability/order/broker-availability re
   // -- Discovery-Kacheln stehen vor Depot/Portfolio/Learning, aber hinter Fokus/Heatmap.
   assert.ok(pos('<div class="stockstage">') < pos('id="marketGainers"'),
     'Fokus/Heatmap muss vor den Discovery-Kacheln stehen');
-  assert.ok(pos('id="marketGainers"') < pos('id="depotStrip"'),
-    'Discovery-Kacheln muessen vor dem Depot-Streifen stehen');
+  /* v4.2.8 · Hier stand bis 4.2.7 die Umkehrung: „Discovery-Kacheln muessen
+     VOR dem Depot-Streifen stehen." Das war die Reihenfolge aus v3.9.2 und
+     ist auf ausdruecklichen Nutzerwunsch gedreht: hinter dem Skope-Fenster
+     kommt die eigene Auswahl und die Trefferliste, danach die Empfehlungen.
+     Erst was IST, dann was VORGESCHLAGEN wird. Die Zusicherung wird deshalb
+     nicht geloescht, sondern umgedreht — sonst waere die neue Reihenfolge
+     ungeschuetzt. */
+  assert.ok(pos('id="depotStrip"') < pos('id="marketGainers"'),
+    'Depot-Streifen und Trefferliste stehen VOR den Discovery-Kacheln (v4.2.8)');
   assert.ok(pos('id="openingPanel"') < pos('id="portfolioRisk"'),
     'Premarket-Kachel muss vor dem Portfolio-Risiko stehen');
   assert.ok(pos('id="extendedWatch"') < pos('id="attributionReport"'),
@@ -4283,14 +4290,19 @@ console.log('✓ FusionPulse v3.24.0 endpoint-seam/boot-watchdog regressions: OK
     'Das AKTIEN-Band muss INNERHALB des Aktienabschnitts liegen — ausserhalb liest es sich als Ende der Coin-Liste');
   assert.ok(bandStock < radar, 'Und direkt ueber „Aktienradar"');
   // Es darf auch nichts Krypto-Bezogenes mehr dazwischenstehen.
-  const coinList = at('<section id="list"', 'Coin-Liste');
+  const coinList = at('id="coinList"', 'Coin-Liste');
   assert.ok(coinList < stocksOpen, 'Die Coin-Liste muss vor dem Aktienabschnitt enden');
 
   /* -- 2. Die geforderte Abfolge im Aktienbereich -------------------------- */
+  /* v4.2.8 · Depot und Liste sind nach VORN gewandert, direkt hinter das
+     Skope-Fenster — auf ausdruecklichen Nutzerwunsch und spiegelbildlich zum
+     Kryptobereich. Die Kachelreihenfolge untereinander bleibt unveraendert. */
   const reihenfolge = [
     ['id="bandStock"',       'Überschrift'],
     ['<h2>Aktienradar</h2>', 'Umfang/Suche'],
-    ['class="stockstage"',   'Fokus'],
+    ['class="stockstage"',   'Skope-Fenster'],
+    ['id="depotStrip"',      'Depot'],
+    ['id="stockGroups"',     'Liste'],
     ['id="topPicks"',        'Top Picks'],
     ['id="marketGainers"',   'Momentum'],
     ['id="openingPanel"',    'Premarket'],
@@ -4298,9 +4310,7 @@ console.log('✓ FusionPulse v3.24.0 endpoint-seam/boot-watchdog regressions: OK
     ['id="sectorLaggards"',  'Nachzügler'],
     ['id="earningsBoard"',   'Zahlen'],
     ['id="gateFunnel"',      'Trichter'],
-    ['id="depotStrip"',      'Depot'],
     ['id="portfolioRisk"',   'Risiko'],
-    ['id="stockGroups"',     'Liste'],
   ];
   let vorher = -1, vorLabel = 'Anfang';
   for (const [needle, label] of reihenfolge) {
@@ -4310,7 +4320,7 @@ console.log('✓ FusionPulse v3.24.0 endpoint-seam/boot-watchdog regressions: OK
   }
 
   /* -- 3. LAB liegt HINTER den Aktien, nicht darin ------------------------- */
-  const stocksClose = idx.indexOf('</section>', at('id="stockGroups"', 'Aktienliste'));
+  const stocksClose = idx.indexOf('</section>', at('id="portfolioRisk"', 'Portfolio-Risiko'));
   for (const [needle, label] of [['id="learningReport"', 'Learning'],
                                  ['id="patternLab"', 'Musterlabor'],
                                  ['id="attributionReport"', 'Selbstauswertung'],
@@ -6088,7 +6098,7 @@ console.log('✓ FusionPulse v4.2.3 Abdeckung sichtbar (ausgefuehrt): OK');
   const coinNav = app.slice(app.indexOf('coins: ['), app.indexOf('stocks: [', app.indexOf('coins: [')));
   assert.match(coinNav, /'#coinTools'/, 'v4.2.3: Die Coin-Leiste braucht ein eigenes Sprungziel');
   assert.match(coinNav, /'#coinFavStrip'/, 'v4.2.3: … und die Coin-Favoriten ebenso');
-  assert.ok(coinNav.indexOf("'#coinTools'") < coinNav.indexOf("['main'"),
+  assert.ok(coinNav.indexOf("'#coinTools'") < coinNav.indexOf("'#coinList'"),
     'v4.2.3: Das Ziel muss VOR der Liste stehen — sonst springt man wieder daran vorbei');
 
   /* ---- 2) Favoriten muessen den Server erreichen -------------------------

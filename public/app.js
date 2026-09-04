@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.2.7 — Frontend
+   FusionPulse v4.2.8 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -6398,34 +6398,35 @@ const VIEW_SECTIONS = {
    Fortschrittsbalken beim Scrollen vor und zurueck, weil `markActiveSection`
    von oben nach unten durchlaeuft und den letzten Treffer nimmt. */
   coins: [
-    ['#bandCoin',          'Krypto', 'Anfang des Kryptobereichs.'],
-    /* v4.2.4 · Die Suche steht jetzt DORT, wo sie auf der Aktienseite auch
-       steht: direkt unter der Überschrift und VOR dem Fokusfenster. Bis 4.2.3
-       lag sie ganz unten hinter Top Picks, Movern und Stimmung — und hatte
-       überhaupt kein Sprungziel. Diese Liste MUSS der DOM-Reihenfolge folgen
-       (siehe oben), deshalb wandert der Eintrag mit. */
-    ['#coinTools',        'Suche', 'Coin-Suche, Filter (auch ★ Favoriten) und Scan-Intervall.'],
-    ['.stage',            'Fokus',        'Krypto-Fokusfenster mit Heatmap — der ausgewählte Coin im Detail.'],
+    /* v4.2.8 · Die Liste MUSS der DOM-Reihenfolge folgen (siehe oben) — und
+       die DOM-Reihenfolge ist ab 4.2.8 wieder die aus dem Markup, weil
+       `applyPrimaryBlockOrder` das Skope-Fenster nicht mehr verschiebt. */
+    ['#bandCoin',         'Krypto',       'Anfang des Kryptobereichs.'],
+    ['.stage',            'Skope',        'Krypto-Fokusfenster mit Suche und Heatmap — der ausgewählte Coin im Detail.'],
+    ['#coinTools',        'Suche',        'Coin-Suche, Filter (auch ★ Favoriten) und Scan-Intervall. Steht im Skope-Fenster.'],
+    ['#coinFavStrip',     'Favoriten',    'Deine mit ★ markierten Coins. Sie werden dem Scan vorangestellt.'],
+    ['#coinList',         'Coin-Liste',   'Die vollständige Trefferliste, direkt unter dem Skope-Fenster.'],
     ['#topPicksCoin',     'Top Picks',    'Rangfolge nach erwartetem Netto-Euro je Tag, aus aufgezeichneten Fällen.'],
     ['#cryptoMovers',     'Mover',        'Coins mit der stärksten gemessenen Bewegung der letzten Stunde.'],
     ['#sentimentCard',    'Stimmung',     'Fear-&-Greed-Index. Reine Einordnung, 0 % BUY-Gewicht.'],
-    ['#coinFavStrip',     'Favoriten',    'Deine mit ★ markierten Coins. Sie werden dem Scan vorangestellt.'],
-    ['main',              'Coin-Liste',   'Die vollständige Trefferliste unterhalb von Fokus und Heatmap.'],
   ],
   stocks: [
+    /* v4.2.8 · Spiegelbild des Kryptobereichs: hinter dem Skope-Fenster kommen
+       Depot und Trefferliste, erst danach die Empfehlungs- und
+       Discovery-Kacheln. Diese Liste MUSS der DOM-Reihenfolge folgen. */
     ['#bandStock',        'Aktien',       'Anfang des Aktienbereichs.'],
-    ['.stockstage',       'Fokus',        'Aktien-Fokusfenster mit Heatmap.'],
+    ['.stockstage',       'Skope',        'Aktien-Fokusfenster mit Suche und Heatmap.'],
+    ['#stockQ',           'Suche',        'Aktiensuche, Filter und Radar-/Watchlist-Schalter. Steht im Skope-Fenster.'],
+    ['#depotStrip',       'Depot',        'Deine mit ★ markierten Titel.'],
+    ['#stockGroups',      'Liste',        'Die vollständige Aktien-Trefferliste, direkt unter dem Skope-Fenster.'],
     ['#topPicks',         'Top Picks',    'Rangfolge nach erwartetem Netto-Euro je Handelstag, aus aufgezeichneten Fällen.'],
-    ['#eveningList',      'Vorabend',     'Kandidaten für den nächsten Handelstag aus Tagesbalken: Trigger, Stop und Ziel.'],
     ['#marketGainers',    'Momentum',     'Bewegung während der laufenden US-Handelszeit.'],
     ['#openingPanel',     'Premarket',    'Gaps vor der Eröffnung (Alpaca).'],
     ['#extendedWatch',    'Nachbörse',    'Bewegung nach Handelsschluss.'],
     ['#sectorLaggards',   'Nachzügler',   'Sektor läuft, Titel hinkt noch — Grund hinzusehen, kein Kaufsignal.'],
     ['#earningsBoard',    'Zahlen',       'Anstehende Quartalszahlen der beobachteten Titel, nach Sektor.'],
     ['#gateFunnel',       'Trichter',     'Woran die Kauf-Freigaben im aktuellen Durchlauf hängen.'],
-    ['#depotStrip',       'Depot',        'Deine mit ★ markierten Titel.'],
     ['#portfolioRisk',    'Risiko',       'Gesamtrisiko über alle offenen Positionen und Klumpungswarnung.'],
-    ['#stockGroups',      'Liste',        'Die vollständige Aktien-Trefferliste.'],
   ],
   lab: [
     ['#bandLab',            'Auswertung', 'Anfang des Auswertungsbereichs — Rückblick über beide Märkte.'],
@@ -6497,11 +6498,35 @@ if(typeof window!=='undefined' && typeof window.addEventListener==='function'){
 document.body.addEventListener('pointerdown', () => audio(), { once: true });
 
 function applyPrimaryBlockOrder(){
-  // v3.3.2 UX: Aktien sind der erste Hauptblock. Im Krypto-Block kommt
-  // zuerst die Coin-Tabelle und erst danach das große Detail-/Fokusfenster.
-  const viewbar=document.querySelector('.viewbar'), stocks=$('#stocks'), main=document.querySelector('main'), stage=document.querySelector('.stage');
+  /* ══ v4.2.8 · HIER WURDE JEDE KORREKTUR AM MARKUP WIEDER AUFGEHOBEN ══════
+     Bis 4.2.7 stand hier zusätzlich:
+
+         if(main && stage) main.insertAdjacentElement('afterend', stage);
+
+     Das hat das Krypto-Skope-Fenster beim Start HINTER `<main>` geschoben —
+     und in `<main>` lagen die Coin-Liste, der gesamte Aktienbereich UND die
+     Auswertung. Das Fenster landete damit ganz am Ende der Seite, hinter dem
+     Lab. Genau das war die Beobachtung „das Skope-Fenster steht immer noch
+     ganz unten".
+
+     Und es erklärt, warum die Sache mehrfach zurückkam: die Reihenfolge im
+     Markup war seit 4.2.5 richtig, jeder Test darauf war grün — nur sah der
+     Browser etwas anderes, weil diese Zeile beim Booten die Reihenfolge
+     überschrieb. Ein Test, der die Datei liest, kann das grundsätzlich nicht
+     bemerken.
+
+     Die Begründung von v3.3.2 („im Krypto-Block zuerst die Coin-Tabelle,
+     dann das Fokusfenster") ist damit ohnehin überholt: gewünscht ist
+     Skope-Fenster ZUERST, dann die Liste, dann die Empfehlungen. Das steht
+     jetzt so im Markup und wird nicht mehr zur Laufzeit verbogen.
+
+     Was bleibt, ist EIN Umzug: der Aktienblock wandert nach oben. Er liegt im
+     Markup innerhalb von `<main>`, weil dort auch die Auswertung steht; für
+     die Anzeige gehört er aber vor den Kryptoblock. Ein einziger dokumentierter
+     Umzug ist vertretbar — eine zweite Reihenfolge neben dem Markup ist es
+     nicht. */
+  const viewbar=document.querySelector('.viewbar'), stocks=$('#stocks');
   if(viewbar&&stocks) viewbar.insertAdjacentElement('afterend',stocks);
-  if(main&&stage) main.insertAdjacentElement('afterend',stage);
 }
 
 /* --------------------------------------------------------------------- Boot */

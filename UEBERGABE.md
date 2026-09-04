@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 04.09.2026, Version **4.2.7**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 04.09.2026, Version **4.2.8**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -299,6 +299,32 @@ Die Bauform lautet damit: **Band → Überschrift → Skope-Fenster mit Suche da
 
 **Drei Negativkontrollen**, alle gefeuert: Coin-Suche zurück vor das Fenster · Aktien-Suche zurück vor das Fenster · Trennlinie der Auswertung entfernt.
 
+### 4.2.8 · Eine zweite, unsichtbare Reihenfolge neben dem Markup
+
+**Das ist die Erklärung dafür, warum die Anordnung der Coin-Sektion mehrfach zurückkam — und der schwerwiegendste Testbefund dieser Serie.**
+
+In `applyPrimaryBlockOrder()` stand seit v3.3.2:
+
+```js
+if(main && stage) main.insertAdjacentElement('afterend', stage);
+```
+
+Diese Zeile schob das Krypto-Skope-Fenster **beim Booten** hinter `<main>`. Und in `<main>` lagen die Coin-Liste, der gesamte Aktienbereich UND die Auswertung. Das Fenster landete damit ganz am Ende der Seite, hinter dem Lab.
+
+**Die Reihenfolge im Markup war seit 4.2.5 richtig. Alle Prüfungen darauf waren grün. Der Browser sah trotzdem etwas anderes.** Ein Test, der `index.html` liest, kann das grundsätzlich nicht bemerken — und alle taten das. Jede Korrektur am Markup war wirkungslos, und weil sie „grün" war, sah es jedes Mal nach Erledigung aus.
+
+**Die neue Reihenfolge, in beiden Bereichen:** Band → Überschrift → Skope-Fenster (mit Suche darin) → ★-Leiste → Trefferliste → Empfehlungen. Erst was IST, dann was VORGESCHLAGEN wird. Bis 4.2.7 stand die Aktienliste hinter neun Kacheln am Ende des Abschnitts; wer den Fokus gelesen hatte, musste an allem vorbeiscrollen.
+
+Dafür musste die Coin-Liste aus `<main>` heraus in einen eigenen Abschnitt `#coinList` — vorher lag sie zusammen mit Aktien und Auswertung in einem Container und war gar nicht frei positionierbar.
+
+**Der neue Test prüft die FUNKTION, nicht die Datei.** `applyPrimaryBlockOrder` darf genau EINEN Umzug ausführen: den Aktienblock nach oben. Jedes weitere `insertAdjacentElement`, `insertBefore`, `append` oder `prepend` dort ist eine neue Zweitwahrheit und wird rot, bevor sie ein Layouträtsel wird. Zusätzlich: im gesamten Boot-Pfad darf kein weiterer Block umgehängt werden.
+
+**Drei Negativkontrollen**, alle gefeuert: die gelöschte Zeile wieder eingebaut (der eigentliche Fehler) · Coin-Liste zurück hinter die Empfehlungen · Aktienliste zurück ans Ende.
+
+**Zwei Zusicherungen wurden bewusst umgedreht statt gelöscht:** „Discovery-Kacheln vor dem Depot-Streifen" (v3.9.2) und die Abfolgeliste des Aktienbereichs. Eine gelöschte Zusicherung lässt die neue Reihenfolge ungeschützt; eine umgedrehte hält sie fest.
+
+**Fünfter Fall derselben Krankheit in dieser Serie** — nach NK72 (Kommentare als Aufrufe), NK74 (Berechnung statt Anzeige), den abgeschriebenen Heatmap-Konstanten und dem mehrdeutigen `class="stocktools"`-Anker. Der gemeinsame Nenner: **der Test hat nicht das gelesen, was tatsächlich wirkt.**
+
 ### Zwei Entscheidungen, die dabei getroffen wurden
 
 **1. Der Altbestand wird nicht zurückgeholt.** Alles vor 4.2.3 trägt irrtümlich `dropped_ts`; die Rohdaten stehen noch da. Ein Zurücksetzen wäre technisch ein Einzeiler, brächte aber nichts: ohne Protokolleinträge für diese Zeitfenster verwürfe der Auflöser dieselben Zeilen sofort wieder, und der Versuch kostete Schreibzeilen aus dem knappen Budget. **Die Messung beginnt bei null.** Die erste auswertbare Basis entsteht damit frühestens nach einigen Handelstagen — das ist der Preis dafür, dass vorher nichts entstanden ist.
@@ -428,6 +454,10 @@ Eine ältere Regex-Zusicherung auf die Inline-Formel (`safety-regression.mjs`, Z
 14. **Die Coin-Suche über `/api/pair/` kostet zwei Unterabfragen je Aufruf** und umgeht das Orderbuch des Scans. Für den Einzelblick ist das richtig; falls sie häufig genutzt wird, im Bandbreitenzweig von `/api/health` nachsehen.
 
 15. **Wenn eine Anforderung mehrfach zurückfällt, zuerst im Testverzeichnis nachsehen.** Die Bereichs-Symmetrie war „extrem oft besprochen" und kam jedes Mal zurück, weil eine Suite die Abweichung festgeschrieben hatte. Das ist ein Muster, kein Einzelfall: heute sind vier Prüfungen aufgefallen, die grün blieben, während das Geprüfte falsch war (NK72, NK74, die Heatmap-Konstanten, und diese hier). Vor der nächsten „das hatten wir doch schon"-Meldung lohnt die Frage, welcher Test den alten Zustand verteidigt.
+
+16. **Die Aktien-Heatmap zeigt immer dieselben Titel — noch nicht abschließend geklärt.** Bei geschlossener US-Börse ist das erwartbar: `0 aktualisiert`, `Daten veraltet`, die Oberfläche wird aus dem serverseitig persistierten Scan bedient, und ein Neustart der App ändert daran nichts. Die Rotation im Code ist vorhanden und hängt an `cycle = Math.floor(minuteSlot/2)`, also alle zwei Minuten — sowohl für Favoriten (`(cycle*2)%favs.length`) als auch für die Sektorreserve und die Exploration (`(cycle*7)%KATALOG`). **Offen ist, ob sie während der US-Sitzung tatsächlich greift.** Zu prüfen an einem Screenshot bei offener Börse: ändert sich die Punktwolke zwischen zwei Deep-Scans, und was steht in `queue` (favorites/recheck/gainers/radar/boats/explore) aus `/api/stocks`? Steht dort `explore: 0`, verfällt die Rotationsquelle, weil die vorherigen Töpfe `deepLimit` bereits füllen.
+
+17. **Alle Punkte der Heatmap liegen im Quadranten „Muster stark / gut handelbar".** Eine Karte, auf der alles in einer Ecke sitzt, trägt keine Information. Unabhängig von Punkt 16 zu klären, ob Qualität und Handelbarkeit sättigen oder ob die Skalierung zu eng ist.
 
 ## 5. Kosten und Cloudflare-Plan
 

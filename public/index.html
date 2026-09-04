@@ -8,9 +8,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/style.css?v=4.2.7">
+<link rel="stylesheet" href="/style.css?v=4.2.8">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
-<script src="/version.js?v=4.2.7"></script>
+<script src="/version.js?v=4.2.8"></script>
 <!-- ══════════════════════════════════════════════ v3.24.0 · BOOT-WÄCHTER ═══
      ANLASS: Am 29.08. stand die Oberfläche still — Statusampeln grau, Version
      "v–", Taktuhr "--:--". Alles stand auf den STATISCHEN Startwerten aus
@@ -66,13 +66,13 @@
   });
 })();
 </script>
-<title>FusionPulse 4.2.7</title>
+<title>FusionPulse 4.2.8</title>
 <!-- v3.14.1: Versionsstempel der SHELL (index.html). Wird von sync-version.mjs
      gesetzt und beim Start gegen FP_VERSION aus version.js verglichen. Weichen
      die beiden ab, ist eine halb aktualisierte Auslieferung im Umlauf: neues
      app.js/style.css auf altem index.html. Das erzeugt Fehler, die wie
      Layout-Probleme aussehen, aber keine sind — und kostet beim Suchen Stunden. -->
-<meta name="fp-shell-version" content="4.2.7">
+<meta name="fp-shell-version" content="4.2.8">
 </head>
 <body>
 <!-- v3.24.0 · Wird nur sichtbar, wenn app.js nicht startet. -->
@@ -231,6 +231,29 @@
 </div>
 
 
+<!-- ═══════════════════════════════════════════ Coin-Trefferliste ═══ -->
+<!-- v4.2.4: Steht wie #depotStrip unmittelbar ueber der Trefferliste. -->
+<div id="coinFavStrip" class="depotstrip" data-domain="coin" title="Deine mit ★ markierten Coins. Sie werden dem Scan vorangestellt und bleiben sichtbar, auch wenn der laufende Durchlauf sie nicht auswählt."></div>
+
+<!-- ═══════════════════════════════════════════════ v4.2.8 · REIHENFOLGE ═══
+     Nach dem Skope-Fenster kommt die COIN-LISTE und erst danach kommen die
+     Empfehlungen. Bis 4.2.7 lag die Liste in <main>, gemeinsam mit dem
+     Aktienbereich und der Auswertung — sie war damit gar nicht frei
+     positionierbar. Jetzt ist sie ein eigener Abschnitt an ihrer richtigen
+     Stelle im Kryptoblock. -->
+<section id="coinList" data-domain="coin">
+  <div class="thead" data-domain="coin">
+    <span title="Coin und Signalstatus. Grün pulsierend = Kauf-Freigabe; Lautsprecher schaltet nur diesen Coin stumm.">Coin</span><span title="Kurzfristiger Verlauf">Verlauf</span><span title="Erkannte Setup-Art; Mouseover erklärt das Muster.">Setup</span>
+    <span class="ta" title="Reife = Anzahl aufeinanderfolgender Scans, die denselben Signalzustand bestätigt haben, und die Dauer dieses Zustands.">Reife</span><span title="Zonenlage: UNTER ZONE = noch unter dem geplanten Einstieg; IN ZONE = im interessanten Einstiegsbereich, aber noch kein automatisches BUY; ÜBER ZONE = Einstieg davongelaufen, nicht hinterherlaufen.">Zonenlage</span>
+    <span class="ta" title="Netto-CRV: erwarteter Ertrag im Verhältnis zum Risiko nach geschätzten Kosten">CRV</span><span class="ta" title="Kaufsumme in Euro: risikobasiert berechnet und zusätzlich durch deinen Maximalbetrag sowie ggf. Marktliquidität begrenzt">Kaufsumme</span><span class="ta" title="Q = Setup-Qualität, H = Handelbarkeit/Ausführbarkeit">Q·H</span>
+  </div>
+  <section id="list" data-domain="coin"></section>
+  <button id="more" class="more hidden"></button>
+  <section id="rest" class="hidden" data-domain="coin"></section>
+</section>
+
+<!-- v4.2.8: Die Empfehlungen kommen NACH der Liste. Erst was IST (Fokus,
+     dann die Treffer), danach was VORGESCHLAGEN wird. -->
 <!-- v3.9.2: Gegenstueck zur Aktien-Discovery auf der Krypto-Seite. Ein echtes
      "Premarket" gibt es bei Krypto nicht — der Markt laeuft durchgehend. Die
      Kachel zeigt deshalb die tatsaechlich gemessene Kurzfristbewegung und sagt
@@ -241,19 +264,9 @@
 
 <section id="sentimentCard" data-tile="sentiment" class="sentiment-card" data-domain="coin" title="Krypto-Stimmungsindex (Fear &amp; Greed) von alternative.me. Misst die Marktstimmung, nicht die Qualität eines Trades — und gilt ausschließlich für Krypto, nicht für Aktien. 0 % Gewicht in Score und Kauf-Freigabe."></section>
 
-<!-- ═══════════════════════════════════════════ Coin-Trefferliste ═══ -->
-<!-- v4.2.4: Steht wie #depotStrip unmittelbar ueber der Trefferliste. -->
-<div id="coinFavStrip" class="depotstrip" data-domain="coin" title="Deine mit ★ markierten Coins. Sie werden dem Scan vorangestellt und bleiben sichtbar, auch wenn der laufende Durchlauf sie nicht auswählt."></div>
 
 <main>
-  <div class="thead" data-domain="coin">
-    <span title="Coin und Signalstatus. Grün pulsierend = Kauf-Freigabe; Lautsprecher schaltet nur diesen Coin stumm.">Coin</span><span title="Kurzfristiger Verlauf">Verlauf</span><span title="Erkannte Setup-Art; Mouseover erklärt das Muster.">Setup</span>
-    <span class="ta" title="Reife = Anzahl aufeinanderfolgender Scans, die denselben Signalzustand bestätigt haben, und die Dauer dieses Zustands.">Reife</span><span title="Zonenlage: UNTER ZONE = noch unter dem geplanten Einstieg; IN ZONE = im interessanten Einstiegsbereich, aber noch kein automatisches BUY; ÜBER ZONE = Einstieg davongelaufen, nicht hinterherlaufen.">Zonenlage</span>
-    <span class="ta" title="Netto-CRV: erwarteter Ertrag im Verhältnis zum Risiko nach geschätzten Kosten">CRV</span><span class="ta" title="Kaufsumme in Euro: risikobasiert berechnet und zusätzlich durch deinen Maximalbetrag sowie ggf. Marktliquidität begrenzt">Kaufsumme</span><span class="ta" title="Q = Setup-Qualität, H = Handelbarkeit/Ausführbarkeit">Q·H</span>
-  </div>
-  <section id="list" data-domain="coin"></section>
-  <button id="more" class="more hidden"></button>
-  <section id="rest" class="hidden" data-domain="coin"></section>
+
 
 
   <section id="stocks" class="stocks" data-domain="stock">
@@ -322,6 +335,15 @@
         </div>
       </aside>
     </div>
+    <!-- ══ v4.2.8 · ERST WAS IST, DANN WAS VORGESCHLAGEN WIRD ══════════════
+         Dieselbe Reihenfolge wie im Kryptobereich: hinter dem Skope-Fenster
+         kommt die eigene Auswahl (★) und die Trefferliste, und erst danach
+         die Empfehlungs- und Discovery-Kacheln. Bis 4.2.7 stand die Liste am
+         Ende des Abschnitts, hinter neun Kacheln — wer den Fokus gelesen
+         hatte, musste an allem vorbeiscrollen, um die Treffer zu sehen. -->
+    <div id="depotStrip" class="depotstrip" title="Deine mit ★ markierten Aktien. Damit kannst du dein bestehendes Depot bzw. eine persönliche Watchlist abbilden."></div>
+    <div id="stockGroups" class="stockgroups"></div>
+
     <!-- v3.9.2: Discovery-Kacheln stehen jetzt direkt hinter Fokus/Heatmap.
          Vorher lagen Depot, Crowd und Portfolio dazwischen — also Kontext vor
          Kandidaten. Reihenfolge folgt jetzt der Arbeitsweise: erst WELCHE Titel
@@ -381,10 +403,8 @@
       <small class="hint">Warum überhaupt von Hand? Der automatische Terminkalender ist im gebuchten Tarif möglicherweise nicht enthalten. Ein selbst eingetragener Termin funktioniert unabhängig davon — und du siehst die Termine bei Google Finance ohnehin. Ein Termin ist <b>keine Richtungsaussage</b>: Er sagt nur, dass der Kurs danach in beide Richtungen weit laufen kann.</small>
     </section>
     <div id="gateFunnel" data-tile="gate" class="openingpanel gate-funnel" title="Zählt, woran die Kauf-Freigaben im aktuellen Durchlauf hängen. Reine Zählung — verändert nichts."></div>
-    <div id="depotStrip" class="depotstrip" title="Deine mit ★ markierten Aktien. Damit kannst du dein bestehendes Depot bzw. eine persönliche Watchlist abbilden."></div>
     <div id="crowdStatus" class="crowd-status" title="Zustand des Crowd/Search-Sensors. Der Tacho bleibt bewusst leer, statt Werte zu erfinden, wenn keine Daten abrufbar sind."></div>
     <section id="portfolioRisk" data-tile="portfolio" class="portfolio-card" title="Modul 2: Gesamt-Risiko ueber alle offenen Positionen und Klumpungswarnung. Rechnet zusammen, was das Einzeltrade-Risiko fuer sich nicht zeigt. Veraendert keinen Score."></section>
-    <div id="stockGroups" class="stockgroups"></div>
     <p class="stocknote" id="stockNote">
       Datenquelle: <b id="stockSourceLabel">wird geladen</b>. EUR-Beträge sind mit dem aktuellen EUR/USD-Kurs
       <b>umgerechnet</b> und ausdrücklich <b>keine Tradegate-Kurse</b>. Vor einer Order den tatsächlichen
@@ -570,6 +590,6 @@
      Muss das LETZTE Element im Fluss bleiben. Hoehe kommt aus derselben
      Messung wie alles andere (--fp-foot-h). -->
 <div class="foot-spacer" aria-hidden="true"></div>
-<script src="/app.js?v=4.2.7"></script>
+<script src="/app.js?v=4.2.8"></script>
 </body>
 </html>

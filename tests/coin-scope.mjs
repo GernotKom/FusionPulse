@@ -55,9 +55,9 @@ const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8'
     ['Skope-Fenster', 'class="stage"',       'class="stockstage"'],
     ['Suche darin',   'id="coinTools"',      'id="stockQ"'],
     ['Fokuskarte',    'id="focus"',          'id="stockFocus"'],
-    ['Top Picks',     'id="topPicksCoin"',   'id="topPicks"'],
     ['★-Leiste',      'id="coinFavStrip"',   'id="depotStrip"'],
-    ['Liste',         '<section id="list"',  'id="stockGroups"'],
+    ['Liste',         'id="coinList"',       'id="stockGroups"'],
+    ['Empfehlungen',  'id="topPicksCoin"',   'id="topPicks"'],
   ];
   for (const spalte of [1, 2]) {
     const markt = spalte === 1 ? 'Krypto' : 'Aktien';
@@ -106,11 +106,20 @@ const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8'
       'v4.2.7: Die Auswertung steht hinter BEIDEN Maerkten — sie wertet beide aus');
   }
 
-  /* Die Trefferliste steht in beiden Bereichen UNTER dem Fokusfenster. */
-  assert.ok(at('class="stage"', 'Coin-Fokus') < at('<section id="list"', 'Coin-Liste'),
-    'Die Coin-Liste gehoert unter das Fokusfenster');
-  assert.ok(at('class="stockstage"', 'Aktien-Fokus') < at('id="stockGroups"', 'Aktienliste'),
-    'Die Aktienliste ebenso');
+  /* ══ v4.2.8 · ERST DIE LISTE, DANN DIE EMPFEHLUNGEN ═════════════════════
+     Die Trefferliste steht in beiden Bereichen direkt unter dem Skope-Fenster
+     und VOR den Empfehlungs-Kacheln. Erst was ist, dann was vorgeschlagen
+     wird. Bis 4.2.7 lag die Aktienliste hinter neun Kacheln am Ende des
+     Abschnitts, die Coin-Liste hinter dreien. */
+  for (const [markt, stage, liste, empf] of [
+    ['Krypto', 'class="stage"',      'id="coinList"',    'id="topPicksCoin"'],
+    ['Aktien', 'class="stockstage"', 'id="stockGroups"', 'id="topPicks"'],
+  ]) {
+    assert.ok(at(stage, `${markt}: Skope`) < at(liste, `${markt}: Liste`),
+      `${markt}: Die Trefferliste gehoert unter das Skope-Fenster`);
+    assert.ok(at(liste, `${markt}: Liste`) < at(empf, `${markt}: Empfehlungen`),
+      `${markt}: Die Empfehlungen kommen NACH der Trefferliste, nicht davor`);
+  }
 
   /* Der Fokus steht vor dem Aktienbereich — sonst waere er nicht „zuerst". */
   assert.ok(at('class="stage"', 'Fokus') < at('<section id="stocks"', 'Aktienabschnitt'),
@@ -371,3 +380,48 @@ console.log('✓ FusionPulse v3.30.0 coin-scope (R1) regressions: OK');
 }
 
 console.log('✓ FusionPulse v4.2.4 Symmetrie beider Marktbereiche (ausgefuehrt): OK');
+
+/* ══ v4.2.8 · DER TEST LAS DIE DATEI, DER BROWSER SAH ETWAS ANDERES ════════
+   Die Reihenfolge im Markup war seit 4.2.5 richtig, alle Prüfungen darauf
+   waren grün — und das Krypto-Skope-Fenster stand trotzdem ganz unten. Ursache
+   war EINE Zeile in `applyPrimaryBlockOrder()`:
+
+       if(main && stage) main.insertAdjacentElement('afterend', stage);
+
+   Sie schob das Fenster beim Booten hinter `<main>` — und in `<main>` lagen
+   Coin-Liste, Aktienbereich UND Auswertung. Das Fenster landete am Ende der
+   Seite, hinter dem Lab.
+
+   Das ist der Grund, warum die Anordnung mehrfach zurückkam: eine zweite,
+   unsichtbare Reihenfolge neben dem Markup. Jede Korrektur an index.html war
+   wirkungslos, und kein Test konnte es sehen, weil alle die Datei lesen.
+
+   Deshalb prüft dieser Block die FUNKTION selbst: sie darf ausschließlich den
+   Aktienblock verschieben. Jedes weitere `insertAdjacentElement`,
+   `insertBefore`, `append` oder `prepend` dort ist eine neue Zweitwahrheit —
+   und wird hier rot, bevor sie ein Layouträtsel wird. */
+{
+  const app3 = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const fn = app3.slice(app3.indexOf('function applyPrimaryBlockOrder()'),
+                        app3.indexOf('/* --------------------------------------------------------------------- Boot */'));
+  assert.ok(fn.length > 100, 'v4.2.8: applyPrimaryBlockOrder muss auffindbar sein');
+  const stripped = fn.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+  const umzuege = [...stripped.matchAll(/insertAdjacentElement|insertBefore|appendChild|\.append\(|\.prepend\(|\.after\(|\.before\(/g)];
+  assert.equal(umzuege.length, 1,
+    `v4.2.8: applyPrimaryBlockOrder darf GENAU EINEN Umzug ausführen (den Aktienblock), gefunden: ${umzuege.length}. `
+    + 'Jeder weitere Umzug ist eine zweite Reihenfolge neben dem Markup — genau daran ist die Anordnung mehrfach gescheitert.');
+  assert.doesNotMatch(stripped, /stage/,
+    'v4.2.8: Das Skope-Fenster darf zur Laufzeit NICHT mehr verschoben werden — seine Position steht im Markup');
+  assert.match(stripped, /viewbar\.insertAdjacentElement\('afterend',\s*stocks\)/,
+    'v4.2.8: Der eine erlaubte Umzug ist der Aktienblock vor den Kryptoblock');
+
+  /* Und die Gegenrichtung: es darf auch sonst nirgends im Boot-Pfad ein
+     Layoutblock verschoben werden. `paint()` sortiert Listenzeilen — das ist
+     Inhalt, keine Seitenstruktur, und deshalb ausgenommen. */
+  const boot = app3.slice(app3.indexOf('/* --------------------------------------------------------------------- Boot */'));
+  const bootStripped = boot.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+  assert.doesNotMatch(bootStripped, /insertAdjacentElement/,
+    'v4.2.8: Im Boot-Pfad darf kein weiterer Block umgehängt werden');
+}
+
+console.log('✓ FusionPulse v4.2.8 Markup ist die einzige Reihenfolge (ausgefuehrt): OK');
