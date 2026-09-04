@@ -784,3 +784,38 @@ console.log('✓ FusionPulse v4.2.3 Beobachtungsprotokoll und Erreichbarkeit (au
 }
 
 console.log('✓ FusionPulse v4.2.3 Verwurf sichtbar (ausgefuehrt): OK');
+
+/* ── NK75 · v4.2.5 · DIE DROSSEL MUSS UEBER STUNDEN HALTEN ──────────────────
+   NK67 prueft zwei Aufrufe. Das reichte nicht: der Fehler in 4.2.3 trat erst
+   auf, wenn das Aufraeumen etwas zu tun bekam — also erst nach Ablauf der
+   Aufbewahrung, Stunden spaeter. Bis dahin war alles gruen.
+
+   Deshalb wird hier ein REALER TAGESABSCHNITT durchgerechnet: acht Stunden
+   Cron im Minutentakt. Erwartet werden hoechstens die 5-Minuten-Takte, nicht
+   die Minuten. Der Unterschied ist der Faktor fuenf im Schreibbudget. */
+{
+  const R = loadResolver(); R.reset();
+  const { db, state } = fakeDb();
+  const t0 = Date.UTC(2026, 8, 4, 0, 0, 0);
+  const STUNDEN = 8, MINUTEN = STUNDEN * 60;
+  for (let m = 0; m < MINUTEN; m++)
+    await R.d1NoteObservations({ DB: db }, 'server', 'stock', ['AAPL', 'MSFT', 'NVDA'], t0 + m * 60_000);
+  const writes = state.log.filter((q) => /INSERT INTO fp_meta/i.test(q)).length;
+  const takte = Math.ceil(MINUTEN / 5);
+  assert.ok(writes <= takte,
+    `NK75: In ${MINUTEN} Minuten duerfen hoechstens ${takte} Schreibvorgaenge anfallen (ein 5-Minuten-Takt), gemessen ${writes}. `
+    + `Waren es deutlich mehr, setzt das Aufraeumen den Schreib-Merker — genau der Fehler aus 4.2.3.`);
+  assert.ok(writes >= takte - 2, `NK75: … und mindestens ${takte - 2}, sonst wird gar nicht mehr protokolliert (gemessen ${writes})`);
+  /* Die Aufbewahrung muss dabei tatsaechlich gegriffen haben — sonst hat der
+     Test den kritischen Zweig nie betreten und beweist nichts. */
+  const log = await R.d1ReadObsLog({ DB: db }, 'server', 'stock');
+  const aeltester = Math.min(...Object.values(log).flat().map(Number));
+  /* Es reicht der Nachweis, dass die erste Stunde ausgeraeumt ist. Eine
+     Zusicherung auf die Minute genau waere sproede: der letzte Schreibvorgang
+     liegt bis zu fuenf Minuten vor Ende des Zeitraums, und das Protokoll
+     bewahrt genau den Stand von damals. */
+  assert.ok(aeltester > t0 + 60 * 60_000,
+    'NK75: Das Aufraeumen muss im Testzeitraum gelaufen sein — sonst prueft NK75 den fraglichen Zweig gar nicht');
+}
+
+console.log('✓ FusionPulse v4.2.5 Drossel des Beobachtungsprotokolls (ausgefuehrt): OK');

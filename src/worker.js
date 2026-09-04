@@ -3632,10 +3632,24 @@ async function d1NoteObservations(env, source, assetType, symbols, now=Date.now(
   if(log===null) return { written:false, reason:'protokoll nicht lesbar' };
   const cutoff=now-OBS_LOG_RETENTION_MS, bucket=Math.floor(now/OBS_LOG_BUCKET_MS);
   const next={};
-  let changed=false;
+  /* ══ v4.2.5 · DIE DROSSEL WAR WIRKUNGSLOS ══════════════════════════════
+     Beim Einbau in 4.2.3 stand hier EIN Merker `changed`, den sowohl das
+     Aufraeumen als auch das Anhaengen setzten. Das Aufraeumen laeuft aber bei
+     JEDEM Aufruf — irgendein Zeitstempel faellt immer aus dem Fenster. Damit
+     war `changed` praktisch immer wahr, und die 5-Minuten-Raste darunter hat
+     nie gegriffen: geschrieben wurde bei jedem `d1StoreRows`-Aufruf statt
+     hoechstens alle fuenf Minuten. Der Kommentar versprach 288 Schreibvorgaenge
+     je Pfad und Tag, tatsaechlich waren es bis zu 1.440 — der Fuenffache.
+
+     Der Fehler ist derselbe wie in 4.2.3 selbst: eine Zusage, die im Kommentar
+     stand und im Code nicht. Deshalb sind es jetzt ZWEI Merker. Geschrieben
+     wird nur, wenn eine BEOBACHTUNG dazugekommen ist. Reines Aufraeumen
+     rechtfertigt keinen Schreibvorgang — die alten Eintraege stoeren niemanden,
+     `obsCountFor` filtert ohnehin nach Zeitfenster, und beim naechsten echten
+     Anhaengen verschwinden sie kostenlos mit. */
+  let appended=false;
   for(const [sym,list] of Object.entries(log)){
     const kept=(Array.isArray(list)?list:[]).map(Number).filter(t=>Number.isFinite(t)&&t>=cutoff);
-    if(kept.length!==(Array.isArray(list)?list.length:0)) changed=true;
     if(kept.length) next[sym]=kept;
   }
   for(const raw of new Set(symbols.map(s=>String(s||'').toUpperCase()).filter(Boolean))){
@@ -3644,9 +3658,9 @@ async function d1NoteObservations(env, source, assetType, symbols, now=Date.now(
     /* Ein zweiter Eintrag im selben 5-Minuten-Takt ist keine zweite
        Beobachtung — derselbe Gedanke wie `INSERT OR IGNORE` auf `bucket5`. */
     if(last!=null && Math.floor(last/OBS_LOG_BUCKET_MS)===bucket) continue;
-    list.push(now); changed=true;
+    list.push(now); appended=true;
   }
-  if(!changed) return { written:false, reason:'takt bereits protokolliert' };
+  if(!appended) return { written:false, reason:'takt bereits protokolliert' };
   await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
     .bind(obsLogKey(source,assetType), JSON.stringify(next), now).run();
