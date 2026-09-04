@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.3.0 — Frontend
+   FusionPulse v4.3.1 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -6387,12 +6387,12 @@ async function toggleWatchlist(){
     }
     if(d?.saved!==true && d?.applied===true){
       watchlistState={mode:want, symbols:syms, sessionOnly:true};
-      paintWatchlist(); loadStocks(true);
+      paintWatchlist(); scanStocks(true);
       wlSay(`${want==='watchlist'?`Watchlist-Modus für diese Sitzung aktiv · ${syms.length} Titel`:'Whole-Market-Radar für diese Sitzung aktiv'} — aber NICHT gespeichert: ${d?.hint||d?.error||'Grund unbekannt'}`);
       return;
     }
     watchlistState={mode:d.mode==='watchlist'?'watchlist':'radar',symbols:d.symbols||[]};
-    paintWatchlist();
+    paintWatchlist(); scanStocks(true);   // v4.3.1: sofort wirksam, nicht erst beim naechsten Takt
     wlSay(watchlistState.mode==='watchlist'
       ? `Watchlist-Modus aktiv · ${watchlistState.symbols.length} Titel, Minutentakt, keine Entdeckung.`
       : 'Whole-Market-Radar wieder aktiv.');

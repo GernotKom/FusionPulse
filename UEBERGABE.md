@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 04.09.2026, Version **4.3.0**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 04.09.2026, Version **4.3.1**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -373,6 +373,22 @@ Ab 4.3.0 sind **gespeichert** und **angewendet** zwei Felder. Der Modus gilt fü
 **Vier Negativkontrollen**, alle gefeuert: Vollmarkt-Rückfall wieder eingebaut · Watchlist-Modus nicht übergeben · angewendet und gespeichert zusammengeworfen · Modus nicht mehr mitgeschickt.
 
 **Und wieder ein zu schwacher Anker:** die erste Fassung der Verdrahtungsprüfung suchte nur den Namen `stockOpts` im Text. Die Gegenprobe „Übergabe auf ein leeres Objekt setzen" blieb grün, weil der Name noch dastand. Geprüft wird jetzt, dass `wlSyms` tatsächlich in `onlySymbols` landet.
+
+### 4.3.1 · Ein Aufruf ins Leere — und die Prüfung, die es künftig fängt
+
+**Selbst verursacht.** In `toggleWatchlist` stand `loadStocks(true)`. Die Funktion heißt `scanStocks`. `loadStocks` gab es in `public/app.js` nie.
+
+Folge: das Umschalten meldete *„Umschalten fehlgeschlagen: Can't find variable: loadStocks"* — **obwohl der Modus bereits gesetzt war**. Der Knopf zeigte „Watchlist · 34", die Meldung darüber sprach von Fehlschlag. Genau die Sorte Fehlmeldung, die v4.1.2 an dieser Stelle schon einmal beseitigt hat, diesmal von der anderen Seite.
+
+Nebenbei belegt der Fehler, dass 4.3.0 funktioniert: der Ablauf war im Zweig „angewendet, aber nicht gespeichert" — der Modus galt für die Sitzung, D1 nahm ihn weiterhin nicht an.
+
+**Warum keine Suite das fand.** `node --check` prüft Syntax; ein Aufruf einer nicht existierenden Funktion ist syntaktisch einwandfrei. Alle Prüfungen zu diesem Bereich vergleichen Quelltext mit regulären Ausdrücken. Der Fehler fällt erst im Browser auf. **Achter Fall derselben Krankheit in dieser Serie: geprüft wurde der Name, nicht die Wirkung.**
+
+**Neue Suite `tests/client-symbols.mjs`:** sammelt alle in `app.js` definierten Namen — Funktionen, Variablen, Klassen, Objektmethoden, Funktions- und Pfeilparameter, `catch`-Bindungen — plus die bekannten Browser-Globals, und meldet jeden Aufruf, der zu keinem davon passt.
+
+**Die erste Fassung war selbst unbrauchbar** und ist es wert, festgehalten zu werden: sie entfernte Zeichenketten und Kommentare per regulärem Ausdruck und meldete daraufhin **162 „Fehler"** — darunter `Handelszeit()`, `Basispunkt()` und `ffnung()`, also deutsche Wörter aus Meldungstexten. Gleichzeitig verschwanden echte Definitionen, weil das Stripping den Quelltext zerschnitt; `loadAladdin` galt als undefiniert, obwohl es dasteht. **Ein Prüfwerkzeug, das seinen Eingabetext falsch zerlegt, irrt in beide Richtungen zugleich.** Ersetzt durch einen echten Zeichenscanner mit Zustand, der Anführungszeichen, Backticks samt verschachteltem Ausdruck, beide Kommentarformen und Regex-Literale kennt. Ergebnis: null Fehlalarme.
+
+**Zwei Negativkontrollen**, beide gefeuert: der echte Fehler wieder eingebaut · ein frei erfundener Tippfehler in einem anderen Aufruf.
 
 ### Zwei Entscheidungen, die dabei getroffen wurden
 
