@@ -6327,8 +6327,34 @@ console.log('✓ FusionPulse v4.2.3 Coin-Suche, Favoriten, Heatmap, Gatter (ausg
      und ein Endanker mitten in einem so langen Objektliteral ist genau die
      Sorte sproeder Griff, die in dieser Serie schon fuenfmal danebengelangt
      hat. */
-  const cached = w.split('\n').find((z) => z.includes("configured:true,state:'ok',cached:true,rows:cleanMemo")) || '';
+  const cached = w.split('\n').find((z) => z.includes("cached:true,servedBy:'memo',rows:cleanMemo")) || '';
   assert.ok(cached.length > 200, 'v4.2.9: Der Cache-Pfad muss auffindbar sein');
+  /* ══ v4.3.3 · DER PFAD, DEN DER NUTZER SIEHT, HATTE KEINE DIAGNOSE ═══════
+     Es gibt DREI Cache-Zweige, nicht zwei. Der dritte — der persistierte
+     Cron-Stand — ist derjenige, den die Oberflaeche praktisch immer bekommt,
+     weil der Browser seit v4.0.0 bewusst keinen eigenen Tiefenscan startet.
+     Ausgerechnet er lieferte weder `persist` (Speicherstatus, seit 4.2.9
+     vorhanden) noch eine Herkunftsangabe. Beide Diagnosen waren damit genau
+     in dem Zustand unsichtbar, in dem man sie braucht — das hat zwei Tage
+     Fehlersuche gekostet. */
+  const persistent = w.split('\n').find((z) => z.includes("servedBy:'cron-persistent'")) || '';
+  assert.ok(persistent.length > 200, 'v4.3.3: Der persistierte Cron-Pfad muss auffindbar sein');
+  assert.match(persistent, /persist:stockPersistState/,
+    'v4.3.3: Auch der persistierte Pfad muss den Speicherstatus mitliefern — er ist der meistgesehene');
+  assert.match(persistent, /cronScanAgeMin/,
+    'v4.3.3: … und das ALTER des Standes. „0 aktualisiert" heisst hier „hier wird nicht gescannt", nicht „gescheitert"');
+  {
+    const a2 = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+    const r = a2.slice(a2.indexOf("const el=$('#deepScanReason')"), a2.indexOf('if(counts){const rc='));
+    assert.match(r, /cron-persistent/, 'v4.3.3: Die Oberflaeche muss den persistierten Fall eigens behandeln');
+    assert.match(r, /Der Browser startet keinen Tiefenscan/,
+      'v4.3.3: … und ausdruecklich sagen, dass hier gar nicht gescannt wird');
+    /* Die Zweige enden mit `return`. Stuenden sie in einem blossen Block statt
+       in einer Funktion, waere das ein Ruecksprung aus renderStocks() — Zaehler,
+       Liste und Kacheln fielen aus. Beim Schreiben genau so passiert. */
+    assert.match(a2, /\(\(\) => \{\n\s*const el=\$\('#deepScanReason'\)/,
+      'v4.3.3: Der Block MUSS eine Funktion sein — sonst verlaesst `return` den ganzen Renderer');
+  }
   assert.match(live, /persist:stockPersistState/, 'v4.2.9: Der Live-Pfad muss den Speicherstatus mitliefern');
   assert.match(cached, /persist:stockPersistState/, 'v4.2.9: Der Cache-Pfad erst recht — dort zaehlt er');
 

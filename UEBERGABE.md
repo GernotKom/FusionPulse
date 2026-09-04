@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 04.09.2026, Version **4.3.2**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 04.09.2026, Version **4.3.3**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -414,6 +414,24 @@ Ab 4.3.2 werden die Fehler gesammelt, nach Meldung zusammengefasst (20 Titel mit
 Kein Verhalten ändert sich, nur die Sichtbarkeit. **Drei Negativkontrollen**, alle gefeuert.
 
 **Offen und wichtig:** Cloudflare meldet für die aktive Bereitstellung **61,8 % Fehlerrate** (670 Fehler/24 h). Vorher 0,6 %. Das ist der nächste Verdächtige und möglicherweise dieselbe Ursache. Der entscheidende Beleg ist das Worker-Log (`wrangler tail` oder Reiter „Beobachtbarkeit"), nicht ein weiterer Screenshot.
+
+### 4.3.3 · „0 aktualisiert" bedeutete etwas ganz anderes als angenommen
+
+**Die Auflösung nach zwei Tagen, und sie ist unspektakulär.**
+
+`tiingoStockSnapshot` hat **drei** Cache-Zweige, nicht einen. Der dritte — der persistierte Cron-Stand — ist derjenige, den die Oberfläche praktisch immer bekommt, weil der Browser seit v4.0.0 **absichtlich keinen eigenen Tiefenscan startet** („PWA startet keinen Doppel-Scan"). Sein eigener Hinweistext sagt das sogar: *„Letzter Stand der Vorsitzung, N Min. alt."*
+
+**`0 aktualisiert` heißt auf diesem Pfad also nicht „gescheitert", sondern „hier wird nicht gescannt".** Die Zahl, auf die es ankommt, ist das ALTER des Standes — und die stand nirgends.
+
+Ausgerechnet dieser meistgesehene Zweig lieferte weder `persist` (Speicherstatus, seit 4.2.9 vorhanden) noch eine Herkunftsangabe. **Beide Diagnosen waren genau in dem Zustand unsichtbar, in dem man sie braucht.** Auch die neue Fehlerliste aus 4.3.2 erscheint dort nicht — zu Recht, denn es gab keinen Scanversuch. Deshalb blieb die Anzeige nach dem Deploy von 4.3.2 leer, und das war korrekt und trotzdem nutzlos.
+
+Ab 4.3.3 tragen alle vier Antwortpfade ein Feld `servedBy` (`live` · `memo` · `cron-persistent` · `awaiting-cron`), der persistierte Zweig zusätzlich `persist`, `cronScanTs` und `cronScanAgeMin`. Die Oberfläche schreibt daraus einen Satz: *„Der Browser startet keinen Tiefenscan — angezeigt wird der Stand des Hintergrundlaufs, N alt"*, und hängt den Speicherfehler an, falls einer vorliegt. Über drei Stunden Alter wird die Zeile gelb.
+
+**Damit verschiebt sich die offene Frage**, und zwar auf festen Boden: nicht mehr „warum scheitert der Scan", sondern **„warum hat der Cron seit dem 01.09. keinen neuen Stand abgelegt"**. Zwei Kandidaten, beide jetzt ablesbar: `persist.ok === false` (D1 nimmt den Stand nicht an) oder der Cron kommt gar nicht bis zum Scan.
+
+**Und ein Fehler, der mir beim Schreiben unterlaufen ist:** die neuen Zweige enden mit `return`. Ich hatte sie in einen bloßen Block `{ … }` gesetzt — das wäre ein Rücksprung aus `renderStocks()` gewesen, und Zähler, Liste und sämtliche Kacheln wären ausgefallen. Beim Nachlesen aufgefallen, in eine sofort aufgerufene Funktion umgebaut, und eine Zusicherung dafür ergänzt. Die Gegenprobe musste dafür syntaktisch gültig gebaut werden, sonst hätte nur `node --check` angeschlagen und nicht die Zusicherung selbst.
+
+**Drei Negativkontrollen**, alle gefeuert: `persist` aus dem persistierten Pfad entfernt · Alter weggelassen · Block statt Funktion.
 
 ### Zwei Entscheidungen, die dabei getroffen wurden
 

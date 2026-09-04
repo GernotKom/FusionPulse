@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.3.2 — Frontend
+   FusionPulse v4.3.3 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -4124,10 +4124,41 @@ function renderStocks() {
          mit Anzahl und Beispielsymbolen.
      Eine Null ohne Grund war zwei Tage lang nicht von einem geschlossenen
      Markt zu unterscheiden. Genau das hat die Fehlersuche gekostet. */
-  {
+  /* Als eigene Funktion, NICHT als blosser Block: die Zweige unten enden mit
+     `return`, und in einem Block waere das ein Ruecksprung aus renderStocks()
+     — die gesamte restliche Anzeige (Zaehler, Liste, Kacheln) fiele aus.
+     Beim Schreiben genau so passiert und beim Nachlesen aufgefallen. */
+  (() => {
     const el=$('#deepScanReason');
     if(el){
       const errs=stockMeta.deepScanErrors||[], versucht=Number(stockMeta.deepScanAttempted);
+      const von=stockMeta.servedBy, alterMin=Number(stockMeta.cronScanAgeMin);
+      /* ══ v4.3.3 · „0 AKTUALISIERT" HEISST HIER ETWAS ANDERES ═════════════
+         Der Browser startet KEINEN Tiefenscan — das ist Absicht seit v4.0.0
+         („PWA startet keinen Doppel-Scan"). Er bekommt den Stand, den der
+         Hintergrundlauf zuletzt abgelegt hat. `0 aktualisiert` bedeutet in
+         diesem Fall also nicht „gescheitert", sondern „hier wird nicht
+         gescannt" — und die Zahl, auf die es ankommt, ist das ALTER dieses
+         Standes.
+
+         Bis 4.3.2 stand nichts davon in der Antwort: ausgerechnet der
+         Cache-Zweig, den der Nutzer praktisch immer sieht, lieferte weder
+         `persist` (Speicherstatus, seit 4.2.9 vorhanden) noch die Herkunft.
+         Beide Diagnosen waren damit genau in dem Zustand unsichtbar, in dem
+         man sie braucht. Das hat zwei Tage Fehlersuche gekostet. */
+      if(von==='cron-persistent' && Number.isFinite(alterMin)){
+        const std=Math.floor(alterMin/60), rest=alterMin%60;
+        const alt=std>=24?`${Math.floor(std/24)} Tage`:std>=1?`${std} Std. ${rest} Min.`:`${alterMin} Min.`;
+        const p=stockMeta.persist;
+        const speicher = p && p.ok===false ? ` Der Hintergrundlauf kann seinen Stand NICHT speichern: ${esc(p.hint||p.reason||'Grund unbekannt')}` : '';
+        el.textContent=`Der Browser startet keinen Tiefenscan — angezeigt wird der Stand des Hintergrundlaufs, ${alt} alt.${speicher}`;
+        el.className = alterMin>180 || (p&&p.ok===false) ? 'dsr bad' : 'dsr';
+        return;
+      }
+      if(von==='awaiting-cron'){
+        el.textContent='Noch kein serverseitiger Batch vorhanden — es wird auf den ersten Hintergrundlauf gewartet.';
+        el.className='dsr'; return;
+      }
       if(Number(stockMeta.updatedThisCycle)>0 || !Number.isFinite(versucht)){ el.textContent=''; el.className='dsr hidden'; }
       else if(versucht===0){ el.textContent='Kein Titel zur Tiefenanalyse angesetzt — nichts zu aktualisieren, kein Fehler.'; el.className='dsr'; }
       else if(!errs.length){ el.textContent=`${versucht} Titel angesetzt, keiner aktualisiert — und KEIN Fehler gemeldet. Das ist selbst ein Befund.`; el.className='dsr bad'; }
@@ -4135,7 +4166,7 @@ function renderStocks() {
         el.textContent=`${versucht} Titel angesetzt, 0 aktualisiert. Häufigster Grund (${e.count}×${e.symbols?.length?', z.B. '+e.symbols.join(', '):''}): ${e.message}`;
         el.className='dsr bad'; el.title=errs.map(x=>`${x.count}× ${x.message}`).join('\n'); }
     }
-  }
+  })();
   if(counts){const rc=stockMeta.discovery?.radar?.candidates?.length||0,bc=stockMeta.discovery?.boats?.candidates?.length||0;counts.textContent=`${stockMeta.updatedThisCycle!=null?stockMeta.updatedThisCycle+' aktualisiert · ':''}${scanned} geladen / ${universeLabel} Universum · ${shown.length} angezeigt · ${rc?'RADAR '+rc+' · ':''}${bc?'BOATS '+bc+' · ':''}★ ${(S.favoriteStocks||[]).length} · Abfrage ${clock(stockMeta.ts)}`;}
   /* v3.31.0 · §28: die alte Zeile behauptete bei JEDER Nicht-Tiingo-Quelle
      „Twelve Data" — auch bei Alpaca, auch bei leerem Feld. Jetzt eine Quelle
