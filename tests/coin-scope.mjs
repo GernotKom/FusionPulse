@@ -50,13 +50,14 @@ const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8'
      der Test — egal welcher. Das ist die einzige Formulierung, die verhindert,
      dass die beiden Seiten wieder auseinanderlaufen. */
   const BAUFORM = [
-    ['Band',        'id="bandCoin"',       'id="bandStock"'],
-    ['Überschrift', '<h2>Coin-Radar</h2>', '<h2>Aktienradar</h2>'],
-    ['Suche',       'id="coinTools"',      'id="stockQ"'],
-    ['Fokus',       'class="stage"',       'class="stockstage"'],
-    ['Top Picks',   'id="topPicksCoin"',   'id="topPicks"'],
-    ['★-Leiste',    'id="coinFavStrip"',   'id="depotStrip"'],
-    ['Liste',       '<section id="list"',  'id="stockGroups"'],
+    ['Band',          'id="bandCoin"',       'id="bandStock"'],
+    ['Überschrift',   '<h2>Coin-Radar</h2>', '<h2>Aktienradar</h2>'],
+    ['Skope-Fenster', 'class="stage"',       'class="stockstage"'],
+    ['Suche darin',   'id="coinTools"',      'id="stockQ"'],
+    ['Fokuskarte',    'id="focus"',          'id="stockFocus"'],
+    ['Top Picks',     'id="topPicksCoin"',   'id="topPicks"'],
+    ['★-Leiste',      'id="coinFavStrip"',   'id="depotStrip"'],
+    ['Liste',         '<section id="list"',  'id="stockGroups"'],
   ];
   for (const spalte of [1, 2]) {
     const markt = spalte === 1 ? 'Krypto' : 'Aktien';
@@ -65,18 +66,45 @@ const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8'
       const pos = at(zeile[spalte], `${markt}: ${zeile[0]}`);
       assert.ok(pos > vorher,
         `${markt}: „${zeile[0]}" muss NACH „${vorLabel}" stehen. Beide Bereiche haben dieselbe Bauform — `
-        + 'Band, Überschrift, Suche, Fokus, Kacheln, ★-Leiste, Liste.');
+        + 'Band, Überschrift, Skope-Fenster mit Suche darin, Kacheln, ★-Leiste, Liste.');
       vorher = pos; vorLabel = zeile[0];
     }
   }
 
-  /* Die Suche steht in BEIDEN Bereichen VOR dem Fokusfenster. Das war der
-     konkrete Unterschied: im Kryptobereich lag sie hinter Top Picks, Movern
-     und Stimmung — wer den Bereich wechselte, suchte sie jedes Mal woanders. */
-  assert.ok(at('id="coinTools"', 'Coin-Suche') < at('class="stage"', 'Coin-Fokus'),
-    'Die Coin-Suche muss VOR dem Fokusfenster stehen, so wie die Aktiensuche auch');
-  assert.ok(at('id="stockQ"', 'Aktiensuche') < at('class="stockstage"', 'Aktien-Fokus'),
-    'Und die Aktiensuche ebenso — sonst ist die Symmetrie in die andere Richtung gebrochen');
+  /* ══ v4.2.7 · DIE SUCHE LIEGT IM SKOPE-FENSTER, NICHT DAVOR ═════════════
+     4.2.5 hatte beide Bereiche gleich gebaut — aber die Suche als eigene
+     Leiste OBERHALB des Fensters. Das war symmetrisch und trotzdem falsch
+     platziert: die Suche entscheidet, WAS im grossen Fenster steht, also
+     gehoert sie hinein. Geprueft wird die tatsaechliche Verschachtelung, nicht
+     nur die Reihenfolge: die Leiste muss zwischen dem oeffnenden Tag des
+     Skope-Fensters und der Fokuskarte liegen. Eine reine Reihenfolgepruefung
+     waere auch dann gruen, wenn die Leiste wieder davor stuende. */
+  for (const [markt, stage, tools, fokus] of [
+    ['Krypto', 'class="stage"',      'id="coinTools"',      'id="focus"'],
+    /* Eigene Kennung, weil `class="stocktools"` seit 4.2.5 in BEIDEN Bereichen
+       steht — der erste Treffer im Dokument waere sonst immer die Coin-Leiste,
+       und die Pruefung liefe an der Aktienseite vorbei. Genau diese Art
+       stiller Fehlanker ist heute schon dreimal aufgetreten. */
+    ['Aktien', 'class="stockstage"', 'id="stockTools"',  'id="stockFocus"'],
+  ]) {
+    const sAt = at(stage, `${markt}: Skope-Fenster`), tAt = at(tools, `${markt}: Suchleiste`), fAt = at(fokus, `${markt}: Fokuskarte`);
+    assert.ok(sAt < tAt && tAt < fAt,
+      `${markt}: Die Suchleiste muss INNERHALB des Skope-Fensters liegen — zwischen dessen Beginn und der Fokuskarte, nicht davor`);
+  }
+
+  /* v4.2.7 · Die Auswertung muss als eigene Sektion erkennbar sein. Alle drei
+     Bereiche liegen in EINEM Dokument, die Reiter springen nur — wer scrollt,
+     laeuft von den Aktien direkt in den Rueckblick. Das Band braucht deshalb
+     eine sichtbare Zaesur und nicht nur eine weitere Zeile. */
+  {
+    const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+    assert.match(css, /#bandLab\{[^}]*border-top/,
+      'v4.2.7: Die Auswertung braucht eine sichtbare Trennlinie zum Aktienbereich');
+    assert.match(css, /#bandLab \.domain-head\{[^}]*background/,
+      'v4.2.7: … und eine abgesetzte Ueberschrift, nicht nur Text');
+    assert.ok(at('id="stockGroups"', 'Aktienliste') < at('id="bandLab"', 'Auswertungsband'),
+      'v4.2.7: Die Auswertung steht hinter BEIDEN Maerkten — sie wertet beide aus');
+  }
 
   /* Die Trefferliste steht in beiden Bereichen UNTER dem Fokusfenster. */
   assert.ok(at('class="stage"', 'Coin-Fokus') < at('<section id="list"', 'Coin-Liste'),

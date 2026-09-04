@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 03.09.2026, Version **4.2.5**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 04.09.2026, Version **4.2.7**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -274,6 +274,30 @@ Nutzeranmerkung vom 03.09.: *„die Sektionen sollten gleich aufgebaut sein … 
 **Der Test prüft ab jetzt die Bauform BEIDER Bereiche gegeneinander**, nicht mehr eine feste Liste je Bereich. Weicht einer ab, fällt er — gleich welcher. Das ist die einzige Formulierung, die verhindert, dass die Seiten wieder auseinanderlaufen; eine Liste je Bereich hätte auch diesmal wieder nur den Ist-Zustand zementiert. Geprüft werden Reihenfolge, Suchfeld, Löschknopf, Ladeknopf, Rückmeldung, Favoritenfilter und der Fokus-Stern — beidseitig.
 
 **Vier Negativkontrollen**, alle gefeuert und zurückgesetzt: Coin-Suche zurück ans Ende · Stern aus dem Coin-Fokus · Löschknopf entfernt · **Stern aus dem Aktien-Fokus** (die Symmetrie muss in beide Richtungen greifen, sonst prüft der Test nur eine Seite).
+
+### 4.2.6 · Die Drossel des Beobachtungsprotokolls war wirkungslos
+
+Beim Nachsehen zur ersten Schreibmessung gefunden, eigener Fehler aus 4.2.3. Es gab EINEN Merker `changed`, den sowohl das Aufräumen als auch das Anhängen setzten. Das Aufräumen läuft bei **jedem** Aufruf — irgendein Zeitstempel fällt immer aus dem Fenster. Damit war der Merker praktisch immer wahr, und die 5-Minuten-Raste hat nie gegriffen: geschrieben wurde bei jedem `d1StoreRows`-Aufruf statt höchstens alle fünf Minuten. Der Kommentar versprach 288 Schreibvorgänge je Pfad und Tag, tatsächlich waren es bis zu 1.440.
+
+**Derselbe Fehlertyp wie 4.2.3 selbst: eine Zusage, die im Kommentar stand und im Code nicht.** Jetzt zwei getrennte Merker; reines Aufräumen rechtfertigt keinen Schreibvorgang. Die alten Einträge stören niemanden — `obsCountFor` filtert ohnehin nach Zeitfenster, und beim nächsten echten Anhängen verschwinden sie kostenlos mit.
+
+**NK67 hat das nicht gefunden**, weil er zwei Aufrufe prüft und der Fehler erst greift, wenn das Aufräumen nach Ablauf der Aufbewahrung etwas zu tun bekommt — Stunden später. **NK75** rechnet deshalb acht Stunden Cron im Minutentakt durch und verlangt höchstens die 5-Minuten-Takte. Gegenprobe mit dem alten Code: 144 statt 96 Schreibvorgänge.
+
+**Zur ersten Messung selbst:** Die Kachel zeigte `DB 191/90k`. Das sind **191 Zeilen**, nicht 191k — `kurz()` setzt das „k" erst ab 10.000, und `191k` stünde als `191k` da. Bei 240 Minuten in den UTC-Tag sind das 0,8 Zeilen/min gegen 62,5 tragfähige. Aussagekräftig wird die Messung aber erst nach einer US-Sitzung; zum Ablesezeitpunkt war der Aktienmarkt geschlossen.
+
+### 4.2.7 · Die Suche gehört INS Skope-Fenster, und die Auswertung braucht eine Zäsur
+
+4.2.5 hatte beide Bereiche gleich gebaut — aber die Suche als eigene Leiste **oberhalb** des Fensters. Symmetrisch und trotzdem falsch platziert: **die Suche entscheidet, WAS im großen Fenster steht, also gehört sie hinein.** Beide Skope-Bereiche sind zweispaltige Raster (Fokuskarte + Heatmap); die Leiste läuft jetzt als volle Breite oben durch (`grid-column:1/-1`), damit sie über beiden Spalten steht und nicht neben einer.
+
+Die Bauform lautet damit: **Band → Überschrift → Skope-Fenster mit Suche darin → Kacheln → ★-Leiste → Liste.**
+
+**Der Test prüft ab jetzt die Verschachtelung, nicht die Reihenfolge.** Eine reine Reihenfolgeprüfung wäre auch dann grün, wenn die Leiste wieder davorstünde — sie liegt in der Datei ja ohnehin vorher. Verlangt wird: Leiste zwischen dem öffnenden Tag des Skope-Fensters und der Fokuskarte.
+
+**Und ein vierter Fehlanker an einem Tag:** die Prüfung suchte `class="stocktools"`, was seit 4.2.5 in BEIDEN Bereichen steht — der erste Treffer im Dokument war immer die Coin-Leiste, die Aktienseite wurde nie geprüft. Die Aktienleiste hat jetzt `id="stockTools"` als eigene Kennung, analog zu `#coinTools`.
+
+**Die Auswertung als eigene Sektion.** Alle drei Bereiche liegen in EINEM Dokument; die Reiter springen, sie blenden nichts aus. Wer scrollt, läuft von den Aktien direkt in den Rückblick. `#bandLab` gab es, war aber optisch so leise wie die beiden Markt-Bänder — dabei trennt es etwas Grundsätzlicheres: davor Handlungsgrundlagen, danach ausschließlich Rückblick über BEIDE Märkte mit 0 % Gewicht in Score, Ampel und Freigabe. Jetzt Trennlinie, abgesetzte Überschrift, größerer Abstand. Der Test verlangt beides.
+
+**Drei Negativkontrollen**, alle gefeuert: Coin-Suche zurück vor das Fenster · Aktien-Suche zurück vor das Fenster · Trennlinie der Auswertung entfernt.
 
 ### Zwei Entscheidungen, die dabei getroffen wurden
 
