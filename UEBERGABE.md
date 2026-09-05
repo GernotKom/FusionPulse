@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 05.09.2026, Version **4.4.0**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 05.09.2026, Version **4.4.1**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -573,6 +573,29 @@ Weder Favoriten noch frische Entdeckungen dürfen die Liste aufweichen, sonst k�
 - **Lesebudget 125.000 von 5.000.000 (2,5 %)** — der Eingriff aus 4.3.7 hält über einen ganzen Tag.
 - **Die rote Systemzeile nennt jetzt den Grund:** *„API-Fehler — The operation was aborted due to timeout"*. Das ist 4.3.9 bei der Arbeit; vorher stand dort nur die Kategorie. **Zeitüberschreitung** ist damit die konkrete Spur für den nächsten Schritt, nicht mehr „irgendwas mit der API".
 - **Schreibbudget 86.000 von 90.000** um 18:42 — die selbst gesetzte Obergrenze wird heute erreicht. Offener Punkt 23 bleibt der nächste Schritt, und `topQueries` ist das Feld dafür.
+
+### 4.4.1 · Ich habe den falschen von zwei Ausgabepfaden repariert
+
+4.4.0 baute die Watchlist-Beschränkung in `safeCarry` ein — im **Live-Pfad**. Der Browser bekommt aber den **persistierten Cron-Stand** („Der Browser startet keinen Tiefenscan"), und der filterte weiter nach Katalog und Favoriten. Ergebnis: 4.4.0 war aufgespielt, und die Heatmap zeigte unverändert GILD, GOLD, AMD, COIN, GOOGL, AVGO, TSLA, RKLB, ABBV.
+
+**Verschärfend:** der persistierte Stand stammt aus einer Zeit, in der der Watchlist-Modus serverseitig gar nicht speicherbar war (`req is not defined`, bis 4.3.6). Er enthält also zwangsläufig Whole-Market-Funde und wird sie behalten, bis der Cron einen reinen Watchlist-Stand geschrieben hat. Der Filter greift ab 4.4.1 sofort.
+
+Der Test verlangt die Regel jetzt in **beiden** Zweigen. Ein Test, der nur einen von zwei Ausgabepfaden prüft, bestätigt eine Reparatur, die den Nutzer nicht erreicht — genau das ist passiert.
+
+**Und wieder ein Fehlanker:** `stockMemo={ts:persisted.ts` kommt zweimal vor; der erste Treffer liegt vor dem geprüften Zweig, der Ausschnitt war leer, und der Test meldete einen Fehler, den es nicht gab. Vierter Griff dieser Art in dieser Reihe. Der Endanker wird jetzt AB dem Startanker gesucht.
+
+### Kostenrechnung für die Plan-Entscheidung
+
+Cloudflare Workers Paid: 5 $/Monat Mindestbetrag, laut Cloudflares eigener Warnmail **25 Milliarden gelesene und 50 Millionen geschriebene Zeilen enthalten**.
+
+| | heute (30 Tage) | enthalten | Sicherheitsfaktor |
+|---|---|---|---|
+| geschrieben | 2,6 Mio. | 50 Mio. | **19×** |
+| gelesen | 3,8 Mio. | 25.000 Mio. | **6.562×** |
+
+Teurer als 5 $ würde es erst ab 1,67 Mio. geschriebenen Zeilen pro Tag (heute 87.000) oder 833 Mio. gelesenen (heute 0,13 Mio.). **Der Verbrauch müsste sich verneunzehnfachen.**
+
+Der Plan löst zusätzlich zwei Dinge, die heute Zeit kosten: das Schreiblimit als Stillstandsursache entfällt, und das Subrequest-Limit von 50 je Aufruf steigt auf 1.000 — Letzteres ist ein plausibler Mitverursacher der Zeitüberschreitungen im Deep Scan.
 
 ### Zwei Entscheidungen, die dabei getroffen wurden
 

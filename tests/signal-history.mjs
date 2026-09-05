@@ -417,4 +417,33 @@ console.log('✓ FusionPulse v4.3.7 Leselimit und Verlaufsabfrage (ausgefuehrt):
     'v4.4.0: Weder Favoriten noch frische Entdeckungen duerfen die Watchlist aufweichen');
 }
 
-console.log('✓ FusionPulse v4.4.0 Watchlist-Modus zeigt nur die Watchlist (ausgefuehrt): OK');
+  /* ══ v4.4.1 · BEIDE PFADE, NICHT NUR EINER ═══════════════════════════════
+     4.4.0 hat die Beschraenkung im LIVE-Pfad eingebaut. Der Browser bekommt
+     aber den PERSISTIERTEN Cron-Stand — dort wirkte sie nicht, und die
+     Heatmap zeigte nach dem Deploy unveraendert fremde Titel.
+     Ein Test, der nur einen von zwei Ausgabepfaden prueft, bestaetigt eine
+     Reparatur, die den Nutzer nicht erreicht. Deshalb wird hier die Regel in
+     BEIDEN Zweigen verlangt. */
+  {
+    const w2 = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+    /* Endanker AB dem Startanker suchen: `stockMemo={ts:persisted.ts` kommt
+       zweimal vor, und der erste Treffer liegt VOR dem Zweig. Ein Endanker
+       vor dem Startanker ergibt einen leeren Ausschnitt und meldet einen
+       Fehler, den es nicht gibt — in dieser Reihe der vierte solche Griff. */
+    const pVon = w2.indexOf('const wlSetP = watchlistMode');
+    const persistZweig = w2.slice(pVon, w2.indexOf('stockMemo={ts:persisted.ts', pVon));
+    assert.ok(persistZweig.length > 200, 'v4.4.1: Der persistierte Zweig muss auffindbar sein');
+    assert.match(persistZweig, /if\(wlSetP\) return wlSetP\.has\(sym\);/,
+      'v4.4.1: Auch der persistierte Cron-Stand muss im Watchlist-Modus auf die Liste beschraenkt werden — das ist der Pfad, den die Oberflaeche sieht');
+    const filter = new Function('watchlistMode','onlySymbols','persisted','catalogSet','favs','allowed',
+      'const NON_COMMON_SYMBOL_DENY=new Set();const NON_COMMON_EQUITY_RE=/$^/;'
+      + persistZweig + '\nreturn cleanRows.map(r=>r.symbol);');
+    const rows = ['IONQ','EDIT','GILD','AMD','TSLA'].map(s=>({symbol:s}));
+    const kat = new Set(['IONQ','EDIT','GILD','AMD','TSLA']);
+    assert.deepEqual(filter(true, ['IONQ','EDIT'], { rows }, kat, ['TSLA'], new Set(['AMD'])), ['IONQ','EDIT'],
+      'v4.4.1: Im Watchlist-Modus bleibt NUR die Liste — auch Favoriten und Radar-Funde nicht');
+    assert.equal(filter(false, [], { rows }, kat, [], new Set()).length, 5,
+      'v4.4.1: Ohne Watchlist bleibt der Filter unveraendert');
+  }
+
+console.log('✓ FusionPulse v4.4.1 Watchlist gilt in BEIDEN Ausgabepfaden (ausgefuehrt): OK');

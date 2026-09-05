@@ -8233,7 +8233,33 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       const verifiedBoats=verifiedCommonOnly(Array.isArray(persisted.meta?.verifiedBoats)?persisted.meta.verifiedBoats:[]);
       const allowed=new Set([...verifiedRadar,...verifiedBoats].map(x=>String(x.symbol||'').toUpperCase()));
       const catalogSet=new Set(STOCK_SEARCH_CATALOG.map(x=>x[1]));
-      const cleanRows=(persisted.rows||[]).filter(r=>{const sym=String(r?.symbol||'').toUpperCase();return !NON_COMMON_SYMBOL_DENY.has(sym) && !NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''}`) && (catalogSet.has(sym)||favs.includes(sym)||allowed.has(sym));});
+      /* ══ v4.4.1 · HIER KOMMT DIE ANZEIGE HER, NICHT AUS safeCarry ═════════
+         4.4.0 hat die Watchlist-Beschraenkung in `safeCarry` eingebaut — im
+         LIVE-Pfad. Der Browser bekommt aber diesen Zweig hier: den
+         persistierten Cron-Stand („Der Browser startet keinen Tiefenscan").
+         Der filterte weiter nach Katalog und Favoriten, nicht nach der
+         Watchlist. Folge: 4.4.0 lag auf dem Rechner des Nutzers und die
+         Heatmap zeigte unveraendert fremde Titel — GILD, GOLD, AMD, COIN,
+         GOOGL, AVGO, TSLA, RKLB, ABBV.
+
+         Ich habe den falschen von zwei Pfaden repariert und das Ergebnis
+         nicht geprueft, weil ich es nicht pruefen KANN — die Anzeige entsteht
+         erst im Betrieb. Genau dafuer gibt es hier jetzt eine Zusicherung, die
+         BEIDE Pfade gegeneinander haelt.
+
+         Verschaerfend: der persistierte Stand stammt aus einer Zeit, in der
+         der Watchlist-Modus serverseitig gar nicht gespeichert werden konnte
+         (`req is not defined`, bis 4.3.6). Er enthaelt also zwangslaeufig
+         Whole-Market-Funde. Bis der Cron einen reinen Watchlist-Stand
+         geschrieben hat, filtert dieser Zweig sie heraus. */
+      const wlSetP = watchlistMode ? new Set(onlySymbols) : null;
+      const cleanRows=(persisted.rows||[]).filter(r=>{
+        const sym=String(r?.symbol||'').toUpperCase();
+        if(NON_COMMON_SYMBOL_DENY.has(sym)) return false;
+        if(NON_COMMON_EQUITY_RE.test(`${r?.securityName||''} ${r?.name||''}`)) return false;
+        if(wlSetP) return wlSetP.has(sym);
+        return catalogSet.has(sym)||favs.includes(sym)||allowed.has(sym);
+      });
       stockMemo={ts:persisted.ts,rows:cleanRows,cycle:persisted.cycle,sig:persisted.sig,refreshedSymbols:Array.isArray(persisted.meta?.refreshedSymbols)?persisted.meta.refreshedSymbols:[]};
       const radar=await readPersistedIexRadar(env);
       return {configured:true,state:fresh?'ok':'stale',cached:true,persistent:true,ageMinutes:Math.round(ageMs/60_000),rows:cleanRows,ts:persisted.ts,cycle:persisted.cycle,universe:radar?.universe||12000,universeLabel:`${radar?.universe||'12.000+'} Tiingo/IEX`,scanned:cleanRows.length,updatedThisCycle:0,refreshedSymbols:Array.isArray(persisted.meta?.refreshedSymbols)?persisted.meta.refreshedSymbols:[],favoritePriority:favs.length,source:'Tiingo IEX',provider:'Tiingo',market:usMarketPhase(),persist:stockPersistState,servedBy:'cron-persistent',cronScanTs:persisted.ts||null,cronScanAgeMin:Math.round(ageMs/60_000),discovery:{radar:{source:'Tiingo IEX Whole-Market Radar · verified',ts:persisted.ts||0,candidates:verifiedRadar,gainers:openingGainers(verifiedRadar),buyWeight:0,gate:{...radarGateStats}},boats:{source:'Tiingo BOATS · verified',ts:persisted.ts||0,candidates:verifiedBoats,buyWeight:0}},version:APP_VERSION,note:fresh?'Server-Cache: autonomer Cron-Radar/Deep-Scan; PWA startet keinen Doppel-Scan. Nur verifizierte Common Stocks werden an die UI gereicht.':`Letzter Stand der Vorsitzung, ${Math.round(ageMs/60_000)} Min. alt. Ausserhalb der US-Handelszeit laeuft kein Scan (Bandbreitenschutz v4.0.0) — angezeigte Kurse sind historisch, keine Kauf-Freigabe.`};
