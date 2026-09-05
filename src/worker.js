@@ -8465,8 +8465,28 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   const safeCarry=new Map();
   const catalogSet=new Set(STOCK_SEARCH_CATALOG.map(x=>x[1]));
   const verifiedDiscoveryNow=new Set([...(radar.rows||[]),...(boats.rows||[])].map(x=>String(x?.symbol||'').toUpperCase()).filter(Boolean));
+  /* ══ v4.4.0 · IM WATCHLIST-MODUS GEHOERT NICHTS ANDERES IN DIE ANZEIGE ═══
+     BEFUND aus dem Betrieb (05.09.): Bei aktiver Watchlist mit 36 Titeln
+     zeigte die Heatmap 17 Punkte, davon 10 — 59 % — die GAR NICHT in der
+     Watchlist stehen: GILD, GOLD, AMD, COIN, GOOGL, AVGO, OM, TSLA, RKLB,
+     ABBV. Wer im Filter zusaetzlich „★ Favoriten / Depot" waehlte, bekam
+     folgerichtig ein anderes Bild — zwei Ansichten derselben Auswahl, die
+     nicht uebereinstimmen.
+
+     Ursache: `safeCarry` traegt JEDE je gesehene Katalogzeile unbegrenzt
+     weiter. Das ist im Radar-Betrieb richtig (die Anzeige soll zwischen zwei
+     Zyklen nicht ausduennen), widerspricht im Watchlist-Modus aber dessen
+     ausdruecklicher Zusage: „Der Server untersucht ausschliesslich diese
+     Titel." Die mitgeschleppten Zeilen stammten zudem vom Vortag — der
+     Nutzer sah alte Whole-Market-Funde als Teil seiner eigenen Auswahl.
+
+     Ab hier gilt im Watchlist-Modus die Liste, und nur sie. Es fehlt dadurch
+     nichts: die 36 Titel werden jede Minute analysiert, sie duennen nicht
+     aus. Im Radar-Betrieb bleibt das Mitschleppen unveraendert. */
+  const wlSet = onlySymbols.length ? new Set(onlySymbols.map(x=>String(x).toUpperCase())) : null;
   for(const r of stockMemo.rows||[]){
     const sym=String(r?.symbol||'').toUpperCase();
+    if(wlSet){ if(wlSet.has(sym)) safeCarry.set(sym,r); continue; }
     if(catalogSet.has(sym)||favs.includes(sym)||verifiedDiscoveryNow.has(sym)) safeCarry.set(sym,r);
   }
   for(const r of fresh)safeCarry.set(r.symbol,r);

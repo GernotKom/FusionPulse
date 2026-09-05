@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 05.09.2026, Version **4.3.9**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 05.09.2026, Version **4.4.0**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -554,6 +554,26 @@ Die Zeile hängt ihn jetzt an, auf 150 Zeichen gekürzt. Fehlt eine Begründung,
 - **Lernschicht arbeitet:** 1.530 Beobachtungen und 1.017 Auswertungen in 24 h, Abdeckung 81 %. Vor 4.2.3 stand dort dauerhaft null.
 - **Aktien-Ampel rot** — das ist 4.3.4 bei der Arbeit: ein Scan mit null Zeilen meldet sich nicht mehr als Erfolg.
 
+### 4.4.0 · Der Watchlist-Modus zeigte fremde Titel als eigene Auswahl
+
+**Nutzerbefund vom 05.09., und er ist präzise:** *„Bei den gescreenten Aktien werden die Favoriten in der Beschreibung angeführt — wenn ich zusätzlich im Dropdown Favoriten auswähle, gibt es eine andere Anzeige in der Heatmap. Wie geht das? Sind ja dieselben Positionen."*
+
+Nachgezählt: bei aktiver Watchlist mit 36 Titeln zeigte die Heatmap 17 Punkte, davon **10 — also 59 % — die gar nicht in der Watchlist stehen**: GILD, GOLD, AMD, COIN, GOOGL, AVGO, OM, TSLA, RKLB, ABBV. Wer im Filter zusätzlich „★ Favoriten / Depot" wählte, bekam folgerichtig ein anderes Bild. Zwei Ansichten derselben Auswahl, die nicht übereinstimmen.
+
+**Ursache ist `safeCarry`.** Es trägt jede je gesehene Katalogzeile unbegrenzt weiter. Im Radar-Betrieb ist das richtig — die Anzeige soll zwischen zwei Zyklen nicht ausdünnen. Im Watchlist-Modus widerspricht es der ausdrücklichen Zusage direkt darüber: *„Der Server untersucht ausschließlich diese Titel."* Die mitgeschleppten Zeilen stammten zudem vom Vortag; der Nutzer sah alte Whole-Market-Funde als Teil seiner eigenen Auswahl.
+
+Ab 4.4.0 gilt im Watchlist-Modus die Liste, und nur sie. Es fehlt dadurch nichts: die 36 Titel werden jede Minute analysiert und dünnen nicht aus. **Im Radar-Betrieb bleibt das Mitschleppen unverändert** — eine Gegenprobe hält fest, dass die Änderung eng gefasst ist.
+
+Weder Favoriten noch frische Entdeckungen dürfen die Liste aufweichen, sonst käme die Vermischung durch die Hintertür zurück. Auch dafür gibt es eine Zusicherung.
+
+**Drei Negativkontrollen**, alle gefeuert: Beschränkung entfernt · Favoriten weichen die Liste auf · Beschränkung auch im Radar-Betrieb (zu weit gefasst).
+
+### Was der Nutzer nebenbei bestätigt hat
+
+- **Lesebudget 125.000 von 5.000.000 (2,5 %)** — der Eingriff aus 4.3.7 hält über einen ganzen Tag.
+- **Die rote Systemzeile nennt jetzt den Grund:** *„API-Fehler — The operation was aborted due to timeout"*. Das ist 4.3.9 bei der Arbeit; vorher stand dort nur die Kategorie. **Zeitüberschreitung** ist damit die konkrete Spur für den nächsten Schritt, nicht mehr „irgendwas mit der API".
+- **Schreibbudget 86.000 von 90.000** um 18:42 — die selbst gesetzte Obergrenze wird heute erreicht. Offener Punkt 23 bleibt der nächste Schritt, und `topQueries` ist das Feld dafür.
+
 ### Zwei Entscheidungen, die dabei getroffen wurden
 
 **1. Der Altbestand wird nicht zurückgeholt.** Alles vor 4.2.3 trägt irrtümlich `dropped_ts`; die Rohdaten stehen noch da. Ein Zurücksetzen wäre technisch ein Einzeiler, brächte aber nichts: ohne Protokolleinträge für diese Zeitfenster verwürfe der Auflöser dieselben Zeilen sofort wieder, und der Versuch kostete Schreibzeilen aus dem knappen Budget. **Die Messung beginnt bei null.** Die erste auswertbare Basis entsteht damit frühestens nach einigen Handelstagen — das ist der Preis dafür, dass vorher nichts entstanden ist.
@@ -699,6 +719,8 @@ Eine ältere Regex-Zusicherung auf die Inline-Formel (`safety-regression.mjs`, Z
 22. **Jede neue D1-Abfrage braucht einen passenden Index, bevor sie ausgeliefert wird.** `signalHistory` (4.2.9) filterte auf eine Spalte ohne Index und hat damit allein das Tageslimit gesprengt. Prüfregel für den nächsten Zusatz: Welche Spalten stehen im WHERE, in welcher Reihenfolge, und deckt ein Index sie ab?
 
 23. **Das SCHREIBbudget läuft am 05.09. auf 132 Zeilen/min** (56.483 nach 427 Minuten) gegen 62,5 tragfähige — Obergrenze gegen 11:20 UTC erreicht. Der fünfte Index aus 4.3.7 kostet dabei eine zusätzliche Zeile je INSERT (+20 % auf Einfügungen), erklärt aber bei weitem nicht alles. **Zu klären am Feld `topQueries` aus `/api/health`** — es nennt die Anweisung mit dem grössten Verbrauch und ist genau dafür gebaut. Erst messen, dann drosseln: die Änderungsschwelle in `d1StoreRows` ist bereits scharf, ein blindes Absenken beschädigt die Lernschicht, die seit 4.2.3 gerade erst wieder arbeitet.
+
+24. **Der Aktien-Deep-Scan läuft in Zeitüberschreitungen.** Seit 4.3.9 steht der Grund in der roten Systemzeile: „The operation was aborted due to timeout". Das ist die konkrete Spur zum eingefrorenen Aktienstand — zu prüfen sind die Zeitbudgets in `tiingoAnalyseOne`/`fetchWithTimeout` und die Parallelität des `pool(syms, 6, …)`. Sechs gleichzeitige Abrufe je Zyklus gegen einen Anbieter, der pro Titel mehrere Kursreihen liefert, ist der naheliegende Verdächtige.
 
 ## 5. Kosten und Cloudflare-Plan
 

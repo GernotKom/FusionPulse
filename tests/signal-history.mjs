@@ -368,3 +368,53 @@ console.log('✓ FusionPulse v4.3.5 Rangalterung der Heatmap (ausgefuehrt): OK')
 }
 
 console.log('✓ FusionPulse v4.3.7 Leselimit und Verlaufsabfrage (ausgefuehrt): OK');
+
+/* ══ v4.4.0 · WATCHLIST HEISST WATCHLIST ═══════════════════════════════════
+   Betriebsbefund vom 05.09.: Bei aktiver Watchlist mit 36 Titeln zeigte die
+   Heatmap 17 Punkte, davon 10 — 59 % — die gar nicht in der Watchlist stehen
+   (GILD, GOLD, AMD, COIN, GOOGL, AVGO, OM, TSLA, RKLB, ABBV). Waehlte man im
+   Filter zusaetzlich „★ Favoriten / Depot", bekam man ein ANDERES Bild:
+   zwei Ansichten derselben Auswahl, die nicht uebereinstimmen.
+
+   Ursache war `safeCarry` — es traegt jede je gesehene Katalogzeile
+   unbegrenzt weiter. Im Radar-Betrieb richtig (die Anzeige soll zwischen
+   Zyklen nicht ausduennen), im Watchlist-Modus ein Widerspruch zur eigenen
+   Zusage: „Der Server untersucht ausschliesslich diese Titel." */
+{
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const von = w.indexOf('const wlSet = onlySymbols.length');
+  const bis = w.indexOf('for(const r of fresh)safeCarry.set(r.symbol,r);');
+  assert.ok(von > 0 && bis > von, 'v4.4.0: Die Uebernahmeregel muss auffindbar sein');
+
+  const uebernehmen = new Function('onlySymbols', 'stockMemo', 'catalogSet', 'favs', 'verifiedDiscoveryNow',
+    'const safeCarry=new Map();' + w.slice(von, bis) + '\nreturn [...safeCarry.keys()];');
+
+  const memo = { rows: ['IONQ','EDIT','LITE','GILD','GOLD','AMD','TSLA','ABBV'].map(s => ({ symbol: s })) };
+  const katalog = new Set(['IONQ','EDIT','LITE','GILD','GOLD','AMD','TSLA','ABBV']);
+
+  /* 1 · Watchlist aktiv: NUR die Liste bleibt. */
+  const wl = ['IONQ','EDIT','LITE'];
+  const inWl = uebernehmen(wl, memo, katalog, [], new Set());
+  assert.deepEqual(inWl.sort(), ['EDIT','IONQ','LITE'],
+    'v4.4.0: Im Watchlist-Modus darf NICHTS ausserhalb der Liste in die Anzeige — sonst zeigt die Heatmap fremde Titel als eigene Auswahl');
+
+  /* 2 · Radar-Betrieb: das Mitschleppen bleibt unveraendert. Ohne diese
+     Gegenprobe waere nicht belegt, dass die Aenderung eng gefasst ist. */
+  const imRadar = uebernehmen([], memo, katalog, [], new Set());
+  assert.equal(imRadar.length, 8,
+    'v4.4.0: Ohne Watchlist muss weiterhin jede Katalogzeile mitgetragen werden — die Anzeige soll zwischen Zyklen nicht ausduennen');
+
+  /* 3 · Ein Titel, der im Katalog steht, aber nicht in der Watchlist, bleibt
+     draussen. Genau dieser Fall war der Befund. */
+  const nurKatalog = uebernehmen(['IONQ'], memo, katalog, [], new Set());
+  assert.deepEqual(nurKatalog, ['IONQ'],
+    'v4.4.0: Katalogzugehoerigkeit allein reicht im Watchlist-Modus NICHT');
+
+  /* 4 · Auch Favoriten und frische Entdeckungen ueberschreiben die Liste
+     nicht — sonst kaeme die Vermischung durch die Hintertuer zurueck. */
+  const trotzFav = uebernehmen(['IONQ'], memo, katalog, ['TSLA','AMD'], new Set(['GILD']));
+  assert.deepEqual(trotzFav, ['IONQ'],
+    'v4.4.0: Weder Favoriten noch frische Entdeckungen duerfen die Watchlist aufweichen');
+}
+
+console.log('✓ FusionPulse v4.4.0 Watchlist-Modus zeigt nur die Watchlist (ausgefuehrt): OK');
