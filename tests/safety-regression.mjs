@@ -5364,7 +5364,18 @@ console.log('✓ FusionPulse v4.0.6 Plan-Alter / Coin-Link / Kartengeometrie (au
   const indizes = (w.match(/CREATE INDEX IF NOT EXISTS \w+ ON market_snapshots/g) || []).length;
   const zeilenProInsert = indizes + 1;
   const proTag = 12 * zeilenProInsert * 1440;
-  assert.strictEqual(indizes, 4, 'v4.1.0: die Rechnung unten haengt an vier Indizes auf market_snapshots');
+  /* ══ v4.3.7 · FUENFTER INDEX, UND WARUM DIE ZAHL NICHT NUR STEIGT ═══════
+     Jeder Index kostet beim INSERT eine geschriebene Zeile — deshalb steht
+     die Zahl hier fest und wird bei jeder Aenderung bewusst nachgezogen, nicht
+     stillschweigend erhoeht.
+
+     Der fuenfte (`idx_snap_light`) ist trotzdem richtig: ohne ihn las die
+     Verlaufsabfrage aus 4.2.9 bei JEDEM Aufruf die ganze Tabelle. Cloudflare
+     hat am 04.09. das Tageslimit fuer GELESENE Zeilen gerissen (5 Mio.,
+     Free-Tier) — die App hat Schreibzeilen penibel budgetiert und Lesezeilen
+     nie gemessen. Der Index kostet 1 Zeile je INSERT und spart Millionen
+     gelesene; das ist kein knapper Handel. */
+  assert.strictEqual(indizes, 5, 'v4.1.0/4.3.7: die Rechnung unten haengt an der Zahl der Indizes auf market_snapshots');
   assert.ok(proTag > 80_000,
     `v4.1.0: ${proTag} Zeilen/Tag ohne Schreibfilter — die Schwelle ist kein Beiwerk`);
 }
@@ -6371,3 +6382,75 @@ console.log('✓ FusionPulse v4.2.3 Coin-Suche, Favoriten, Heatmap, Gatter (ausg
 }
 
 console.log('✓ FusionPulse v4.2.9 Eingefrorener Aktienscan wird benannt (ausgefuehrt): OK');
+
+/* ══ v4.3.8 · DIE LESESEITE WIRD ANGEZEIGT UND BEURTEILT ═══════════════════
+   Am 04.09. riss Cloudflare das Tageslimit fuer GELESENE Zeilen (5 Mio.,
+   Free-Tier). Die App meldete waehrenddessen `DB 27k/90k` — gruen, im Rahmen.
+   Sie zeigte ausschliesslich Schreibzeilen.
+
+   Der Server misst `rowsRead` seit jeher und liefert `readShareOfFreeLimit`,
+   `atLeastRowsReadPerMin`, `sustainableRowsReadPerMin` und
+   `freeLimitRowsRead` mit. Es fehlte genau das eine Feld, das aus einer ZAHL
+   eine AUSSAGE macht — `readBudgetHoldsToday` — und die Anzeige. */
+{
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const a = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  assert.match(w, /readBudgetHoldsToday: rPerMin > 0/,
+    'v4.3.8: Die Leseseite braucht dasselbe Urteil wie die Schreibseite');
+  assert.match(w, /readBudgetMinutesLeft: rPerMin > 0/,
+    'v4.3.8: … und dieselbe Restzeitangabe');
+
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const mk = (over) => ({ d1: { measured: true, rowsWritten: 1000, freeLimitRowsWritten: 100000, selfCap: 90000,
+    rowsRead: 100000, freeLimitRowsRead: 5000000, atLeastRowsReadPerMin: 100,
+    sustainableRowsReadPerMin: 3472, readBudgetHoldsToday: true, complete: true, ...over } });
+
+  /* 1 · Normalfall: eine Zahl mit Grenze, keine Warnfarbe. */
+  const ruhig = C.d1ReadNote(mk({}));
+  assert.equal(ruhig.measured, true);
+  assert.equal(ruhig.tone, 'ok');
+  assert.match(ruhig.short, /Lesen/);
+
+  /* 2 · DER FALL VOM 04.09.: Limit gerissen. Muss rot sein und es sagen. */
+  const gerissen = C.d1ReadNote(mk({ rowsRead: 5200000, readBudgetHoldsToday: false }));
+  assert.equal(gerissen.tone, 'err', 'v4.3.8: Ein gerissenes Leselimit MUSS rot sein');
+  assert.match(gerissen.detail, /Fehler zurück/,
+    'v4.3.8: … und benennen, dass lesende Abfragen ab jetzt scheitern');
+
+  /* 3 · Hochrechnung: der Takt reisst das Limit noch heute. Auch das ist
+     eine Warnung, obwohl der Stand noch niedrig ist. */
+  const kippt = C.d1ReadNote(mk({ rowsRead: 900000, readBudgetHoldsToday: false, readBudgetMinutesLeft: 90 }));
+  assert.equal(kippt.tone, 'orange', 'v4.3.8: Eine Hochrechnung, die heute reisst, ist eine Warnung');
+  assert.match(kippt.detail, /90 Minuten/, 'v4.3.8: … mit der verbleibenden Zeit');
+
+  /* 4 · FAIL-CLOSED. Ohne Messung KEIN Prozentwert — eine Leerstelle sähe aus
+     wie Reserve. */
+  for (const [name, m] of [['gar nichts', undefined], ['nicht gemessen', { d1: { measured: false } }],
+                           ['keine Lesezahl', mk({ rowsRead: null })]]) {
+    const n = C.d1ReadNote(m);
+    assert.equal(n.measured, false, `v4.3.8 (${name}): hier darf nichts gemessen sein`);
+    assert.ok(!/%/.test(n.label), `v4.3.8 (${name}): KEIN Prozentwert ohne Messung`);
+    assert.match(n.detail, /NICHT schließen/, `v4.3.8 (${name}): … und keine Entwarnung daraus`);
+  }
+
+  /* 5 · Die Kachel zeigt BEIDE Seiten, und die schlechtere Ampel faerbt.
+     Eine gruene Haelfte darf eine rote nicht ueberdecken — genau das ist am
+     04.09. passiert. */
+  /* Der Ausschnitt beginnt beim Kommentar VOR der Kachel, weil `rdSys` dort
+     gebildet wird. Ein zu enger Griff findet die Zuweisung nicht und meldet
+     einen Fehler, den es nicht gibt — schon dreimal in dieser Reihe passiert. */
+  const sysVon = a.indexOf('const rdSys=d1ReadNote(health);');
+  assert.ok(sysVon > 0, 'v4.3.8: Die Kachel muss die Leseseite abfragen');
+  const sys = a.slice(sysVon, a.indexOf('box.dataset.tip=', sysVon));
+  assert.match(sys, /\$\{rdSys\.short/, 'v4.3.8: … und sie AUSGEBEN, nicht nur berechnen');
+  assert.match(sys, /Math\.max\(rang\(d1Sys/, 'v4.3.8: Die schlechtere der beiden Ampeln muss faerben');
+
+  /* 6 · KEINE Bremse. Lesevorgaenge zu sperren wuerde die App stilllegen,
+     waehrend die Datenbank noch antwortet. */
+  assert.ok(!/readCapExhausted|d1ReadCap\s*\(/.test(w),
+    'v4.3.8: Es darf KEINE Lesebremse geben — sie wuerde die App stilllegen, waehrend D1 noch antwortet');
+}
+
+console.log('✓ FusionPulse v4.3.8 Lesebudget sichtbar (ausgefuehrt): OK');

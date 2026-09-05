@@ -50,7 +50,7 @@
   // Ohne diesen Eintrag gilt die Vorgabe 90.000. Vor einem Wechsel auf Paid
   // erst eine saubere Tagesmessung abwarten, dann diesen Wert setzen, dann
   // den Tarif wechseln — in dieser Reihenfolge.
-  "vars": { "APP_VERSION": "4.3.5", "ALPACA_FEED": "iex", "TIINGO_STOCKS_MODE": "primary", "D1_WRITE_BUDGET": "90000" },
+  "vars": { "APP_VERSION": "4.3.8", "ALPACA_FEED": "iex", "TIINGO_STOCKS_MODE": "primary", "D1_WRITE_BUDGET": "90000" },
 
   // v3.2: Cron läuft jede Minute. Im Worker selbst wird gedrosselt:
   // Krypto 5-minütig, Alpaca im Opening-Fenster, Aktien-Learning im Primary-Modus über Tiingo.

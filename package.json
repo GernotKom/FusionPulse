@@ -1,6 +1,6 @@
 {
   "name": "fusionpulse",
-  "version": "4.3.5",
+  "version": "4.3.8",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "predeploy": "npm run sync-version",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
-    "check": "node --check public/app.js && node --check src/worker.js && node --check public/sw.js && npm run test:safety && npm run test:coinscope && npm run test:provider && npm run test:bandwidth && npm run test:sw && npm run test:d1 && node tests/signal-history.mjs && node tests/client-symbols.mjs",
+    "check": "npm run lint && node --check public/app.js && node --check src/worker.js && node --check public/sw.js && npm run test:safety && npm run test:coinscope && npm run test:provider && npm run test:bandwidth && npm run test:sw && npm run test:d1 && node tests/signal-history.mjs && node tests/client-symbols.mjs",
     "test:safety": "node tests/safety-regression.mjs",
     "audit:reach": "node tests/reachability-audit.mjs",
     "test:sw": "node tests/sw-fault.mjs",
@@ -19,9 +19,11 @@
     "test:bandwidth": "node tests/bandwidth-feed.mjs",
     "test:d1": "node tests/d1-usage.mjs",
     "handbuch": "python3 scripts/build-handbuch.py",
-    "release": "npm run sync-version && npm run check && npm run handbuch"
+    "release": "npm run sync-version && npm run check && npm run handbuch",
+    "lint": "eslint src/worker.js public/app.js public/sw.js"
   },
   "devDependencies": {
+    "eslint": "^9.39.5",
     "wrangler": "^4.68.0"
   }
 }

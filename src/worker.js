@@ -1420,10 +1420,20 @@ async function writeCoinWatch(env, pairs){
    („eine Trefferquote aus sieben Faellen ist keine Quote"). Die Liste zeigt
    Faelle, keine Statistik. */
 const SIGNAL_EPISODE_GAP_MS = 45*60_000;
-const SIGNAL_HISTORY_MAX_ROWS = 4000;
+/* v4.3.7 · Von 4.000 auf 1.200 gesenkt. Der Verlauf zeigt hoechstens 20
+   Episoden; 4.000 Zeilen waren gross gewaehlt „fuer den Fall der Faelle" und
+   sind bei gerissenem Leselimit genau der falsche Fall. */
+const SIGNAL_HISTORY_MAX_ROWS = 1200;
+/* Ein Vorrat je Anlageklasse. Zwei offene Tabs und jedes Neuladen teilten sich
+   bisher NICHTS — jeder Aufruf ging voll auf die Datenbank. */
+const signalHistoryMemo = new Map();
+const SIGNAL_HISTORY_TTL_MS = 10*60_000;
 async function signalHistory(env, assetType='coin', days=7, limit=25){
   const out={configured:!!env?.DB, assetType, days, episodes:[], version:APP_VERSION};
   if(!env?.DB){ out.state='nodb'; out.reason='Ohne D1 gibt es keine Aufzeichnung.'; return out; }
+  const memoKey=`${assetType}:${days}:${limit}`;
+  const memo=signalHistoryMemo.get(memoKey);
+  if(memo && Date.now()-memo.ts<SIGNAL_HISTORY_TTL_MS) return {...memo.data, cached:true, cacheAgeSec:Math.round((Date.now()-memo.ts)/1000)};
   const since=Date.now()-Math.max(1,Math.min(30,days))*86400_000;
   let rows;
   try{
@@ -1483,6 +1493,7 @@ async function signalHistory(env, assetType='coin', days=7, limit=25){
   }));
   out.state='ok';
   out.counted=eps.length;
+  signalHistoryMemo.set(memoKey,{ts:Date.now(),data:out});
   return out;
 }
 const STOCK_SNAPSHOT_LIVE_MS = 4*60_000;
@@ -2496,10 +2507,6 @@ async function stockSnapshot(env, force = false, comp, minCrv = 3, favoriteSymbo
   return {
     configured: true, state: 'ok', cached: false, rows, ts: stockMemo.ts, cycle,
     universe: STOCK_UNIVERSE.length, scanned: rows.length, updatedThisCycle: fresh.length, refreshedSymbols: fresh.map(r=>r.symbol), favoritePriority: favs.length,
-    /* v4.3.2 · Warum nichts aktualisiert wurde. Nur gefuellt, wenn es
-       tatsaechlich Fehler gab; eine leere Liste heisst „keine Fehler", nicht
-       „nicht gemessen" — deshalb steht `deepScanAttempted` daneben. */
-    deepScanAttempted: syms.length, deepScanErrors: scanErrorSummary,
     fxUsdPerEur: fx || null, fxApprox: !!fx, quota: quotaView(), version: APP_VERSION,
     market: usMarketPhase(new Date(), null), note: 'US-Marktdaten; EUR ist eine gekennzeichnete Umrechnung, kein Tradegate-Kurs',
   };
@@ -3172,6 +3179,23 @@ async function ensureD1Schema(env){
   if(!cols.some(c=>String(c.name)==='last_obs_ts')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN last_obs_ts INTEGER').run();
   if(!cols.some(c=>String(c.name)==='dropped_ts')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN dropped_ts INTEGER').run();
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_snap_due ON market_snapshots(resolved_ts, dropped_ts, ts)').run();
+  /* ══ v4.3.7 · DER INDEX, DEN MEINE VERLAUFSABFRAGE GEBRAUCHT HAETTE ═══════
+     Cloudflare hat am 04.09. das TAGESLIMIT FUER `rows_read` gerissen: 5 Mio.
+     gelesene Zeilen im Free-Tier, 82 % um 13:39, ueberschritten um 20:17.
+     Danach geben alle lesenden D1-Anfragen Fehler zurueck — das erklaert die
+     „Serverprobleme" am fruehen Nachmittag.
+
+     Die App hat Schreibzeilen bis auf die Stelle genau budgetiert (90.000 von
+     100.000, eigener Zaehler, Bremse, Hochrechnung) und LESEZEILEN nie
+     gemessen. Genau dort lag die Grenze.
+
+     Ursache ist `signalHistory` aus 4.2.9 — von mir. Die Abfrage filtert auf
+     `light='green' AND asset_type=? AND ts>=?`, und auf `light` gab es keinen
+     Index. SQLite las also bei JEDEM Aufruf die ganze Tabelle. Zweimal beim
+     Laden und zweimal alle 15 Minuten macht 194 Vollscans je offenem Tab und
+     Tag; bei 40.000 Zeilen sind das 7,8 Millionen gelesene Zeilen — das
+     Anderthalbfache des Tageslimits, aus EINER Kachel. */
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_snap_light ON market_snapshots(asset_type, light, ts DESC)').run();
   d1SchemaReady=true;return true;
 }
 const dbNum = (x) => Number.isFinite(Number(x)) ? Number(x) : null;
@@ -3420,6 +3444,24 @@ async function d1MeterView(env, now=Date.now()){
       writeBudgetMinutesLeft: wPerMin > 0 ? Math.max(0, Math.round((100_000 - rowsWritten) / wPerMin)) : null,
       writeBudgetMinutesLeftInDay: Math.round(restMin),
       writeBudgetHoldsToday: wPerMin > 0 ? (rowsWritten + wPerMin * restMin) <= 100_000 : true,
+      /* ══ v4.3.8 · DIE LESESEITE HATTE ALLES AUSSER DEM URTEIL ═════════════
+         `rowsRead`, `readShareOfFreeLimit`, `atLeastRowsReadPerMin`,
+         `sustainableRowsReadPerMin`, `atLeastProjectedRowsRead` und sogar
+         `freeLimitRowsRead: 5_000_000` gibt es seit jeher. Was fehlte, war
+         genau das eine Feld, das eine ZAHL in eine AUSSAGE verwandelt:
+         `readBudgetHoldsToday`. Und angezeigt wurde die Leseseite nirgends —
+         die Kachel nannte ausschliesslich Schreibzeilen.
+
+         Am 04.09. hat Cloudflare das Leselimit gerissen (5 Mio./Tag), und die
+         App hat waehrenddessen `DB 27k/90k` gemeldet: gruen, im Rahmen, alles
+         gut. Elfter Fall desselben Musters in dieser Reihe — gemessen,
+         uebertragen, nie ausgewertet.
+
+         Eine BREMSE gibt es hier bewusst nicht. Schreibvorgaenge lassen sich
+         aufschieben, Lesevorgaenge nicht: wer sie sperrt, legt die App still,
+         waehrend D1 noch antworten wuerde. Gewarnt wird, gebremst nicht. */
+      readBudgetMinutesLeft: rPerMin > 0 ? Math.max(0, Math.round((5_000_000 - rowsRead) / rPerMin)) : null,
+      readBudgetHoldsToday: rPerMin > 0 ? (rowsRead + rPerMin * restMin) <= 5_000_000 : true,
       complete: (Number(acc.unmetered)||0) === 0,
       /* v4.2.1: die selbst gesetzte Obergrenze. Cloudflare liefert fuer D1
          keine Ausgabenbremse; diese hier ist die einzige. Sie gehoert neben
@@ -8358,7 +8400,20 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
       if(!row){ scanErrors.push({symbol:sym,message:'keine analysierbaren Bars (tiingoAnalyseOne lieferte nichts)'}); return null; }
       // v4.2.0: relative Staerke gegen den Benchmark. Der Abruf ist gecacht,
       // dieser Aufruf kostet daher nichts pro Titel.
-      attachRelativeVwap(row, await benchmarkSessionVwap(env, now));
+      /* ══ v4.3.6 · DIE WURZEL DER EINGEFRORENEN AKTIENANZEIGE ═══════════
+         `now` gibt es in dieser Funktion nicht. Seit v4.2.0 warf damit JEDE
+         Symbolanalyse `ReferenceError: now is not defined` — direkt vor dem
+         `return row`. Das catch darunter fing es, schrieb eine Zeile ins
+         Worker-Log und lieferte `null`. Ergebnis: `fresh` immer leer, `rows`
+         immer leer, `persistStockScan` schrieb nie, und die Oberflaeche zeigte
+         dauerhaft den letzten Stand vor dem 4.2.0-Deploy.
+
+         Vier Verdaechtige habe ich sauber widerlegt — Bandbreite, Kadenz,
+         Rotation, Marktphase — und der Grund war ein undefinierter Bezeichner,
+         drei Zeilen vom Ziel entfernt. Gefunden hat ihn ESLint mit `no-undef`
+         in der ersten Sekunde. Weder `node --check` noch eine der
+         Muster-Pruefungen konnte das je sehen. */
+      attachRelativeVwap(row, await benchmarkSessionVwap(env, Date.now()));
       if(NON_COMMON_SYMBOL_DENY.has(sym)||NON_COMMON_EQUITY_RE.test(`${row?.name||''} ${row?.securityName||''}`))return null;
       const rm=radarMap.get(sym),bm=boatsMap.get(sym);
       if(rm){ row.discovery={type:'iex-radar',...rm,buyWeight:0}; row.securityVerified=rm.securityVerified===true; row.securityName=rm.securityName||row.name; row.companyDescription=rm.companyDescription||''; row.exchange=rm.exchange||''; }
@@ -8468,7 +8523,13 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
   stockMemo={ts:Date.now(),rows,cycle,sig}; setApiState('stocks',fresh.length?'ok':'stale',fresh.length?null:'Tiingo lieferte keine analysierbaren Bars');
   stockMemo.liveQuoteHits=liveQuoteHits;   // v3.13.0: stiller Ausfall soll sichtbar sein
   await persistStockScan(env,sig,cycle,rows,{provider:'Tiingo IEX',fxUsdPerEur:fx||null,refreshedSymbols:fresh.map(r=>r.symbol),queue:{favorites:favPick,recheck:recheckPick,gainers:gainerPick,radar:radarPick,boats:boatsPick,explore},verifiedRadar:(radar.rows||[]).slice(0,20),verifiedBoats:(boats.rows||[]).slice(0,12)});
-  return {configured:true,state:fresh.length?'ok':'stale',cached:false,servedBy:'live',rows,ts:stockMemo.ts,cycle,universe:radar.universe||12000,universeLabel:`${radar.universe||'12.000+'} Tiingo/IEX`,scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:phase,queue:{favorites:favPick.length,recheck:recheckPick.length,gainers:gainerPick.length,radar:radarPick.length,boats:boatsPick.length,explore:explore.length},discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar.ts,universe:radar.universe,candidates:(radar.rows||[]).slice(0,20),gainers:openingGainers(radar.rows||[]),buyWeight:0,gate:{...radarGateStats}},boats:{source:'Tiingo BOATS',ts:boats.ts,session:boats.session,candidates:(boats.rows||[]).slice(0,15),buyWeight:0}},persist:stockPersistState,version:APP_VERSION,note:'Tiingo Primary: Large-Cap Opportunity Lifecycle Radar + BOATS Discovery (beide 0 % direktes BUY-Gewicht) -> adaptive Deep-Scan-Queue -> IEX 5-Min Analyse.'};
+  return {configured:true,state:fresh.length?'ok':'stale',cached:false,servedBy:'live',rows,ts:stockMemo.ts,cycle,
+    /* v4.3.6 · Diese beiden Felder standen seit 4.3.2 in `stockSnapshot`
+       (Twelve-Data-Pfad) statt hier — der Ankertext war in beiden Funktionen
+       fast gleich. Dort war `scanErrorSummary` gar nicht definiert, was den
+       Twelve-Data-Pfad bei jedem Aufruf hat werfen lassen; und hier fehlten
+       sie, weshalb die Diagnose aus 4.3.2 den Client nie erreicht hat. */
+    deepScanAttempted:syms.length,deepScanErrors:scanErrorSummary,universe:radar.universe||12000,universeLabel:`${radar.universe||'12.000+'} Tiingo/IEX`,scanned:rows.length,deepCandidates:syms.length,updatedThisCycle:fresh.length,refreshedSymbols:fresh.map(r=>r.symbol),favoritePriority:favs.length,fxUsdPerEur:fx||null,source:'Tiingo IEX',provider:'Tiingo',market:phase,queue:{favorites:favPick.length,recheck:recheckPick.length,gainers:gainerPick.length,radar:radarPick.length,boats:boatsPick.length,explore:explore.length},discovery:{radar:{source:'Tiingo IEX Whole-Market Radar',ts:radar.ts,universe:radar.universe,candidates:(radar.rows||[]).slice(0,20),gainers:openingGainers(radar.rows||[]),buyWeight:0,gate:{...radarGateStats}},boats:{source:'Tiingo BOATS',ts:boats.ts,session:boats.session,candidates:(boats.rows||[]).slice(0,15),buyWeight:0}},persist:stockPersistState,version:APP_VERSION,note:'Tiingo Primary: Large-Cap Opportunity Lifecycle Radar + BOATS Discovery (beide 0 % direktes BUY-Gewicht) -> adaptive Deep-Scan-Queue -> IEX 5-Min Analyse.'};
 }
 async function tiingoStockSuggest(env,raw){
   const query=String(raw||'').trim();
@@ -8670,8 +8731,9 @@ export default {
 
     if (url.pathname === '/api/coinwatch') {
       try{
-        if(req.method==='POST'){
-          const body=await req.json().catch(()=>({}));
+        /* v4.3.6 · Hier stand `req`. Der Handler heisst `request`. */
+        if(request.method==='POST'){
+          const body=await request.json().catch(()=>({}));
           const pairs=await writeCoinWatch(env, body?.pairs);
           return json({pairs, saved:true, version:APP_VERSION},200,{ 'cache-control':'no-store' });
         }
@@ -8692,8 +8754,24 @@ export default {
 
     if (url.pathname === '/api/watchlist') {
       try{
-        if(req.method==='POST'){
-          const body=await req.json().catch(()=>({}));
+        /* ══ v4.3.6 · EIN WORT, SEIT v4.1.0 ═══════════════════════════════
+           Hier stand `req`. Der Handler heisst `request`. Jeder POST auf
+           /api/watchlist warf damit `ReferenceError: req is not defined` —
+           gefangen vom catch darunter, gemeldet als `reason:'unknown'` mit
+           dem nichtssagenden Satz „Der Modus konnte nicht gespeichert
+           werden."
+
+           DAS IST DER GRUND, WARUM DAS UMSCHALTEN NIE FUNKTIONIERT HAT.
+           Seit v4.1.0. Der Watchlist-Modus liess sich nie speichern, der
+           Cron hat ihn nie gesehen, und weil der Fehlertext den echten Grund
+           verschwieg, wurde stattdessen die halbe Datenkette verdaechtigt.
+           Sichtbar wurde er erst, als 4.3.0 bei `unknown` die tatsaechliche
+           Meldung durchreichte statt des Ersatztextes.
+
+           Dieselbe Verwechslung stand in /api/coinwatch — von mir, in 4.2.4,
+           beim Abschreiben dieses Musters uebernommen. */
+        if(request.method==='POST'){
+          const body=await request.json().catch(()=>({}));
           const wl=await writeWatchlist(env, body?.mode, body?.symbols);
           return json({...wl, saved:true, applied:true, version:APP_VERSION},200,{ 'cache-control':'no-store' });
         }

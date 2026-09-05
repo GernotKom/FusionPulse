@@ -17,7 +17,7 @@ assert.ok(from > 0 && to > from, 'signalHistory muss auffindbar sein');
 const src = 'const APP_VERSION="test";\nfunction dbNum(v){const n=Number(v);return Number.isFinite(n)?n:null;}\n'
   + 'async function ensureD1Schema(){}\n'
   + worker.slice(from, to)
-  + '\nreturn { signalHistory, SIGNAL_EPISODE_GAP_MS };';
+  + '\nreturn { signalHistory, SIGNAL_EPISODE_GAP_MS, signalHistoryMemo };';
 const M = new Function(src)();
 
 /* Ein Prüfstand, der genau das liefert, was D1 liefern würde. */
@@ -27,13 +27,20 @@ function db(rows, opts = {}) {
   }; } }; } };
 }
 const T0 = Date.UTC(2026, 8, 1, 12, 0, 0), B = 5 * 60_000;
+/* v4.3.7 · `signalHistory` haelt seit dem gerissenen Leselimit einen Vorrat
+   von zehn Minuten. Das ist gewolltes Produktionsverhalten, im Test aber eine
+   Falle: alle Faelle benutzen denselben Schluessel und bekaemen sonst das
+   Ergebnis des ersten zurueck. Deshalb vor jedem Fall leeren — und zwar
+   ausdruecklich, damit der Vorrat sichtbar bleibt statt umgangen zu werden. */
+const frisch = () => { M.signalHistoryMemo.clear(); };
 const gruen = (symbol, ts, extra = {}) => ({ ts, symbol, source: 'Bitpanda Fusion', price: 1, score: 7, crv: 2,
   max_pct: null, min_pct: null, mae_pre: null, success_ts: null, reach_ts: null, resolved_ts: null, dropped_ts: null, payload: null, ...extra });
 
 /* 1 · Zwölf aufeinanderfolgende Takte sind EINE Gelegenheit, nicht zwölf. */
 {
+  frisch();
   const rows = Array.from({ length: 12 }, (_, i) => gruen('USELESS', T0 + i * B));
-  const r = await M.signalHistory({ DB: db(rows) }, 'coin', 7, 25);
+  const r = await (frisch(), M.signalHistory)({ DB: db(rows) }, 'coin', 7, 25);
   assert.equal(r.state, 'ok');
   assert.equal(r.episodes.length, 1,
     'NK-SH1: Aufeinanderfolgende gruene Takte sind EINE Episode — sonst zaehlt eine ruhige Stunde als zwoelf Empfehlungen');
@@ -43,11 +50,12 @@ const gruen = (symbol, ts, extra = {}) => ({ ts, symbol, source: 'Bitpanda Fusio
 
 /* 2 · Eine echte Lücke trennt. Genau das meint „2x empfohlen". */
 {
+  frisch();
   const rows = [
     ...Array.from({ length: 4 }, (_, i) => gruen('USELESS', T0 + i * B)),
     ...Array.from({ length: 3 }, (_, i) => gruen('USELESS', T0 + 20 * 3600_000 + i * B)),
   ];
-  const r = await M.signalHistory({ DB: db(rows) }, 'coin', 7, 25);
+  const r = await (frisch(), M.signalHistory)({ DB: db(rows) }, 'coin', 7, 25);
   assert.equal(r.episodes.length, 2, 'NK-SH2: Zwei getrennte Phasen sind zwei Episoden');
   assert.ok(r.episodes[0].firstTs > r.episodes[1].firstTs, 'NK-SH2: die jüngste steht oben');
 }
@@ -56,16 +64,17 @@ const gruen = (symbol, ts, extra = {}) => ({ ts, symbol, source: 'Bitpanda Fusio
        entscheidet, ob aus einer Gelegenheit zwei werden. */
 {
   const knapp = M.SIGNAL_EPISODE_GAP_MS - 60_000;
-  const r1 = await M.signalHistory({ DB: db([gruen('X', T0), gruen('X', T0 + knapp)]) }, 'coin', 7, 25);
+  const r1 = await (frisch(), M.signalHistory)({ DB: db([gruen('X', T0), gruen('X', T0 + knapp)]) }, 'coin', 7, 25);
   assert.equal(r1.episodes.length, 1, 'NK-SH3: knapp unter der Grenze bleibt es eine Episode');
-  const r2 = await M.signalHistory({ DB: db([gruen('X', T0), gruen('X', T0 + M.SIGNAL_EPISODE_GAP_MS + 60_000)]) }, 'coin', 7, 25);
+  const r2 = await (frisch(), M.signalHistory)({ DB: db([gruen('X', T0), gruen('X', T0 + M.SIGNAL_EPISODE_GAP_MS + 60_000)]) }, 'coin', 7, 25);
   assert.equal(r2.episodes.length, 2, 'NK-SH3: darüber sind es zwei');
 }
 
 /* 4 · Zwei Symbole vermischen sich nicht. */
 {
+  frisch();
   const rows = [gruen('BTC', T0), gruen('ETH', T0 + B), gruen('BTC', T0 + 2 * B)];
-  const r = await M.signalHistory({ DB: db(rows) }, 'coin', 7, 25);
+  const r = await (frisch(), M.signalHistory)({ DB: db(rows) }, 'coin', 7, 25);
   assert.equal(r.episodes.length, 2, 'NK-SH4: je Symbol eine eigene Episode');
   assert.deepEqual(r.episodes.map(e => e.symbol).sort(), ['BTC', 'ETH']);
 }
@@ -74,7 +83,8 @@ const gruen = (symbol, ts, extra = {}) => ({ ts, symbol, source: 'Bitpanda Fusio
        Eine verworfene Zeile heisst „zu selten nachgesehen" — sie als
        Fehlschlag zu zaehlen waere genau die Verzerrung, vor der R3 warnt. */
 {
-  const f = (extra) => M.signalHistory({ DB: db([gruen('A', T0, extra)]) }, 'coin', 7, 25);
+  frisch();
+  const f = (extra) => { frisch(); return M.signalHistory({ DB: db([gruen('A', T0, extra)]) }, 'coin', 7, 25); };
   assert.equal((await f({ success_ts: T0 + 3600_000 })).episodes[0].outcome, 'Ziel erreicht');
   assert.equal((await f({ resolved_ts: T0 + 3600_000 })).episodes[0].outcome, 'ausgewertet');
   assert.equal((await f({ dropped_ts: T0 + 3600_000 })).episodes[0].outcome, 'ohne Beleg');
@@ -84,8 +94,9 @@ const gruen = (symbol, ts, extra = {}) => ({ ts, symbol, source: 'Bitpanda Fusio
 /* 6 · Das beste und das schlechteste Ergebnis der Episode werden über alle
        Takte gebildet, nicht vom ersten übernommen. */
 {
+  frisch();
   const rows = [gruen('A', T0, { max_pct: 1, min_pct: -1 }), gruen('A', T0 + B, { max_pct: 74, min_pct: -3 }), gruen('A', T0 + 2 * B, { max_pct: 12, min_pct: -0.5 })];
-  const r = await M.signalHistory({ DB: db(rows) }, 'coin', 7, 25);
+  const r = await (frisch(), M.signalHistory)({ DB: db(rows) }, 'coin', 7, 25);
   assert.equal(r.episodes[0].maxPct, 74, 'NK-SH6: der beste Ausschlag der Episode zaehlt');
   assert.equal(r.episodes[0].minPct, -3, 'NK-SH6: … und der schlechteste ebenso');
 }
@@ -94,11 +105,12 @@ const gruen = (symbol, ts, extra = {}) => ({ ts, symbol, source: 'Bitpanda Fusio
        „keine Freigaben gefunden" und „konnte nicht nachsehen" sähen sonst
        identisch aus, und das erste ist eine Behauptung. */
 {
-  const r = await M.signalHistory({ DB: db([], { fail: 'D1_ERROR: nope' }) }, 'coin', 7, 25);
+  frisch();
+  const r = await (frisch(), M.signalHistory)({ DB: db([], { fail: 'D1_ERROR: nope' }) }, 'coin', 7, 25);
   assert.equal(r.state, 'error', 'NK-SH7: ein Lesefehler muss als Fehler zurückkommen');
   assert.ok(r.reason, 'NK-SH7: … mit Begründung');
   assert.equal(r.episodes.length, 0, 'NK-SH7: … und ohne erfundene Einträge');
-  const leer = await M.signalHistory({ DB: db([]) }, 'coin', 7, 25);
+  const leer = await (frisch(), M.signalHistory)({ DB: db([]) }, 'coin', 7, 25);
   assert.equal(leer.state, 'ok', 'NK-SH7: eine echte Leermenge ist KEIN Fehler');
 }
 
@@ -106,7 +118,8 @@ const gruen = (symbol, ts, extra = {}) => ({ ts, symbol, source: 'Bitpanda Fusio
        Episoden wäre sie eine Zahl ohne Aussage — dieselbe Regel wie im
        Musterlabor. */
 {
-  const r = await M.signalHistory({ DB: db([gruen('A', T0, { success_ts: T0 + 1 })]) }, 'coin', 7, 25);
+  frisch();
+  const r = await (frisch(), M.signalHistory)({ DB: db([gruen('A', T0, { success_ts: T0 + 1 })]) }, 'coin', 7, 25);
   const keys = Object.keys(r).join(' ');
   assert.doesNotMatch(keys, /winRate|hitRate|trefferquote|quote/i,
     'NK-SH8: Der Verlauf zeigt Fälle, keine Statistik — eine Quote aus wenigen Fällen ist keine Quote');
@@ -127,9 +140,23 @@ console.log('✓ FusionPulse v4.2.9 Verlauf der Kauf-Freigaben (ausgefuehrt): OK
     'v4.3.2: Ein geworfener Fehler muss gesammelt werden, nicht nur geloggt');
   assert.match(w, /scanErrors\.push\(\{symbol:sym,message:'keine analysierbaren Bars/,
     'v4.3.2: … und ein leeres Ergebnis ohne Wurf ebenso — das ist ein eigener Fall');
-  assert.match(w, /deepScanErrors: scanErrorSummary/, 'v4.3.2: Die Zusammenfassung muss den Client erreichen');
-  assert.match(w, /deepScanAttempted: syms\.length/,
+  /* ══ v4.3.6 · DIE FELDER STANDEN IN DER FALSCHEN FUNKTION ════════════════
+     Bis 4.3.5 lagen `deepScanAttempted`/`deepScanErrors` in `stockSnapshot`
+     (Twelve-Data-Pfad) statt in `tiingoStockSnapshot` — die Ankertexte beider
+     Rueckgaben sind fast gleich, und ich habe am falschen Ende eingesetzt.
+     Dort war `scanErrorSummary` nicht einmal definiert (ReferenceError bei
+     jedem Aufruf), und im Tiingo-Pfad fehlte die Diagnose ganz.
+     Der Test prueffte nur „steht irgendwo in der Datei" und war deshalb gruen.
+     Jetzt wird der AUSSCHNITT der richtigen Funktion geprueft. */
+  const tiingo = w.slice(w.indexOf('async function tiingoStockSnapshot'), w.indexOf('async function tiingoStockLookup'));
+  assert.ok(tiingo.length > 5000, 'v4.3.6: tiingoStockSnapshot muss auffindbar sein');
+  assert.match(tiingo, /deepScanErrors:scanErrorSummary/,
+    'v4.3.2: Die Zusammenfassung muss den Client erreichen — und zwar aus DEM Pfad, der scannt');
+  assert.match(tiingo, /deepScanAttempted:syms\.length/,
     'v4.3.2: … samt der Zahl der ANGESETZTEN Titel. Ohne sie ist „keine Fehler" nicht von „nichts versucht" zu unterscheiden');
+  assert.doesNotMatch(w.slice(w.indexOf('async function stockSnapshot'), w.indexOf('async function tiingoIexMarketRadar')),
+    /scanErrorSummary/,
+    'v4.3.6: Im Twelve-Data-Pfad darf `scanErrorSummary` NICHT vorkommen — dort existiert es nicht');
 
   /* Die Zusammenfassung ausgefuehrt: 20 Titel mit demselben 429 sind EIN
      Befund, nicht zwanzig Zeilen. */
@@ -295,3 +322,49 @@ console.log('✓ FusionPulse v4.3.4 Leerer Scan meldet sich als Fehler (ausgefue
 }
 
 console.log('✓ FusionPulse v4.3.5 Rangalterung der Heatmap (ausgefuehrt): OK');
+
+/* ══ v4.3.7 · DAS LESELIMIT WAR DIE GRENZE, NICHT DAS SCHREIBLIMIT ═════════
+   Cloudflare hat am 04.09. das Tageslimit fuer `rows_read` gerissen: 5 Mio.
+   im Free-Tier, 82 % um 13:39, ueberschritten um 20:17. Danach geben alle
+   lesenden D1-Anfragen Fehler zurueck.
+
+   Die App budgetiert Schreibzeilen bis auf die Stelle genau — eigener Zaehler,
+   Bremse, Hochrechnung, Tagesobergrenze 90.000 von 100.000. Gelesene Zeilen
+   hat nie jemand gemessen. Genau dort lag die Grenze.
+
+   Ursache war `signalHistory` aus 4.2.9: Filter auf `light`, kein Index
+   darauf, also ein Vollscan je Aufruf. 194 Aufrufe je offenem Tab und Tag
+   ergeben bei 40.000 Zeilen 7,8 Mio. gelesene Zeilen — aus EINER Kachel. */
+{
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const a = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  assert.match(w, /CREATE INDEX IF NOT EXISTS idx_snap_light ON market_snapshots\(asset_type, light, ts DESC\)/,
+    'v4.3.7: Die Verlaufsabfrage filtert auf asset_type+light+ts und braucht genau darauf einen Index — sonst Vollscan');
+
+  /* Die Spaltenfolge des Index MUSS zur WHERE-Klausel passen. Ein Index in
+     falscher Reihenfolge sieht im Test gut aus und wird von SQLite ignoriert. */
+  const abfrage = w.slice(w.indexOf('async function signalHistory'), w.indexOf('const STOCK_SNAPSHOT_LIVE_MS'));
+  assert.match(abfrage, /WHERE light='green' AND asset_type=\? AND ts>=\?/,
+    'v4.3.7: Aendert sich die WHERE-Klausel, muss der Index nachgezogen werden');
+
+  assert.match(abfrage, /signalHistoryMemo\.set/, 'v4.3.7: Das Ergebnis muss serverseitig vorgehalten werden');
+  assert.match(abfrage, /Date\.now\(\)-memo\.ts<SIGNAL_HISTORY_TTL_MS/,
+    'v4.3.7: … damit mehrere Tabs und jedes Neuladen sich EINE Abfrage teilen');
+  assert.match(w, /const SIGNAL_HISTORY_MAX_ROWS = 1200;/,
+    'v4.3.7: Die Obergrenze der gelesenen Zeilen bleibt klein — der Verlauf zeigt 20 Episoden, nicht 4.000 Zeilen');
+
+  const takt = a.match(/loadSignalHistory\('stock'\); \}, (\d+)\*60_000\)/);
+  assert.ok(takt && Number(takt[1]) >= 60,
+    'v4.3.7: Der Verlauf darf hoechstens stuendlich nachgeladen werden — er aendert sich nicht viertelstuendlich');
+
+  /* Und die Rechnung, die zeigt WARUM: 194 Vollscans je Tab und Tag. */
+  const aufrufeVorher = 2 * (1 + Math.floor(24 * 60 / 15));
+  assert.ok(aufrufeVorher * 40000 > 5_000_000,
+    'v4.3.7: Die alte Taktung sprengt das Leselimit rechnerisch — das ist der Beleg, nicht eine Vermutung');
+  const aufrufeJetzt = 2 * (1 + Math.floor(24 * 60 / 60));
+  assert.ok(aufrufeJetzt * 1200 < 100_000,
+    'v4.3.7: … und die neue liegt weit darunter, selbst ohne den Index');
+}
+
+console.log('✓ FusionPulse v4.3.7 Leselimit und Verlaufsabfrage (ausgefuehrt): OK');

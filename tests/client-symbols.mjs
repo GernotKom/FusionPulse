@@ -18,7 +18,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const raw = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+const DATEIEN = ['../public/app.js', '../src/worker.js'];
 /* Kommentare und Zeichenketten raus — sonst zaehlen Beispiele in Kommentaren
    und Funktionsnamen in Meldungstexten als Aufrufe. Genau dieser Fehler hat
    NK72 im Worker beim ersten Anlauf unbrauchbar gemacht. */
@@ -67,8 +67,10 @@ function stripCode(t) {
   }
   return out;
 }
-const src = stripCode(raw);
 
+for (const datei of DATEIEN) {
+const raw = fs.readFileSync(new URL(datei, import.meta.url), 'utf8');
+const src = stripCode(raw);
 const defined = new Set();
 for (const re of [
   /(?:^|\n)\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_$]+)/g,
@@ -76,8 +78,13 @@ for (const re of [
   /(?:^|\n)\s*class\s+([A-Za-z0-9_$]+)/g,
   /([A-Za-z0-9_$]+)\s*[:=]\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>)/g,
   /(?:function(?:\s+[A-Za-z0-9_$]+)?|catch)\s*\(([^)]*)\)/g,   // benannte Funktionen haben auch Parameter
+  /(?:^|[,{;\n])\s*(?:async\s+)?[A-Za-z0-9_$]+\s*\(([^)]*)\)\s*\{/g,   // … und Methoden-Kurzschreibweise
   /\(([^()]*)\)\s*=>/g,                                        // Pfeilfunktionen ebenso
   /(?:^|[^\w$])([A-Za-z0-9_$]+)\s*=>/g,
+  /* Kurzschreibweise fuer Methoden in Objektliteralen — `scheduled(c,env,ctx){}`,
+     `get(){}`. Ohne diese Regel gelten sie als AUFRUFE und der Waechter meldet
+     drei Fehlalarme im Worker. */
+  /(?:^|[,{;\n])\s*(?:async\s+)?([A-Za-z0-9_$]+)\s*\([^)]*\)\s*\{/g,
 ]) { let m; while ((m = re.exec(src))) for (const t of m[1].split(',')) {
   const n = t.trim().replace(/[={].*$/, '').replace(/^\.\.\./, '').trim();
   if (/^[A-Za-z0-9_$]+$/.test(n)) defined.add(n);
@@ -94,27 +101,53 @@ const BROWSER = new Set(['window','document','console','fetch','setTimeout','cle
   'if','for','while','switch','catch','return','typeof','new','function','await','async','of','in','do','else','try','case','delete','void','yield','instanceof','throw']);
 
 const problem = new Map();
-const call = /(?<![.\w$])([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g;
-let m;
-while ((m = call.exec(src))) {
-  const name = m[1];
-  if (defined.has(name) || BROWSER.has(name)) continue;
-  if (!problem.has(name)) problem.set(name, src.slice(0, m.index).split('\n').length);
+/* ══ v4.3.6 · WAS DIESE PRUEFUNG KANN — UND WAS NICHT ════════════════════
+   Sie findet AUFRUFE nicht existierender Funktionen. Genau so wurde
+   `loadStocks(true)` gefunden.
+
+   Sie findet NICHT den teuersten Fehler dieser Serie: in /api/watchlist stand
+   seit v4.1.0 `req.method` — der Handler heisst `request`. Das ist kein
+   Aufruf, sondern ein Zugriff. Ein Versuch, auch `name.` zu pruefen, ergab
+   48 Fehlalarme (Destrukturierung, Marken, Vorlagen-Platzhalter): fuer
+   Zugriffe reicht ein regulaerer Ausdruck nicht, dafuer braucht es einen
+   echten Parser mit Gueltigkeitsbereichen. Der laeuft in `npm run lint`
+   (ESLint, `no-undef`) — siehe UEBERGABE.md.
+
+   Ein Waechter, der seine Grenze kennt, ist brauchbar. Einer, der 48
+   Fehlalarme meldet, wird nach zwei Tagen ignoriert. */
+for (const muster of [/(?<![.\w$])([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g]) {
+  let m;
+  while ((m = muster.exec(src))) {
+    const name = m[1];
+    if (defined.has(name) || BROWSER.has(name)) continue;
+    if (!problem.has(name)) problem.set(name, src.slice(0, m.index).split('\n').length);
+  }
 }
 
 const liste = [...problem.entries()].map(([n, z]) => `${n}() in Zeile ${z}`);
 assert.deepEqual(liste, [],
-  'v4.3.1: In public/app.js werden Funktionen aufgerufen, die es dort nicht gibt:\n  '
+  `v4.3.6: In ${datei} werden Funktionen aufgerufen, die es dort nicht gibt:\n  `
   + liste.join('\n  ')
   + '\n  Das faellt erst im Browser des Nutzers auf und meldet sich dort als „Can\'t find variable".');
 
+}
+
 /* Gegenprobe im Test selbst: ohne sie waere nicht belegt, dass die Pruefung
-   ueberhaupt etwas findet. */
+   ueberhaupt etwas findet. Sie laeuft gegen eine kleine, vollstaendig
+   kontrollierte Quelle statt gegen die echten Dateien — so haengt sie nicht
+   an deren Inhalt. */
 {
-  const kaputt = src + '\nfunction __probe(){ dieseFunktionGibtEsNicht(1); }\n';
-  let treffer = false, r = /(?<![.\w$])([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g, x;
-  while ((x = r.exec(kaputt))) if (x[1] === 'dieseFunktionGibtEsNicht' && !defined.has(x[1]) && !BROWSER.has(x[1])) treffer = true;
-  assert.ok(treffer, 'v4.3.1: Die Pruefung muss einen erfundenen Aufruf auch wirklich finden');
+  const probe = 'function a(x){ return b(x) + nichtDa(x); }\nfunction b(y){ return y; }\n';
+  const p = stripCode(probe);
+  const def = new Set();
+  let m2;
+  const rd = /(?:^|\n)\s*(?:async\s+)?function\s+([A-Za-z0-9_$]+)/g;
+  while ((m2 = rd.exec(p))) def.add(m2[1]);
+  const gefunden = [];
+  const rc = /(?<![.\w$])([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g;
+  while ((m2 = rc.exec(p))) if (!def.has(m2[1])) gefunden.push(m2[1]);
+  assert.deepEqual(gefunden, ['nichtDa'],
+    'v4.3.6: Die Pruefung muss einen Aufruf ohne Definition finden — und NUR den');
 }
 
 console.log('✓ FusionPulse v4.3.1 Alle aufgerufenen Funktionen existieren (ausgefuehrt): OK');

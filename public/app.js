@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.3.5 — Frontend
+   FusionPulse v4.3.8 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1420,6 +1420,19 @@ const STATE_TEXT = {
 };
 const STATE_TONE = { ok: 'ok', busy: 'busy', ratelimit: 'warn', daylimit: 'warn', dblimit: 'warn', nokey: 'err', error: 'err', unknown: 'busy', stale: 'warn', warn: 'warn', cpu: 'warn' };
 
+/* ══ v4.3.6 · `toast` GAB ES NIE ══════════════════════════════════════════
+   An zwei Stellen im Tagebuch stand `toast?.(…)`. Das Fragezeichen schuetzt
+   vor `null`/`undefined` — NICHT vor einem undeklarierten Bezeichner. Beide
+   Zeilen warfen `ReferenceError: toast is not defined`, und zwar ausgerechnet
+   im Fehlerpfad: wer beim Speichern eines Eintrags einen Fehler bekam, sah
+   statt der Meldung einen Absturz der Funktion.
+   Gefunden von ESLint (`no-undef`), nicht von einer der Muster-Pruefungen. */
+function toast(text) {
+  const s = String(text || '').trim();
+  if (!s) return;
+  console.warn('[fusionpulse]', s);
+  setSys('#sysCrypto', 'warn', s);
+}
 function setSys(id, st, detail) {
   const el = $(id); if (!el) return;
   const key = STATE_TEXT[st] ? st : 'unknown';
@@ -2936,6 +2949,51 @@ function coverageNote(stats){
       +'sondern das Wiedersehen der bereits aufgezeichneten Titel.'
       +(st.windowComplete?'':' Das 24-Stunden-Fenster ist noch nicht vollständig.') };
 }
+/* ══ v4.3.8 · DIE LESESEITE ═══════════════════════════════════════════════
+   Am 04.09. hat Cloudflare das TAGESLIMIT FUER GELESENE ZEILEN gerissen
+   (5 Mio., Free-Tier). Die App meldete währenddessen `DB 27k/90k` — grün, im
+   Rahmen, alles gut. Sie hat nämlich nur Schreibzeilen angezeigt.
+
+   Der Server misst `rowsRead` seit jeher und liefert sogar
+   `readShareOfFreeLimit` und `atLeastRowsReadPerMin` mit. Im Browser kam die
+   Zahl nie an. Elfter Fall desselben Musters: gemessen, übertragen, nie
+   ausgewertet.
+
+   Fail-closed wie bei `d1Note`: ohne Messung steht „nicht gemessen" und KEIN
+   Prozentwert. Und ausdrücklich KEINE Bremse — Schreibvorgänge lassen sich
+   aufschieben, Lesevorgänge nicht. Wer sie sperrt, legt die App still,
+   während D1 noch antworten würde. */
+function d1ReadNote(meta){
+  const d=(meta||{}).d1;
+  const nope=(why)=>({ measured:false, tone:'warn', short:'Lesen n. gem.',
+    label:'Lesebudget: nicht gemessen',
+    detail:`${why} Das ist eine fehlende Messung, kein niedriger Verbrauch — daraus lässt sich NICHT schließen, dass Reserve vorhanden ist.` });
+  if(!d || d.measured===false) return nope(d?.reason||'Der Server meldet keine Zeilenzahlen.');
+  /* `Number(null)` ist 0 — eine FEHLENDE Lesezahl gaelte damit als „null
+     gelesene Zeilen", also als bestmoegliche Reserve. Entwarnung aus Unwissen,
+     dieselbe Falle wie in `coverageNote` (4.2.3). Ich habe sie hier trotz
+     Kenntnis erneut gebaut; der Test hat sie beim ersten Lauf gefangen. */
+  const num=(v)=>(v===null||v===undefined||v==='')?NaN:Number(v);
+  const r=num(d.rowsRead), cap=num(d.freeLimitRowsRead);
+  if(!Number.isFinite(r)||!(cap>0)) return nope('Der Server meldet keine gelesenen Zeilen für den laufenden UTC-Tag.');
+  const n=(x)=>Number(x).toLocaleString('de-DE');
+  const kurz=(x)=>x>=1_000_000?(x/1_000_000).toFixed(1).replace('.',',')+'M':x>=10_000?Math.round(x/1000)+'k':n(x);
+  const share=r/cap, rate=Number(d.atLeastRowsReadPerMin), soll=Number(d.sustainableRowsReadPerMin);
+  const haelt=d.readBudgetHoldsToday!==false, rest=Number(d.readBudgetMinutesLeft);
+  const tone = share>=1 ? 'err' : (!haelt||share>=0.8) ? 'orange' : 'ok';
+  const takt = Number.isFinite(rate)&&Number.isFinite(soll)
+    ? ` Takt: mindestens ${n(rate)} Zeilen/min, tragfähig sind ${n(soll)}.` : '';
+  const reicht = share>=1 ? ' Das Limit ist erreicht — lesende Abfragen geben bis 00:00 UTC Fehler zurück.'
+    : haelt ? ' Bei diesem Takt reicht es bis Mitternacht UTC.'
+    : Number.isFinite(rest) ? ` Bei diesem Takt ist es in rund ${n(rest)} Minuten erreicht.` : '';
+  return { measured:true, tone,
+    short:`Lesen ${kurz(r)}/${kurz(cap)}`,
+    label:`Lesebudget: ${n(r)} von ${n(cap)} (${Math.round(share*100)} %)`,
+    detail:`Gelesene D1-Zeilen im laufenden UTC-Tag.${takt}${reicht}`
+      + ' Der Wert ist eine UNTERGRENZE — nicht messbare Abfragen fehlen darin.'
+      + (d.complete===false?' Es gab nicht messbare Abfragen; die Zahl ist unvollständig.':'')
+      + ' Eine Bremse gibt es hier bewusst nicht: Lesevorgänge zu sperren würde die App stilllegen, während die Datenbank noch antwortet.' };
+}
 function d1Note(meta){
   if(authDenied){
     return { measured:false, tone:'warn', short:'DB n. v.', label:'Schreibbudget: nicht abrufbar',
@@ -3144,12 +3202,19 @@ function renderResourceStrip(){
   /* v4.2.2: sichtbar statt nur im Hilfetext. Der Kurzwert nennt Verbrauch und
      Grenze; die Ampel faerbt sich erst, wenn es etwas zu sagen gibt. */
   const dbEl=$('#sysDb');
+  /* v4.3.8 · Die Kachel nennt BEIDE Seiten. Bis 4.3.7 stand dort nur der
+     Schreibverbrauch — und als Cloudflare am 04.09. das LESElimit riss, zeigte
+     sie unbeirrt „27k/90k" in Grün. Die schlechtere der beiden Ampeln färbt,
+     denn eine grüne Hälfte darf eine rote nicht überdecken. */
+  const rdSys=d1ReadNote(health);
   if(dbEl){
-    dbEl.textContent=d1Sys.short||'DB n. v.';
-    dbEl.dataset.state=d1Sys.measured===false?'warn':d1Sys.tone==='err'?'err':d1Sys.tone==='orange'?'warn':'ok';
-    dbEl.title=d1Sys.detail;
+    const rang=(t,m)=>m===false?2:t==='err'?3:t==='orange'?2:1;
+    const schlechter=Math.max(rang(d1Sys.tone,d1Sys.measured), rang(rdSys.tone,rdSys.measured));
+    dbEl.textContent=`${d1Sys.short||'DB n. v.'} · ${rdSys.short||'Lesen n. v.'}`;
+    dbEl.dataset.state=schlechter===3?'err':schlechter===2?'warn':'ok';
+    dbEl.title=`${d1Sys.label}\n${d1Sys.detail}\n\n${rdSys.label}\n${rdSys.detail}`;
   }
-  box.dataset.tip=`${text}${rateNote}. Datenquelle Aktien: ${fiSys.label}. ${bwSys.label}. ${d1Sys.label}. Krypto: ${hs.crypto?.state||'n.v.'}; Aktien: ${hs.stocks?.state||'n.v.'}; Opening: ${hs.alpaca?.state||'n.v.'}; Tiingo: ${health?.tiingoConfigured?'aktiv':'n.v.'}. Grün = alles stabil, Gelb = funktioniert mit kleiner Einschränkung, Orange = beobachten/zeitnah prüfen, Rot = konkreter Handlungsbedarf.`;
+  box.dataset.tip=`${text}${rateNote}. Datenquelle Aktien: ${fiSys.label}. ${bwSys.label}. ${d1Sys.label}. ${rdSys.label}. Krypto: ${hs.crypto?.state||'n.v.'}; Aktien: ${hs.stocks?.state||'n.v.'}; Opening: ${hs.alpaca?.state||'n.v.'}; Tiingo: ${health?.tiingoConfigured?'aktiv':'n.v.'}. Grün = alles stabil, Gelb = funktioniert mit kleiner Einschränkung, Orange = beobachten/zeitnah prüfen, Rot = konkreter Handlungsbedarf.`;
 }
 
 function renderLearningReport(){
@@ -6709,7 +6774,13 @@ applyPrimaryBlockOrder();
    D1-Lesevorgang — bei 90.000 Schreibzeilen Tagesbudget waere ein Abruf im
    Scan-Takt eine unnoetige Dauerlast ohne jeden Erkenntnisgewinn. */
 loadSignalHistory('coin'); loadSignalHistory('stock');
-setInterval(() => { loadSignalHistory('coin'); loadSignalHistory('stock'); }, 15*60_000);
+/* v4.3.7 · Von 15 auf 60 Minuten. Cloudflare hat am 04.09. das TAGESLIMIT fuer
+   GELESENE Zeilen gerissen (5 Mio., Free-Tier) — die App hat Schreibzeilen
+   penibel budgetiert und Lesezeilen nie gemessen. Der Verlauf der letzten
+   sieben Tage aendert sich nicht viertelstuendlich; serverseitig liegt
+   zusaetzlich ein Vorrat von zehn Minuten, sodass mehrere offene Tabs sich
+   eine Abfrage teilen statt jede fuer sich zu lesen. */
+setInterval(() => { loadSignalHistory('coin'); loadSignalHistory('stock'); }, 60*60_000);
 applyTheme();
 renderSignalBanner();
 /* ==== v3.14.5 · Versionsanzeige im Kopf =====================================

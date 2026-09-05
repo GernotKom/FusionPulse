@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 04.09.2026, Version **4.3.5**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 05.09.2026, Version **4.3.8**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -474,6 +474,71 @@ Wirkung, ausgeführt gemessen: aus 0 von 12 werden 12 von 12 frische Zeilen. Inn
 
 **Und wieder ein zu schwacher Test:** Die erste Fassung der Stabilitätsprüfung verglich zwei Läufe desselben Eingangs. Die Gegenprobe „Boden auf 0" blieb grün — zu Recht, denn bei Gleichstand entscheidet das nächste Kriterium deterministisch. Der Test prüfte Determinismus, nicht Stabilität. Er verlangt jetzt, dass unter gleich alten Zeilen die Reife die Reihenfolge bestimmt.
 
+### 4.3.6 · Die Wurzel: ein undefinierter Bezeichner, seit v4.2.0
+
+**`attachRelativeVwap(row, await benchmarkSessionVwap(env, now));`**
+
+`now` gibt es in `tiingoStockSnapshot` nicht. Seit v4.2.0 warf damit **JEDE** Symbolanalyse `ReferenceError: now is not defined` — drei Zeilen vor dem `return row`. Das `catch` darunter fing es, schrieb eine Zeile ins Worker-Log und lieferte `null`.
+
+Die ganze Kette daraus: `fresh` immer leer → `rows` immer leer → `persistStockScan` schreibt nie (Schutz gegen Überschreiben mit Nichts) → die Oberfläche zeigt dauerhaft den letzten Stand vor dem 4.2.0-Deploy. **Das ist die eingefrorene Aktien-Heatmap, vollständig erklärt.**
+
+Ich habe vier Verdächtige sauber widerlegt — Bandbreite (28 von 40 GB frei), Kadenz (rechnerisch korrekt), Rotation (existiert), Marktphase (erklärte nur die Nacht) — und die Ursache war ein Tippfehler im Gültigkeitsbereich. **ESLint mit `no-undef` hat ihn in der ersten Sekunde gefunden.**
+
+**Zwei weitere echte Fehler im selben Lauf:**
+- `toast?.(…)` an zwei Stellen im Tagebuch. Das Fragezeichen schützt vor `null`/`undefined`, **nicht** vor einem undeklarierten Bezeichner. Beide Zeilen warfen — ausgerechnet im Fehlerpfad. Jetzt gibt es `toast()`.
+- `deepScanAttempted`/`deepScanErrors` lagen seit 4.3.2 in `stockSnapshot` (Twelve-Data-Pfad) statt in `tiingoStockSnapshot`. Die Ankertexte beider Rückgaben sind fast gleich, ich habe am falschen Ende eingesetzt. Dort war `scanErrorSummary` nicht definiert (ReferenceError bei jedem Aufruf), und im Tiingo-Pfad fehlte die Diagnose ganz. **Mein eigener Test war grün, weil er nur „steht irgendwo in der Datei" prüfte.**
+
+**Und `req.method` statt `request.method`** in `/api/watchlist`, seit v4.1.0. Jeder POST warf, das `catch` meldete `reason:'unknown'` mit dem nichtssagenden Satz „Der Modus konnte nicht gespeichert werden." Der Watchlist-Modus ließ sich **nie** speichern. Dieselbe Verwechslung hatte ich in 4.2.4 nach `/api/coinwatch` kopiert.
+
+### Die eigentliche Lehre dieser ganzen Serie
+
+Zehn Befunde, ein Muster: **geprüft wurde der Name, nicht die Wirkung.** `node --check` findet Syntax. Die Muster-Prüfungen finden Text. Keine von beiden findet einen Bezeichner, den es nicht gibt — und genau das waren drei der teuersten Fehler.
+
+`npm run lint` läuft ab 4.3.6 als **erster Schritt** von `npm run check`. Genau eine Regel ist eingeschaltet: `no-undef`. Keine Stilregeln — die wären Rauschen, und ein Lauf mit Rauschen wird nach zwei Tagen ignoriert.
+
+Der Muster-Wächter `tests/client-symbols.mjs` bleibt, kennt aber jetzt seine Grenze im Kommentar: er findet **Aufrufe** nicht existierender Funktionen (so wurde `loadStocks` gefunden), nicht **Zugriffe** wie `req.method`. Ein Versuch, auch `name.` per regulärem Ausdruck zu prüfen, ergab 48 Fehlalarme.
+
+**Drei Negativkontrollen**, alle gefeuert — jede baut einen der drei echten Fehler wieder ein, und der Linter meldet ihn mit Zeile und Spalte.
+
+### 4.3.7 · Die Grenze war `rows_read`, und die hat nie jemand gemessen
+
+**Cloudflare-Warnungen vom 04.09.: 82 % um 13:39, Limit überschritten um 20:17.** Nicht `rows_written` — **`rows_read`**, 5 Millionen im Free-Tier. Danach geben alle lesenden D1-Anfragen Fehler zurück. Das sind die „Serverprobleme am frühen Nachmittag".
+
+**Die App budgetiert Schreibzeilen bis auf die Stelle genau**: eigener Zähler, Bremse, Hochrechnung, Tagesobergrenze 90.000 von 100.000, `writeBudgetHoldsToday`, `topQueries`. Zwei Tage lang haben wir auf `DB 27k/90k` geschaut und beruhigt festgestellt, dass alles im Rahmen liegt. **Gelesene Zeilen kommen in der gesamten Messung nicht vor.**
+
+**Ursache ist `signalHistory` aus 4.2.9 — von mir.** Die Abfrage filtert auf `light='green' AND asset_type=? AND ts>=?`, und auf `light` gab es keinen Index. SQLite liest damit bei jedem Aufruf die ganze Tabelle. Zweimal beim Laden und zweimal alle 15 Minuten sind 194 Vollscans je offenem Tab und Tag; bei 40.000 Zeilen **7,8 Millionen gelesene Zeilen — das Anderthalbfache des Tageslimits, aus einer einzigen Kachel.**
+
+Vier Eingriffe:
+- **`idx_snap_light (asset_type, light, ts DESC)`** — die Spaltenfolge folgt der WHERE-Klausel; ein Index in falscher Reihenfolge sieht im Test gut aus und wird von SQLite ignoriert. Ein Test hält beides zusammen.
+- **Obergrenze von 4.000 auf 1.200 Zeilen.** Der Verlauf zeigt höchstens 20 Episoden; 4.000 war „für den Fall der Fälle" gewählt und ist bei gerissenem Leselimit genau der falsche Fall.
+- **Serverseitiger Vorrat von zehn Minuten.** Mehrere Tabs und jedes Neuladen teilten sich bisher nichts.
+- **Client-Taktung von 15 auf 60 Minuten.**
+
+Rechnerisch: von 7,8 Mio. auf unter 100.000 gelesene Zeilen pro Tag, und das **ohne** den Index mitzurechnen.
+
+**Fünfter Index auf `market_snapshots`.** Die Zusicherung aus v4.1.0 nennt die Zahl ausdrücklich, weil jeder Index beim INSERT eine geschriebene Zeile kostet. Sie wurde bewusst nachgezogen, nicht stillschweigend erhöht: eine geschriebene Zeile je INSERT gegen Millionen gelesene ist kein knapper Handel.
+
+**Was offen bleibt und beim nächsten Mal zuerst drankommt:** Es gibt keinen Lesezähler. `d1Meter` misst ausschließlich `rows_written`. Solange das so ist, kann dieselbe Klasse Fehler jederzeit wiederkommen — die nächste Abfrage ohne passenden Index fällt genauso lautlos aus. **Ein Gegenstück zu `d1WriteBudget` für Lesezeilen gehört gebaut**, samt Anzeige neben `DB 27k/90k`.
+
+**Vier Negativkontrollen**, alle gefeuert: Index entfernt · Vorrat abgeschaltet · Obergrenze zurück auf 4.000 · Taktung zurück auf 15 Minuten.
+
+### 4.3.8 · Das Lesebudget wird angezeigt und beurteilt (offener Punkt 21 erledigt)
+
+Der Server misst `rowsRead` **seit jeher** und liefert `readShareOfFreeLimit`, `atLeastRowsReadPerMin`, `sustainableRowsReadPerMin`, `atLeastProjectedRowsRead` und sogar `freeLimitRowsRead: 5_000_000` mit. Gefehlt haben genau zwei Dinge:
+
+1. `readBudgetHoldsToday` — das eine Feld, das aus einer **Zahl** eine **Aussage** macht. Die Schreibseite hatte es seit v4.2.1.
+2. Die Anzeige. Die Kachel nannte ausschließlich Schreibzeilen.
+
+Deshalb meldete die App am 04.09., während Cloudflare das Leselimit riss, unbeirrt `DB 27k/90k` in Grün. **Elfter Fall desselben Musters: gemessen, übertragen, nie ausgewertet.**
+
+Die Kachel zeigt jetzt beide Seiten (`27k/90k · Lesen 1,2M/5,0M`), und **die schlechtere der beiden Ampeln färbt** — eine grüne Hälfte darf eine rote nicht überdecken, genau das ist am 04.09. passiert.
+
+**Ausdrücklich KEINE Lesebremse.** Schreibvorgänge lassen sich aufschieben, Lesevorgänge nicht: wer sie sperrt, legt die App still, während D1 noch antworten würde. Gewarnt wird, gebremst nicht. Ein Test hält fest, dass keine entsteht.
+
+**Und ein Fehler, den ich trotz Kenntnis wiederholt habe:** `Number(null)` ist 0 — eine fehlende Lesezahl hätte als „null gelesene Zeilen" gegolten, also als bestmögliche Reserve. Entwarnung aus Unwissen, dieselbe Falle, die ich in 4.2.3 bei `coverageNote` schon einmal beseitigt hatte. Der Test hat sie beim ersten Lauf gefangen; ohne ihn wäre sie durchgegangen.
+
+**Vier Negativkontrollen**, alle gefeuert: Leseurteil entfernt · Kachel zeigt nur Schreibzeilen · grüne Schreibampel überdeckt rote Leseampel · fehlende Lesezahl wieder als 0.
+
 ### Zwei Entscheidungen, die dabei getroffen wurden
 
 **1. Der Altbestand wird nicht zurückgeholt.** Alles vor 4.2.3 trägt irrtümlich `dropped_ts`; die Rohdaten stehen noch da. Ein Zurücksetzen wäre technisch ein Einzeiler, brächte aber nichts: ohne Protokolleinträge für diese Zeitfenster verwürfe der Auflöser dieselben Zeilen sofort wieder, und der Versuch kostete Schreibzeilen aus dem knappen Budget. **Die Messung beginnt bei null.** Die erste auswertbare Basis entsteht damit frühestens nach einigen Handelstagen — das ist der Preis dafür, dass vorher nichts entstanden ist.
@@ -613,6 +678,10 @@ Eine ältere Regex-Zusicherung auf die Inline-Formel (`safety-regression.mjs`, Z
 19. **Seit 01.09. 19:55 UTC kein erfolgreicher Aktien-Deep-Scan.** `updatedThisCycle: 0` über zwei Handelstage, `state: 'stale'`, Begründung „Tiingo lieferte keine analysierbaren Bars". Zusammen mit Punkt 18 der wahrscheinliche Grund für die eingefrorene Aktien-Heatmap. Zu belegen am Tiingo-Zweig von `/api/health`: HTTP-Status und Fehlertext der letzten Abrufe.
 
 20. **`safeCarry` kennt keine Altersgrenze.** Jede je gesehene Katalogzeile wird unbegrenzt mitgeschleppt und mit ihren EINGEFRORENEN Werten (`preSignalMaturity`, `situationScore`, `radarRank`, `score`) gegen frisch gemessene Titel sortiert. Ein neu explorierter Titel muss sich gegen bis zu 100 alte Zeilen durchsetzen, die nach ihrem letzten guten Stand bewertet sind. **Damit ist die Rotation der Scan-Warteschlange in der Anzeige unsichtbar** — sie wählt andere Symbole, aber die Rangliste ändert sich nicht. Vorschlag (noch nicht umgesetzt, weil es die täglich gelesene Reihenfolge verändert): das Ranggewicht altern lassen, nicht den Datensatz. Die Zeile bleibt sichtbar und beschriftet, verliert aber mit der Zeit ihren Vorrang.
+
+21. ~~**Es gibt keinen Zähler für GELESENE D1-Zeilen.**~~ **Erledigt in 4.3.8** — der Zähler existierte, es fehlten das Urteil (`readBudgetHoldsToday`) und die Anzeige. Ursprünglicher Text: `d1Meter` misst ausschliesslich `rows_written`; das Free-Tier-Limit von 5 Mio. `rows_read` pro Tag wurde am 04.09. gerissen, ohne dass irgendeine Anzeige in der App das hätte zeigen können. Ein Gegenstück zu `d1WriteBudget` — Zähler, Hochrechnung, `topQueries` nach gelesenen Zeilen — ist der nächste sinnvolle Schritt. Ohne ihn fällt die nächste Abfrage ohne passenden Index genauso lautlos aus.
+
+22. **Jede neue D1-Abfrage braucht einen passenden Index, bevor sie ausgeliefert wird.** `signalHistory` (4.2.9) filterte auf eine Spalte ohne Index und hat damit allein das Tageslimit gesprengt. Prüfregel für den nächsten Zusatz: Welche Spalten stehen im WHERE, in welcher Reihenfolge, und deckt ein Index sie ab?
 
 ## 5. Kosten und Cloudflare-Plan
 
