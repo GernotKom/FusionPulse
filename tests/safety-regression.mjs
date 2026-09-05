@@ -6454,3 +6454,30 @@ console.log('✓ FusionPulse v4.2.9 Eingefrorener Aktienscan wird benannt (ausge
 }
 
 console.log('✓ FusionPulse v4.3.8 Lesebudget sichtbar (ausgefuehrt): OK');
+
+/* ══ v4.3.9 · „API-FEHLER" IST KEINE DIAGNOSE ══════════════════════════════
+   Die rote Systemzeile nannte nur den ZUSTAND: „Aktien (Tiingo, Fallback
+   Twelve Data): API-Fehler". Der konkrete Grund liegt seit jeher in
+   `apiState[…].message` — seit 4.3.4 sogar mit der haeufigsten Meldung des
+   Tiefenscans samt Beispielsymbolen. Angezeigt wurde er nie.
+   Zwoelfter Fall desselben Musters: gemessen, uebertragen, nicht gezeigt. */
+{
+  const a = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const w = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  assert.match(w, /message: message \? String\(message\)\.slice\(0, 220\) : null/,
+    'v4.3.9: Der Zustand muss weiterhin eine Begruendung mitfuehren');
+  const zeile = a.slice(a.indexOf('const bad='), a.indexOf('const who='));
+  assert.match(zeile, /hs\[k\]\.message/,
+    'v4.3.9: Die rote Zeile MUSS die Begruendung ausgeben, nicht nur die Fehlerkategorie');
+  /* Muster mit `\s*`: die erste Fassung verlangte ein Leerzeichen nach dem
+     Komma, im Code steht keines. Der Test wurde rot, obwohl die Aenderung
+     korrekt war — ein Muster, das die Schreibweise statt der Sache prueft. */
+  assert.match(zeile, /slice\(0,\s*150\)/,
+    'v4.3.9: … gekuerzt, damit die Leiste nicht bricht — aber nicht weggelassen');
+  /* Und die Kuerzung darf nicht zur Weglassung werden: ohne Begruendung bleibt
+     die Zeile wie bisher, mit Begruendung kommt sie dazu. */
+  assert.match(zeile, /kurz\?' — '\+kurz:''/,
+    'v4.3.9: Fehlt die Begruendung, bleibt die Zeile unveraendert — kein leerer Gedankenstrich');
+}
+
+console.log('✓ FusionPulse v4.3.9 Grund in der Systemzeile (ausgefuehrt): OK');

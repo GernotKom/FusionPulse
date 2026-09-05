@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.3.8 — Frontend
+   FusionPulse v4.3.9 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -3185,7 +3185,18 @@ function renderResourceStrip(){
       return level==='red'?['error','nokey'].includes(st)
         :level==='orange'?['cpu','daylimit','dblimit'].includes(st)
         :['ratelimit','stale','warn','unknown'].includes(st);})
-    .map(k=>`${RESOURCE_LABEL[k]}: ${STATE_TEXT[hs[k].state]||hs[k].state}`);
+    /* ══ v4.3.9 · DER GRUND STEHT DANEBEN UND WURDE NICHT GEZEIGT ═════════
+       Die rote Zeile nannte bisher nur den ZUSTAND: „Aktien (Tiingo, Fallback
+       Twelve Data): API-Fehler". Der konkrete Grund liegt seit jeher in
+       `message` — seit 4.3.4 sogar mit der häufigsten Fehlermeldung des
+       Tiefenscans samt Beispielsymbolen. Angezeigt wurde er nie.
+       „API-Fehler" ist keine Diagnose, sondern eine Kategorie; genau daran
+       ist in dieser Reihe schon mehrfach Zeit verloren gegangen. */
+    .map(k=>{
+      const msg=String(hs[k].message||'').trim();
+      const kurz=msg.length>150?msg.slice(0,150)+'…':msg;
+      return `${RESOURCE_LABEL[k]}: ${STATE_TEXT[hs[k].state]||hs[k].state}${kurz?' — '+kurz:''}`;
+    });
   const who=bad.length?' · '+bad.join(' · '):'';
   /* v3.31.0 · Lehre aus 8aa: „Ein Satz, der bei einem Ausfall dasselbe sagt wie
      bei einem leeren Ergebnis, ist eine Falschaussage." Am 30.08. hat der

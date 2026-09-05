@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 05.09.2026, Version **4.3.8**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 05.09.2026, Version **4.3.9**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -539,6 +539,21 @@ Die Kachel zeigt jetzt beide Seiten (`27k/90k · Lesen 1,2M/5,0M`), und **die sc
 
 **Vier Negativkontrollen**, alle gefeuert: Leseurteil entfernt · Kachel zeigt nur Schreibzeilen · grüne Schreibampel überdeckt rote Leseampel · fehlende Lesezahl wieder als 0.
 
+### 4.3.9 · „API-Fehler" ist keine Diagnose
+
+Die rote Systemzeile nannte ausschliesslich den ZUSTAND: *„Aktien (Tiingo, Fallback Twelve Data): API-Fehler"*. Der konkrete Grund liegt seit jeher in `apiState[…].message` — seit 4.3.4 sogar mit der häufigsten Meldung des Tiefenscans samt Beispielsymbolen. **Angezeigt wurde er nie.** Zwölfter Fall desselben Musters.
+
+Die Zeile hängt ihn jetzt an, auf 150 Zeichen gekürzt. Fehlt eine Begründung, bleibt die Zeile unverändert — kein leerer Gedankenstrich.
+
+**Und ein Test von mir war zu wörtlich:** er verlangte `slice(0, 150)` mit Leerzeichen, im Code steht keines. Der Lauf wurde rot, obwohl die Änderung korrekt war. Ein Muster, das die Schreibweise statt der Sache prüft — dieselbe Krankheit wie überall in dieser Reihe, nur mit umgekehrtem Vorzeichen: diesmal meldete es einen Fehler, den es nicht gab.
+
+### Stand der Messungen am 05.09., 07:07 UTC
+
+- **Lesebudget: 90.000 von 5.000.000 (1,8 %).** Der Eingriff aus 4.3.7 wirkt: von rechnerisch 7,8 Millionen auf 90.000. Die Ursache war bestätigt.
+- **Schreibbudget: 56.483 von 90.000 (63 %) nach 427 Minuten** — rund 132 Zeilen/min gegen 62,5 tragfähige. **Bei diesem Takt ist die selbst gesetzte Obergrenze gegen 11:20 UTC erreicht.** Die Leseseite ist gelöst, die Schreibseite ist es nicht.
+- **Lernschicht arbeitet:** 1.530 Beobachtungen und 1.017 Auswertungen in 24 h, Abdeckung 81 %. Vor 4.2.3 stand dort dauerhaft null.
+- **Aktien-Ampel rot** — das ist 4.3.4 bei der Arbeit: ein Scan mit null Zeilen meldet sich nicht mehr als Erfolg.
+
 ### Zwei Entscheidungen, die dabei getroffen wurden
 
 **1. Der Altbestand wird nicht zurückgeholt.** Alles vor 4.2.3 trägt irrtümlich `dropped_ts`; die Rohdaten stehen noch da. Ein Zurücksetzen wäre technisch ein Einzeiler, brächte aber nichts: ohne Protokolleinträge für diese Zeitfenster verwürfe der Auflöser dieselben Zeilen sofort wieder, und der Versuch kostete Schreibzeilen aus dem knappen Budget. **Die Messung beginnt bei null.** Die erste auswertbare Basis entsteht damit frühestens nach einigen Handelstagen — das ist der Preis dafür, dass vorher nichts entstanden ist.
@@ -682,6 +697,8 @@ Eine ältere Regex-Zusicherung auf die Inline-Formel (`safety-regression.mjs`, Z
 21. ~~**Es gibt keinen Zähler für GELESENE D1-Zeilen.**~~ **Erledigt in 4.3.8** — der Zähler existierte, es fehlten das Urteil (`readBudgetHoldsToday`) und die Anzeige. Ursprünglicher Text: `d1Meter` misst ausschliesslich `rows_written`; das Free-Tier-Limit von 5 Mio. `rows_read` pro Tag wurde am 04.09. gerissen, ohne dass irgendeine Anzeige in der App das hätte zeigen können. Ein Gegenstück zu `d1WriteBudget` — Zähler, Hochrechnung, `topQueries` nach gelesenen Zeilen — ist der nächste sinnvolle Schritt. Ohne ihn fällt die nächste Abfrage ohne passenden Index genauso lautlos aus.
 
 22. **Jede neue D1-Abfrage braucht einen passenden Index, bevor sie ausgeliefert wird.** `signalHistory` (4.2.9) filterte auf eine Spalte ohne Index und hat damit allein das Tageslimit gesprengt. Prüfregel für den nächsten Zusatz: Welche Spalten stehen im WHERE, in welcher Reihenfolge, und deckt ein Index sie ab?
+
+23. **Das SCHREIBbudget läuft am 05.09. auf 132 Zeilen/min** (56.483 nach 427 Minuten) gegen 62,5 tragfähige — Obergrenze gegen 11:20 UTC erreicht. Der fünfte Index aus 4.3.7 kostet dabei eine zusätzliche Zeile je INSERT (+20 % auf Einfügungen), erklärt aber bei weitem nicht alles. **Zu klären am Feld `topQueries` aus `/api/health`** — es nennt die Anweisung mit dem grössten Verbrauch und ist genau dafür gebaut. Erst messen, dann drosseln: die Änderungsschwelle in `d1StoreRows` ist bereits scharf, ein blindes Absenken beschädigt die Lernschicht, die seit 4.2.3 gerade erst wieder arbeitet.
 
 ## 5. Kosten und Cloudflare-Plan
 
