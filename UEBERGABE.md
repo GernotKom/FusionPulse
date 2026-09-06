@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 05.09.2026, Version **4.4.1**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 05.09.2026, Version **4.5.0**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -596,6 +596,32 @@ Cloudflare Workers Paid: 5 $/Monat Mindestbetrag, laut Cloudflares eigener Warnm
 Teurer als 5 $ würde es erst ab 1,67 Mio. geschriebenen Zeilen pro Tag (heute 87.000) oder 833 Mio. gelesenen (heute 0,13 Mio.). **Der Verbrauch müsste sich verneunzehnfachen.**
 
 Der Plan löst zusätzlich zwei Dinge, die heute Zeit kosten: das Schreiblimit als Stillstandsursache entfällt, und das Subrequest-Limit von 50 je Aufruf steigt auf 1.000 — Letzteres ist ein plausibler Mitverursacher der Zeitüberschreitungen im Deep Scan.
+
+### 4.5.0 · Die laufende Whole-Market-Entdeckung ist gestrichen
+
+**Beschluss vom 05.09., gemeinsam getroffen nach einer Woche Fehlersuche.**
+
+Der Whole-Market-Radar hat 39 der 40 GB Tiingo-Bandbreite verbraucht, die Zeitüberschreitungen im Deep Scan verursacht, einen Großteil der Schreiblast getragen und fremde Titel in die Heatmap gespült — und in einer Woche keinen einzigen Hinweis geliefert, der gehandelt worden wäre.
+
+**Neu:** fortlaufend nur die Watchlist des Nutzers, und **ein Vollmarktlauf täglich um 20:00 Wiener Zeit**.
+
+Der Zeitpunkt ist nicht beliebig: **20:00 Wien ist ganzjährig 14:00 New York**, also mitten in der regulären US-Sitzung. Beide Zeitzonen schalten die Sommerzeit, der Versatz von sechs Stunden bleibt; in den zwei Wochen jährlicher Verschiebung liegt der Lauf bei 13:00 oder 15:00 ET und damit immer noch in der Sitzung. Der Vorschlag ist also handelbar — genau darum ging es.
+
+**Die Tagessperre ist die eigentliche Zusicherung, nicht das Zeitfenster.** Das Fenster ist zehn Minuten breit, weil Minute 0 eine Kryptominute ist und der Aktienblock dort übersprungen wird; ein enges Fenster hinge an einer einzigen Minute. Dass daraus genau ein Lauf wird, besorgt die Sperre in `fp_meta` — eine Modulvariable allein wäre keine Sperre, das ist die Lehre aus v4.0.0.
+
+**Die Sperre wird erst NACH einem erfolgreichen Abruf gesetzt.** Andernfalls kostet ein einzelner Fehlversuch die Tagesempfehlung bis zum nächsten Tag; das Fenster ist breit genug für einen zweiten Anlauf.
+
+**Bandbreite:** 1 statt 68 Vollmarktabrufe je Tag. Von 16 GB auf **0,24 GB je Monat** — Faktor 68. Der Rest der 40 GB bleibt für die Kursreihen der Watchlist.
+
+**Zwei Tests wurden umgedreht statt gelöscht.** NK76 verlangte eine Minutenkadenz und dass der Radar mehrfach täglich auslöst; er verlangt jetzt das Gegenteil, damit die alte Taktung nicht unbemerkt zurückkommt. NK77 rechnete 68 Abrufe gegen 40 GB; er hält die alte Zahl als Begründung fest und prüft die neue. Eine gelöschte Zahl wäre eine gelöschte Herleitung.
+
+**Drei Negativkontrollen**, alle gefeuert: Tagessperre entfernt · Sperre vor dem Abruf gesetzt · Kadenz zurück auf laufende Entdeckung.
+
+**Ein Fehler beim Schreiben:** `markDailyPickRan(env, meta, now)` — ich hatte `(env, now, meta)`. Weder `node --check` noch ESLint sehen das, weil der Aufruf gültig ist. Nur eine Zusicherung fängt so etwas; sie steht jetzt da.
+
+### Noch offen für den Watchlist-Betrieb
+
+Die Zeitüberschreitung im Deep Scan (Punkt 24) ist damit nicht behoben, aber deutlich entschärft: ohne Radar im selben Zyklus konkurrieren die Symbolabrufe nicht mehr mit einem 11-MB-Vollmarktabruf. Ob das reicht, zeigt der erste Handelstag.
 
 ### Zwei Entscheidungen, die dabei getroffen wurden
 

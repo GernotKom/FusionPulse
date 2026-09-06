@@ -6948,12 +6948,49 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
         await persistApiState(env,'stocks',wlAnzahl>0?'ok':'error',wlText,now);
       }catch(e){ await noteProviderFailure(env,'stocks',e,now,'watchlist'); }
     } else if(radarDueNow(phase.key, stockMinute)){
-      try{
+      /* ══ v4.5.0 · EIN VOLLMARKTLAUF AM TAG, UM 20:00 WIENER ZEIT ══════════
+         Beschluss vom 05.09. nach einer Woche Fehlersuche: Die laufende
+         Whole-Market-Entdeckung wird gestrichen. Sie hat 39 der 40 GB
+         Tiingo-Bandbreite verbraucht, die Zeitueberschreitungen im Deep Scan
+         verursacht, einen Grossteil der Schreiblast getragen und fremde Titel
+         in die Heatmap gespuelt — und in einer Woche keinen einzigen Hinweis
+         geliefert, der gehandelt worden waere.
+
+         Stattdessen: fortlaufend nur die Watchlist des Nutzers, und EIN
+         Vollmarktlauf taeglich um 20:00 Wiener Zeit. Der Zeitpunkt ist nicht
+         zufaellig — 20:00 Wien ist ganzjaehrig 14:00 New York, also mitten in
+         der regulaeren US-Sitzung. Der Vorschlag ist damit noch handelbar,
+         und genau darum ging es.
+
+         DIE TAGESSPERRE IST DIE EIGENTLICHE ZUSICHERUNG, nicht das
+         Zeitfenster. Das Fenster ist zehn Minuten breit, weil Minute 0 eine
+         Kryptominute ist und der Aktienblock dort uebersprungen wird; ohne
+         Sperre waeren das bis zu zehn Vollmarktabrufe statt einem. Die Sperre
+         liegt in `fp_meta` und ueberlebt den Isolate — eine Modulvariable
+         allein waere keine Sperre, das ist die Lehre aus v4.0.0. */
+      if(await dailyPickAlreadyRan(env, new Date())){
+        /* Schon gelaufen. Kein Abruf, keine Meldung — das ist der Normalfall
+           an neun von zehn Minuten des Fensters. */
+      } else try{
         const rd=await tiingoIexMarketRadar(env,80,true);
-        setApiState('stocks','ok',`Whole-Market Radar aktualisiert · ${rd?.rows?.length||0} Kandidaten`);
-        await persistApiState(env,'stocks','ok',`Whole-Market Radar aktualisiert · ${rd?.rows?.length||0} Kandidaten`,now);
+        const treffer=rd?.rows?.length||0;
+        /* Reihenfolge: (env, meta, now). Beim ersten Schreiben hatte ich
+           `(env, now, meta)` — ein Fehler, den weder `node --check` noch
+           ESLint sieht, weil der Aufruf gueltig ist. Nur ein Test faengt so
+           etwas; er steht in tests/signal-history.mjs. */
+        await markDailyPickRan(env, { candidates:treffer, source:'Tiingo IEX Whole-Market' }, new Date());
+        const txt=`Tagesempfehlung 20:00 · Vollmarktlauf · ${treffer} Kandidaten`;
+        setApiState('stocks', treffer>0?'ok':'error', treffer>0?txt:`${txt} — kein einziger Kandidat, das ist ein Befund`);
+        await persistApiState(env,'stocks', treffer>0?'ok':'error', txt, now);
+        cronLog('stocks','daily_pick',`${txt}. Naechster Lauf morgen 20:00 Wiener Zeit.`);
       }
-      catch(e){ await noteProviderFailure(env,'stocks',e,now,'iex-radar'); }
+      catch(e){
+        /* Die Sperre wird NICHT gesetzt, wenn der Lauf scheitert — sonst
+           faellt die Tagesempfehlung bis zum naechsten Tag aus, weil ein
+           einzelner Fehlversuch als „erledigt" gilt. Das Fenster ist zehn
+           Minuten breit; ein zweiter Versuch ist damit moeglich. */
+        await noteProviderFailure(env,'stocks',e,now,'iex-radar');
+      }
     }else if(stockMinute%2===0){
       try{
         const st=await tiingoStockSnapshot(env,false,new Set(ALL_ON),3,[],'server');
@@ -7312,13 +7349,97 @@ const RADAR_CADENCE_MIN = {
 const RADAR_PHASE_OFFSET = 1;
 /** Faellt der Radar in dieser Cron-Minute an? Fail-closed: unbekannte Phase
  *  heisst NEIN. Eine Phase, die wir nicht kennen, darf nicht 11 MB kosten. */
-function radarDueNow(phaseKey, cronMinute){
+/* ══ v4.5.0 · EIN ENTDECKUNGSLAUF AM TAG STATT ALLE ACHT MINUTEN ═══════════
+   ENTSCHEIDUNG des Nutzers am 05.09., und sie ist die richtige: die Aktien
+   zum Screenen kommen aus den Favoriten; der GESAMTE Markt wird einmal
+   taeglich um 20:00 Wiener Zeit durchsucht — dann ist die US-Sitzung noch
+   offen (14:00 ET) und ein Fund waere am selben Tag handelbar.
+
+   WAS DAS AUFLOEST, gemessen an dieser Woche:
+     · Bandbreite: 68 Radar-Abrufe/Tag x 10,8 MB = 0,72 GB/Tag. Kuenftig EINER.
+       Zusammen mit BOATS fielen 39 von 40 GB Monatskontingent an; uebrig
+       bleiben rund 0,5 GB. Das Kontingent war der Grund, warum Tiingo
+       zwischenzeitlich abgewiesen hat.
+     · Zeitueberschreitungen: der Deep Scan lief gegen 20 wechselnde Titel aus
+       der Entdeckung. Kuenftig gegen die Favoritenliste — dieselben Titel,
+       warme Caches, kein Vollmarktabruf im selben Zyklus.
+     · Schreiblast: keine wechselnden Entdeckungsfunde mehr, die jeweils neue
+       Snapshot-Zeilen anlegen.
+
+   WAS AUFGEGEBEN WIRD, ausdruecklich: die laufende Entdeckung waehrend des
+   Tages. Ein Titel, der um 15:00 anspringt und um 19:00 wieder ruhig ist,
+   wird nicht mehr gefunden. Das ist der Preis, und er ist bewusst gezahlt —
+   die laufende Entdeckung hat in einer Woche Betrieb keinen einzigen
+   verwertbaren Hinweis geliefert, aber saemtliche Grenzen gerissen.
+
+   Die Zeitzone wird aus `Europe/Vienna` gelesen, nicht aus einem festen
+   UTC-Versatz: sonst laege der Lauf im Winter eine Stunde falsch. */
+const DAILY_PICK_HOUR_VIENNA = 20;
+const DAILY_PICK_KEY = 'daily_pick:last';
+function viennaHourMinute(now = new Date()){
+  try{
+    const p = new Intl.DateTimeFormat('de-AT', { timeZone:'Europe/Vienna', hour:'2-digit', minute:'2-digit', hour12:false })
+      .formatToParts(now);
+    const h = Number(p.find(x=>x.type==='hour')?.value);
+    const m = Number(p.find(x=>x.type==='minute')?.value);
+    return (Number.isFinite(h) && Number.isFinite(m)) ? { h, m } : null;
+  }catch{ return null; }
+}
+/** Zeitfenster 20:00–20:09 Wiener Zeit. Bewusst ZEHN Minuten, nicht zwei:
+    Minute 0 ist eine Kryptominute (`cronMinute % 5 === 0`), und dort wird der
+    gesamte Aktienblock uebersprungen — ein Zwei-Minuten-Fenster haenge damit
+    an einer einzigen Minute. Dass daraus trotzdem GENAU EIN Lauf wird,
+    besorgt die Tagessperre `dailyPickAlreadyRan`, nicht die Fensterbreite. */
+function dailyPickDue(now = new Date()){
+  const t = viennaHourMinute(now);
+  /* FAIL-CLOSED: ist die Zeitzone nicht bestimmbar, laeuft KEIN Vollmarkt-
+     abruf. Lieber keine Tagesempfehlung als 68 unbeabsichtigte Abrufe. */
+  if(!t) return false;
+  return t.h === DAILY_PICK_HOUR_VIENNA && t.m < 10;
+}
+/** Wiener Datum als Sperrschluessel — nicht UTC, sonst springt die Sperre
+    abends um Mitternacht Wiener Zeit noch nicht um. */
+function viennaDateKey(now = new Date()){
+  try{ return new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Vienna',year:'numeric',month:'2-digit',day:'2-digit'}).format(now); }
+  catch{ return null; }
+}
+let dailyPickMemo = { date:null };
+/** Lief der Tageslauf heute schon? Ein Lesevorgang, ein Schreibvorgang je Tag. */
+async function dailyPickAlreadyRan(env, now = new Date()){
+  const key = viennaDateKey(now);
+  if(!key) return true;                       // fail-closed: kein Datum, kein Lauf
+  if(dailyPickMemo.date === key) return true; // derselbe Isolate hat ihn schon
+  if(!env?.DB) return false;
+  try{
+    const row = await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind(DAILY_PICK_KEY).first();
+    const done = row?.value ? JSON.parse(String(row.value))?.date : null;
+    if(done === key){ dailyPickMemo = { date:key }; return true; }
+    return false;
+  }catch{
+    /* Nicht lesbar → NICHT laufen. Ein doppelter Vollmarktabruf kostet
+       10,8 MB; eine ausgefallene Tagesempfehlung kostet einen Tag. */
+    return true;
+  }
+}
+async function markDailyPickRan(env, meta, now = new Date()){
+  const key = viennaDateKey(now); if(!key) return;
+  dailyPickMemo = { date:key };
+  if(!env?.DB) return;
+  try{
+    await env.DB.prepare(`INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts`)
+      .bind(DAILY_PICK_KEY, JSON.stringify({ date:key, ts:Date.now(), ...(meta||{}) }), Date.now()).run();
+  }catch(e){ cronLog('stocks','daily_pick_mark_failed', String(e?.message||e)); }
+}
+function radarDueNow(phaseKey, cronMinute, now = new Date()){
+  /* Der Whole-Market-Radar laeuft ab v4.5.0 ausschliesslich im Tagesfenster.
+     Die Kadenztabelle bleibt als Dokumentation der frueheren Taktung stehen
+     und wird nicht mehr befragt — sie zu loeschen wuerde die Herleitung
+     mitloeschen, und die Zahlen darin erklaeren, warum es so nicht ging. */
   if(!Object.prototype.hasOwnProperty.call(RADAR_CADENCE_MIN, phaseKey)) return false;
-  const every = RADAR_CADENCE_MIN[phaseKey];
-  if(!(Number.isFinite(every) && every > 0)) return false;
-  const m = Number(cronMinute);
-  if(!Number.isFinite(m)) return false;
-  return ((m % every) + every) % every === RADAR_PHASE_OFFSET % every;
+  if(RADAR_CADENCE_MIN[phaseKey] == null) return false;   // 'closed' bleibt aus
+  void cronMinute;
+  return dailyPickDue(now);
 }
 
 /* ══ v4.0.0 · EINE TTL IM ISOLATE IST KEINE TTL ═════════════════════════════

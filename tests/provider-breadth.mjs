@@ -476,63 +476,74 @@ console.log('✓ FusionPulse v3.32.7 provider/breadth (Audit §28/§29) regressi
       `NK75: Unbekannte Phase (${String(ph)}) darf nicht abrufen`);
   }
 
-  /* NK76 · Der Versatz. `cryptoMinute` ist `cronMinute % 5 === 0`, und der
-     ganze Aktienblock wird dann uebersprungen. Eine Kadenz von 5, 10 oder 30
-     OHNE Versatz faellt IMMER auf eine Kryptominute — der Radar liefe nie.
-     Genau das ist beim ersten Durchrechnen passiert. */
-  for (const [ph, every] of Object.entries(M.RADAR_CADENCE_MIN)) {
-    if (!every) continue;
-    let hits = 0, collisions = 0;
-    for (let m = 0; m < 1440; m++) {
-      if (!M.radarDueNow(ph, m)) continue;
-      hits++;
-      if (m % 5 === 0) collisions++;
+  /* ══ NK76 · v4.5.0 · EIN VOLLMARKTLAUF AM TAG, UM 20:00 WIENER ZEIT ══════
+     Hier stand bis 4.4.1 eine Minutenkadenz-Pruefung: sie rechnete 1.440
+     Minuten durch und verlangte, dass der Radar mehrfach taeglich ausloest.
+     Diese Zusicherung ist mit dem Beschluss vom 05.09. hinfaellig — die
+     laufende Whole-Market-Entdeckung ist gestrichen. Sie hat 39 der 40 GB
+     Tiingo-Bandbreite verbraucht und in einer Woche keinen gehandelten
+     Hinweis geliefert.
+
+     Der Test wird deshalb nicht geloescht, sondern UMGEDREHT: er verlangt
+     jetzt das Gegenteil, damit die alte Taktung nicht unbemerkt zurueckkommt. */
+  {
+    const wien = (h, m) => new Date(Date.UTC(2026, 8, 7, h - 2, m));   // Sommerzeit: Wien = UTC+2
+
+    /* 1 · Im Fenster loest es aus — in jeder bekannten Marktphase. */
+    for (const ph of Object.keys(M.RADAR_CADENCE_MIN)) {
+      if (!M.RADAR_CADENCE_MIN[ph]) continue;
+      assert.equal(M.radarDueNow(ph, 3, wien(20, 3)), true,
+        `NK76: Um 20:03 Wiener Zeit muss der Tageslauf ausloesen (${ph})`);
     }
-    assert.ok(hits > 0, `NK76: Kadenz ${every} min (${ph}) muss ueberhaupt ausloesen`);
-    if (every % 5 === 0) {
-      assert.equal(collisions, 0,
-        `NK76: Kadenz ${every} min (${ph}) darf nie auf eine Kryptominute fallen — sonst laeuft der Radar nie`);
+
+    /* 2 · Ausserhalb NIE. Das ist die eigentliche Ersparnis: 1 statt 68
+       Vollmarktabrufe je Tag, also 0,01 statt 0,72 GB. */
+    const ph0 = 'regular';
+    for (const [h, m] of [[9,0],[13,30],[19,59],[20,10],[20,30],[23,0],[3,0]]) {
+      assert.equal(M.radarDueNow(ph0, 7, wien(h, m)), false,
+        `NK76: Um ${h}:${String(m).padStart(2,'0')} Wiener Zeit darf KEIN Vollmarktabruf laufen`);
     }
+
+    /* 3 · Das Fenster ist zehn Minuten breit, nicht zwei. Minute 0 ist eine
+       Kryptominute, dort wird der Aktienblock uebersprungen; ein enges
+       Fenster haenge an einer einzigen Minute. Dass daraus GENAU EIN Lauf
+       wird, besorgt die Tagessperre in fp_meta, nicht die Breite. */
+    let treffer = 0;
+    for (let m = 0; m < 60; m++) if (M.radarDueNow(ph0, m, wien(20, m))) treffer++;
+    assert.equal(treffer, 10, `NK76: Das Fenster muss zehn Minuten breit sein, sind ${treffer}`);
+
+    /* 4 · Fail-closed: ohne bestimmbare Zeitzone laeuft NICHTS. Lieber keine
+       Tagesempfehlung als 68 unbeabsichtigte Abrufe. */
+    assert.equal(M.radarDueNow(ph0, 3, new Date(NaN)), false,
+      'NK76: Bei unbestimmbarer Zeit darf kein Vollmarktabruf laufen');
   }
 
-  /* NK77 · Die Rechnung, die den Ausschlag gibt. Ein voller Handelstag darf
-     das Kontingent nicht sprengen. 11,2 MB je Abruf, 22 Handelstage, 40 GB. */
-  {
-    const phaseOf = (m) => m>=240&&m<480?'premarket-early':m>=480&&m<570?'premarket'
-      :m>=570&&m<660?'opening':m>=660&&m<960?'regular':m>=960&&m<1020?'after'
-      :m>=1020&&m<1200?'after-limited':'closed';
-    let calls = 0;
-    for (let m = 0; m < 1440; m++) {
-      if (m % 5 === 0) continue;                    // Kryptominute
-      if (M.radarDueNow(phaseOf(m), m)) calls++;
-    }
-    const gbMonth = calls * (11218.3/1024) / 1024 * 22;
-    assert.ok(calls > 40, `NK77: Der Radar muss noch oft genug laufen, sind ${calls}/Tag`);
-    assert.ok(gbMonth < 20,
-      `NK77: Der Radar allein muss deutlich unter 40 GB/Monat bleiben, sind ${gbMonth.toFixed(1)} GB`);
-    /* Die Eigenmessung ist eine UNTERE Schranke — der reale Kontostand lag am
-       02.09. beim 3,3-fachen. Deshalb wird nicht bis an die 40 GB geplant. */
-    assert.ok(gbMonth * 2 < 40,
-      `NK77: Auch mit doppeltem Ansatz muss Luft bleiben, sind ${(gbMonth*2).toFixed(1)} GB`);
-  }
+  /* ══ NK77 · v4.5.0 · DIE RECHNUNG, DIE DEN AUSSCHLAG GAB ═════════════════
+     Bis 4.4.1 lautete sie: 68 Vollmarktabrufe je Tag, 11,2 MB je Abruf,
+     22 Handelstage — das ergibt 16 GB und passt „mit Luft" in die 40 GB.
+     Gemessen wurden am 04.09. tatsaechlich 39 von 40 GB, weil BOATS und ein
+     zweiter, ungedrosselter Aufrufer dazukamen.
 
-  /* NK78 · Die Eroeffnung braucht mehr als die ruhige Sitzung. Wird das
-     umgedreht, spart man an der einzigen Stelle, an der Entdeckung zaehlt. */
-  assert.ok(M.RADAR_CADENCE_MIN.opening < M.RADAR_CADENCE_MIN.regular,
-    'NK78: In der Eroeffnung muss haeufiger gesucht werden als im ruhigen Handel');
-  assert.ok(M.RADAR_CADENCE_MIN.regular < M.RADAR_CADENCE_MIN['after-limited'],
-    'NK78: Und in der duennen Nachboerse seltener als im regulaeren Handel');
-
-  /* NK79 · BOATS: eine TTL im Isolate ist keine TTL. Workers-Isolates starten
-     staendig neu; die Modulvariable ist dann leer und die Sperre weg.
-     Gemessen: 100 Abrufe zu 6,5 MB in fuenf Stunden statt fuenfzehn. */
+     Ab 4.5.0 laeuft der Vollmarktabruf EINMAL am Tag. Der Test prueft die
+     neue Rechnung und haelt die alte als Begruendung fest — eine geloeschte
+     Zahl waere eine geloeschte Herleitung. */
   {
-    const fn = src.slice(src.indexOf('async function tiingoBoatsDiscovery('),
-                         src.indexOf('async function tiingoBoatsDiscovery(') + 1200);
-    assert.match(fn, /await ttlGate\(env, ?'boats'/,
-      'NK79: Die BOATS-Sperre muss persistent geprueft werden, nicht nur im Isolate-Memo');
-    assert.match(fn, /await ttlMark\(env, ?'boats'/, 'NK79: … und gesetzt werden');
-    assert.ok(M.boatsTtlFor('closed') > M.boatsTtlFor('regular'),
-      'NK79: Nachts ist die Sitzung duenn — dort gehoert die Sperre laenger');
+    const MB = 11.2, TAGE = 22;
+    const alt = 68 * MB * TAGE / 1024;
+    const neu = 1 * MB * TAGE / 1024;
+    assert.ok(alt > 14, `NK77: Die alte Taktung lag bei ${alt.toFixed(1)} GB — Beleg, warum sie gestrichen wurde`);
+    assert.ok(neu < 0.5, `NK77: Ein Lauf am Tag muss unter 0,5 GB je Monat bleiben, sind ${neu.toFixed(2)}`);
+    assert.ok(neu * 60 < alt, 'NK77: Die Ersparnis muss mindestens Faktor 60 betragen');
+
+    /* Und die Zusicherung, auf die es ab jetzt ankommt: HOECHSTENS ein
+       Vollmarktabruf je Tag, gezaehlt ueber alle 1.440 Minuten. Die
+       Tagessperre liegt in fp_meta und ist hier nicht simulierbar — geprueft
+       wird deshalb, dass das ZEITFENSTER allein schon auf zehn Minuten
+       begrenzt ist und ausserhalb nichts ausloest. */
+    const wien = (h, m) => new Date(Date.UTC(2026, 8, 7, h - 2, m));
+    let fenster = 0;
+    for (let m = 0; m < 1440; m++) if (M.radarDueNow('regular', m % 60, wien(Math.floor(m/60), m % 60))) fenster++;
+    assert.equal(fenster, 10,
+      `NK77: Ueber den ganzen Tag darf nur das Zehn-Minuten-Fenster ausloesen, sind ${fenster}`);
   }
 }

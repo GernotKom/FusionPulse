@@ -123,10 +123,24 @@ assert.match(workerText,/await tiingoFetch\(env,'\/iex'\)/,'Whole-market Radar m
 {
   const cycStart = workerText.indexOf('async function serverLearningCycle(');
   const cycle = workerText.slice(cycStart, workerText.indexOf('\n}\n', cycStart) + 3);
-  assert.ok(cycle.length > 1000 && cycle.length < 12000,
+  /* v4.5.0 · Obergrenze von 12.000 auf 16.000. Die Schranke soll verhindern,
+     dass der Ausschnitt versehentlich die halbe Datei umfasst — sie ist keine
+     Zeilenbremse. Der Tageslauf-Zweig samt Begruendung ist bewusst
+     dazugekommen; die Zahl wird deshalb angehoben und nicht entfernt. */
+  assert.ok(cycle.length > 1000 && cycle.length < 16000,
     `Der geprueffte Ausschnitt muss der Cron-Zyklus sein, ist ${cycle.length} Zeichen`);
-  assert.match(cycle,/radarDueNow\(phase\.key, ?stockMinute\)[\s\S]{0,200}tiingoIexMarketRadar\(env,80,true\)/,
+  /* v4.5.0 · Zwischen Torwaechter und Abruf steht jetzt die TAGESSPERRE, und
+     die ist ein paar Zeilen Begruendung lang. Der Abstand wird deshalb weiter
+     gefasst — und die Sperre selbst ausdruecklich verlangt, denn ohne sie
+     laeuft der Vollmarktabruf bis zu zehnmal im Fenster statt einmal. */
+  assert.match(cycle,/radarDueNow\(phase\.key, ?stockMinute\)[\s\S]{0,2600}tiingoIexMarketRadar\(env,80,true\)/,
     'Server scheduler must keep the market radar independent of the browser, gated by market phase');
+  assert.match(cycle,/await dailyPickAlreadyRan\(env, new Date\(\)\)[\s\S]{0,1600}tiingoIexMarketRadar/,
+    'v4.5.0: Vor dem Vollmarktabruf MUSS die Tagessperre stehen — das Zeitfenster ist zehn Minuten breit');
+  assert.match(cycle,/await markDailyPickRan\(env, \{ candidates:treffer/,
+    'v4.5.0: … und nach einem ERFOLGREICHEN Lauf gesetzt werden, in der Reihenfolge (env, meta, now)');
+  assert.ok(cycle.indexOf('markDailyPickRan') > cycle.indexOf('tiingoIexMarketRadar(env,80,true)'),
+    'v4.5.0: Die Sperre darf erst NACH dem Abruf gesetzt werden — sonst faellt die Tagesempfehlung nach einem Fehlversuch bis morgen aus');
 }
 assert.match(workerText,/execution!=='server'&&!force[\s\S]*readLatestPersistedStockScan/,'Browser stock requests must consume the persisted server scan instead of starting a duplicate market scan');
 assert.match(workerText,/source IN \('Twelve Data','Tiingo IEX'\)/,'Learning must accept Tiingo IEX history after Primary migration');
