@@ -6512,3 +6512,70 @@ console.log('✓ FusionPulse v4.3.8 Lesebudget sichtbar (ausgefuehrt): OK');
 }
 
 console.log('✓ FusionPulse v4.3.9 Grund in der Systemzeile (ausgefuehrt): OK');
+
+/* ══ v4.5.2 · DIE KACHEL MUSS DIE GESTELLTE FRAGE BEANTWORTEN ═══════════════
+   Gefragt ist „bleiben wir bei 5 USD im Monat". Bis 4.5.1 nannte die Kachel
+   ausschliesslich einen TAGESSTAND und rechnete ihn gegen die Free-Grenzen —
+   auf Paid ist der Tag aber nicht die abgerechnete Einheit, und die Free-Zahl
+   nicht der Massstab. Beides ausgefuehrt geprueft, nicht per Regex. */
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const basis = { measured:true, rowsWritten:12_000, rowsRead:900_000,
+    dayLimitRowsWritten:1_000_000, dayLimitRowsRead:806_451_612,
+    planDayLimitRowsWritten:1_612_903, freeLimitRowsWritten:1_000_000,
+    freeLimitRowsRead:806_451_612, selfCap:1_000_000, plan:'paid',
+    atLeastRowsWrittenPerMin:20, sustainableRowsWrittenPerMin:694.4,
+    atLeastRowsReadPerMin:1500, sustainableRowsReadPerMin:560_035.8,
+    writeBudgetHoldsToday:true, readBudgetHoldsToday:true, complete:true };
+
+  /* Die Lesekachel darf auf Paid bei 900.000 Zeilen NICHT anschlagen — unter
+     der alten festen 5-Mio.-Grenze waeren das 18 Prozent und bald orange,
+     tatsaechlich sind es 0,1 Promille. */
+  const lesen = C.d1ReadNote({ d1: basis });
+  assert.equal(lesen.tone, 'ok',
+    'v4.5.2: 900.000 gelesene Zeilen sind auf Paid belanglos — die Kachel darf davon nicht warnen');
+  assert.ok(/806/.test(lesen.short),
+    `v4.5.2: der Nenner der Lesekachel muss die Tarifgrenze sein, war "${lesen.short}"`);
+
+  /* Ohne Monatsdaten bleibt die Kachel wie bisher — kein erfundener Betrag. */
+  const ohne = C.d1Note({ d1: basis });
+  assert.ok(!/USD/.test(ohne.detail),
+    'v4.5.2: ohne Monatsbilanz darf kein Geldbetrag behauptet werden');
+
+  /* Mit Monatsdaten muss der Betrag dastehen — und zwar beide Richtungen. */
+  const gut = C.d1Note({ d1: { ...basis, month: { month:'2026-09', rowsWritten:9_000_000,
+    includedRowsWritten:50_000_000, atLeastProjectedRowsWritten:24_000_000,
+    atLeastProjectedOverageUsd:0, holdsThisMonth:true, capIsSafeForMonth:true } } });
+  assert.ok(/bleibt es bei 5 USD/.test(gut.detail),
+    `v4.5.2: haelt die Hochrechnung, muss das dastehen — war "${gut.detail}"`);
+
+  const teuer = C.d1Note({ d1: { ...basis, month: { month:'2026-09', rowsWritten:29_000_000,
+    includedRowsWritten:50_000_000, atLeastProjectedRowsWritten:60_000_000,
+    atLeastProjectedOverageUsd:10, holdsThisMonth:false, capIsSafeForMonth:true } } });
+  assert.ok(/10,00 USD ÜBER/.test(teuer.detail),
+    `v4.5.2: eine Ueberschreitung gehoert beziffert, nicht angedeutet — war "${teuer.detail}"`);
+  /* Aber NICHT rot: eine Rechnung ist kein Ausfall. Die Kachel meldet den
+     Betriebszustand; Geld gehoert benannt, nicht als Stoerung gemeldet. */
+  assert.equal(teuer.tone, 'ok',
+    'v4.5.2: eine Ueberschreitung ist Geld, kein Ausfall — sie darf die Betriebsampel nicht faelschen');
+
+  /* Eine zu hoch gesetzte Tagesobergrenze muss auffallen, auch wenn der
+     laufende Monat gerade haelt. Das ist der Fehler, der sich beim naechsten
+     „ein bisschen mehr Luft" von selbst einstellt. */
+  const zuHoch = C.d1Note({ d1: { ...basis, month: { month:'2026-09', rowsWritten:1_000_000,
+    includedRowsWritten:50_000_000, atLeastProjectedRowsWritten:2_000_000,
+    atLeastProjectedOverageUsd:0, holdsThisMonth:true,
+    capIsSafeForMonth:false, capWorstCaseRowsWritten:52_700_000 } } });
+  assert.ok(/zu hoch gesetzt/.test(zuHoch.detail),
+    `v4.5.2: eine Tagesobergrenze, deren voller Monat ueber dem Kontingent liegt, muss benannt werden — war "${zuHoch.detail}"`);
+
+  /* Speicher ist der dritte abgerechnete Zaehler und war nirgends sichtbar. */
+  const platz = C.d1Note({ d1: { ...basis, storage:{ bytes:6.2e9, gb:6.2, includedGb:5, atLeastMonthlyUsd:0.9 } } });
+  assert.ok(/6,2 GB von 5 GB/.test(platz.detail),
+    `v4.5.2: der Speicherstand gehoert in die Kachel — war "${platz.detail}"`);
+  assert.ok(/keine Aufräumung/.test(platz.detail),
+    'v4.5.2: dass market_snapshots nie aufgeraeumt wird, gehoert daneben — sonst liest sich der Wert wie ein Gleichgewicht');
+}
+
+console.log('✓ FusionPulse v4.5.2 Kachel nennt Monat, Betrag und Speicher (ausgefuehrt): OK');

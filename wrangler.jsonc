@@ -7,31 +7,42 @@
 
   "observability": { "enabled": true, "head_sampling_rate": 1 },
 
-  /* v4.0.5 · DEAKTIVIERT — BELEGT DURCH DAS BUILD-PROTOKOLL VOM 02.09.
-     Der Deploy scheiterte reproduzierbar am versions-Endpunkt:
-       „CPU limits are not supported for the Free plan" [code: 100328]
-     Ein `limits`-Block ist auf dem Free-Plan nicht erlaubt — auch nicht der
-     Subrequest-Teil, das ganze Feld wird abgelehnt. Die Zeile blieb drei
-     Versionen lang drin und hat jeden Build gekillt, waehrend die App
-     unveraendert weiterlief und dadurch voellig normal aussah.
+  /* ══ v4.5.2 · WIEDER EINGESCHALTET — DER TARIF IST JETZT PAID ═════════════
+     Der Block war seit v4.0.5 auskommentiert, weil der Free-Plan ihn ablehnt
+     ("CPU limits are not supported for the Free plan" [code: 100328]) und drei
+     Versionen lang jeden Deploy gekillt hat. Auf Workers Paid ist er erlaubt —
+     und dort ist er kein Komfort mehr, sondern die einzige Obergrenze, die es
+     ueberhaupt noch gibt: Free WEIST AB, Paid RECHNET AB.
 
-     WIEDER EINSCHALTEN, sobald auf Workers Paid umgestellt ist. Beide Werte
-     sind dann sinnvoll und wurden bereits durchgerechnet:
-       cpu_ms      30000 · deckelt RECHENZEIT. Cron-Trigger duerfen sonst bis
-                           zu 15 Minuten CPU ziehen — Faktor 30 gegen einen
-                           Amoklauf. Der schwerste Job (Whole-Market-Radar,
-                           ~11 MB JSON ranken) bleibt weit darunter.
-       subrequests  1000 · deckelt ZUGRIFFE und ist die wichtigere der beiden.
-                           Wartezeit auf fetch(), KV oder D1 zaehlt NICHT zur
-                           CPU-Zeit; eine Schleife, die Millionen Zeilen nach
-                           D1 schreibt, verbraucht fast keine CPU und liefe am
-                           CPU-Deckel vorbei. Jede D1-Query ist aber ein
-                           Subrequest. Der Cron liegt mit ~150 weit darunter.
-     Auf dem Free-Plan braucht es sie ohnehin nicht: dort wird nicht
-     abgerechnet, sondern bei Erreichen der Limits schlicht abgewiesen.
+     Nachgerechnet, weil eine Zahl ohne Rechnung nur eine Meinung ist.
+     Der Cron laeuft minuetlich, also bis zu 44.640 Aufrufe im 31-Tage-Monat.
+     Enthalten sind 30 Mio. CPU-Millisekunden, jede weitere Million 0,02 USD.
 
-  "limits": { "cpu_ms": 30000, "subrequests": 1000 },
-  */
+       ohne Block   Cron-Trigger duerfen 15 MINUTEN CPU ziehen (900.000 ms).
+                    Schlimmster Fall: 44.640 x 900.000 = 40,2 Mrd. CPU-ms.
+                    Das sind rund 803.000 USD. Nicht als Prognose gemeint,
+                    sondern als Groessenordnung dessen, was oben offen steht.
+       cpu_ms 5000  44.640 x 5.000 = 223 Mio. CPU-ms, davon 193 Mio. ueber dem
+                    Kontingent: rund 3,87 USD. Der schlimmste Fall bleibt damit
+                    unter 9 USD im Monat statt unbegrenzt.
+       Normalbetrieb Der schwerste Job (Whole-Market-Radar, ~11,2 MB JSON
+                    parsen und ranken) liegt bei geschaetzt 0,5-2 s und laeuft
+                    nach RADAR_CADENCE_MIN rund 70-mal am Tag, nicht minuetlich.
+                    5.000 ms lassen ihm den Faktor 2,5 bis 10.
+
+     Wird der Radar doch abgeschnitten, steht das als Fehler im Log — ein
+     abgebrochener Lauf ist SICHTBAR, eine Rechnung erst am Monatsende. Deshalb
+     lieber zu eng und nachjustieren als zu weit und hoffen.
+
+     subrequests 1000 ist auf Paid ohnehin die Vorgabe; der Eintrag macht sie
+     nur explizit. Wichtig bleibt sie trotzdem: Wartezeit auf fetch(), KV oder
+     D1 zaehlt NICHT zur CPU-Zeit. Eine Schleife, die Millionen Zeilen nach D1
+     schreibt, verbraucht fast keine CPU und liefe am CPU-Deckel vorbei — jede
+     D1-Abfrage ist aber ein Subrequest. Der Cron liegt mit ~150 weit darunter.
+
+     ZURUECKNEHMEN, falls der Deploy mit 100328 scheitert: dann laeuft das
+     Konto doch noch auf Free, und dort wird das ganze Feld abgelehnt. */
+  "limits": { "cpu_ms": 5000, "subrequests": 1000 },
 
   // Nur Diagnose. Die verbindliche Version steht in src/version.js und wird
   // von scripts/sync-version.mjs aus package.json hierher gespiegelt.
@@ -50,7 +61,7 @@
   // Ohne diesen Eintrag gilt die Vorgabe 90.000. Vor einem Wechsel auf Paid
   // erst eine saubere Tagesmessung abwarten, dann diesen Wert setzen, dann
   // den Tarif wechseln — in dieser Reihenfolge.
-  "vars": { "APP_VERSION": "4.5.1", "ALPACA_FEED": "iex", "TIINGO_STOCKS_MODE": "primary", "D1_WRITE_BUDGET": "1000000" },
+  "vars": { "APP_VERSION": "4.5.2", "ALPACA_FEED": "iex", "TIINGO_STOCKS_MODE": "primary", "D1_WRITE_BUDGET": "1000000", "CF_PLAN": "paid" },
 
   // v3.2: Cron läuft jede Minute. Im Worker selbst wird gedrosselt:
   // Krypto 5-minütig, Alpaca im Opening-Fenster, Aktien-Learning im Primary-Modus über Tiingo.

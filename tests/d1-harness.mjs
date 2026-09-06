@@ -77,6 +77,16 @@ export function fakeDb(opts = {}) {
       boom(); state.log.push(sql);
       /* Faellige Snapshots fuer den Aufloeser. `rows` wird vom Test gesetzt. */
       if (/FROM market_snapshots/i.test(sql) && state.due) return result(state.due);
+      /* v4.5.2: Die Monatsbilanz summiert die Tageszeilen per LIKE-Praefix.
+         Ohne diesen Zweig lieferte die Attrappe eine leere Liste, der Test
+         haette eine Summe von 0 gegen 0 geprueft und damit nichts. Genau die
+         Sorte gruener Haken, die schon zweimal ein Limit hat reissen lassen. */
+      if (/FROM fp_meta/i.test(sql) && /LIKE/i.test(sql)) {
+        const pre = String(args[0] ?? '').replace(/%$/, '');
+        return result([...meta.entries()]
+          .filter(([k]) => k.startsWith(pre))
+          .map(([, v]) => ({ value: v.value, updated_ts: v.ts })));
+      }
       return result([]);
     },
     first: async () => {

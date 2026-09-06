@@ -3251,7 +3251,7 @@ const LEARN_COUNT_FLUSH_MS = 30_000;
    ist mit Punkt 1 verschwunden.                                            */
 let d1Meter = null;
 function d1MeterStart(tag){
-  d1Meter = { tag, at: Date.now(), rowsRead:0, rowsWritten:0, queries:0, unmetered:0, byQuery:{} };
+  d1Meter = { tag, at: Date.now(), rowsRead:0, rowsWritten:0, queries:0, unmetered:0, sizeAfter:0, byQuery:{} };
   return d1Meter;
 }
 function d1QueryShape(sql){
@@ -3272,6 +3272,15 @@ function d1MeterNote(sql, res){
     const rr = Number(meta.rows_read), rw = Number(meta.rows_written);
     if(Number.isFinite(rr)){ m.rowsRead += rr; b.r += rr; }
     if(Number.isFinite(rw)){ m.rowsWritten += rw; b.w += rw; }
+    /* v4.5.2: `meta.size_after` liefert die Datenbankgroesse in Bytes und
+       kostet nichts — sie steht ohnehin in jeder Antwort. Speicher ist der
+       DRITTE abgerechnete Zaehler (5 GB frei, danach 0,75 USD je GB und
+       Monat) und war als einziger nirgends erfasst. `market_snapshots` hat
+       keine Aufraeumung; dieser Wert ist die Voraussetzung dafuer, ueber eine
+       zu entscheiden, statt sie zu raten. Genommen wird das Maximum: bei
+       nebenlaeufigen Isolates ist der groessere Wert der juengere. */
+    const sz = Number(meta.size_after);
+    if(Number.isFinite(sz) && sz > 0) m.sizeAfter = Math.max(Number(m.sizeAfter)||0, sz);
   }
 }
 /** Legt einen messenden Mantel um das D1-Binding. Verhalten bleibt identisch. */
@@ -3330,6 +3339,55 @@ function d1Wrap(db){
    Schreibvorgaenge scheitern. */
 const D1_METER_KEY = 'd1_meter';
 const D1_WRITE_CAP_DEFAULT = 90_000;   // Free: 100.000 minus Reserve fuer die Untergrenze
+
+/* ══ v4.5.2 · DER TARIF HAT SICH GEAENDERT, DIE MASSSTAEBE NICHT ════════════
+   Beim Wechsel auf Workers Paid wurde `D1_WRITE_BUDGET` auf 1.000.000
+   hochgesetzt — die BREMSE stimmte damit. Die ANZEIGE nicht: `d1MeterView`
+   rechnete jede Aussage weiterhin gegen die Free-Zahlen 100.000 und 5.000.000.
+
+   Die Folge ist nicht Kosmetik. `writeBudgetHoldsToday` wurde ab 100.000
+   geschriebenen Zeilen falsch, also bei 10 % des tatsaechlichen Budgets, und
+   die Kachel damit dauerhaft orange. `readBudgetHoldsToday` kippte bei
+   5 Mio. gelesenen Zeilen — auf Paid entspricht das 0,6 % des Anspruchs, der
+   Faktor liegt bei 166. Eine Anzeige, die dauernd Alarm gibt, wird nicht
+   gelesen; danach bewacht niemand mehr die einzige Grenze, die wirklich Geld
+   kostet. Zwoelfter Fall desselben Musters in dieser Reihe, diesmal
+   umgekehrt: nicht ungemessen, sondern gegen das falsche Lineal gemessen.
+
+   Die Tageswerte fuer Paid sind ABGELEITET, nicht von Cloudflare gesetzt:
+   dort gilt ein MONATS-Kontingent (25 Mrd. gelesen, 50 Mio. geschrieben).
+   Geteilt wird durch 31, nicht durch 30 — der laengere Monat ist der
+   ungueltigere Fall, und eine Ableitung darf nie in den guenstigeren fallen. */
+const D1_MONTH_INCLUDED_READ  = 25_000_000_000;
+const D1_MONTH_INCLUDED_WRITE = 50_000_000;
+const D1_OVER_USD_PER_M_READ  = 0.001;
+const D1_OVER_USD_PER_M_WRITE = 1.00;
+const D1_MONTH_DAYS_WORST     = 31;
+
+function d1Plan(env){
+  const raw = String(env?.CF_PLAN || '').trim().toLowerCase();
+  return raw === 'paid' ? 'paid' : 'free';
+}
+/** Die operativen TAGES-Grenzen des laufenden Tarifs. Auf Free sind es
+ *  Cloudflares eigene Tageslimits, auf Paid die aus dem Monatskontingent
+ *  abgeleiteten Tagesanteile. */
+function d1PlanLimits(env){
+  if(d1Plan(env) === 'paid'){
+    return {
+      plan: 'paid',
+      dayRowsRead:    Math.floor(D1_MONTH_INCLUDED_READ  / D1_MONTH_DAYS_WORST),
+      dayRowsWritten: Math.floor(D1_MONTH_INCLUDED_WRITE / D1_MONTH_DAYS_WORST),
+      monthRowsRead:  D1_MONTH_INCLUDED_READ,
+      monthRowsWritten: D1_MONTH_INCLUDED_WRITE,
+      /* Auf Paid haelt Cloudflare NICHTS an — Ueberschreitung wird berechnet.
+         Deshalb ist hier die selbst gesetzte Obergrenze die einzige Bremse. */
+      blocksOnLimit: false,
+    };
+  }
+  return { plan:'free', dayRowsRead:5_000_000, dayRowsWritten:100_000,
+    monthRowsRead:null, monthRowsWritten:null, blocksOnLimit:true };
+}
+
 let writeCapMemo = { day: null, base: 0, loaded: false };
 function d1WriteCap(env) {
   const raw = Number(env?.D1_WRITE_BUDGET);
@@ -3377,6 +3435,8 @@ async function d1MeterFlush(env, path){
     acc.rowsWritten = (Number(acc.rowsWritten)||0) + m.rowsWritten;
     acc.queries = (Number(acc.queries)||0) + m.queries;
     acc.unmetered = (Number(acc.unmetered)||0) + m.unmetered;
+    /* Nicht addieren — die Groesse ist ein STAND, keine Menge. */
+    if(Number(m.sizeAfter) > 0) acc.sizeAfter = Math.max(Number(acc.sizeAfter)||0, Number(m.sizeAfter));
     acc.byPath = acc.byPath || {};
     const p = acc.byPath[path] || (acc.byPath[path] = { q:0, r:0, w:0 });
     p.q += m.queries; p.r += m.rowsRead; p.w += m.rowsWritten;
@@ -3423,27 +3483,104 @@ async function d1MeterView(env, now=Date.now()){
     const minutes = Math.max(1, (now - dayStart) / 60_000);
     const wPerMin = rowsWritten / minutes, rPerMin = rowsRead / minutes;
     const restMin = Math.max(0, 1440 - minutes);
+    const lim = d1PlanLimits(env);
+    const writeCap = d1WriteCap(env);
+    /* ══ v4.5.2 · DER TAG WAR NIE DIE ABGERECHNETE EINHEIT ══════════════════
+       Auf Free ist das Tagesfenster die Grenze, und ein Tagesstand ist die
+       vollstaendige Aussage. Auf Paid rechnet Cloudflare je MONAT ab: 50 Mio.
+       geschriebene Zeilen enthalten, jede weitere Million 1,00 USD, ohne
+       Rueckfrage. Die Tagesobergrenze ist dort nur noch ein Stellvertreter —
+       sie haelt, WEIL 31 x 1.000.000 unter 50 Mio. liegt, nicht weil sie den
+       abgerechneten Zeitraum kennen wuerde.
+
+       Ein Stellvertreter, den niemand nachrechnet, ist eine Annahme. Deshalb
+       wird der Monat hier zusammengezaehlt: aus den bereits vorhandenen
+       Tageszeilen, ohne einen einzigen zusaetzlichen Schreibvorgang. Kosten
+       sind hoechstens 31 gelesene Zeilen je Aufruf — gegen ein Tageskontingent
+       von rund 806 Mio. ist das nichts.
+
+       WICHTIG: Cloudflares Monat beginnt am Tag des Abonnements, nicht am
+       Ersten. Diese Summe laeuft ueber den Kalendermonat und ist damit im
+       ungueltigsten Fall um bis zu 30 Tage versetzt. Sie taugt als Frueh-
+       warnung ueber die Groessenordnung, NICHT als Abrechnung. */
+    let month = null;
+    if(lim.plan === 'paid'){
+      try{
+        const pre = `${D1_METER_KEY}:${day.slice(0,7)}-`;
+        const days = (await env.DB.prepare('SELECT value FROM fp_meta WHERE key LIKE ? LIMIT 40').bind(pre+'%').all()).results || [];
+        let mw = 0, mr = 0;
+        for(const d of days){
+          try{ const a = JSON.parse(d.value)||{}; mw += Number(a.rowsWritten)||0; mr += Number(a.rowsRead)||0; }catch{}
+        }
+        const dayNo = Math.max(1, Number(day.slice(8,10)) || 1);
+        const daysInMonth = new Date(Date.UTC(Number(day.slice(0,4)), Number(day.slice(5,7)), 0)).getUTCDate();
+        const elapsed = (dayNo - 1) + (minutes / 1440);
+        const projW = Math.round(mw / Math.max(0.01, elapsed) * daysInMonth);
+        const projR = Math.round(mr / Math.max(0.01, elapsed) * daysInMonth);
+        const overW = Math.max(0, projW - lim.monthRowsWritten) / 1_000_000 * D1_OVER_USD_PER_M_WRITE;
+        const overR = Math.max(0, projR - lim.monthRowsRead) / 1_000_000 * D1_OVER_USD_PER_M_READ;
+        month = {
+          month: day.slice(0,7), daysCounted: days.length, daysInMonth,
+          rowsWritten: mw, rowsRead: mr,
+          includedRowsWritten: lim.monthRowsWritten, includedRowsRead: lim.monthRowsRead,
+          atLeastProjectedRowsWritten: projW, atLeastProjectedRowsRead: projR,
+          shareOfIncludedWritten: mw / lim.monthRowsWritten,
+          /* Der einzige Satz, der die Frage „bleiben wir bei 5 USD" wirklich
+             beantwortet. `atLeast`, weil die Messung eine Untergrenze ist. */
+          atLeastProjectedOverageUsd: Math.round((overW + overR) * 100) / 100,
+          holdsThisMonth: (projW <= lim.monthRowsWritten) && (projR <= lim.monthRowsRead),
+          /* Die Tagesobergrenze taugt nur, solange ihr schlimmster Monat unter
+             dem Kontingent bleibt. Das ist nachrechenbar, also wird es
+             nachgerechnet statt geglaubt. */
+          capWorstCaseRowsWritten: writeCap * D1_MONTH_DAYS_WORST,
+          capIsSafeForMonth: writeCap * D1_MONTH_DAYS_WORST <= lim.monthRowsWritten,
+          calendarMonthNotBillingMonth: true,
+        };
+      }catch{ month = { month: day.slice(0,7), measured:false, reason:'Monatssumme nicht lesbar' }; }
+    }
+    /* Speicher, der dritte abgerechnete Zaehler. 5 GB enthalten, danach
+       0,75 USD je GB und Monat. `market_snapshots` waechst ohne Aufraeumung. */
+    const sizeBytes = Number(acc.sizeAfter) || null;
+    const storage = sizeBytes ? {
+      bytes: sizeBytes,
+      gb: Math.round(sizeBytes / 1e9 * 1000) / 1000,
+      includedGb: 5,
+      shareOfIncluded: sizeBytes / 5e9,
+      atLeastMonthlyUsd: Math.round(Math.max(0, sizeBytes/1e9 - 5) * 0.75 * 100) / 100,
+      note: 'Es gibt keine Aufraeumung fuer market_snapshots — dieser Wert kennt nur eine Richtung.',
+    } : null;
     return { day, measured:true, rowsRead, rowsWritten,
       queries:Number(acc.queries)||0, unmetered:Number(acc.unmetered)||0,
-      freeLimitRowsRead: 5_000_000,
-      freeLimitRowsWritten: 100_000,
+      plan: lim.plan,
+      /* v4.5.2: die operative TAGES-Grenze des LAUFENDEN Tarifs. Fuer das
+         Schreiben ist das nicht die Tarifgrenze, sondern die selbst gesetzte
+         Obergrenze: auf Paid haelt Cloudflare nichts an, also ist sie die
+         einzige Zahl, die tatsaechlich etwas stoppt — und damit die einzige,
+         gegen die zu messen ueberhaupt eine Aussage ergibt. */
+      dayLimitRowsRead: lim.dayRowsRead,
+      dayLimitRowsWritten: writeCap,
+      planDayLimitRowsWritten: lim.dayRowsWritten,
+      /* Die alten Namen bleiben als Alias stehen, damit ein aus dem Cache
+         geladener Client nicht auf einen leeren Nenner faellt. */
+      freeLimitRowsRead: lim.dayRowsRead,
+      freeLimitRowsWritten: writeCap,
       /* Die Quote ist eine UNTERGRENZE: nicht messbare `.first()`-Abfragen
          fehlen darin. Sie darf nie als „noch viel Luft" gelesen werden. */
-      readShareOfFreeLimit: rowsRead / 5_000_000,
-      writeShareOfFreeLimit: rowsWritten / 100_000,
+      readShareOfFreeLimit: rowsRead / lim.dayRowsRead,
+      writeShareOfFreeLimit: rowsWritten / writeCap,
       minutesIntoUtcDay: Math.round(minutes),
       atLeastRowsWrittenPerMin: Math.round(wPerMin * 10) / 10,
       atLeastRowsReadPerMin: Math.round(rPerMin * 10) / 10,
-      sustainableRowsWrittenPerMin: Math.round(100_000 / 1440 * 10) / 10,
-      sustainableRowsReadPerMin: Math.round(5_000_000 / 1440 * 10) / 10,
+      sustainableRowsWrittenPerMin: Math.round(writeCap / 1440 * 10) / 10,
+      sustainableRowsReadPerMin: Math.round(lim.dayRowsRead / 1440 * 10) / 10,
       atLeastProjectedRowsWritten: Math.round(rowsWritten + wPerMin * restMin),
       atLeastProjectedRowsRead: Math.round(rowsRead + rPerMin * restMin),
       /* Minuten bis zum Schreiblimit bei der aktuellen Rate. 0 = bereits
          erreicht. Groesser als `writeBudgetMinutesLeftInDay` heisst: heute
          nicht mehr. null = keine Rate messbar. */
-      writeBudgetMinutesLeft: wPerMin > 0 ? Math.max(0, Math.round((100_000 - rowsWritten) / wPerMin)) : null,
+      writeBudgetMinutesLeft: wPerMin > 0 ? Math.max(0, Math.round((writeCap - rowsWritten) / wPerMin)) : null,
       writeBudgetMinutesLeftInDay: Math.round(restMin),
-      writeBudgetHoldsToday: wPerMin > 0 ? (rowsWritten + wPerMin * restMin) <= 100_000 : true,
+      writeBudgetHoldsToday: wPerMin > 0 ? (rowsWritten + wPerMin * restMin) <= writeCap : true,
       /* ══ v4.3.8 · DIE LESESEITE HATTE ALLES AUSSER DEM URTEIL ═════════════
          `rowsRead`, `readShareOfFreeLimit`, `atLeastRowsReadPerMin`,
          `sustainableRowsReadPerMin`, `atLeastProjectedRowsRead` und sogar
@@ -3460,8 +3597,8 @@ async function d1MeterView(env, now=Date.now()){
          Eine BREMSE gibt es hier bewusst nicht. Schreibvorgaenge lassen sich
          aufschieben, Lesevorgaenge nicht: wer sie sperrt, legt die App still,
          waehrend D1 noch antworten wuerde. Gewarnt wird, gebremst nicht. */
-      readBudgetMinutesLeft: rPerMin > 0 ? Math.max(0, Math.round((5_000_000 - rowsRead) / rPerMin)) : null,
-      readBudgetHoldsToday: rPerMin > 0 ? (rowsRead + rPerMin * restMin) <= 5_000_000 : true,
+      readBudgetMinutesLeft: rPerMin > 0 ? Math.max(0, Math.round((lim.dayRowsRead - rowsRead) / rPerMin)) : null,
+      readBudgetHoldsToday: rPerMin > 0 ? (rowsRead + rPerMin * restMin) <= lim.dayRowsRead : true,
       complete: (Number(acc.unmetered)||0) === 0,
       /* v4.2.1: die selbst gesetzte Obergrenze. Cloudflare liefert fuer D1
          keine Ausgabenbremse; diese hier ist die einzige. Sie gehoert neben
@@ -3470,6 +3607,7 @@ async function d1MeterView(env, now=Date.now()){
       selfCapSpent: rowsWritten,
       selfCapExhausted: rowsWritten >= d1WriteCap(env),
       selfCapSource: Number(env?.D1_WRITE_BUDGET) > 0 ? 'D1_WRITE_BUDGET' : 'Vorgabe',
+      month, storage,
       topQueries: top, topPaths: paths, updatedTs: Number(row.updated_ts)||null };
   }catch{ return null; }
 }

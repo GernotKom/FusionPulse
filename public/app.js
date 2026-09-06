@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.5.1 — Frontend
+   FusionPulse v4.5.2 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2974,7 +2974,12 @@ function d1ReadNote(meta){
      dieselbe Falle wie in `coverageNote` (4.2.3). Ich habe sie hier trotz
      Kenntnis erneut gebaut; der Test hat sie beim ersten Lauf gefangen. */
   const num=(v)=>(v===null||v===undefined||v==='')?NaN:Number(v);
-  const r=num(d.rowsRead), cap=num(d.freeLimitRowsRead);
+  /* v4.5.2: Nenner ist die Tagesgrenze des LAUFENDEN Tarifs. Auf Free sind das
+     Cloudflares 5 Mio.; auf Paid der Tagesanteil des Monatskontingents, rund
+     806 Mio. Bis 4.5.1 stand hier fest 5 Mio. — auf Paid haette die Kachel
+     damit bei 0,6 Prozent des Anspruchs rot gemeldet. Eine Anzeige, die
+     dauernd Alarm gibt, wird nicht mehr gelesen. */
+  const r=num(d.rowsRead), cap=num(d.dayLimitRowsRead ?? d.freeLimitRowsRead);
   if(!Number.isFinite(r)||!(cap>0)) return nope('Der Server meldet keine gelesenen Zeilen für den laufenden UTC-Tag.');
   const n=(x)=>Number(x).toLocaleString('de-DE');
   const kurz=(x)=>x>=1_000_000?(x/1_000_000).toFixed(1).replace('.',',')+'M':x>=10_000?Math.round(x/1000)+'k':n(x);
@@ -3004,7 +3009,12 @@ function d1Note(meta){
     return { measured:false, tone:'warn', short:'DB n. gem.', label:'Schreibbudget: nicht gemessen',
       detail:(d&&d.reason?d.reason+' ':'')+'Das ist eine fehlende Messung, kein niedriger Verbrauch — daraus lässt sich NICHT schließen, dass Reserve vorhanden ist.' };
   }
-  const w=Number(d.rowsWritten), cap=Number(d.freeLimitRowsWritten);
+  const w=Number(d.rowsWritten);
+  /* v4.5.2: `freeLimitRowsWritten` traegt seit dem Tarifwechsel die operative
+     Obergrenze, nicht mehr die Tarifgrenze. Die Tarifgrenze steht jetzt in
+     `planDayLimitRowsWritten`. Beide getrennt zu halten ist der ganze Zweck
+     des Satzes weiter unten — sonst verschwindet er stillschweigend. */
+  const cap=Number(d.planDayLimitRowsWritten ?? d.freeLimitRowsWritten);
   if(!Number.isFinite(w)||!(cap>0)){
     return { measured:false, tone:'warn', short:'DB n. gem.', label:'Schreibbudget: nicht gemessen',
       detail:'Der Server meldet noch keine Zeilenzahlen für den laufenden UTC-Tag. Das ist eine fehlende Messung, kein niedriger Verbrauch — daraus lässt sich NICHT schließen, dass Reserve vorhanden ist.' };
@@ -3028,10 +3038,36 @@ function d1Note(meta){
     : haelt ? ' Bei diesem Takt reicht es bis Mitternacht UTC.'
     : Number.isFinite(rest) ? ` Bei diesem Takt ist es in rund ${n(rest)} Minuten aufgebraucht.` : '';
   const kurz=(x)=>x>=10_000?Math.round(x/1000)+'k':n(x);
+  /* ══ v4.5.2 · DER TAG BEANTWORTET DIE FRAGE NICHT, DIE GESTELLT WURDE ═════
+     Gefragt ist „bleiben wir bei 5 USD im Monat". Abgerechnet wird je MONAT;
+     jede Million geschriebener Zeilen ueber 50 Mio. kostet 1,00 USD, ohne
+     Rueckfrage. Bis 4.5.1 stand hier ausschliesslich ein TAGESSTAND — die
+     Kachel konnte 30 Tage lang gruen sein, waehrend die Rechnung lief.
+     Der Monatsstand faellt bei der Bremse ohnehin an; er wird jetzt auch
+     ausgewiesen. Rot wird die Kachel davon nicht: eine Ueberschreitung ist
+     kein Ausfall, sondern Geld — sie gehoert benannt, nicht als Stoerung
+     gemeldet. */
+  const m = d.month;
+  const monat = (m && m.measured!==false && Number.isFinite(Number(m.rowsWritten)))
+    ? ` Monat ${m.month}: ${n(m.rowsWritten)} von ${n(m.includedRowsWritten)} enthaltenen Zeilen`
+      + `, Hochrechnung mindestens ${n(m.atLeastProjectedRowsWritten)}`
+      + (Number(m.atLeastProjectedOverageUsd) > 0
+          ? ` — das sind mindestens ${Number(m.atLeastProjectedOverageUsd).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2})} USD ÜBER den 5 USD.`
+          : ' — bei diesem Takt bleibt es bei 5 USD.')
+      + (m.capIsSafeForMonth===false
+          ? ` ⚠ Die Tagesobergrenze ist zu hoch gesetzt: 31 volle Tage ergäben ${n(m.capWorstCaseRowsWritten)} Zeilen und damit mehr als das Kontingent.`
+          : '')
+      + ' Der Monat läuft hier über den Kalender, Cloudflare rechnet ab dem Abo-Tag — die Zahl ist eine Frühwarnung, keine Abrechnung.'
+    : '';
+  const speicher = (d.storage && Number(d.storage.gb) >= 0)
+    ? ` Speicher: ${Number(d.storage.gb).toLocaleString('de-DE',{maximumFractionDigits:2})} GB von 5 GB enthalten`
+      + (Number(d.storage.atLeastMonthlyUsd) > 0 ? `, das kostet rund ${Number(d.storage.atLeastMonthlyUsd).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2})} USD im Monat.` : '.')
+      + ' Für market_snapshots gibt es keine Aufräumung — dieser Wert kennt nur eine Richtung.'
+    : '';
   return { measured:true, tone, label, short:`DB ${kurz(w)}/${kurz(grenze)}`,
     /* Die Untergrenze muss mitlaufen, sonst liest sich „reicht" wie eine
        Zusage. Der Server misst `.first()`-Abfragen nicht mit. */
-    detail:`${label}.${takt}${reicht}${eigen?` Die Grenze ist eine SELBST gesetzte Tagesobergrenze (${n(grenze)}), nicht das Limit des Tarifs (${n(cap)}) — Cloudflare bietet für D1 keine Ausgabenbremse. Bei Erreichen stoppen die großen Schreibvorgänge; Kurse und Analysen laufen weiter.`:''}${d.selfCapExhausted?' ⛔ Die Obergrenze ist erreicht, es wird nichts mehr für die Lernschicht gespeichert.':''} Gerechnet wird gegen 00:00 UTC (2 Uhr MESZ). Die Messung ist eine UNTERGRENZE${d.complete===false?' und ausdrücklich unvollständig':''} — der echte Verbrauch liegt bei oder über diesem Wert. Maßgeblich bleibt der Kontostand im Cloudflare-Dashboard.` };
+    detail:`${label}.${takt}${reicht}${eigen?` Die Grenze ist eine SELBST gesetzte Tagesobergrenze (${n(grenze)}), nicht das Limit des Tarifs (${n(cap)}) — Cloudflare bietet für D1 keine Ausgabenbremse. Bei Erreichen stoppen die großen Schreibvorgänge; Kurse und Analysen laufen weiter.`:''}${d.selfCapExhausted?' ⛔ Die Obergrenze ist erreicht, es wird nichts mehr für die Lernschicht gespeichert.':''} Gerechnet wird gegen 00:00 UTC (2 Uhr MESZ). Die Messung ist eine UNTERGRENZE${d.complete===false?' und ausdrücklich unvollständig':''} — der echte Verbrauch liegt bei oder über diesem Wert. Maßgeblich bleibt der Kontostand im Cloudflare-Dashboard.${monat}${speicher}` };
 }
 function bandwidthNote(meta) {
   if (authDenied) {

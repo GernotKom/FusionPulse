@@ -495,8 +495,14 @@ console.log('✓ FusionPulse v3.32.10 R3 Aufloeser (ausgefuehrt): OK');
   await D.d1MeterFlush(env, '/cron');
   const v = await D.d1MeterView(env, t6);
 
-  assert.equal(v.freeLimitRowsWritten, 100_000,
+  /* v4.5.2: Gemessen wird gegen die OPERATIVE Grenze — die, die wirklich
+     etwas anhaelt. Ohne Konfiguration ist das die Vorgabe 90.000. Die reine
+     Tarifgrenze bleibt daneben stehen, damit die beiden nicht verschmelzen. */
+  assert.equal(v.freeLimitRowsWritten, 90_000,
     'NK60: das Schreiblimit gehoert neben die geschriebenen Zeilen — es ist das, was zweimal gerissen ist');
+  assert.equal(v.planDayLimitRowsWritten, 100_000,
+    'NK60: die Tarifgrenze muss getrennt ausgewiesen bleiben');
+  assert.equal(v.plan, 'free', 'NK60: ohne CF_PLAN gilt der vorsichtigere Tarif');
   assert.ok(v.writeShareOfFreeLimit > 0,
     'NK60: die Schreibquote muss ausgewiesen werden, nicht nur die Lesequote');
   assert.equal(v.minutesIntoUtcDay, 360,
@@ -507,8 +513,8 @@ console.log('✓ FusionPulse v3.32.10 R3 Aufloeser (ausgefuehrt): OK');
   assert.equal(v.atLeastProjectedRowsWritten, erwartet,
     `NK60: die Hochrechnung muss ${erwartet} sein, war ${v.atLeastProjectedRowsWritten}`);
   assert.ok(v.atLeastRowsWrittenPerMin > 0, 'NK60: die Rate gehoert dazu, sonst ist die Projektion nicht nachrechenbar');
-  assert.equal(v.sustainableRowsWrittenPerMin, 69.4,
-    'NK60: der tragfaehige Takt (100.000/1440) gehoert danebengestellt, sonst fehlt der Massstab');
+  assert.equal(v.sustainableRowsWrittenPerMin, 62.5,
+    'NK60: der tragfaehige Takt (90.000/1440) gehoert danebengestellt, sonst fehlt der Massstab');
 }
 
 /* ── NK61 · Die Projektion muss auch NEIN sagen koennen ─────────────────────
@@ -532,8 +538,8 @@ console.log('✓ FusionPulse v3.32.10 R3 Aufloeser (ausgefuehrt): OK');
     'NK61: 333 Zeilen/min reissen das Tageslimit — die Bilanz MUSS das sagen');
   assert.ok(v.writeBudgetMinutesLeft > 0 && v.writeBudgetMinutesLeft < v.writeBudgetMinutesLeftInDay,
     `NK61: die Restlaufzeit muss vor Tagesende liegen, war ${v.writeBudgetMinutesLeft} von ${v.writeBudgetMinutesLeftInDay}`);
-  assert.equal(v.writeBudgetMinutesLeft, 240,
-    `NK61: bei 333/min und 80.000 Rest sind es 240 Minuten, waren ${v.writeBudgetMinutesLeft}`);
+  assert.equal(v.writeBudgetMinutesLeft, 210,
+    `NK61: bei 333/min und 70.000 Rest bis zur Bremse sind es 210 Minuten, waren ${v.writeBudgetMinutesLeft}`);
 
   /* Die Bilanz bleibt eine UNTERGRENZE. Ein „haelt heute" darf deshalb nie
      wie eine Zusage klingen — die Felder heissen `atLeast…`, und die
@@ -620,8 +626,10 @@ console.log('✓ FusionPulse v4.1.6 Schreibbudget und Hochrechnung (ausgefuehrt)
   assert.equal(v.selfCap, 1_500_000, `NK63: die gesetzte Obergrenze gehoert in die Bilanz, war ${v.selfCap}`);
   assert.equal(v.selfCapSource, 'D1_WRITE_BUDGET', 'NK63: und die Herkunft, damit eine vergessene Konfiguration auffaellt');
   assert.strictEqual(v.selfCapExhausted, false, 'NK63: bei 10 Zeilen ist sie nicht erreicht');
-  assert.equal(v.freeLimitRowsWritten, 100_000,
+  assert.equal(v.planDayLimitRowsWritten, 100_000,
     'NK63: das Tarif-Limit bleibt daneben stehen — die beiden duerfen nicht verwechselt werden');
+  assert.equal(v.freeLimitRowsWritten, 1_500_000,
+    'NK63: der Nenner der Anzeige ist die operative Obergrenze, nicht die Tarifgrenze');
   const ohne = await D.d1MeterView({ DB: env.DB }, t);
   assert.equal(ohne.selfCapSource, 'Vorgabe', 'NK63: ohne Konfiguration muss das als Vorgabe erkennbar sein');
 }
@@ -819,3 +827,126 @@ console.log('✓ FusionPulse v4.2.3 Verwurf sichtbar (ausgefuehrt): OK');
 }
 
 console.log('✓ FusionPulse v4.2.5 Drossel des Beobachtungsprotokolls (ausgefuehrt): OK');
+
+/* ── NK76 · Der Tarif hat sich geaendert, die Massstaebe muessen mitziehen ───
+   Beim Wechsel auf Workers Paid wurde `D1_WRITE_BUDGET` hochgesetzt, die
+   ANZEIGE aber nicht: sie rechnete weiter gegen die Free-Zahlen 100.000 und
+   5.000.000. Auf Paid haette die Lesekachel damit bei 0,6 Prozent des
+   Anspruchs rot gemeldet — und eine Anzeige, die dauernd Alarm gibt, wird
+   nicht mehr gelesen. Ausgefuehrt geprueft, beide Tarife. */
+{
+  D.reset();
+  const { db } = fakeDb({ rowsRead: 5 });
+  const d = new Date();
+  const t = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12, 0, 0);
+  const env = { DB: D.d1Wrap(db), CF_PLAN: 'paid', D1_WRITE_BUDGET: '1000000' };
+  D.d1MeterStart('/cron');
+  for (let i = 0; i < 20; i++) await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)').bind('k' + i, 'v', t).run();
+  await D.d1MeterFlush(env, '/cron');
+  const v = await D.d1MeterView(env, t);
+
+  assert.equal(v.plan, 'paid', 'NK76: der erkannte Tarif gehoert in die Bilanz');
+  /* 25 Mrd. je Monat, geteilt durch 31 — der laengere Monat ist der
+     ungueltigere Fall, eine Ableitung darf nie in den guenstigeren fallen. */
+  assert.equal(v.dayLimitRowsRead, Math.floor(25_000_000_000 / 31),
+    `NK76: die Tages-Lesegrenze muss aus dem Monatskontingent kommen, war ${v.dayLimitRowsRead}`);
+  assert.ok(v.dayLimitRowsRead > 800_000_000,
+    'NK76: auf Paid darf nirgends mehr gegen die 5 Mio. des Free-Tarifs gerechnet werden');
+  assert.equal(v.dayLimitRowsWritten, 1_000_000,
+    'NK76: Nenner der Schreibkachel ist die selbst gesetzte Obergrenze — sie ist auf Paid die einzige Bremse');
+  assert.equal(v.sustainableRowsWrittenPerMin, Math.round(1_000_000 / 1440 * 10) / 10,
+    'NK76: der tragfaehige Takt muss aus derselben Grenze folgen, sonst widersprechen sich zwei Zahlen derselben Kachel');
+
+  /* Die Kernfrage: bleibt es bei 5 USD? Sie wird je MONAT entschieden, nicht
+     je Tag. Bei 20 Zeilen darf die Hochrechnung keine Ueberschreitung sehen. */
+  assert.ok(v.month && v.month.measured !== false, 'NK76: auf Paid gehoert eine Monatsbilanz dazu');
+  assert.equal(v.month.includedRowsWritten, 50_000_000, 'NK76: das enthaltene Monatskontingent gehoert danebengestellt');
+  assert.strictEqual(v.month.holdsThisMonth, true, 'NK76: bei 20 Zeilen darf die Hochrechnung nicht anschlagen');
+  assert.equal(v.month.atLeastProjectedOverageUsd, 0, 'NK76: und die Ueberschreitung muss 0 USD sein');
+  /* Die Tagesobergrenze ist auf Paid nur ein STELLVERTRETER fuer das
+     Monatskontingent. Sie taugt genau so lange, wie ihr schlimmster Monat
+     darunter bleibt — 31 x 1.000.000 = 31 Mio. gegen 50 Mio. Das ist
+     nachrechenbar, also wird es nachgerechnet statt geglaubt. */
+  assert.strictEqual(v.month.capIsSafeForMonth, true,
+    'NK76: 31 volle Tage zu 1.000.000 Zeilen muessen unter dem Monatskontingent bleiben');
+  assert.equal(v.month.capWorstCaseRowsWritten, 31_000_000,
+    `NK76: der schlimmste Monat der Tagesobergrenze gehoert ausgewiesen, war ${v.month.capWorstCaseRowsWritten}`);
+
+  /* Und die Gegenprobe: eine zu hoch gesetzte Tagesobergrenze MUSS auffallen.
+     1.700.000/Tag ergeben 52,7 Mio. im 31-Tage-Monat — darueber. Genau der
+     Wert, den ein „ein bisschen mehr Luft" arglos erzeugen wuerde. */
+  D.reset();
+  const { db: db2 } = fakeDb({ rowsRead: 5 });
+  const env2 = { DB: D.d1Wrap(db2), CF_PLAN: 'paid', D1_WRITE_BUDGET: '1700000' };
+  D.d1MeterStart('/cron');
+  await env2.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)').bind('k', 'v', t).run();
+  await D.d1MeterFlush(env2, '/cron');
+  const v2 = await D.d1MeterView(env2, t);
+  assert.strictEqual(v2.month.capIsSafeForMonth, false,
+    'NK76: eine Tagesobergrenze, deren voller Monat ueber dem Kontingent liegt, MUSS als unsicher gelten');
+}
+
+/* ── NK77 · Keine Free-Konstante mehr im Urteilspfad ────────────────────────
+   Der Fehler war nicht eine falsche Zahl, sondern eine FESTE. Solange
+   `100_000` oder `5_000_000` in einem Urteilsfeld steht, ueberlebt jede
+   Massstabskorrektur nur bis zum naechsten Tarifwechsel. Geprueft wird der
+   Rumpf von d1MeterView() ohne Kommentare — die Begruendung darf die Zahlen
+   nennen, die Rechnung nicht. */
+{
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const at = worker.indexOf('async function d1MeterView(');
+  assert.ok(at > 0, 'NK77: d1MeterView() muss auffindbar sein');
+  const body = stripComments(worker.slice(at, worker.indexOf('\nlet learnCounts', at)));
+  for (const feld of ['writeBudgetHoldsToday', 'readBudgetHoldsToday', 'writeBudgetMinutesLeft',
+    'readBudgetMinutesLeft', 'sustainableRowsWrittenPerMin', 'sustainableRowsReadPerMin',
+    'readShareOfFreeLimit', 'writeShareOfFreeLimit']) {
+    const zeile = body.split('\n').find((l) => l.includes(feld + ':'));
+    assert.ok(zeile, `NK77: ${feld} muss es weiterhin geben`);
+    assert.ok(!/100_000|5_000_000|100000|5000000/.test(zeile),
+      `NK77: ${feld} rechnet gegen eine feste Free-Zahl — genau der Fehler, der beim Tarifwechsel unbemerkt blieb: ${zeile.trim()}`);
+  }
+}
+
+/* ── NK78 · Die Monatsrechnung muss auch NEIN sagen koennen ─────────────────
+   Eine Kennzahl, die nur beruhigen kann, ist keine — dieselbe Lehre wie NK61,
+   eine Ebene hoeher. Der Tagesstand kann 30 Tage lang gruen sein, waehrend die
+   Rechnung laeuft; geprueft wird deshalb der Fall, in dem die Hochrechnung des
+   MONATS ueber das Kontingent geht, samt Betrag in USD. */
+{
+  D.reset();
+  const { db } = fakeDb({ rowsRead: 1 });
+  const env = { DB: D.d1Wrap(db), CF_PLAN: 'paid', D1_WRITE_BUDGET: '1000000' };
+  /* Fester Zeitpunkt, sonst haengt das Ergebnis am Kalendertag des Testlaufs.
+     15. September, 12:00 UTC = 14,5 von 30 Tagen verstrichen. */
+  const t = Date.UTC(2026, 8, 15, 12, 0, 0);
+  const tag = (n, w) => db.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)')
+    .bind(`d1_meter:2026-09-${String(n).padStart(2, '0')}`, JSON.stringify({ rowsWritten: w, rowsRead: 0, queries: 1, unmetered: 0 }), t).run();
+  for (let n = 1; n <= 14; n++) await tag(n, 2_000_000);
+  await tag(15, 1_000_000);                       // 29 Mio. bei 14,5 Tagen
+  const v = await D.d1MeterView(env, t);
+
+  assert.equal(v.month.rowsWritten, 29_000_000,
+    `NK78: die Tageszeilen des Monats muessen summiert werden, waren ${v.month.rowsWritten}`);
+  assert.equal(v.month.atLeastProjectedRowsWritten, 60_000_000,
+    `NK78: 29 Mio. in 14,5 von 30 Tagen ergeben 60 Mio., waren ${v.month.atLeastProjectedRowsWritten}`);
+  assert.strictEqual(v.month.holdsThisMonth, false,
+    'NK78: eine Hochrechnung ueber dem Kontingent MUSS als solche gelten');
+  /* 10 Mio. Zeilen ueber den enthaltenen 50 Mio., je Million 1,00 USD. */
+  assert.equal(v.month.atLeastProjectedOverageUsd, 10,
+    `NK78: die Ueberschreitung gehoert in USD ausgewiesen, waren ${v.month.atLeastProjectedOverageUsd}`);
+
+  /* Und die Gegenprobe, damit der Test nicht bloss immer NEIN sagt. */
+  D.reset();
+  const { db: db2 } = fakeDb({ rowsRead: 1 });
+  const env2 = { DB: D.d1Wrap(db2), CF_PLAN: 'paid', D1_WRITE_BUDGET: '1000000' };
+  const tag2 = (n, w) => db2.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)')
+    .bind(`d1_meter:2026-09-${String(n).padStart(2, '0')}`, JSON.stringify({ rowsWritten: w, rowsRead: 0, queries: 1, unmetered: 0 }), t).run();
+  for (let n = 1; n <= 14; n++) await tag2(n, 800_000);
+  await tag2(15, 400_000);                        // 11,6 Mio. -> 24 Mio. im Monat
+  const v2 = await D.d1MeterView(env2, t);
+  assert.strictEqual(v2.month.holdsThisMonth, true,
+    'NK78: bei 24 Mio. Hochrechnung darf die Bilanz nicht warnen — sonst warnt sie immer');
+  assert.equal(v2.month.atLeastProjectedOverageUsd, 0, 'NK78: und der Betrag muss 0 USD sein');
+}
+
+console.log('✓ FusionPulse v4.5.2 Tarifbewusste Grenzen und Monatsbilanz (ausgefuehrt): OK');
