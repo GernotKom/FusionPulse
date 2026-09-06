@@ -6925,6 +6925,67 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
        aus. Die Abdeckung entsteht jetzt im Beobachtungsprotokoll. */
     if(phase.key==='closed'){
       // Nichts. Kein Radar, kein Deep Scan. Es gibt nichts zu entdecken.
+    } else if(radarDueNow(phase.key, stockMinute) && !(await dailyPickAlreadyRan(env, new Date()))){
+      /* ══ v4.5.1 · DER TAGESLAUF STAND HINTER DER WATCHLIST ═══════════════
+         BEFUND aus dem Betrieb (06.09.): Der Nutzer hat den Watchlist-Modus
+         aktiv — und damit greift der Zweig darunter IMMER zuerst. Der
+         Vollmarktlauf um 20:00 wurde nie erreicht. Beide Dinge, die
+         ausdruecklich zusammen bestellt waren (fortlaufend die eigene Liste,
+         einmal taeglich der ganze Markt), schlossen einander aus.
+
+         Der Tageslauf steht deshalb jetzt ZUERST. Er kostet zehn Minuten im
+         Jahr — an genau einem Zyklus am Tag laeuft die Watchlist nicht,
+         danach wieder. Die Tagessperre ist in die Bedingung gewandert: ist
+         der Lauf erledigt, faellt der Zweig durch und die Watchlist bekommt
+         die Minute zurueck.
+
+         Auf einem geschlossenen Markt passiert weiterhin nichts — der Zweig
+         darueber faengt das ab. Am Wochenende gibt es also keinen Tageslauf,
+         und das ist richtig: ein Vorschlag, den man nicht handeln kann, ist
+         keiner. */
+      /* ══ v4.5.0 · EIN VOLLMARKTLAUF AM TAG, UM 20:00 WIENER ZEIT ══════════
+         Beschluss vom 05.09. nach einer Woche Fehlersuche: Die laufende
+         Whole-Market-Entdeckung wird gestrichen. Sie hat 39 der 40 GB
+         Tiingo-Bandbreite verbraucht, die Zeitueberschreitungen im Deep Scan
+         verursacht, einen Grossteil der Schreiblast getragen und fremde Titel
+         in die Heatmap gespuelt — und in einer Woche keinen einzigen Hinweis
+         geliefert, der gehandelt worden waere.
+
+         Stattdessen: fortlaufend nur die Watchlist des Nutzers, und EIN
+         Vollmarktlauf taeglich um 20:00 Wiener Zeit. Der Zeitpunkt ist nicht
+         zufaellig — 20:00 Wien ist ganzjaehrig 14:00 New York, also mitten in
+         der regulaeren US-Sitzung. Der Vorschlag ist damit noch handelbar,
+         und genau darum ging es.
+
+         DIE TAGESSPERRE IST DIE EIGENTLICHE ZUSICHERUNG, nicht das
+         Zeitfenster. Das Fenster ist zehn Minuten breit, weil Minute 0 eine
+         Kryptominute ist und der Aktienblock dort uebersprungen wird; ohne
+         Sperre waeren das bis zu zehn Vollmarktabrufe statt einem. Die Sperre
+         liegt in `fp_meta` und ueberlebt den Isolate — eine Modulvariable
+         allein waere keine Sperre, das ist die Lehre aus v4.0.0. */
+      /* Die Sperre steht jetzt in der Zweigbedingung oben — wer hier ankommt,
+         hat sie bereits passiert. Eine zweite Abfrage waere ein zusaetzlicher
+         Lesevorgang je Fenster-Minute ohne jeden Nutzen. */
+      try{
+        const rd=await tiingoIexMarketRadar(env,80,true);
+        const treffer=rd?.rows?.length||0;
+        /* Reihenfolge: (env, meta, now). Beim ersten Schreiben hatte ich
+           `(env, now, meta)` — ein Fehler, den weder `node --check` noch
+           ESLint sieht, weil der Aufruf gueltig ist. Nur ein Test faengt so
+           etwas; er steht in tests/signal-history.mjs. */
+        await markDailyPickRan(env, { candidates:treffer, source:'Tiingo IEX Whole-Market' }, new Date());
+        const txt=`Tagesempfehlung 20:00 · Vollmarktlauf · ${treffer} Kandidaten`;
+        setApiState('stocks', treffer>0?'ok':'error', treffer>0?txt:`${txt} — kein einziger Kandidat, das ist ein Befund`);
+        await persistApiState(env,'stocks', treffer>0?'ok':'error', txt, now);
+        cronLog('stocks','daily_pick',`${txt}. Naechster Lauf morgen 20:00 Wiener Zeit.`);
+      }
+      catch(e){
+        /* Die Sperre wird NICHT gesetzt, wenn der Lauf scheitert — sonst
+           faellt die Tagesempfehlung bis zum naechsten Tag aus, weil ein
+           einzelner Fehlversuch als „erledigt" gilt. Das Fenster ist zehn
+           Minuten breit; ein zweiter Versuch ist damit moeglich. */
+        await noteProviderFailure(env,'stocks',e,now,'iex-radar');
+      }
     } else if(wl.mode==='watchlist'){
       /* ══ v4.1.0 · WATCHLIST STATT WHOLE MARKET ═══════════════════════════
          Kein Radar-Abruf (11,2 MB), kein BOATS, keine Exploration — nur die
@@ -6947,50 +7008,6 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
         setApiState('stocks',wlAnzahl>0?'ok':'error',wlText);
         await persistApiState(env,'stocks',wlAnzahl>0?'ok':'error',wlText,now);
       }catch(e){ await noteProviderFailure(env,'stocks',e,now,'watchlist'); }
-    } else if(radarDueNow(phase.key, stockMinute)){
-      /* ══ v4.5.0 · EIN VOLLMARKTLAUF AM TAG, UM 20:00 WIENER ZEIT ══════════
-         Beschluss vom 05.09. nach einer Woche Fehlersuche: Die laufende
-         Whole-Market-Entdeckung wird gestrichen. Sie hat 39 der 40 GB
-         Tiingo-Bandbreite verbraucht, die Zeitueberschreitungen im Deep Scan
-         verursacht, einen Grossteil der Schreiblast getragen und fremde Titel
-         in die Heatmap gespuelt — und in einer Woche keinen einzigen Hinweis
-         geliefert, der gehandelt worden waere.
-
-         Stattdessen: fortlaufend nur die Watchlist des Nutzers, und EIN
-         Vollmarktlauf taeglich um 20:00 Wiener Zeit. Der Zeitpunkt ist nicht
-         zufaellig — 20:00 Wien ist ganzjaehrig 14:00 New York, also mitten in
-         der regulaeren US-Sitzung. Der Vorschlag ist damit noch handelbar,
-         und genau darum ging es.
-
-         DIE TAGESSPERRE IST DIE EIGENTLICHE ZUSICHERUNG, nicht das
-         Zeitfenster. Das Fenster ist zehn Minuten breit, weil Minute 0 eine
-         Kryptominute ist und der Aktienblock dort uebersprungen wird; ohne
-         Sperre waeren das bis zu zehn Vollmarktabrufe statt einem. Die Sperre
-         liegt in `fp_meta` und ueberlebt den Isolate — eine Modulvariable
-         allein waere keine Sperre, das ist die Lehre aus v4.0.0. */
-      if(await dailyPickAlreadyRan(env, new Date())){
-        /* Schon gelaufen. Kein Abruf, keine Meldung — das ist der Normalfall
-           an neun von zehn Minuten des Fensters. */
-      } else try{
-        const rd=await tiingoIexMarketRadar(env,80,true);
-        const treffer=rd?.rows?.length||0;
-        /* Reihenfolge: (env, meta, now). Beim ersten Schreiben hatte ich
-           `(env, now, meta)` — ein Fehler, den weder `node --check` noch
-           ESLint sieht, weil der Aufruf gueltig ist. Nur ein Test faengt so
-           etwas; er steht in tests/signal-history.mjs. */
-        await markDailyPickRan(env, { candidates:treffer, source:'Tiingo IEX Whole-Market' }, new Date());
-        const txt=`Tagesempfehlung 20:00 · Vollmarktlauf · ${treffer} Kandidaten`;
-        setApiState('stocks', treffer>0?'ok':'error', treffer>0?txt:`${txt} — kein einziger Kandidat, das ist ein Befund`);
-        await persistApiState(env,'stocks', treffer>0?'ok':'error', txt, now);
-        cronLog('stocks','daily_pick',`${txt}. Naechster Lauf morgen 20:00 Wiener Zeit.`);
-      }
-      catch(e){
-        /* Die Sperre wird NICHT gesetzt, wenn der Lauf scheitert — sonst
-           faellt die Tagesempfehlung bis zum naechsten Tag aus, weil ein
-           einzelner Fehlversuch als „erledigt" gilt. Das Fenster ist zehn
-           Minuten breit; ein zweiter Versuch ist damit moeglich. */
-        await noteProviderFailure(env,'stocks',e,now,'iex-radar');
-      }
     }else if(stockMinute%2===0){
       try{
         const st=await tiingoStockSnapshot(env,false,new Set(ALL_ON),3,[],'server');

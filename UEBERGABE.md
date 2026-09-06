@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 05.09.2026, Version **4.5.0**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 06.09.2026, Version **4.5.1**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -622,6 +622,34 @@ Der Zeitpunkt ist nicht beliebig: **20:00 Wien ist ganzjährig 14:00 New York**,
 ### Noch offen für den Watchlist-Betrieb
 
 Die Zeitüberschreitung im Deep Scan (Punkt 24) ist damit nicht behoben, aber deutlich entschärft: ohne Radar im selben Zyklus konkurrieren die Symbolabrufe nicht mehr mit einem 11-MB-Vollmarktabruf. Ob das reicht, zeigt der erste Handelstag.
+
+### 4.5.1 · Der Tageslauf konnte im Normalbetrieb nie stattfinden
+
+**Befund am ersten Tag nach dem Umbau.** Die Zweigkette im Cron lautete:
+
+```
+if (Markt geschlossen)      → nichts
+else if (Watchlist aktiv)   → nur die Liste
+else if (Tageslauf faellig) → Vollmarktabruf     ← nie erreicht
+else if (jede 2. Minute)    → Deep Scan
+```
+
+Der Nutzer hat die Watchlist aktiv — das ist der vorgesehene Normalbetrieb. Damit greift der zweite Zweig immer, und der Tageslauf um 20:00 wurde **nie erreicht**. Beide Dinge, die ausdrücklich zusammen bestellt waren, schlossen einander aus.
+
+Der Tageslauf steht jetzt vor der Watchlist, aber weiterhin hinter der Marktphase. Er kostet genau eine Minute am Tag; danach bekommt die Watchlist den Takt zurück. Die Tagessperre ist in die Zweigbedingung gewandert — ist der Lauf erledigt, fällt der Zweig durch, und die zweite Abfrage der Sperre im Rumpf entfällt (ein Lesevorgang je Fenster-Minute weniger).
+
+Am Wochenende gibt es keinen Tageslauf. Das ist richtig: ein Vorschlag, den man nicht handeln kann, ist keiner.
+
+**Der Test prüft jetzt die REIHENFOLGE**, nicht nur das Vorhandensein — genau das war die Lücke.
+
+**Fünfzehnter Fehlanker in dieser Reihe:** die Gegenprobe „Tageslauf ganz nach vorn" blieb grün, weil `phase.key==='closed'` auch in einem Kommentar darüber vorkommt und der Test die Erwähnung statt der Verzweigung gelesen hat. Der Anker enthält jetzt Klammer und Rumpfbeginn.
+
+### Messwerte am 06.09., 20:14 (nach Upgrade und 4.5.0)
+
+- **Bandbreite 0,90 GB/Tag** — halbiert gegenüber 1,82 vor dem Umbau. Der Tageslauf ist dabei noch gar nicht gelaufen; die Ersparnis stammt allein aus dem Wegfall der laufenden Entdeckung.
+- **Schreiben 22k/90k, Lesen 20k/5,0M** — beide Budgets weit im grünen Bereich, kein Abendstopp mehr zu erwarten.
+- **9.714 ausgewertete Fälle, letzte Auswertung vor 3 Minuten** — die Lernschicht läuft durchgehend.
+- Rote Zeile mit Zeitüberschreitung: Stand vom 05.09. 09:05. Sonntag, Markt geschlossen, kein neuer Scan — der Wert ist alt und sagt über heute nichts.
 
 ### Zwei Entscheidungen, die dabei getroffen wurden
 

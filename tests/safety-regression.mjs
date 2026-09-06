@@ -133,10 +133,27 @@ assert.match(workerText,/await tiingoFetch\(env,'\/iex'\)/,'Whole-market Radar m
      die ist ein paar Zeilen Begruendung lang. Der Abstand wird deshalb weiter
      gefasst — und die Sperre selbst ausdruecklich verlangt, denn ohne sie
      laeuft der Vollmarktabruf bis zu zehnmal im Fenster statt einmal. */
-  assert.match(cycle,/radarDueNow\(phase\.key, ?stockMinute\)[\s\S]{0,2600}tiingoIexMarketRadar\(env,80,true\)/,
+  /* v4.5.1: Zwischen Torwaechter und Abruf steht jetzt zusaetzlich die
+     Sperrbedingung samt Begruendung; der Abstand waechst entsprechend. */
+  assert.match(cycle,/radarDueNow\(phase\.key, ?stockMinute\)[\s\S]{0,3200}tiingoIexMarketRadar\(env,80,true\)/,
     'Server scheduler must keep the market radar independent of the browser, gated by market phase');
-  assert.match(cycle,/await dailyPickAlreadyRan\(env, new Date\(\)\)[\s\S]{0,1600}tiingoIexMarketRadar/,
-    'v4.5.0: Vor dem Vollmarktabruf MUSS die Tagessperre stehen — das Zeitfenster ist zehn Minuten breit');
+  /* ══ v4.5.1 · REIHENFOLGE DER ZWEIGE ═════════════════════════════════════
+     Der Tageslauf stand HINTER dem Watchlist-Zweig. Bei aktiver Watchlist —
+     also im vorgesehenen Normalbetrieb — wurde er nie erreicht. Beide Dinge,
+     die zusammen bestellt waren, schlossen einander aus.
+     Geprueft wird deshalb die REIHENFOLGE, nicht nur das Vorhandensein. */
+  assert.match(cycle,/radarDueNow\(phase\.key, ?stockMinute\) && !\(await dailyPickAlreadyRan\(env, new Date\(\)\)\)/,
+    'v4.5.1: Die Tagessperre gehoert in die Zweigbedingung — sonst kostet das Fenster zehn Vollmarktabrufe');
+  assert.ok(cycle.indexOf('radarDueNow(phase.key') < cycle.indexOf("wl.mode==='watchlist'"),
+    'v4.5.1: Der Tageslauf MUSS vor dem Watchlist-Zweig stehen — sonst wird er im Normalbetrieb nie erreicht');
+  /* Anker mit Klammer und Rumpfbeginn: `phase.key==='closed'` kommt auch in
+     einem Kommentar darueber vor, und der stand VOR dem Zweig. Die Gegenprobe
+     „Tageslauf nach vorn" blieb deshalb gruen. Fuenfzehnter Fehlanker in
+     dieser Reihe — der Test las eine Erwaehnung statt der Verzweigung. */
+  assert.ok(cycle.indexOf("if(phase.key==='closed'){") > 0,
+    'v4.5.1: Der Marktphasen-Zweig muss auffindbar sein');
+  assert.ok(cycle.indexOf("if(phase.key==='closed'){") < cycle.indexOf('} else if(radarDueNow(phase.key'),
+    'v4.5.1: … und VOR dem Tageslauf stehen. Ein Vorschlag, den man nicht handeln kann, ist keiner');
   assert.match(cycle,/await markDailyPickRan\(env, \{ candidates:treffer/,
     'v4.5.0: … und nach einem ERFOLGREICHEN Lauf gesetzt werden, in der Reihenfolge (env, meta, now)');
   assert.ok(cycle.indexOf('markDailyPickRan') > cycle.indexOf('tiingoIexMarketRadar(env,80,true)'),
