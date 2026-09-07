@@ -115,3 +115,28 @@ export function fakeDb(opts = {}) {
   };
   return { db, state };
 }
+
+/* ══ v4.5.3 · ZUSTANDSREIFUNG DER ANBIETER-AMPEL, AUSGEFUEHRT ═══════════════
+   `persistentApiState` entscheidet, welche Farbe die Systemzeile bekommt. Am
+   07.09. stand sie zwei Tage lang auf Rot, weil ein alter FEHLER nie verfiel,
+   waehrend ein alter Erfolg abgewertet wurde. Ein Mustertest haette das nicht
+   gefunden — die Zeile stand ja da und war syntaktisch einwandfrei. Deshalb
+   wird die Funktion hier samt Marktphase wirklich ausgefuehrt. */
+export function loadHealthState() {
+  const schnitt = (start, ende) => {
+    const from = worker.indexOf(start);
+    if (from < 0) throw new Error(`nicht gefunden: ${start}`);
+    const to = worker.indexOf(ende, from);
+    if (to <= from) throw new Error(`Endanker nicht gefunden: ${ende}`);
+    return worker.slice(from, to);
+  };
+  const src = 'async function ensureD1Schema(){ return true; }\n'
+    /* NY_FMT steht weit oben bei den Konstanten und wird von `nyParts`
+       gebraucht; ohne sie wirft die Marktphase, statt zu antworten. */
+    + schnitt('const NY_FMT', '\n') + '\n'
+    + schnitt('function nyParts(', '\nfunction isoAgo(')
+    + schnitt('const apiState = {', '\nfunction classifyError(')
+    + schnitt('async function persistentApiState(', '\n/** Der Cache muss die Analyse-Einstellung kennen')
+    + '\nreturn { persistentApiState, usMarketPhase, setApiState, apiState };';
+  return new Function(src)();
+}

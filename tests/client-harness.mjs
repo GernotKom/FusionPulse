@@ -156,6 +156,7 @@ export function loadClient(overrides = {}) {
   /* v4.1.7: Die Schreibbudget-Anzeige muss AUSGEFUEHRT prueffbar sein — vor
      allem die Faelle ohne Messung, in denen nichts beruhigt werden darf. */
   d1Note, vwapNote, coverageNote, d1ReadNote,
+  STATE_TEXT, STATE_TONE, setMiniStatus,   // v4.5.3: Zustand -> Farbe, ausgefuehrt pruefbar
   /* v4.1.8: die Zustandstabellen, damit der neue Datenbank-Zustand AUSGEFUEHRT
      geprueft werden kann statt per Regex im Quelltext. */
   STATE_TEXT, STATE_TONE,

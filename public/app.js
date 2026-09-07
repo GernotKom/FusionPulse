@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.5.2 — Frontend
+   FusionPulse v4.5.3 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1417,8 +1417,17 @@ const STATE_TEXT = {
      zum falschen Konto. */
   dblimit: 'Datenbank-Tageslimit',
   nokey: 'API-Key fehlt', error: 'API-Fehler', unknown: 'Status noch nicht verifiziert', stale: 'Daten veraltet', warn: 'eingeschränkt', cpu: 'Ressourcenwarnung',
+  /* ══ v4.5.3 · RUHE IST KEIN MANGEL ═══════════════════════════════════════
+     Am Wochenende wird der Aktienblock im Cron gar nicht erst betreten. Es
+     wird also nichts versucht, und was nicht versucht wird, kann weder
+     gelingen noch scheitern. Bis 4.5.2 blieb hier der letzte Zustand von
+     Freitagabend stehen — im beobachteten Fall ein Timeout, und die Leiste
+     stand zwei Tage lang auf „Handlungsbedarf". `closed` ist deshalb ein
+     eigener Zustand mit GRUENER Ampel, nicht bloss eine mildere Warnung: der
+     geschlossene Markt ist der Normalfall, keine Einschraenkung. */
+  closed: 'Markt geschlossen',
 };
-const STATE_TONE = { ok: 'ok', busy: 'busy', ratelimit: 'warn', daylimit: 'warn', dblimit: 'warn', nokey: 'err', error: 'err', unknown: 'busy', stale: 'warn', warn: 'warn', cpu: 'warn' };
+const STATE_TONE = { ok: 'ok', busy: 'busy', ratelimit: 'warn', daylimit: 'warn', dblimit: 'warn', nokey: 'err', error: 'err', unknown: 'busy', stale: 'warn', warn: 'warn', cpu: 'warn', closed: 'ok' };
 
 /* ══ v4.3.6 · `toast` GAB ES NIE ══════════════════════════════════════════
    An zwei Stellen im Tagebuch stand `toast?.(…)`. Das Fragezeichen schuetzt
@@ -1445,7 +1454,15 @@ function setSys(id, st, detail) {
 function setMiniStatus(id, st, detail = '') {
   const el = $(id); if (!el) return;
   const raw = String(st || 'busy').toLowerCase();
-  const cls = raw === 'ok' ? 'ok' : ['warn','stale','ratelimit','daylimit','dblimit','cpu'].includes(raw) ? 'warn' : ['err','error','nokey'].includes(raw) ? 'err' : 'busy';
+  /* ══ v4.5.3 · EINE ZWEITE LISTE DERSELBEN ZUSTAENDE ═══════════════════════
+     Hier stand eine eigene Zuordnung von Zustand zu Farbe, parallel zu
+     `STATE_TONE` daneben. Aufgefallen ist das beim Einbau von `closed`: der
+     neue Zustand war in `STATE_TONE` gruen und fiel hier trotzdem auf „busy"
+     durch, weil er in keiner der drei Listen stand. Genau die Zweitwahrheit,
+     an der diese Codebasis in dieser Serie mehrfach gescheitert ist — jetzt
+     eine Quelle. `err` bleibt als Sonderfall, weil Aufrufer es direkt
+     uebergeben; es ist ein Farbname, kein Zustand. */
+  const cls = raw === 'err' ? 'err' : (STATE_TONE[raw] || 'busy');
   el.classList.remove('ok','warn','err','busy');
   el.classList.add(cls);
   const label = detail || (el.id === 'miniCrypto' ? 'Krypto-Datenquelle' : el.id === 'miniStocks' ? 'Aktien-Datenquelle' : el.id === 'miniTiingo' ? 'Tiingo-Aktienfeed' : 'Cloudflare/Worker');

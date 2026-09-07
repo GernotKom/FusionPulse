@@ -930,7 +930,11 @@ async function persistApiState(env, which, state, message = null, ts = Date.now(
     console.warn(JSON.stringify({ event:'fusionpulse_health_persist_failed', provider:which, message:String(e?.message||e), ts:Date.now() }));
   }
 }
-async function persistentApiState(env, which, configured) {
+/* `now` ist ausdruecklich ein Parameter und kein `Date.now()` im Rumpf: die
+   Zustandsreifung haengt an der Uhrzeit UND am Wochentag, und ein Test, der
+   das nicht steuern kann, waere je nach Laufzeitpunkt gruen oder rot. Genau
+   diese Sorte Test hat in dieser Reihe schon zweimal nichts bewiesen. */
+async function persistentApiState(env, which, configured, now = Date.now()) {
   if (!configured) return { state:'nokey', ts:0, message:'nicht konfiguriert', persistent:true };
   const local = apiState[which] || { state:'unknown', ts:0, message:null };
   if (!env?.DB) return { ...local, persistent:false };
@@ -941,16 +945,83 @@ async function persistentApiState(env, which, configured) {
     let saved = null;
     if (meta?.value) { try { saved = JSON.parse(meta.value); } catch {} }
     if (saved?.state) {
-      const age = Date.now() - Number(saved.ts || meta.updated_ts || 0);
+      const age = now - Number(saved.ts || meta.updated_ts || 0);
       const staleAfter = which === 'crypto' ? 20*60_000 : 45*60_000;
-      return { state: saved.state === 'ok' && age > staleAfter ? 'stale' : saved.state,
+      /* ══ v4.5.3 · EIN ALTER ERFOLG VERFIEL, EIN ALTER FEHLER NIE ══════════
+         BEFUND aus dem Betrieb (07.09., Sonntag 09:28): Die Systemzeile stand
+         seit Freitagabend auf ROT mit „Handlungsbedarf · Datenquelle
+         fehlerhaft · Aktien: API-Fehler — The operation was aborted due to
+         timeout". Der Timeout war echt — nur eben zwei Tage alt und laengst
+         gegenstandslos.
+
+         Die Regel darueber war unsymmetrisch, und zwar in die falsche
+         Richtung: `saved.state === 'ok' && age > staleAfter` hat NUR einen
+         alten Erfolg auf `stale` abgewertet. Ein alter FEHLER behielt seine
+         volle Kraft, unbegrenzt lange. Ausgerechnet die Aussage, die zum
+         Handeln auffordert, war die einzige, die nie verfiel.
+
+         Verschaerft wird das durch den geschlossenen Markt: bei
+         `phase.key === 'closed'` ueberspringt der Cron den gesamten
+         Aktienblock (Zeile ~7064, „Nichts. Kein Radar, kein Deep Scan.").
+         Es wird also gar nichts mehr versucht — und was nicht versucht wird,
+         kann auch nicht scheitern. Der letzte Fehler vor Boersenschluss blieb
+         damit das ganze Wochenende stehen, ohne dass irgendetwas ihn haette
+         ueberschreiben koennen.
+
+         DAS IST KEIN KOSMETIKPROBLEM. Eine Ampel, die zwei Tage lang ohne
+         Anlass rot steht, bringt genau das bei, was sie verhindern soll: sie
+         zu ignorieren. Beim naechsten echten Ausfall waere Rot bereits die
+         gewohnte Farbe. Dreizehnter Fall derselben Krankheit in dieser Reihe
+         — gemessen, uebertragen, und die Aussage stimmte trotzdem nicht.
+
+         Neu, und bewusst in dieser Reihenfolge:
+           1. Ist der Markt geschlossen und der Stand aelter als die Frist,
+              lautet der Zustand `closed`. Kein Fehler, keine Warnung — der
+              Ruhezustand ist der NORMALFALL, nicht eine Einschraenkung.
+           2. Sonst verfaellt JEDER Stand nach der Frist zu `stale`, nicht nur
+              ein erfolgreicher. Der urspruengliche Zustand bleibt im Text
+              erhalten, damit nichts verlorengeht.
+           3. Innerhalb der Frist bleibt alles wie bisher. Ein Anbieter, der
+              WIRKLICH gerade scheitert, wird im Minutentakt neu geschrieben
+              und bleibt damit frisch und rot — genau so soll es sein. */
+      const alt = saved.state;
+      /* Deutsches Dezimalkomma: der Text geht unveraendert in die Leiste. Ein
+         „2.4 Tage" mitten in einem deutschen Satz liest sich wie ein Tippfehler
+         und kostet genau die Glaubwuerdigkeit, um die es hier geht. */
+      const komma = (x) => String(Math.round(x*10)/10).replace('.', ',');
+      const wieAlt = age >= 36*3600_000 ? `${komma(age/86_400_000)} Tagen`
+        : age >= 90*60_000 ? `${komma(age/3600_000)} Stunden`
+        : `${Math.round(age/60_000)} Minuten`;
+      if (age > staleAfter) {
+        const zu = which === 'crypto' ? null : usMarketPhase(new Date(now), 'iex');
+        if (zu && zu.key === 'closed') {
+          return { state:'closed', ts:Number(saved.ts || meta.updated_ts || 0), persistent:true, ageMs:age,
+            wasState:alt,
+            message:`US-Markt geschlossen — seit ${wieAlt} wird nichts abgerufen, deshalb gibt es auch nichts Neues zu melden. `
+              + `Letzter Stand vor Boersenschluss: ${alt}${saved.message?` (${saved.message})`:''}.` };
+        }
+        return { state:'stale', ts:Number(saved.ts || meta.updated_ts || 0), persistent:true, ageMs:age,
+          wasState:alt,
+          message:`Letzte Rueckmeldung vor ${wieAlt}: ${alt}${saved.message?` (${saved.message})`:''}. `
+            + `Seither keine neue Messung — der aktuelle Zustand ist damit unbekannt, nicht bestaetigt.` };
+      }
+      return { state: alt,
         ts:Number(saved.ts || meta.updated_ts || 0), message:saved.message || null, persistent:true, ageMs:age };
     }
     const source = which === 'crypto' ? 'Bitpanda Fusion' : which === 'stocks' ? 'Twelve Data' : 'Alpaca IEX';
     const snap = await env.DB.prepare('SELECT MAX(ts) ts FROM market_snapshots WHERE source=?').bind(source).first();
     if (Number(snap?.ts) > 0) {
-      const age = Date.now() - Number(snap.ts);
+      const age = now - Number(snap.ts);
       const staleAfter = which === 'crypto' ? 20*60_000 : 45*60_000;
+      /* Derselbe Ruhezustand auch hier: ist der Markt zu, ist ein alter
+         Snapshot kein Mangel. Zwei Wege zur selben Aussage duerfen sich nicht
+         widersprechen — das waere die Zweitwahrheit, an der diese Codebasis
+         in dieser Serie mehrfach gescheitert ist. */
+      if (age > staleAfter && which !== 'crypto') {
+        const zu = usMarketPhase(new Date(now), 'iex');
+        if (zu.key === 'closed') return { state:'closed', ts:Number(snap.ts), persistent:true, ageMs:age,
+          message:`US-Markt geschlossen — letzter Snapshot aus D1 ist ${Math.round(age/3600_000*10)/10} h alt.` };
+      }
       return { state:age > staleAfter ? 'stale' : 'ok', ts:Number(snap.ts), message:'aus letztem D1-Snapshot abgeleitet', persistent:true, ageMs:age };
     }
   } catch (e) {

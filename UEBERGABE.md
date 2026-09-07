@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 06.09.2026, Version **4.5.1**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 07.09.2026, Version **4.5.3**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -622,6 +622,71 @@ Der Zeitpunkt ist nicht beliebig: **20:00 Wien ist ganzjährig 14:00 New York**,
 ### Noch offen für den Watchlist-Betrieb
 
 Die Zeitüberschreitung im Deep Scan (Punkt 24) ist damit nicht behoben, aber deutlich entschärft: ohne Radar im selben Zyklus konkurrieren die Symbolabrufe nicht mehr mit einem 11-MB-Vollmarktabruf. Ob das reicht, zeigt der erste Handelstag.
+
+### 4.5.3 · Ein alter Erfolg verfiel, ein alter Fehler nie
+
+**Befund aus dem Betrieb (07.09., Sonntag 09:28).** Die Systemzeile stand seit Freitagabend auf Rot: „Handlungsbedarf · Datenquelle fehlerhaft · Aktien (Tiingo, Fallback Twelve Data): API-Fehler — The operation was aborted due to timeout". Der Timeout war echt, nur eben zwei Tage alt und längst gegenstandslos.
+
+Zwei Dinge trafen zusammen. Erstens war die Regel in `persistentApiState` unsymmetrisch, und zwar in die falsche Richtung:
+
+```js
+saved.state === 'ok' && age > staleAfter ? 'stale' : saved.state
+```
+
+Nur ein alter **Erfolg** wurde abgewertet. Ein alter **Fehler** behielt seine volle Kraft, unbegrenzt lange. Ausgerechnet die Aussage, die zum Handeln auffordert, war die einzige, die nie verfiel.
+
+Zweitens überspringt der Cron bei `phase.key === 'closed'` den gesamten Aktienblock („Nichts. Kein Radar, kein Deep Scan."). Es wird also gar nichts versucht — und was nicht versucht wird, kann auch nicht scheitern. Der letzte Fehler vor Börsenschluss blieb damit das ganze Wochenende stehen, ohne dass irgendetwas ihn hätte überschreiben können.
+
+**Das ist kein Kosmetikproblem.** Eine Ampel, die zwei Tage ohne Anlass rot steht, bringt genau das bei, was sie verhindern soll: sie zu ignorieren. Beim nächsten echten Ausfall wäre Rot bereits die gewohnte Farbe. Dreizehnter Fall derselben Krankheit in dieser Reihe — gemessen, übertragen, und die Aussage stimmte trotzdem nicht.
+
+**Geändert:**
+
+- Ist der Markt geschlossen und der Stand älter als die Frist, lautet der Zustand `closed` — grüne Ampel, eigener Text. Der Ruhezustand ist der Normalfall, nicht eine Einschränkung.
+- Sonst verfällt **jeder** Stand nach der Frist zu `stale`, nicht nur ein erfolgreicher. Der ursprüngliche Zustand bleibt in `wasState` und im Text erhalten; die Reifung darf kein Vertuschen sein.
+- Innerhalb der Frist bleibt alles wie bisher. Ein Anbieter, der wirklich gerade scheitert, wird im Minutentakt neu geschrieben und bleibt damit frisch und rot.
+- Krypto fällt nie in `closed` — der Markt läuft durch, ein alter Stand dort ist immer veraltet.
+- `persistentApiState(env, which, configured, now)` hat die Uhr jetzt als Parameter. Die Reifung hängt an Uhrzeit **und** Wochentag; ein Test, der das nicht steuern kann, wäre je nach Laufzeitpunkt grün oder rot.
+
+**Nebenbefund beim Einbau.** `setMiniStatus` führte eine **zweite Liste** derselben Zustände neben `STATE_TONE`. Aufgefallen ist das, weil `closed` dort grün war und hier trotzdem auf „busy" durchfiel. Jetzt eine Quelle; `HS8` prüft am Verhalten, dass beide nicht wieder auseinanderlaufen.
+
+**Neue Suite** `tests/health-state.mjs` (`npm run test:health`, im `check`), acht Blöcke, ausgeführt mit fester Uhr: der beobachtete Wochenendfall, derselbe alte Fehler bei offenem Markt, ein frischer Fehler bei offenem **und** geschlossenem Markt (Gegenprobe — „Markt zu" darf kein Freibrief werden), Krypto, ein frischer Erfolg, und eine Sperre gegen die Rückkehr der unsymmetrischen Regel.
+
+### 4.5.2 · Der Tarif hat sich geändert, die Maßstäbe nicht
+
+**Anlass:** Upgrade auf Workers Paid. `D1_WRITE_BUDGET` wurde dabei korrekt auf 1.000.000 hochgesetzt — die **Bremse** stimmte also. Die **Anzeige** nicht: `d1MeterView()` rechnete jede Aussage weiter gegen die Free-Zahlen 100.000 und 5.000.000.
+
+Das ist keine Kosmetik. `writeBudgetHoldsToday` wurde ab 100.000 Zeilen falsch, also bei 10 % des tatsächlichen Budgets, und die Kachel damit dauerhaft orange. `readBudgetHoldsToday` kippte bei 5 Mio. gelesenen Zeilen — auf Paid sind das 0,6 % des Anspruchs, Faktor 166. Eine Anzeige, die dauernd Alarm gibt, wird nicht gelesen; danach bewacht niemand mehr die einzige Grenze, die wirklich Geld kostet. Zwölfter Fall desselben Musters in dieser Reihe, diesmal umgekehrt: nicht ungemessen, sondern **gegen das falsche Lineal gemessen**.
+
+**Die Preisgrundlage (Cloudflare, nachgeschlagen):**
+
+| Zähler | Enthalten bei 5 $ | Überschreitung |
+|---|---|---|
+| Worker-Requests | 10 Mio./Monat | 0,30 $ je Mio. |
+| **CPU-Zeit** | **30 Mio. CPU-ms/Monat** | **0,02 $ je Mio.** |
+| D1 gelesene Zeilen | 25 Mrd./Monat | 0,001 $ je Mio. |
+| **D1 geschriebene Zeilen** | **50 Mio./Monat** | **1,00 $ je Mio.** |
+| D1 Speicher | 5 GB | 0,75 $ je GB-Monat |
+| Workers Logs | 20 Mio. Events/Monat | 0,60 $ je Mio. |
+
+**Was unkritisch war:** Requests (max. 44.640 Cron-Aufrufe im Monat gegen 10 Mio.), Lesezeilen (der Vorfall vom 04.09. entspricht auf Paid rund 1 % des Anspruchs — Lesen kostet 1.000-mal weniger als Schreiben) und Logs (50 Log-Stellen, alle in `catch`-Zweigen oder einmal je Lauf, keine in Schleifen).
+
+**Was geändert wurde:**
+
+- `CF_PLAN: "paid"` als Schalter; `d1PlanLimits()` leitet die Tagesgrenzen aus dem Monatskontingent ab, geteilt durch **31**, nicht 30 — eine Ableitung darf nie in den günstigeren Fall fallen.
+- Sämtliche Urteilsfelder rechnen gegen die operative Grenze. Tarifgrenze (`planDayLimitRowsWritten`) und selbst gesetzte Obergrenze (`dayLimitRowsWritten`) bleiben getrennt.
+- **Monatsbilanz** aus den vorhandenen Tageszeilen summiert, ohne einen zusätzlichen Schreibvorgang (höchstens 31 gelesene Zeilen je Aufruf). Beziffert die Überschreitung in USD und prüft nach, ob Tagesobergrenze × 31 überhaupt unter dem Kontingent bleibt.
+- **Speicher** aus `meta.size_after` — steht ohnehin in jeder D1-Antwort, kostet nichts. Dritter abgerechneter Zähler, war als einziger nirgends erfasst.
+- `limits: { cpu_ms: 5000, subrequests: 1000 }` **wieder aktiv**. Der Block war seit 4.0.5 aus, weil Free ihn ablehnt (`code: 100328`); der Kommentar dort sagte „wieder einschalten, sobald auf Paid umgestellt ist" — es war nicht passiert. Ohne ihn stand nach oben offen: Cron-Trigger dürfen 15 Minuten CPU ziehen, 44.640 × 900.000 ms ≈ 40 Mrd. CPU-ms, Größenordnung 800.000 $. Mit 5.000 ms sinkt der schlimmste Fall auf rund 3,87 $ Überschreitung.
+
+**Warum `D1_WRITE_BUDGET` auf 1.000.000 bleibt.** Der Kommentar in `wrangler.jsonc` schlug für Paid 1.500.000 vor. Das wären 46,5 Mio. gegen 50 Mio. enthaltene — 7 % Reserve, während der eigene Zähler zugegebenermaßen eine Untergrenze ist. Bei 1.700.000 kippt es (52,7 Mio.). Die Monatsbilanz rechnet das jetzt selbst nach und meldet eine zu hoch gesetzte Tagesobergrenze (`capIsSafeForMonth`).
+
+**Erste Produktionsmessung nach dem Deploy** (06.09., 19:25 UTC, also 81 % in den UTC-Tag hinein): Schreiben 26.033 von 1.000.000 (3 %), Lesen 24.197 von 806.451.612 (0 %). Hochgerechnet rund 1 Mio. geschriebene Zeilen im Monat gegen 50 Mio. enthaltene — die 5 $ halten mit großem Abstand.
+
+**Nebenbefund, unabhängig von Cloudflare.** `tests/worker-symbols.mjs` war rot, seit es die Datei gibt, und stand nicht in `npm run check`. Der Grund war kein Loch im Wächter, sondern ein Denkfehler in seiner Anlage: `req` **ist** in `src/worker.js` definiert (`function authed(req, url, env)`, Zeile 7226). Der historische Fehler war nie „diesen Namen gibt es nicht", sondern „diesen Namen gibt es *hier* nicht" — eine Frage des Gültigkeitsbereichs, die ein dateiweiter Namensvergleich grundsätzlich nicht beantworten kann. Die Gegenprobe verlangte also etwas Unmögliches. Sie geht jetzt gegen einen Schnitt durch `fetch` **und** `handle` (der erste Anlauf schnitt nur `fetch` heraus — ein 946 Zeichen langer Mantel, der sofort weiterreicht; sämtliche Routen liegen in `handle`). Nachgewiesen statt behauptet: Fehler wieder eingebaut → rot, zurückgenommen → grün. Außerdem stellte sich heraus, dass `undefinedReads()` in 4.3.6 ausdrücklich für diese Fehlerklasse geschrieben und danach **von keiner einzigen Suite aufgerufen** wurde. Läuft jetzt mit, `worker-symbols.mjs` ist als `test:symbols` in `npm run check`.
+
+### Offen: Speicher-Aufbewahrung
+
+`market_snapshots` wächst monoton, es gibt kein `DELETE`. Bei rund 90.000 Zeilen/Tag und ~300 Byte je Zeile inklusive der fünf Indizes sind das etwa 0,8 GB/Monat; die enthaltenen 5 GB fallen in ungefähr sechs Monaten, danach 0,75 $ je GB-Monat mit steigender Tendenz. Drei Wege, Entscheidung steht aus: Aufbewahrung nach Alter (z. B. 180 Tage), Verdichtung aufgelöster Episoden auf ihr Ergebnis statt des vollen Verlaufs, oder bewusst zahlen und bei etwa 2 $/Monat deckeln. **Nicht ohne Rückfrage umgesetzt:** Snapshots wegzuwerfen zerstört genau die Grundlage, für die die Lernschicht existiert.
 
 ### 4.5.1 · Der Tageslauf konnte im Normalbetrieb nie stattfinden
 
