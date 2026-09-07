@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.5.5 — Frontend
+   FusionPulse v4.5.6 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -3031,6 +3031,19 @@ function d1ReadNote(meta){
     ? ' Groesste Leser heute: ' + top.map(q =>
         `${q.query} ${n(q.r)} Zeilen (${Math.round(q.r / Math.max(1, r) * 100)} %, ${n(q.q)} Abfragen)`).join(' · ') + '.'
     : ' Die Aufschluesselung nach Abfrageform liegt noch nicht vor — ohne sie laesst sich ein Anstieg nur raten.';
+  /* ══ v4.5.6 · DIE EINZIGE RATE, DIE ETWAS AUSSAGT ═════════════════════════
+     Der Tageswert mischt Code-Staende, sobald zwischendurch ausgeliefert
+     wurde. Am 07.09. habe ich daraus zweimal falsch geschlossen, einmal in
+     jede Richtung. Deshalb steht der Verbrauch SEIT DER LAUFENDEN VERSION
+     daneben — und nur der beantwortet „hat die Aenderung gewirkt". */
+  const vNow = Array.isArray(d.byVersion) ? d.byVersion[0] : null;
+  const seitVersion = vNow
+    ? ` Seit Version ${vNow.version} (${vNow.minutes < 90 ? Math.round(vNow.minutes) + ' min' : (Math.round(vNow.minutes/6)/10).toLocaleString('de-DE') + ' h'} in Betrieb): ${n(vNow.rowsRead)} Zeilen`
+      + (vNow.rowsReadPerMin !== null && vNow.rowsReadPerMin !== undefined
+          ? `, also ${n(vNow.rowsReadPerMin)}/min.`
+          : ' — fuer eine Rate laeuft sie noch zu kurz.')
+      + ' Nur diese Rate ist mit der einer anderen Version vergleichbar; der Tageswert mischt beide.'
+    : '';
   const routen = Array.isArray(d.topPaths) ? d.topPaths.filter(x => Number(x?.r) > 0).slice(0, 2) : [];
   const wo = routen.length
     ? ' Groesste Routen: ' + routen.map(x => `${x.path} ${n(x.r)}`).join(' · ') + '.'
@@ -3038,7 +3051,7 @@ function d1ReadNote(meta){
   return { measured:true, tone,
     short:`Lesen ${kurz(r)}/${kurz(cap)}`,
     label:`Lesebudget: ${n(r)} von ${n(cap)} (${Math.round(share*100)} %)`,
-    detail:`Gelesene D1-Zeilen im laufenden UTC-Tag.${takt}${reicht}${verbraucher}${wo}`
+    detail:`Gelesene D1-Zeilen im laufenden UTC-Tag.${takt}${reicht}${seitVersion}${verbraucher}${wo}`
       + ' Der Wert ist eine UNTERGRENZE — nicht messbare Abfragen fehlen darin.'
       + (d.complete===false?' Es gab nicht messbare Abfragen; die Zahl ist unvollständig.':'')
       + ' Eine Bremse gibt es hier bewusst nicht: Lesevorgänge zu sperren würde die App stilllegen, während die Datenbank noch antwortet.' };

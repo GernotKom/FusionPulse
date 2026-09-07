@@ -991,3 +991,61 @@ console.log('✓ FusionPulse v4.2.5 Drossel des Beobachtungsprotokolls (ausgefue
 }
 
 console.log('✓ FusionPulse v4.5.2 Tarifbewusste Grenzen und Monatsbilanz (ausgefuehrt): OK');
+
+/* ── NK80 · Verbrauch je Code-Stand ────────────────────────────────────────
+   Am 07.09. habe ich zweimal hintereinander dieselbe Fehlmessung gemacht, in
+   beide Richtungen: aus einem Intervall, das einen Deploy in der Mitte hatte,
+   erst auf eine Wirkung geschlossen und dann auf deren Ausbleiben. Das erste
+   Intervall vollstaendig NACH der Auslieferung zeigte dann null.
+
+   Der Tageszaehler laeuft von 00:00 UTC und weiss nichts von Versionen. Jede
+   Differenz zweier Ablesungen mischt Code-Staende, sobald dazwischen
+   ausgeliefert wurde. Ab hier wird je Version gezaehlt — das ist die einzige
+   Grundlage, auf der sich die Wirkung einer Aenderung ablesen laesst. */
+{
+  D.reset();
+  const { db } = fakeDb({ rowsRead: 100 });
+  /* Der Flush schreibt unter dem UTC-Tag von `Date.now()`; die Ansicht muss
+     denselben Tag lesen, sonst prueft der Block eine leere Zeile. */
+  const heute = new Date();
+  const t0 = Date.UTC(heute.getUTCFullYear(), heute.getUTCMonth(), heute.getUTCDate(), 10, 0, 0);
+
+  /* Alte Version, zehn Minuten, viel gelesen. */
+  const alt = { DB: D.d1Wrap(db), APP_VERSION: '4.5.3', CF_PLAN: 'paid', D1_WRITE_BUDGET: '1000000' };
+  for (let i = 0; i < 5; i++) {
+    D.d1MeterStart('/api/health');
+    await alt.DB.prepare('SELECT value FROM fp_meta WHERE key=?').bind('x').all();
+    await D.d1MeterFlush(alt, '/api/health');
+  }
+  /* Kurze Pause: `lastTs` kommt aus `Date.now()` und hat Millisekunden-
+     Aufloesung. Ohne sie laufen beide Staende auf denselben Zeitstempel und
+     die Reihenfolge waere zufaellig — in Produktion liegen zwischen zwei
+     Auslieferungen Minuten, im Test Mikrosekunden. */
+  await new Promise((r) => setTimeout(r, 5));
+  /* Neue Version, danach. */
+  const neu = { DB: D.d1Wrap(db), APP_VERSION: '4.5.6', CF_PLAN: 'paid', D1_WRITE_BUDGET: '1000000' };
+  D.d1MeterStart('/api/health');
+  await neu.DB.prepare('SELECT value FROM fp_meta WHERE key=?').bind('x').all();
+  await D.d1MeterFlush(neu, '/api/health');
+
+  const v = await D.d1MeterView(neu, t0);
+  const byV = v.byVersion || [];
+  assert.ok(byV.length >= 2,
+    `NK80: Beide Code-Staende muessen getrennt gefuehrt werden, waren ${byV.length}`);
+  const jung = byV[0];
+  assert.equal(jung.version, '4.5.6',
+    `NK80: Der zuletzt gelaufene Stand gehoert nach vorn, war "${jung.version}"`);
+  const frueher = byV.find((x) => x.version === '4.5.3');
+  assert.ok(frueher && frueher.rowsRead > jung.rowsRead,
+    'NK80: Der alte Stand hat mehr gelesen — genau diese Unterscheidung fehlte am 07.09.');
+  assert.equal(jung.rowsRead + frueher.rowsRead, v.rowsRead,
+    'NK80: Die Summe der Versionen MUSS den Tageswert ergeben, sonst ist eine davon falsch');
+
+  /* Eine Rate aus einem einzigen Messpunkt sieht aus wie eine Messung und ist
+     keine. Unter zwei Minuten Laufzeit wird deshalb ausdruecklich `null`
+     geliefert statt einer Zahl. */
+  assert.strictEqual(jung.rowsReadPerMin, null,
+    `NK80: Fuer einen Stand, der Sekunden laeuft, darf keine Rate gebildet werden (war ${jung.rowsReadPerMin})`);
+}
+
+console.log('✓ FusionPulse v4.5.6 Verbrauch je Code-Stand (ausgefuehrt): OK');

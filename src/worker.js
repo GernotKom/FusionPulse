@@ -3516,6 +3516,28 @@ async function d1MeterFlush(env, path){
       const t = acc.byQuery[shape] || (acc.byQuery[shape] = { q:0, r:0, w:0 });
       t.q += b.q; t.r += b.r; t.w += b.w;
     }
+    /* ══ v4.5.6 · EINE RATE UEBER EINEN DEPLOY HINWEG IST KEINE RATE ════════
+       Am 07.09. habe ich zweimal hintereinander dieselbe Fehlmessung gemacht,
+       in beide Richtungen. Zuerst: „nach dem Deploy sinkt die Leserate, dann
+       war es die Ursache" — und aus einem Intervall, das den Deploy in der
+       Mitte hatte, geschlossen, die Korrektur habe NICHT gewirkt. Acht Minuten
+       spaeter, im ersten Intervall vollstaendig NACH dem Deploy, lag die Rate
+       bei null. Die Korrektur hatte gewirkt; falsch war die Messung.
+
+       Der Tageszaehler laeuft von 00:00 UTC und weiss nichts von Versionen.
+       Jede Differenz zweier Ablesungen mischt deshalb Code-Staende, sobald
+       dazwischen ausgeliefert wurde — und ausgeliefert wird hier oft.
+
+       Deshalb wird ab hier je Version mitgezaehlt, mit erstem und letztem
+       Zeitstempel. Damit laesst sich eine Rate INNERHALB eines Code-Standes
+       bilden, und nur die ist eine Aussage. Kostet nichts: dieselbe Zeile,
+       dieselbe Schreiboperation. */
+    const ver = String(env?.APP_VERSION || 'unbekannt');
+    acc.byVersion = acc.byVersion || {};
+    const vb = acc.byVersion[ver] || (acc.byVersion[ver] = { r:0, w:0, q:0, firstTs:m.at, lastTs:m.at });
+    vb.r += m.rowsRead; vb.w += m.rowsWritten; vb.q += m.queries;
+    vb.firstTs = Math.min(Number(vb.firstTs) || m.at, m.at);
+    vb.lastTs  = Math.max(Number(vb.lastTs)  || m.at, m.at);
     await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts')
       .bind(key, JSON.stringify(acc), Date.now()).run();
     /* v4.2.1: Der frische Tagesstand geht direkt an die Bremse zurueck. Dadurch
@@ -3698,6 +3720,19 @@ async function d1MeterView(env, now=Date.now()){
       selfCapSpent: rowsWritten,
       selfCapExhausted: rowsWritten >= d1WriteCap(env),
       selfCapSource: Number(env?.D1_WRITE_BUDGET) > 0 ? 'D1_WRITE_BUDGET' : 'Vorgabe',
+      /* v4.5.6: Verbrauch je Code-Stand. Die einzige Grundlage, auf der sich
+         die Wirkung einer Aenderung ueberhaupt ablesen laesst. */
+      byVersion: Object.entries(acc.byVersion||{}).map(([version,b])=>{
+        const min = Math.max(1, (Number(b.lastTs)-Number(b.firstTs))/60_000);
+        return { version, rowsRead:Number(b.r)||0, rowsWritten:Number(b.w)||0,
+          queries:Number(b.q)||0, firstTs:Number(b.firstTs)||null, lastTs:Number(b.lastTs)||null,
+          minutes: Math.round(min*10)/10,
+          /* Unter zwei Minuten Laufzeit ist eine Rate Rauschen und wird
+             ausdruecklich NICHT gebildet — eine Zahl, die aus einem Messpunkt
+             entsteht, sieht aus wie eine Messung und ist keine. */
+          rowsReadPerMin: min >= 2 ? Math.round((Number(b.r)||0)/min) : null,
+          rowsWrittenPerMin: min >= 2 ? Math.round((Number(b.w)||0)/min) : null };
+      }).sort((a,b)=>Number(b.lastTs)-Number(a.lastTs)).slice(0,6),
       month, storage,
       topQueries: top, topPaths: paths, updatedTs: Number(row.updated_ts)||null };
   }catch{ return null; }

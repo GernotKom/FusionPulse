@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 07.09.2026, Version **4.5.5**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 07.09.2026, Version **4.5.6**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -623,6 +623,20 @@ Der Zeitpunkt ist nicht beliebig: **20:00 Wien ist ganzjährig 14:00 New York**,
 
 Die Zeitüberschreitung im Deep Scan (Punkt 24) ist damit nicht behoben, aber deutlich entschärft: ohne Radar im selben Zyklus konkurrieren die Symbolabrufe nicht mehr mit einem 11-MB-Vollmarktabruf. Ob das reicht, zeigt der erste Handelstag.
 
+### 4.5.6 · Eine Rate über einen Deploy hinweg ist keine Rate
+
+Am 07.09. habe ich zweimal hintereinander dieselbe Fehlmessung gemacht, in **beide** Richtungen. Erst: „nach dem Deploy sinkt die Rate, dann war es die Ursache." Dann, aus einem Intervall mit der Auslieferung in der Mitte, der Umkehrschluss, die Korrektur habe nicht gewirkt. Acht Minuten später, im ersten Intervall vollständig nach dem Deploy, lag die Leserate bei **null**.
+
+| Intervall | Dauer | gelesene Zeilen | Rate | Code-Stand |
+|---|---|---|---|---|
+| 09:28 → 10:11 | 43 min | 271.000 | 6.302/min | 4.5.2 → 4.5.3 |
+| 10:11 → 10:52 | 41 min | 481.000 | 11.732/min | 4.5.3 → 4.5.4 |
+| 10:52 → 11:00 | 8 min | 0 | **0/min** | 4.5.4 → 4.5.5 |
+
+Die Korrektur aus 4.5.4 hatte gewirkt. Falsch war die Messung, nicht die Diagnose. Der Tageszähler läuft von 00:00 UTC und weiß nichts von Versionen; jede Differenz zweier Ablesungen mischt Code-Stände, sobald dazwischen ausgeliefert wurde — und hier wird oft ausgeliefert.
+
+**Geändert:** `d1MeterFlush` zählt zusätzlich je `APP_VERSION` mit, samt erstem und letztem Zeitstempel. Kostet nichts — dieselbe Zeile, dieselbe Schreiboperation. Die Lesekachel nennt jetzt „Seit Version X (Y min in Betrieb): Z Zeilen, also N/min", und nur diese Rate ist mit der einer anderen Version vergleichbar. Läuft ein Stand kürzer als zwei Minuten, wird ausdrücklich **keine** Rate gebildet: eine Zahl aus einem einzigen Messpunkt sieht aus wie eine Messung und ist keine. `NK80` prüft ausgeführt, dass beide Stände getrennt geführt werden und ihre Summe den Tageswert ergibt.
+
 ### 4.5.5 · Ich musste raten, obwohl die Antwort schon da war
 
 **Befund am 07.09.** Die Leserate stieg an einem Sonntag, an dem am Markt nichts passiert:
@@ -633,7 +647,9 @@ Die Zeitüberschreitung im Deep Scan (Punkt 24) ist damit nicht behoben, aber de
 | 10:11 | 408.000 | 6.302/min |
 | 10:52 | 889.000 | 11.732/min |
 
-Ich habe daraufhin in 4.5.4 eine Ursache **vermutet** — ein `LIKE` in meiner eigenen Monatsbilanz, das den Primärschlüssel umging — und behoben. Die Korrektur war richtig und bleibt drin. Sie war aber nicht der Treiber: nach dem Deploy stieg die Rate weiter.
+Ich habe daraufhin in 4.5.4 eine Ursache **vermutet** — ein `LIKE` in meiner eigenen Monatsbilanz, das den Primärschlüssel umging — und behoben.
+
+**Richtigstellung (siehe 4.5.6):** Ich habe an dieser Stelle geschrieben, die Korrektur sei nicht der Treiber gewesen, weil die Rate „nach dem Deploy weiter stieg". Das war falsch, und zwar aus genau demselben methodischen Grund wie die ursprüngliche Vermutung: das Intervall 10:11–10:52 hatte die Auslieferung in der Mitte. Das erste Intervall vollständig danach (10:52–11:00) zeigte **0 Zeilen/min**. Das `LIKE` war der Treiber.
 
 **Der eigentliche Fehler ist nicht die falsche Vermutung, sondern dass ich vermuten musste.** `d1MeterView` führt seit 3.32.9 `topQueries` und `topPaths`, also gelesene Zeilen je Abfrageform und je Route. Die Zahlen werden berechnet, über `/api/health` übertragen — und standen in **keiner einzigen Anzeige**. Vierzehnter Fall desselben Musters in dieser Reihe, und diesmal hat er eine ganze Version in die falsche Richtung geschickt.
 
