@@ -154,3 +154,50 @@ async function mitStand(which, state, message, ts) {
 }
 
 console.log('✓ FusionPulse v4.5.3 Reifung der Anbieter-Ampel (ausgefuehrt): OK');
+
+/* ══ v4.5.5 · DIE AUFSCHLUESSELUNG MUSS SICHTBAR SEIN ═══════════════════════
+   Am 07.09. stieg die Leserate an einem Sonntag von 306 auf 11.732 Zeilen/min.
+   Die App wusste die ganze Zeit, WELCHE Abfrageform das verursacht —
+   `topQueries` und `topPaths` laufen seit 3.32.9 mit und gehen ueber
+   /api/health an den Browser. Angezeigt wurden sie nie. Ich habe deshalb eine
+   Ursache vermutet, eine Version darauf verwendet, und die Rate stieg weiter.
+
+   Diese Pruefung haelt fest, dass die Aufschluesselung in der Kachel steht —
+   und, genauso wichtig, dass ihr FEHLEN benannt wird. Eine leere Aufstellung,
+   die wie „nichts Auffaelliges" aussieht, waere derselbe Fehler noch einmal. */
+{
+  const { loadClient } = await import('./client-harness.mjs');
+  const C = loadClient();
+  const basis = { measured:true, rowsWritten:1000, rowsRead:889_000,
+    dayLimitRowsRead:806_451_612, dayLimitRowsWritten:1_000_000, selfCap:1_000_000,
+    planDayLimitRowsWritten:1_612_903, plan:'paid',
+    atLeastRowsReadPerMin:1671, sustainableRowsReadPerMin:560_035.8,
+    readBudgetHoldsToday:true, complete:true };
+
+  const mit = C.d1ReadNote({ d1: { ...basis,
+    topQueries:[{ query:'SELECT market_snapshots', q:520, r:640_000 },
+                { query:'SELECT fp_meta', q:1400, r:210_000 },
+                { query:'SELECT trades', q:12, r:39_000 }],
+    topPaths:[{ path:'cron', q:800, r:700_000 }, { path:'/api/learning', q:60, r:150_000 }] } });
+  assert.match(mit.detail, /SELECT market_snapshots/,
+    'v4.5.5: Die groesste Abfrageform gehoert in die Kachel — sonst bleibt nur Raten');
+  assert.match(mit.detail, /72 %/,
+    `v4.5.5: … mit ihrem Anteil, sonst ist die Zahl ohne Massstab (war "${mit.detail}")`);
+  assert.match(mit.detail, /cron/,
+    'v4.5.5: und die Route dazu, damit klar ist, WO die Abfrage laeuft');
+  /* Nur die drei groessten. Eine vollstaendige Liste in einem Tooltip liest
+     niemand, und was niemand liest, wirkt wie nicht vorhanden. */
+  assert.equal((mit.detail.match(/Zeilen \(/g) || []).length, 3,
+    'v4.5.5: genau die drei groessten Leser, nicht die ganze Liste');
+
+  /* Und der Fall, um den es eigentlich geht: liegt die Aufschluesselung nicht
+     vor, MUSS das dastehen. Schweigen liest sich sonst wie Unauffaelligkeit. */
+  const ohne = C.d1ReadNote({ d1: basis });
+  assert.match(ohne.detail, /nur raten/,
+    `v4.5.5: Eine fehlende Aufschluesselung ist keine unauffaellige — sie muss als Luecke benannt werden (war "${ohne.detail}")`);
+  const leer = C.d1ReadNote({ d1: { ...basis, topQueries:[{ query:'SELECT fp_meta', q:3, r:0 }] } });
+  assert.match(leer.detail, /nur raten/,
+    'v4.5.5: Eine Aufstellung, in der alles 0 gelesene Zeilen hat, ist ebenfalls keine Aussage');
+}
+
+console.log('✓ FusionPulse v4.5.5 Groesste Leser sichtbar (ausgefuehrt): OK');

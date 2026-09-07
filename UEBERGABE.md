@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 07.09.2026, Version **4.5.4**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 07.09.2026, Version **4.5.5**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -622,6 +622,26 @@ Der Zeitpunkt ist nicht beliebig: **20:00 Wien ist ganzjährig 14:00 New York**,
 ### Noch offen für den Watchlist-Betrieb
 
 Die Zeitüberschreitung im Deep Scan (Punkt 24) ist damit nicht behoben, aber deutlich entschärft: ohne Radar im selben Zyklus konkurrieren die Symbolabrufe nicht mehr mit einem 11-MB-Vollmarktabruf. Ob das reicht, zeigt der erste Handelstag.
+
+### 4.5.5 · Ich musste raten, obwohl die Antwort schon da war
+
+**Befund am 07.09.** Die Leserate stieg an einem Sonntag, an dem am Markt nichts passiert:
+
+| Uhrzeit | gelesene Zeilen | Rate im Intervall |
+|---|---|---|
+| 09:28 | 137.000 | — |
+| 10:11 | 408.000 | 6.302/min |
+| 10:52 | 889.000 | 11.732/min |
+
+Ich habe daraufhin in 4.5.4 eine Ursache **vermutet** — ein `LIKE` in meiner eigenen Monatsbilanz, das den Primärschlüssel umging — und behoben. Die Korrektur war richtig und bleibt drin. Sie war aber nicht der Treiber: nach dem Deploy stieg die Rate weiter.
+
+**Der eigentliche Fehler ist nicht die falsche Vermutung, sondern dass ich vermuten musste.** `d1MeterView` führt seit 3.32.9 `topQueries` und `topPaths`, also gelesene Zeilen je Abfrageform und je Route. Die Zahlen werden berechnet, über `/api/health` übertragen — und standen in **keiner einzigen Anzeige**. Vierzehnter Fall desselben Musters in dieser Reihe, und diesmal hat er eine ganze Version in die falsche Richtung geschickt.
+
+Im Worker steht seit 3.32.9 wörtlich: „Punkte 2–4 messen statt raten — ohne Telemetrie ist jede weitere Optimierung Raterei." Die Telemetrie war da. Sichtbar war sie nicht, und damit für die Fehlersuche genauso wertlos, als gäbe es sie nicht.
+
+**Geändert:** Die Lesekachel nennt jetzt die drei größten Abfrageformen mit Zeilen, Anteil und Abfragezahl sowie die zwei größten Routen. Fehlt die Aufschlüsselung oder steht überall 0, wird das ausdrücklich als Lücke benannt — eine leere Aufstellung, die wie „nichts Auffälliges" aussieht, wäre derselbe Fehler noch einmal.
+
+**Einordnung der Größenordnung:** 11.732 Zeilen/min sind hochgerechnet 16,8 Mio. am Tag gegen einen Tagesanspruch von 806 Mio. auf Paid, also rund 2 %. Kosten entstehen dadurch keine — gelesene Zeilen kosten 0,001 USD je Million, und 25 Mrd. im Monat sind enthalten. **Das Problem ist nicht der Betrag, sondern die unerklärte Verdreifachung innerhalb von 90 Minuten.** Unerklärtes Wachstum ist das, was später Grenzen reißt; genau so lief der 04.09.
 
 ### 4.5.4 · Die Bilanz hat sich selbst teuer gemacht
 

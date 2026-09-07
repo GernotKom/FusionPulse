@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.5.4 — Frontend
+   FusionPulse v4.5.5 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -3008,10 +3008,37 @@ function d1ReadNote(meta){
   const reicht = share>=1 ? ' Das Limit ist erreicht — lesende Abfragen geben bis 00:00 UTC Fehler zurück.'
     : haelt ? ' Bei diesem Takt reicht es bis Mitternacht UTC.'
     : Number.isFinite(rest) ? ` Bei diesem Takt ist es in rund ${n(rest)} Minuten erreicht.` : '';
+  /* ══ v4.5.5 · GEMESSEN, UEBERTRAGEN, NIE ANGEZEIGT — WIEDER ══════════════
+     Am 07.09. stieg die Leserate zwischen 09:28 und 10:52 von 306 auf 11.732
+     Zeilen/min, an einem Sonntag, an dem am Markt nichts passiert. Ich habe
+     daraufhin eine Ursache VERMUTET (ein `LIKE` in meiner Monatsbilanz), sie
+     behoben — und die Rate stieg weiter. Die Vermutung war falsch, oder
+     jedenfalls nicht der Treiber.
+
+     Der Punkt ist nicht die falsche Vermutung. Der Punkt ist, dass ich raten
+     MUSSTE: `d1MeterView` fuehrt seit 3.32.9 `topQueries` und `topPaths`, also
+     die gelesenen Zeilen je Abfrageform und je Route. Die Zahlen werden
+     berechnet, ueber /api/health uebertragen — und standen in keiner einzigen
+     Anzeige. Vierzehnter Fall desselben Musters in dieser Reihe, und diesmal
+     hat er mich selbst eine Version lang in die falsche Richtung geschickt.
+
+     „Punkte 2-4 messen statt raten — ohne Telemetrie ist jede weitere
+     Optimierung Raterei." Das steht seit 3.32.9 im Worker. Die Telemetrie war
+     da; sichtbar war sie nicht, und damit war sie fuer die Fehlersuche
+     genauso wertlos, als gaebe es sie nicht. */
+  const top = Array.isArray(d.topQueries) ? d.topQueries.filter(q => Number(q?.r) > 0).slice(0, 3) : [];
+  const verbraucher = top.length
+    ? ' Groesste Leser heute: ' + top.map(q =>
+        `${q.query} ${n(q.r)} Zeilen (${Math.round(q.r / Math.max(1, r) * 100)} %, ${n(q.q)} Abfragen)`).join(' · ') + '.'
+    : ' Die Aufschluesselung nach Abfrageform liegt noch nicht vor — ohne sie laesst sich ein Anstieg nur raten.';
+  const routen = Array.isArray(d.topPaths) ? d.topPaths.filter(x => Number(x?.r) > 0).slice(0, 2) : [];
+  const wo = routen.length
+    ? ' Groesste Routen: ' + routen.map(x => `${x.path} ${n(x.r)}`).join(' · ') + '.'
+    : '';
   return { measured:true, tone,
     short:`Lesen ${kurz(r)}/${kurz(cap)}`,
     label:`Lesebudget: ${n(r)} von ${n(cap)} (${Math.round(share*100)} %)`,
-    detail:`Gelesene D1-Zeilen im laufenden UTC-Tag.${takt}${reicht}`
+    detail:`Gelesene D1-Zeilen im laufenden UTC-Tag.${takt}${reicht}${verbraucher}${wo}`
       + ' Der Wert ist eine UNTERGRENZE — nicht messbare Abfragen fehlen darin.'
       + (d.complete===false?' Es gab nicht messbare Abfragen; die Zahl ist unvollständig.':'')
       + ' Eine Bremse gibt es hier bewusst nicht: Lesevorgänge zu sperren würde die App stilllegen, während die Datenbank noch antwortet.' };
