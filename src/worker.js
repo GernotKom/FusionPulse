@@ -3577,8 +3577,28 @@ async function d1MeterView(env, now=Date.now()){
     let month = null;
     if(lim.plan === 'paid'){
       try{
+        /* ══ v4.5.4 · `LIKE` HAT DEN INDEX NICHT BENUTZT ═══════════════════
+           In 4.5.2 stand hier `WHERE key LIKE ?`. Das sieht wie eine
+           Praefixsuche aus und ist in SQLite keine: `LIKE` ist dort
+           voreingestellt NICHT zeichengenau, und genau das schaltet die
+           Index-Optimierung ab. `fp_meta` hat `key TEXT PRIMARY KEY`, also
+           einen brauchbaren Index — er wurde nur nicht angefasst. Jede
+           /api/health hat stattdessen die ganze Tabelle gelesen.
+
+           Das ist dieselbe Bauart wie der Vorfall vom 04.09.: eine Abfrage,
+           die wie gefiltert aussieht und in Wahrheit scannt. Damals hat sie
+           das Tageslimit gerissen, hier kostet sie auf Paid fast nichts
+           (0,001 USD je Million gelesener Zeilen) — aber sie waechst mit
+           `fp_meta` mit, und eine Bilanz, die sich selbst teurer macht, ist
+           ein Widerspruch in sich. Der Zaehler darf nicht zum Verbraucher
+           werden; das stand schon 4.2.1 daneben.
+
+           Ein Bereichsvergleich auf demselben Praefix leistet dasselbe und
+           laeuft ueber den Primaerschluessel. `\uffff` ist die obere Schranke:
+           kein Schluessel dieser Anwendung enthaelt sie. */
         const pre = `${D1_METER_KEY}:${day.slice(0,7)}-`;
-        const days = (await env.DB.prepare('SELECT value FROM fp_meta WHERE key LIKE ? LIMIT 40').bind(pre+'%').all()).results || [];
+        const days = (await env.DB.prepare('SELECT value FROM fp_meta WHERE key >= ? AND key < ? LIMIT 40')
+          .bind(pre, pre + '\uffff').all()).results || [];
         let mw = 0, mr = 0;
         for(const d of days){
           try{ const a = JSON.parse(d.value)||{}; mw += Number(a.rowsWritten)||0; mr += Number(a.rowsRead)||0; }catch{}

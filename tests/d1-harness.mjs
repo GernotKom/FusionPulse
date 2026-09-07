@@ -77,14 +77,20 @@ export function fakeDb(opts = {}) {
       boom(); state.log.push(sql);
       /* Faellige Snapshots fuer den Aufloeser. `rows` wird vom Test gesetzt. */
       if (/FROM market_snapshots/i.test(sql) && state.due) return result(state.due);
-      /* v4.5.2: Die Monatsbilanz summiert die Tageszeilen per LIKE-Praefix.
-         Ohne diesen Zweig lieferte die Attrappe eine leere Liste, der Test
-         haette eine Summe von 0 gegen 0 geprueft und damit nichts. Genau die
-         Sorte gruener Haken, die schon zweimal ein Limit hat reissen lassen. */
-      if (/FROM fp_meta/i.test(sql) && /LIKE/i.test(sql)) {
-        const pre = String(args[0] ?? '').replace(/%$/, '');
+      /* v4.5.2: Die Monatsbilanz summiert die Tageszeilen ueber einen
+         Schluesselbereich. Ohne diesen Zweig lieferte die Attrappe eine leere
+         Liste, der Test haette eine Summe von 0 gegen 0 geprueft und damit
+         nichts. Genau die Sorte gruener Haken, die schon zweimal ein Limit hat
+         reissen lassen.
+         v4.5.4: Die Abfrage war bis dahin ein `LIKE` und hat in SQLite den
+         Primaerschluessel NICHT benutzt. Der Prueffstand bildet jetzt den
+         Bereichsvergleich nach — und ausdruecklich NICHT mehr `LIKE`, damit
+         ein Rueckfall in die scannende Fassung hier auffliegt statt still
+         weiterzulaufen. */
+      if (/FROM fp_meta/i.test(sql) && /key\s*>=\s*\?/i.test(sql)) {
+        const von = String(args[0] ?? ''), bis = String(args[1] ?? '\uffff');
         return result([...meta.entries()]
-          .filter(([k]) => k.startsWith(pre))
+          .filter(([k]) => k >= von && k < bis)
           .map(([, v]) => ({ value: v.value, updated_ts: v.ts })));
       }
       return result([]);

@@ -949,4 +949,45 @@ console.log('✓ FusionPulse v4.2.5 Drossel des Beobachtungsprotokolls (ausgefue
   assert.equal(v2.month.atLeastProjectedOverageUsd, 0, 'NK78: und der Betrag muss 0 USD sein');
 }
 
+/* ── NK79 · Die Bilanz darf sich nicht selbst teuer machen ─────────────────
+   In 4.5.2 stand in der Monatssumme `WHERE key LIKE ?`. Das sieht wie eine
+   Praefixsuche aus und ist in SQLite keine: `LIKE` ist dort voreingestellt
+   nicht zeichengenau, was die Index-Optimierung abschaltet. `fp_meta` hat
+   `key TEXT PRIMARY KEY` — der Index war da und wurde nicht benutzt. Jede
+   /api/health hat die ganze Tabelle gelesen.
+
+   Dieselbe Bauart wie der Vorfall vom 04.09.: eine Abfrage, die wie gefiltert
+   aussieht und in Wahrheit scannt. Ein Zaehler, der mit der Tabelle mitwaechst,
+   die er zaehlt, ist ein Widerspruch in sich. */
+{
+  const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
+  const at = worker.indexOf('async function d1MeterView(');
+  const body = stripComments(worker.slice(at, worker.indexOf('\nlet learnCounts', at)));
+  assert.ok(!/\bLIKE\b/i.test(body),
+    'NK79: In der Monatsbilanz darf kein LIKE stehen — es umgeht den Primaerschluessel und scannt fp_meta vollstaendig');
+  assert.match(body, /WHERE key >= \? AND key < \?/,
+    'NK79: Der Bereichsvergleich ueber den Schluessel ist die indizierte Fassung derselben Frage');
+
+  /* Und ausgefuehrt: die Abfrage muss WIRKLICH nur den laufenden Monat holen.
+     Ein Bereich, der zu weit greift, waere derselbe Scan mit anderem Namen. */
+  D.reset();
+  const { db, state } = fakeDb({ rowsRead: 1 });
+  const env = { DB: D.d1Wrap(db), CF_PLAN: 'paid', D1_WRITE_BUDGET: '1000000' };
+  const t = Date.UTC(2026, 8, 15, 12, 0, 0);
+  const setz = (key, w) => db.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?)')
+    .bind(key, JSON.stringify({ rowsWritten: w, rowsRead: 0, queries: 1, unmetered: 0 }), t).run();
+  await setz('d1_meter:2026-09-14', 3_000_000);
+  await setz('d1_meter:2026-09-15', 1_000_000);
+  await setz('d1_meter:2026-08-31', 9_000_000);   // Vormonat — darf NICHT mitzaehlen
+  await setz('learn_counts', 7);                  // fremder Schluessel — ebenso wenig
+  await setz('provider_health:stocks', 5);
+  const v = await D.d1MeterView(env, t);
+  assert.equal(v.month.rowsWritten, 4_000_000,
+    `NK79: nur der laufende Monat gehoert in die Summe, war ${v.month.rowsWritten}`);
+  assert.equal(v.month.daysCounted, 2,
+    `NK79: und zwar genau zwei Tageszeilen, waren ${v.month.daysCounted}`);
+  assert.ok(state.log.some((q) => /key >= \? AND key < \?/.test(q)),
+    'NK79: die Bereichsabfrage muss tatsaechlich abgesetzt worden sein — sonst prueft der Block eine Abfrage, die es nicht gibt');
+}
+
 console.log('✓ FusionPulse v4.5.2 Tarifbewusste Grenzen und Monatsbilanz (ausgefuehrt): OK');

@@ -1,6 +1,6 @@
 # FusionPulse — Übergabe an den nächsten Chat
 
-Stand: 07.09.2026, Version **4.5.3**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
+Stand: 07.09.2026, Version **4.5.4**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.
 
 
 ---
@@ -622,6 +622,14 @@ Der Zeitpunkt ist nicht beliebig: **20:00 Wien ist ganzjährig 14:00 New York**,
 ### Noch offen für den Watchlist-Betrieb
 
 Die Zeitüberschreitung im Deep Scan (Punkt 24) ist damit nicht behoben, aber deutlich entschärft: ohne Radar im selben Zyklus konkurrieren die Symbolabrufe nicht mehr mit einem 11-MB-Vollmarktabruf. Ob das reicht, zeigt der erste Handelstag.
+
+### 4.5.4 · Die Bilanz hat sich selbst teuer gemacht
+
+Die Monatssumme aus 4.5.2 fragte `SELECT value FROM fp_meta WHERE key LIKE ?`. Das sieht wie eine Präfixsuche aus und ist in SQLite keine: `LIKE` ist dort voreingestellt nicht zeichengenau, und genau das schaltet die Index-Optimierung ab. `fp_meta` hat `key TEXT PRIMARY KEY` — der Index war da und wurde nicht angefasst. Jede `/api/health` las stattdessen die ganze Tabelle.
+
+Dieselbe Bauart wie der Vorfall vom 04.09.: eine Abfrage, die wie gefiltert aussieht und in Wahrheit scannt. Auf Paid kostet das fast nichts (0,001 USD je Million gelesener Zeilen), aber es wächst mit `fp_meta` mit — und ein Zähler, der mit der Tabelle wächst, die er zählt, ist ein Widerspruch in sich. Dass die Bremse nicht selbst zum Verbraucher werden darf, stand seit 4.2.1 daneben; ich habe es beim Einbau der Monatsbilanz selbst gebrochen.
+
+Ersetzt durch einen Bereichsvergleich `key >= ? AND key < ?` über den Primärschlüssel. `NK79` prüft beides: dass kein `LIKE` mehr im Rumpf steht, **und** ausgeführt, dass die Summe nur den laufenden Monat greift — mit Vormonats- und Fremdschlüsseln als Gegenprobe. Die Test-Attrappe bildet ausdrücklich nur noch den Bereichsvergleich nach, damit ein Rückfall in die scannende Fassung auffliegt statt still weiterzulaufen.
 
 ### 4.5.3 · Ein alter Erfolg verfiel, ein alter Fehler nie
 
