@@ -362,14 +362,30 @@ function ladeClient() {
   assert.match(ccode, /\.resource-strip span\{[^}]*white-space:nowrap/,
     'Im Normalfall bleibt die Leiste einzeilig — sonst faellt die Kopfzeile auseinander');
 
-  /* Aber im Fehlerfall darf sie nicht kuerzen. Sonst ist die dreiteilige
-     Diagnose aus v3.32.1 unsichtbar — der Fehler aus 8aa. */
-  assert.match(ccode, /\.resource-strip\.err span[^{]*\{[^}]*white-space:normal/,
-    'Im Fehlerfall muss der Text umbrechen duerfen, nicht abgeschnitten werden');
-  assert.match(ccode, /\.resource-strip\.err span[^{]*\{[^}]*overflow:visible/,
-    'overflow:hidden wuerde die Diagnose weiterhin verschlucken');
-  assert.match(ccode, /\.resource-strip\.err[^{]*\{[^}]*max-width:none/,
-    'Die 190-px-Grenze muss im Fehlerfall entfallen');
+  /* ══ v4.5.9 · DIESE FORDERUNG WIRD ABGELOEST, NICHT GESTRICHEN ═════════════
+     Bis 4.5.8 stand hier: im Fehlerfall darf die Leiste nicht kuerzen, die
+     190-px-Grenze muss entfallen, `max-width:none`. Das Ziel war richtig — die
+     dreiteilige Diagnose aus v3.32.1 darf nicht verschluckt werden (8aa).
+     Der Weg war falsch: ohne Breitengrenze wuchs die Kopfzeile am 08.09. auf
+     188 px und nahm dem Inhalt ein Achtel des Bildes. Gemeldet mit den Worten
+     „war besser, als sie nur klein war ... darunter war mehr Uebersicht."
+
+     Das Ziel bleibt, der Mechanismus wechselt: der Text darf weiterhin
+     umbrechen, aber auf ZWEI Zeilen begrenzt, und der vollstaendige Wortlaut
+     steht unveraendert im Tooltip (`data-tip`, gesetzt in `renderResourceStrip`).
+     Lesbarkeit ohne Bildflaeche.
+
+     Die Bauhoehe selbst prueft NK82 gerendert (`tests/header-layout.mjs`) —
+     hier steht nur noch, dass der Mechanismus vorhanden ist. Ein Muster kann
+     nicht messen, wie hoch etwas wird; genau daran ist 4.5.7 gescheitert. */
+  assert.match(ccode, /\.resource-strip\.err span[^{]*\{[^}]*-webkit-line-clamp:\s*2/,
+    'Im Fehlerfall muss der Text auf zwei Zeilen umbrechen duerfen');
+  assert.match(ccode, /\.resource-strip\.err[^{]*\{[^}]*max-width:\s*340px/,
+    'Die Leiste bleibt begrenzt — ohne Grenze frisst sie die Kopfzeile');
+  /* Der volle Wortlaut MUSS erreichbar bleiben, sonst waere die Begrenzung
+     genau der Fehler aus 8aa, nur mit anderer Ursache. */
+  assert.ok(/box\.dataset\.tip=`\$\{text\}\$\{rateNote\}/.test(app),
+    'Der vollstaendige Diagnosetext muss weiterhin im Tooltip stehen');
   /* Und der orange Fall („Zustand nicht abrufbar") genauso — er traegt
      ebenfalls einen erklaerenden Satz. */
   assert.match(ccode, /\.resource-strip\.orange span[^{]*\{[^}]*white-space:normal/,

@@ -1,3 +1,51 @@
+# FusionPulse 4.5.9 — Statusleiste wieder kompakt
+
+Gemeldet: „war besser, als sie nur klein war und nicht über die gesamte
+Bildbreite ging — darunter war mehr Übersicht." Die volle Breite war meine
+Idee, nicht die Anforderung. Gemessen mit Chromium bei 1440 px, Fehlerzustand:
+
+| Stand | Kopfhöhe | Inhalt sichtbar |
+|---|---|---|
+| 4.5.6 / 4.5.7 | 278 px | 622 px |
+| 4.5.8 | 188 px | 712 px |
+| **4.5.9** | **77 px** | **823 px** |
+
+Grün und Rot sind jetzt praktisch gleich hoch (60 vs. 77 px). Die Leiste bleibt
+bei 340 px, der Text auf zwei Zeilen begrenzt; der vollständige Wortlaut steht
+unverändert im Tooltip.
+
+**Neues Prüfkriterium NK82-5:** Die Kopfzeile darf im Fehlerfall höchstens
+24 px wachsen. Negativkontrolle bestätigt: mit `flex:1 1 100%` fällt der Test.
+Das hält jede künftige „die Meldung muss auffälliger werden"-Idee auf, bevor
+sie wieder Bildfläche kostet.
+
+**Ein Bestandstest wurde abgelöst, nicht gelöscht.** `provider-breadth.mjs`
+forderte seit v3.32.1 `max-width:none` im Fehlerfall — Ziel war, dass die
+Diagnose nicht verschluckt wird (Lehre 8aa). Das Ziel bleibt gültig, der
+Mechanismus wechselt: zwei Zeilen plus vollständiger Tooltip statt unbegrenzter
+Breite. Der Test prüft jetzt den neuen Mechanismus und zusätzlich, dass der
+volle Text im Tooltip erhalten bleibt.
+
+## Bestätigt
+
+`19781 verworfen (58 %) · 0 offen`. Vorhergesagt waren 56 %. Es gab nie einen
+Rückstand von 19.000 Fällen — der Zähler hat Verwürfe verschwiegen.
+
+## Unverändert offen: der Aktienteil
+
+`tiingoIexSeries` liefert leere Arrays. Gemessen: 9.312 Abrufe, Ø 5,5 KB, aber
+der Gesamtverbrauch steht seit dem 07.09. unverändert bei 0,049 GB — die neuen
+Abrufe tragen praktisch null Bytes bei. HTTP 200, Body leer.
+
+Verdächtig ist die URL in `worker.js:8374`:
+
+    /iex/{sym}/prices?startDate={heute-36h}&resampleFreq=5min&columns=open,high,low,close,volume
+
+Ohne Tiingo-Token lässt sich das hier nicht entscheiden. Der Diagnoselauf steht
+in der Antwort vom 08.09.
+
+---
+
 # FusionPulse 4.5.8 — die Kopfzeile wird jetzt gerendert, nicht gelesen
 
 ## Was in 4.5.7 schiefging

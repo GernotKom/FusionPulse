@@ -148,6 +148,15 @@ try {
       `Titel schrumpft im Fehlerfall von ${gruen.titelBreite} auf ${rot.titelBreite} px`);
     pruefe(rot.titelHoehe <= gruen.titelHoehe + 2,
       `Titel waechst im Fehlerfall von ${gruen.titelHoehe} auf ${rot.titelHoehe} px`);
+
+    /* 5 · v4.5.9, ausdruecklich vom Nutzer gefordert: „war besser, als sie nur
+           klein war ... darunter war mehr Uebersicht." Die Kopfzeile darf im
+           Fehlerfall nicht mehr nennenswert wachsen. 24 px Toleranz decken eine
+           zweite Textzeile ab, nicht eine zweite Kopfzeile. Diese Pruefung
+           haelt jede kuenftige „die Meldung muss auffaelliger werden"-Idee auf,
+           bevor sie wieder Bildflaeche kostet. */
+    pruefe(rot.hoehe <= gruen.hoehe + 24,
+      `Kopfzeile waechst im Fehlerfall von ${gruen.hoehe} auf ${rot.hoehe} px`);
   }
 } finally {
   await browser.close();
