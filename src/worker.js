@@ -9291,6 +9291,63 @@ export default {
       catch(e){ return json({configured:!!env.TIINGO_API_TOKEN,state:'error',error:String(e.message||e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
     }
 
+    /* ══ v4.6.0 · DIE APP PRUEFT IHRE EIGENE ABFRAGE ══════════════════════════
+       BEFUND, gemessen statt vermutet: `tiingoIexSeries` hat seit dem 07.09.
+       rund 6.000 Abrufe gemacht, alle mit HTTP 200 — und der Gesamtverbrauch
+       stand still. 9.312 Abrufe x 5,5 KB ergibt denselben Wert wie vorher
+       3.224 x 15,9 KB. Die Antworten sind praktisch leer, der Aktienteil
+       meldet folgerichtig „0 von 36 analysierbar\".
+
+       Was NICHT feststeht, ist die Ursache. Drei Kandidaten in der URL aus
+       Zeile 8374, und sie schliessen einander aus:
+         · `columns=open,high,low,close,volume` enthaelt KEIN `date` — die
+           Serie liest aber `x.date`. Wenn Tiingo die Antwort auf die
+           angeforderten Spalten beschraenkt, fehlt jeder Zeitstempel.
+         · `startDate` liegt 36 h zurueck und traf am 08.09. auf den Labor Day.
+         · Die Berechtigung des Kontos fuer Intraday-IEX koennte weg sein.
+
+       Ein blinder Fix waere der zweite in drei Tagen. Stattdessen probiert
+       dieser Endpunkt die Varianten NACHEINANDER gegen ein einzelnes Symbol
+       und meldet je Variante, wie viele Zeilen zurueckkamen und ob ein
+       `date`-Feld dabei war. Danach ist die Ursache keine Meinung mehr.
+
+       KOSTEN, weil sie zaehlen: vier Abrufe je Aufruf, jeder wenige KB. Nur
+       auf ausdrueckliche Anforderung, nie im Cron. Die Antworten laufen durch
+       `tiingoFetch`, werden also normal mitgezaehlt.
+       NULL WIRKUNG AUF DIE BEWERTUNG. Reine Diagnose. */
+    if (url.pathname === '/api/tiingo/probe') {
+      if (!env.TIINGO_API_TOKEN) return json({ ok:false, reason:'TIINGO_API_TOKEN fehlt' }, 200, { 'cache-control':'no-store' });
+      const sym = safeRadarSymbol(url.searchParams.get('symbol') || 'NVDA') || 'NVDA';
+      const tag = (h) => new Date(Date.now() - h*3600_000).toISOString().slice(0,10);
+      const varianten = [
+        { name:'wie die App (36 h + columns)', pfad:`/iex/${sym}/prices?startDate=${tag(36)}&resampleFreq=5min&columns=open,high,low,close,volume` },
+        { name:'ohne columns',                 pfad:`/iex/${sym}/prices?startDate=${tag(36)}&resampleFreq=5min` },
+        { name:'ohne startDate',               pfad:`/iex/${sym}/prices?resampleFreq=5min` },
+        { name:'ohne resampleFreq (Rohticks)', pfad:`/iex/${sym}/prices` },
+      ];
+      const out = [];
+      for (const v of varianten) {
+        try {
+          const d = await tiingoFetch(env, v.pfad);
+          const arr = Array.isArray(d) ? d : [];
+          const erste = arr[0] || null;
+          out.push({ variante:v.name, pfad:v.pfad, zeilen:arr.length,
+            /* Die entscheidende Frage: liegt ein Zeitstempel bei? Ohne ihn ist
+               jede Zeile fuer `analyseStock` wertlos, auch wenn Zeilen da sind. */
+            hatDatum: !!(erste && (erste.date || erste.datetime)),
+            felder: erste ? Object.keys(erste).slice(0, 12) : [],
+            probe: erste || null });
+        } catch (e) {
+          out.push({ variante:v.name, pfad:v.pfad, fehler:String(e?.message||e) });
+        }
+      }
+      const treffer = out.find(r => r.zeilen > 0 && r.hatDatum);
+      return json({ ok:true, symbol:sym, phase:usMarketPhase().key, version:APP_VERSION,
+        befund: treffer
+          ? `Daten kommen mit: „${treffer.variante}\". Die App benutzt Variante 1 — dort ist der Fehler.`
+          : 'KEINE Variante liefert brauchbare Zeilen. Dann liegt es nicht an der URL, sondern am Konto oder am Endpunkt.',
+        varianten: out }, 200, { 'cache-control':'no-store' });
+    }
     if (url.pathname === '/api/tiingo/status') {
       const wantDeep=url.searchParams.get('stockDeep');
       if(wantDeep!=null) await persistStockDeepLimit(env,wantDeep);

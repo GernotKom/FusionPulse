@@ -1,3 +1,35 @@
+# FusionPulse 4.6.0 — Selbstdiagnose statt Vermutung, und die Zähler nennen Namen
+
+## 1 · `/api/tiingo/probe` — die App prüft ihre eigene Abfrage
+
+Gemessen: `tiingoIexSeries` hat seit 07.09. rund 6.000 Abrufe gemacht, alle
+HTTP 200, und der Gesamtverbrauch stand still (9.312 × 5,5 KB = derselbe Wert
+wie vorher 3.224 × 15,9 KB). Die Antworten sind praktisch leer.
+
+Die Ursache stand **nicht** fest. Drei sich ausschließende Kandidaten in der
+URL aus `worker.js:8374`. Ein blinder Fix wäre der zweite in drei Tagen
+gewesen. Der Endpunkt probiert stattdessen vier Varianten nacheinander gegen
+ein Symbol und meldet je Variante Zeilenzahl, Feldnamen und ob ein
+Zeitstempel dabei war:
+
+    /api/tiingo/probe?symbol=NVDA
+
+Kosten: vier Abrufe je Aufruf, wenige KB. Nur auf Anforderung, nie im Cron —
+NK84 prüft beides.
+
+## 2 · Ampelzähler nennen ihre Titel
+
+Gemeldet: „man erkennt nicht, zu wem der grüne 1er gehört." Die Namen lagen
+in `r.pair` vor und wurden weggeworfen. Der Hilfetext nennt jetzt die Titel
+und sagt ausdrücklich **Coins** — die Zähler zählen Krypto, nicht Aktien; bei
+rotem Aktien-Status wäre die Verwechslung sonst naheliegend.
+
+Als reine Funktion `countLabel()` herausgezogen, damit sie ausgeführt prüfbar
+ist statt nur im Quelltext sichtbar — genau die Abkürzung, an der 4.5.7
+gescheitert ist. NK83 mit Negativkontrollen.
+
+---
+
 # FusionPulse 4.5.9 — Statusleiste wieder kompakt
 
 Gemeldet: „war besser, als sie nur klein war und nicht über die gesamte

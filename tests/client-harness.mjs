@@ -172,7 +172,7 @@ export function loadClient(overrides = {}) {
      aussahen und im Betrieb das Gegenteil aussagten — ein verschwiegener
      Verwurf und ein Tempo, das im Stillstand sank. Regex haette beides
      durchgelassen. */
-  learningBadge, bandwidthNote,
+  learningBadge, bandwidthNote, countLabel, COUNT_NAMES_MAX,
   get learningData(){return learningData;}, set learningData(v){learningData=v;},
   get health(){return health;}, set health(v){health=v;},
   get authDenied(){return authDenied;}, set authDenied(v){authDenied=v;},

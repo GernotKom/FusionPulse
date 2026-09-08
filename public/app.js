@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.5.9 — Frontend
+   FusionPulse v4.6.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -5065,6 +5065,23 @@ function rowHtml(r) {
     </span>`;
 }
 
+/* v4.6.0 · Als reine Funktion herausgezogen, damit sie AUSGEFUEHRT prueffbar
+   ist statt nur im Quelltext sichtbar. Genau diese Abkuerzung hat in 4.5.7 eine
+   Layout-Reparatur durchgelassen, die es schlimmer machte. */
+const COUNT_LABEL = { green: 'Handeln', yellow: 'Beobachten', red: 'Rest' };
+const COUNT_NAMES_MAX = 12;
+function countLabel(licht, liste) {
+  const namen = Array.isArray(liste) ? liste.filter(Boolean) : [];
+  const wort = COUNT_LABEL[licht] || licht;
+  if (!namen.length) return `${wort}: keine`;
+  /* Ab zwoelf Namen wird die Liste selbst unuebersichtlich — dann sagt sie
+     „und N weitere", statt den Bildschirm zu fluten. */
+  const kurz = namen.length > COUNT_NAMES_MAX
+    ? namen.slice(0, COUNT_NAMES_MAX).join(', ') + ` und ${namen.length - COUNT_NAMES_MAX} weitere`
+    : namen.join(', ');
+  return `${wort} (${namen.length} ${namen.length === 1 ? 'Coin' : 'Coins'}): ${kurz}`;
+}
+
 function renderList() {
   const list = visible().slice(0, S.coinCount);
   const hot = list.filter((r) => r.light !== 'red');
@@ -5078,9 +5095,27 @@ function renderList() {
   $('#more').textContent = showRest ? `▾ ${rest.length} ausblenden` : `▸ ${rest.length} weitere anzeigen`;
   $('#rest').classList.toggle('hidden', !showRest);
 
+  /* ══ v4.6.0 · DIE ZAEHLER SAGTEN EINE ZAHL UND VERSCHWIEGEN DEN NAMEN ══════
+     Gemeldet am 08.09.: „man erkennt nicht, zu wem der gruene 1er gehoert."
+     Stimmt — die Kachel zeigte seit jeher nur `1 0 19`. Bei 19 roten Zeilen ist
+     das egal, bei EINER gruenen ist die Zahl fast wertlos: die einzige
+     Kauf-Freigabe der Sitzung stand da als anonyme Ziffer.
+
+     Die Namen liegen bereits vor (`r.pair`), sie wurden nur weggeworfen. Es
+     wird nichts berechnet, was es nicht schon gibt.
+
+     WICHTIG und deshalb im Hilfetext benannt: diese Zaehler zaehlen `rows` —
+     also COINS, nicht Aktien. Wer bei rotem Aktien-Status auf eine gruene 1
+     schaut, koennte sie sonst dem Aktienteil zuordnen. */
   const c = { green: 0, yellow: 0, red: 0 };
-  rows.forEach((r) => c[r.light]++);
-  $('#gc').textContent = c.green; $('#yc').textContent = c.yellow; $('#rc').textContent = c.red;
+  const namen = { green: [], yellow: [], red: [] };
+  rows.forEach((r) => { c[r.light]++; namen[r.light].push(sym(r.pair)); });
+  for (const [licht, id] of [['green', '#gc'], ['yellow', '#yc'], ['red', '#rc']]) {
+    const el = $(id); if (!el) continue;
+    el.textContent = c[licht];
+    const ziel = el.parentElement || el;
+    ziel.title = countLabel(licht, namen[licht]);
+  }
 }
 
 function paint(container, list) {

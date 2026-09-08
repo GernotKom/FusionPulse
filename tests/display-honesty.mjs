@@ -176,4 +176,56 @@ const w   = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8'
   }
 }
 
-console.log('✓ FusionPulse v4.5.7 NK81 Anzeigen im Ausnahmefall (ausgefuehrt): OK');
+/* ═══ NK83 · Die Ampelzaehler nennen ihre Titel ════════════════════════════
+   Gemeldet am 08.09.: „man erkennt nicht, zu wem der gruene 1er gehoert."
+   Bei 19 roten Zeilen ist die blosse Zahl egal; bei EINER gruenen war die
+   einzige Kauf-Freigabe der Sitzung eine anonyme Ziffer. */
+{
+  const fp = loadClient();
+
+  assert.equal(fp.countLabel('green', ['BTC']), 'Handeln (1 Coin): BTC',
+    'Ein einzelner Titel muss beim Namen genannt werden — und im Singular');
+  assert.equal(fp.countLabel('red', []), 'Rest: keine',
+    'Keine Treffer duerfen keine leere Klammer erzeugen');
+
+  /* Die Bezeichnung „Coins" ist kein Beiwerk: die Zaehler zaehlen `rows`, also
+     Krypto. Wer bei rotem AKTIEN-Status auf eine gruene 1 schaut, wuerde sie
+     sonst dem Aktienteil zuordnen. */
+  assert.match(fp.countLabel('yellow', ['ETH', 'SOL']), /Coins/,
+    'Der Hilfetext muss sagen, dass hier Coins gezaehlt werden, nicht Aktien');
+
+  /* Lange Listen duerfen den Bildschirm nicht fluten, aber die Gesamtzahl
+     muss stimmen — sonst waere die Kuerzung die naechste stille Luege. */
+  const viele = Array.from({ length: 15 }, (_, i) => 'C' + i);
+  const lang = fp.countLabel('yellow', viele);
+  assert.match(lang, /\(15 Coins\)/, 'Die Gesamtzahl muss die volle Menge nennen');
+  assert.match(lang, /und 3 weitere$/, 'Der Rest muss beziffert, nicht verschwiegen werden');
+  assert.ok(!lang.includes('C12'), 'Ueber der Grenze wird gekuerzt');
+  assert.ok(lang.includes('C11'), 'Bis zur Grenze wird genannt');
+  assert.equal(fp.COUNT_NAMES_MAX, 12, 'Die Grenze gehoert benannt, nicht versteckt');
+
+  /* Negativkontrolle: die alte Anzeige war die nackte Zahl. */
+  assert.notEqual(fp.countLabel('green', ['BTC']), '1',
+    'Negativkontrolle: die blosse Ziffer war der gemeldete Zustand');
+}
+
+/* ═══ NK84 · Der Selbstdiagnose-Endpunkt fuer Tiingo ════════════════════════
+   Er ersetzt einen curl-Befehl mit Token-Hantierung durch einen Klick. Reine
+   Diagnose — er darf nichts bewerten und nicht im Cron laufen. */
+{
+  assert.ok(w.includes("url.pathname === '/api/tiingo/probe'"), 'Der Diagnoseendpunkt muss existieren');
+  const i = w.indexOf("url.pathname === '/api/tiingo/probe'");
+  const block = w.slice(i, i + 3000);
+  assert.ok(/ohne columns/.test(block) && /ohne startDate/.test(block),
+    'Die Varianten muessen die konkreten Verdaechtigen isolieren');
+  assert.ok(/hatDatum/.test(block),
+    'Zeilen ohne Zeitstempel sind fuer analyseStock wertlos — das muss geprueft werden');
+  for (const verboten of ['buyReady', 'quality', 'situationScore', 'light=']) {
+    assert.ok(!block.includes(verboten), `Die Diagnose darf ${verboten} nicht beruehren`);
+  }
+  /* Sie darf nur auf Anforderung laufen, nie im Hintergrund. */
+  const cron = w.slice(w.indexOf('async function serverLearningCycle'), w.indexOf('async function serverLearningCycle') + 9000);
+  assert.ok(!cron.includes('tiingo/probe'), 'Die Diagnose gehoert nicht in den Cron');
+}
+
+console.log('✓ FusionPulse v4.6.0 NK81/83/84 Anzeigen und Selbstdiagnose (ausgefuehrt): OK');
