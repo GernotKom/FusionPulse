@@ -167,6 +167,13 @@ export function loadClient(overrides = {}) {
   wilsonUpperPct, econBreakEvenPct, econBreakEvenFloorPct,
   get twinStore(){return twinStore;}, set twinStore(v){twinStore=v;},
   CRV_INFLATION_WARN, CRV_COST_SHARE_WARN, CRV_STRUCT_CONFLICT_FACTOR,
+  /* v4.5.7: learningBadge und bandwidthNote muessen AUSGEFUEHRT prueffbar
+     sein. Beide zeigten am 07./08.09. Zahlen, die im Quelltext richtig
+     aussahen und im Betrieb das Gegenteil aussagten — ein verschwiegener
+     Verwurf und ein Tempo, das im Stillstand sank. Regex haette beides
+     durchgelassen. */
+  learningBadge, bandwidthNote,
+  get learningData(){return learningData;}, set learningData(v){learningData=v;},
   get health(){return health;}, set health(v){health=v;},
   get authDenied(){return authDenied;}, set authDenied(v){authDenied=v;},
   get lastHttpStatus(){return lastHttpStatus;}, set lastHttpStatus(v){lastHttpStatus=v;}

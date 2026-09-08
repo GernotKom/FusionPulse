@@ -7395,7 +7395,10 @@ function authHint(req, url, env) {
 
    NULL WIRKUNG AUF DIE BEWERTUNG. Reine Beobachtung. */
 const TIINGO_BW_CAP_GB = 40;   // Tarif „Power", Stand 30.08.2026. Siehe /api/health.
-let tiingoBw = { monthKey:'', paths:{}, exact:0, approx:0, loadedFromD1:false, startedTs:0 };
+/* v4.5.7 · `lastTs` ist neu und der Grund steht in `tiingoBwView`: ohne den
+   Zeitpunkt des letzten gezaehlten Abrufs laeuft der Nenner des Tempos weiter,
+   waehrend der Zaehler steht. */
+let tiingoBw = { monthKey:'', paths:{}, exact:0, approx:0, loadedFromD1:false, startedTs:0, lastTs:0 };
 let tiingoBwLimitHit = 0;   // Zeitpunkt des letzten Bandbreiten-429, 0 = nie
 
 function tiingoMonthKeyUTC(){ return new Date().toISOString().slice(0,7); }
@@ -7421,11 +7424,12 @@ function noteTiingoBytes(env, path, bytes, exact){
   const n=Number(bytes);
   if(!Number.isFinite(n)||n<0) return;          // Regel 2: nichts erfinden
   const mk=tiingoMonthKeyUTC();
-  if(tiingoBw.monthKey!==mk){ tiingoBw={monthKey:mk,paths:{},exact:0,approx:0,loadedFromD1:tiingoBw.loadedFromD1,startedTs:Date.now()}; }
+  if(tiingoBw.monthKey!==mk){ tiingoBw={monthKey:mk,paths:{},exact:0,approx:0,loadedFromD1:tiingoBw.loadedFromD1,startedTs:Date.now(),lastTs:0}; }
   const b=tiingoBwBucket(path);
   const cur=tiingoBw.paths[b]||{calls:0,bytes:0};
   cur.calls++; cur.bytes+=n; tiingoBw.paths[b]=cur;
   if(exact) tiingoBw.exact++; else tiingoBw.approx++;
+  tiingoBw.lastTs=Date.now();
   if(env?.DB && Date.now()-tiingoBwPersistTimer>30_000){
     tiingoBwPersistTimer=Date.now();
     const payload=JSON.stringify(tiingoBw);
@@ -7442,8 +7446,8 @@ async function loadTiingoBwOnce(env){
     const r=await env.DB.prepare('SELECT value FROM fp_meta WHERE key=?').bind('tiingo_bandwidth').first();
     const v=r?.value?JSON.parse(r.value):null;
     if(v && v.monthKey===tiingoMonthKeyUTC() && v.paths && typeof v.paths==='object'){
-      tiingoBw={monthKey:v.monthKey,paths:v.paths,exact:Number(v.exact)||0,approx:Number(v.approx)||0,loadedFromD1:true,startedTs:Number(v.startedTs)||Date.now()};
-    } else { tiingoBw.monthKey=tiingoMonthKeyUTC(); tiingoBw.loadedFromD1=true; tiingoBw.startedTs=Date.now(); }
+      tiingoBw={monthKey:v.monthKey,paths:v.paths,exact:Number(v.exact)||0,approx:Number(v.approx)||0,loadedFromD1:true,startedTs:Number(v.startedTs)||Date.now(),lastTs:Number(v.lastTs)||0};
+    } else { tiingoBw.monthKey=tiingoMonthKeyUTC(); tiingoBw.loadedFromD1=true; tiingoBw.startedTs=Date.now(); tiingoBw.lastTs=0; }
   }catch(e){ tiingoBw.loadedFromD1=true; console.warn(JSON.stringify({event:'tiingo_bw_load_failed',message:String(e?.message||e),ts:Date.now()})); }
 }
 
@@ -7474,16 +7478,43 @@ function tiingoBandwidthView(){
      und wird in der Anzeige nicht mehr verwendet. */
   const startedTs = Number(tiingoBw.startedTs) || null;
   const measuredHours = startedTs ? Math.max(0, (Date.now()-startedTs)/3_600_000) : null;
-  const perDayGb = measuredHours && measuredHours > 0.25 ? +(usedGb/measuredHours*24).toFixed(3) : null;
+  /* v4.5.7 · Das Tempo laeuft ueber die AKTIVE Spanne (erster bis letzter
+     gezaehlter Abruf), nicht ueber die verstrichene Zeit. Fehlt `lastTs` —
+     alter persistierter Stand aus einer Vorversion — bleibt es beim alten
+     Verhalten, statt mit einer erfundenen Null zu rechnen. */
+  const lastTs = Number(tiingoBw.lastTs) || null;
+  const activeHours = (startedTs && lastTs) ? Math.max(0, (lastTs-startedTs)/3_600_000) : measuredHours;
+  const idleHours   = lastTs ? Math.max(0, (Date.now()-lastTs)/3_600_000) : null;
+  const perDayGb = activeHours && activeHours > 0.25 ? +(usedGb/activeHours*24).toFixed(3) : null;
   return {
     measured:true, monthKey:mk, usedGb, capGb:TIINGO_BW_CAP_GB,
     startedTs, measuredHours: measuredHours!=null ? +measuredHours.toFixed(2) : null,
+    /* ══ v4.5.7 · DAS TEMPO WURDE BESSER, WEIL NICHTS MEHR LIEF ══════════════
+       BEFUND vom 07./08.09.: Die Kachel zeigte 0,79 GB/Tag, sechs Stunden
+       spaeter 0,74, am naechsten Nachmittag 0,64 — bei UNVERAENDERTER
+       Pfadtabelle. Es war Labor Day, der Aktienblock lag still, kein einziger
+       Abruf kam dazu. `measuredHours` laeuft seit `startedTs` in Echtzeit
+       weiter, `usedGb` stand. Ein Bruch mit eingefrorenem Zaehler und
+       laufendem Nenner: je laenger die App NICHTS tut, desto sparsamer sieht
+       sie aus. Bis zum naechsten Abend haette dort 0,55 gestanden.
+
+       Zum dritten Mal dasselbe Muster wie beim CRV und beim alten
+       Bandbreiten-Prozentsatz — Zaehler und Nenner aus verschiedenen
+       Bezugsrahmen. Nur diesmal in der Zeitachse statt in der Menge.
+
+       `activeHours` misst deshalb bis zum LETZTEN gezaehlten Abruf, nicht bis
+       jetzt. Steht die App still, friert das Tempo mit ein, statt zu sinken.
+       `idleHours` sagt daneben, wie lange nichts mehr kam — denn ein
+       eingefrorenes Tempo ohne diesen Hinweis waere die naechste stille Luege. */
+    lastTs: tiingoBw.lastTs || null,
+    activeHours: activeHours!=null ? +activeHours.toFixed(2) : null,
+    idleHours: idleHours!=null ? +idleHours.toFixed(2) : null,
     perDayGb, perMonthGb: perDayGb!=null ? +(perDayGb*30).toFixed(1) : null,
     pctMisleading:+Math.min(999,(usedGb/TIINGO_BW_CAP_GB)*100).toFixed(1),
     pct:null,
     paths:rows,
     exactSamples:tiingoBw.exact, approxSamples:tiingoBw.approx,
-    note:'Eigenmessung DIESES Workers seit seinem Start. Nicht der Kontostand bei Tiingo — frueherer Verbrauch im selben Monat und andere Clients fehlen. Als UNTERE SCHRANKE lesen; ein Prozentsatz des Monatskontingents laesst sich daraus nicht bilden.',
+    note:'Eigenmessung seit Beginn des laufenden Monatsbehaelters — sie ueberdauert Deploys und wird am Monatswechsel zurueckgesetzt. Nicht der Kontostand bei Tiingo — frueherer Verbrauch im selben Monat und andere Clients fehlen. Als UNTERE SCHRANKE lesen; ein Prozentsatz des Monatskontingents laesst sich daraus nicht bilden.',
   };
 }
 

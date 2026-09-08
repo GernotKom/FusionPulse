@@ -40,8 +40,22 @@ kbd{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padd
 .mono,.lvv,.c-sz,.c-r,.c-qh{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
 
 /* ═══════════════════════════════════════════════════════════ Kopfzeile ═══ */
+/* ══ v4.5.7 · DIE KOPFZEILE ZERBRACH GENAU DANN, WENN SIE ETWAS ZU SAGEN HATTE
+   Die Regel `.resource-strip.err{flex-basis:100%}` weiter unten (Zeile ~782)
+   traegt den Kommentar „Im Fehlerfall darf diese Leiste wachsen und
+   UMBRECHEN“. Umbrechen konnte sie nie: weder `header` noch `.hcenter-tools`
+   hatten `flex-wrap`. In einer Flex-Zeile ohne Umbruch fordert `flex-basis:100%`
+   die volle Breite und bekommt sie — `.hstat{min-width:0;flex:1}` schrumpft
+   dadurch auf Minimalbreite, und „Krypto · Risk-Off · 35 % ueber VWAP\" faellt
+   in eine 70-Pixel-Saeule mit einem Wort je Zeile. Die sticky Kopfzeile wird
+   dabei so hoch, dass vom Inhalt nur ein schmales Scrollfenster bleibt.
+
+   Gemeldet am 08.09. mit rotem Aktien-Status. Im gruenen Normalfall war das
+   Layout immer tadellos — der Fehler trat ausschliesslich bei `err` und
+   `orange` auf, also genau dann, wenn die Kopfzeile gelesen werden soll.
+   Eine Anzeige, die im Ausnahmefall versagt, fuer den sie gebaut wurde. */
 header{
-  position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:9px;
+  position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:9px;flex-wrap:wrap;
   padding:9px var(--pad);background:#080b14f2;backdrop-filter:blur(16px);
   border-bottom:1px solid var(--line);
 }
@@ -693,7 +707,13 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
 .zone-label{display:block;margin-top:2px;font-size:8px;line-height:1;letter-spacing:.04em;color:var(--dim2);text-align:center;white-space:nowrap}.zone-label.in{color:var(--green);font-weight:800}.zone-label.below{color:var(--yellow)}.zone-label.above{color:var(--dim)}
 
 /* v3.1.5 header/status, permanent banner and regime explanation */
-.hcenter-tools{display:flex;align-items:center;gap:8px;margin-left:auto}
+/* v4.5.7 · `.resource-strip` ist ein Kind DIESER Leiste, nicht von `header`.
+   `flex-basis:100%` bezieht sich deshalb auf `.hcenter-tools` — ohne `wrap`
+   hier bleibt die Zeile trotz `wrap` im `header` eine einzige. Beide brauchen
+   es: `header`, damit diese Leiste eine eigene Zeile bekommen kann, und
+   `.hcenter-tools`, damit die Statusleiste innerhalb davon umbricht statt
+   ihre Geschwister zu erdruecken. */
+.hcenter-tools{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-left:auto}
 .mini-status{display:flex;align-items:center;gap:5px;padding:4px 7px;border:1px solid var(--line);border-radius:999px;background:var(--panel)}
 .mini-dot{font:800 10px ui-monospace,monospace;line-height:1;color:var(--dim2)}
 .mini-dot.ok{color:var(--green)}.mini-dot.warn{color:var(--yellow)}.mini-dot.err{color:var(--red)}.mini-dot.busy{color:var(--dim2);opacity:.75}
@@ -731,7 +751,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"4.5.6";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"4.5.7";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.

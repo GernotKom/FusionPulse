@@ -1,3 +1,56 @@
+# FusionPulse 4.5.7 — Anzeigen, die im Ausnahmefall versagen
+
+Reiner Anzeigepatch. Keine Bewertungsregel, keine Datenbankstruktur, kein
+Abrufverhalten wurde angefasst. Alle vier Befunde sind derselbe Fehler: eine
+Anzeige arbeitet im Normalfall tadellos und wird genau dann falsch, wenn sie
+gebraucht wird.
+
+1. **Kopfzeile** (`style.css`) — `.resource-strip.err{flex-basis:100%}` trug
+   seit jeher den Kommentar „darf wachsen und umbrechen“, aber weder `header`
+   noch `.hcenter-tools` hatten `flex-wrap`. Ergebnis bei rotem oder orangem
+   Status: die Statusleiste erdrückte ihre Geschwister, der Regime-Titel fiel
+   in eine 70-Pixel-Säule, und vom Inhalt blieb ein schmales Scrollfenster.
+   Im grünen Normalfall war das Layout immer korrekt.
+
+2. **Lernkachel** (`app.js:learningBadge`) — zeigte `Setups` und `ausgewertet`,
+   nie `dropped`. Verworfene Snapshots (keine Folgekurse binnen
+   `LEARN_HORIZON_MS`) blieben dauerhaft in der Differenz und sahen wie ein
+   Rückstand von 19.000 Fällen aus, der 245 Tage bräuchte. `stats.dropped`
+   lieferte der Server längst. Der Nacht-/Learning-Bericht hatte dieselbe
+   Korrektur bereits in 4.2.3 bekommen — diese Kachel nicht.
+
+3. **Bandbreiten-Tempo** (`worker.js:tiingoBandwidthView`) — rechnete
+   `usedGb / measuredHours`, wobei der Nenner in Echtzeit weiterlief. Am Labor
+   Day, mit stillstehendem Aktienblock, sank die Anzeige von 0,79 über 0,74 auf
+   0,64 GB/Tag bei unveränderter Pfadtabelle: je länger die App nichts tat,
+   desto sparsamer sah sie aus. Neu wird über die **aktive Spanne** gerechnet
+   (`startedTs` bis `lastTs`); das Tempo friert im Stillstand ein statt zu
+   sinken, und `idleHours` sagt daneben, seit wann nichts mehr kam.
+   Neues Feld `lastTs` im persistierten Zustand; alte Stände ohne `lastTs`
+   fallen auf das bisherige Verhalten zurück statt mit einer Null zu rechnen.
+
+4. **Etikett** (`app.js`, `worker.js`) — „gemessen seit dem Start dieser
+   Worker-Version“ war falsch. `startedTs` hängt am Monatsbehälter, liegt in D1
+   und überdauert jeden Deploy. Die Formulierung suggerierte, der Zähler messe
+   den aktuellen Codestand — und genau darauf stützte sich die Beurteilung der
+   4.5.x-Wirkung.
+
+**Tests:** `tests/display-honesty.mjs` (NK81a–e), ausgeführt statt per Muster,
+in `npm run check` eingehängt. Alle vier Korrekturen mit Negativkontrolle
+belegt: zurückgedreht fällt die Suite jeweils.
+
+**Nicht enthalten:** die Aufräumung für `market_snapshots`
+(`SNAP_RETENTION_DAYS`). Sie ändert Verhalten und wartet auf eine
+Entscheidung; sie gehört nicht in einen Anzeigepatch.
+
+**Offen:** ob der rote Aktien-Alarm im Premarket ein Fehlalarm ist. Das
+5-Stunden-Abruffenster von `tiingoStockChart` enthält vor 09:30 ET keine
+regulären Bars — 5.256 Abrufe am 08.09. lieferten leere Antworten (Ø
+Antwortgröße fiel von 15,9 auf 6,0 KB bei unverändertem Gesamtverbrauch).
+Ob sich das nach US-Eröffnung von selbst löst, ist noch nicht belegt.
+
+---
+
 # FusionPulse — Übergabe an den nächsten Chat
 
 Stand: 07.09.2026, Version **4.5.6**. Diese Datei liegt im Repository, damit sie beim nächsten Upload mitwandert.

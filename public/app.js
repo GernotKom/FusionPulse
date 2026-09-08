@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.5.6 — Frontend
+   FusionPulse v4.5.7 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2718,12 +2718,41 @@ function edgeStrip(r){const e=edgeSignals(r),tw=e.tw;const twinSrc=tw.source==='
     : '';return `<div class="edge-strip"><span title="Attention-Price-Divergence: hohe Suchaufmerksamkeit bei noch relativ ruhigem Preis. Forschungsindikator, kein BUY allein.">⚡ Attention ${e.apd==null?'n.v.':e.apd+'/100'}</span><span title="Liquidity Vacuum: heuristisch wenig frühere Aktivität/Widerstand direkt oberhalb des Einstiegs. Höher kann schnellere Expansion begünstigen.">↗ Vacuum ${e.vac}/100</span><span title="Sector Leader-Lag: positiver Wert bedeutet, dass andere Titel derselben Branche kurzfristig stärker laufen. Beobachtet potenzielle Nachzügler.">⇢ Sektor-Lag ${e.lag==null?'n.v.':num(e.lag,1)+'%'}</span><span title="${esc(`Historical Twin: ähnlichste frühere Markt-Snapshots, bevorzugt serverseitig aus Cloudflare D1, lokal nur als Rückfall. Gezählt wird der Anteil der Fälle, die mindestens ${num(tw.winPct??2.04,2)} % Maximalbewegung erreicht haben — die wirtschaftliche Zielweite dieser App, nicht mehr die alte 5-%-Marke. Angezeigt wird die obere 95-%-Konfidenzgrenze: 0 von 19 Fällen heißt nicht 0 %, sondern höchstens 16,8 %. Erst ab 5 unabhängigen Episoden. 0 % Gewicht in Score, Ampel und Freigabe.${legacy}`)}">🧠 Twin ${twin}</span>${verdict}${leadBadge(r)}</div>`;}
 
 
+/* ══ v4.5.7 · DIESELBE KORREKTUR ZUM ZWEITEN MAL, DIESMAL AN DER RICHTIGEN
+      STELLE ══════════════════════════════════════════════════════════════════
+   Der Nacht-/Learning-Bericht hat sie in 4.2.3 bekommen (siehe den Kommentar
+   weiter unten: „Bis 4.2.2 zeigte der Bericht ausschliesslich die
+   ausgewerteten. Ein Verwurf von 100 % sah damit ..."). Diese Kachel nicht.
+
+   FOLGE, gemessen am 07./08.09. ueber 18 Stunden:
+     11:27  30.531 Setups · 11.361 ausgewertet   → Differenz 19.170
+     18:01  31.434 Setups · 12.299 ausgewertet   → Differenz 19.135
+     05:51  32.752 Setups · 13.642 ausgewertet   → Differenz 19.110
+   Rund 120 neue und 120 aufgeloeste Faelle je Stunde, und die Differenz
+   bewegte sich um 60 Stueck. Das sieht nach einem Rueckstand aus, der 245 Tage
+   braucht. Es ist keiner: `resolved` zaehlt nur `resolved_ts`, waehrend
+   `dropped_ts` — verworfen, weil binnen `LEARN_HORIZON_MS` keine Folgekurse
+   kamen — dauerhaft in der Differenz haengen bleibt. Jede Marktschliessung,
+   jedes Wochenende, jeder Feiertag legt einen neuen unaufloesbaren Block dazu.
+
+   `stats.dropped` liefert der Server seit jeher mit (`learnCountersView`), die
+   Kachel hat es nur nie gelesen. Es wird nichts berechnet, was es nicht schon
+   gibt — es wird aufgehoert, etwas zu verschweigen. */
 function learningBadge(){
   const st=learningData?.stats||{};
   if(learningData?.configured===false) return '🧠 D1 nicht verbunden';
   if(learningData?.state==='error') return '🧠 Learning-Fehler';
   const age=st.lastTs?mins(Date.now()-st.lastTs):'–';
-  return `🧠 ${Number(st.snapshots||0)} Setups · ${Number(st.resolved||0)} ausgewertet · letzter ${age}`;
+  const snaps=Number(st.snapshots||0), res=Number(st.resolved||0);
+  const drop=Number(st.dropped||0);
+  /* Offen = was WIRKLICH noch aussteht. Nie negativ: `snapshots` und die
+     beiden Zaehler koennen aus verschiedenen Flush-Zyklen stammen, und ein
+     „-3 offen" waere schlimmer als eine Rundung. */
+  const open=Math.max(0, snaps-res-drop);
+  const dropTxt = drop
+    ? ` · ${drop} verworfen`+(snaps ? ` (${(drop/snaps*100).toFixed(0)} %)` : '')
+    : '';
+  return `🧠 ${snaps} Setups · ${res} ausgewertet${dropTxt} · ${open} offen · letzter ${age}`;
 }
 /* v3.14.2 · Die Ampel nennt jetzt die Quelle.
    Gemeldet: „SYSTEM ist rot, was ist da los". Die Leiste sagte nur
@@ -2837,7 +2866,7 @@ function renderBandwidthTable(){
         <td>${num(r.gb,3)} GB</td>
         <td>${Math.round((Number(r.bytes)||0)/total*100)} %</td></tr>`).join('')
     + `</tbody></table>
-      <small class="hint">${esc(bw.note||'')} Gemessen seit dem Start dieser Worker-Version; ${num(bw.exactSamples,0)} exakte und ${num(bw.approxSamples,0)} geschätzte Messungen.</small>`;
+      <small class="hint">${esc(bw.note||'')} Gemessen seit Beginn des laufenden Monatsbehälters (überdauert Deploys, wird am Monatswechsel zurückgesetzt); ${num(bw.exactSamples,0)} exakte und ${num(bw.approxSamples,0)} geschätzte Messungen.</small>`;
 }
 
 /* ══ v4.1.7 · DIE ZAHL, DIE MAN MORGENS BRAUCHT, STAND NUR IM ROH-JSON ═══════
@@ -3174,10 +3203,19 @@ function bandwidthNote(meta) {
   const perMonth = perDay != null ? perDay * 30 : null;
   const over = perMonth != null && cap > 0 ? perMonth / cap : null;
   const floorShare = cap > 0 ? used / cap : 0;
-  const rate = perDay != null ? ` · Tempo ${num(perDay, 2)} GB/Tag` : '';
+  /* v4.5.7 · Der Server rechnet das Tempo jetzt ueber die AKTIVE Spanne. Steht
+     die App still, friert der Wert ein statt zu sinken — und `idleHours` sagt
+     hier dazu, seit wann. Ohne diesen Zusatz waere ein eingefrorenes Tempo
+     genauso irrefuehrend wie das sinkende davor, nur andersherum. */
+  const idle = bw && Number.isFinite(Number(bw.idleHours)) ? Number(bw.idleHours) : null;
+  const stale = idle != null && idle >= 2;
+  const idleTxt = stale
+    ? (idle >= 24 ? ` · seit ${num(idle/24, 1)} Tagen kein Abruf` : ` · seit ${num(idle, 0)} h kein Abruf`)
+    : '';
+  const rate = perDay != null ? ` · Tempo ${num(perDay, 2)} GB/Tag${idleTxt}` : '';
   return { measured: true, pct: null, usedGb: used, capGb: cap, perDayGb: perDay, perMonthGb: perMonth,
     label: `Bandbreite: mindestens ${num(used, 2)} GB gemessen${rate}`,
-    detail: `Eigenmessung dieses Workers seit seinem Start — eine UNTERE SCHRANKE, kein Kontostand. Früherer Verbrauch im selben Monat und andere Clients fehlen darin. Der Anbieter deckelt bei ${num(cap, 0)} GB im Monat und antwortet danach mit HTTP 429; aus dieser Zahl lässt sich NICHT ablesen, wie viel davon noch frei ist.`
+    detail: `Eigenmessung seit Beginn des laufenden Monatsbehälters — eine UNTERE SCHRANKE, kein Kontostand. Früherer Verbrauch im selben Monat und andere Clients fehlen darin. Der Anbieter deckelt bei ${num(cap, 0)} GB im Monat und antwortet danach mit HTTP 429; aus dieser Zahl lässt sich NICHT ablesen, wie viel davon noch frei ist.`
       + (perMonth != null ? ` Hochgerechnet aus dem gemessenen Tempo: rund ${num(perMonth, 0)} GB im Monat${over != null && over > 1 ? ` — das ${num(over, 1)}-fache des Kontingents.` : '.'}` : ''),
     /* ══ DIE UNTERE SCHRANKE DARF ESKALIEREN, ABER NIE BERUHIGEN ═════════════
        `used/cap` ist als Bruch irrefuehrend, weil der Zaehler seit dem Deploy
