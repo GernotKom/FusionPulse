@@ -8369,8 +8369,47 @@ function maturityBreakdown(row, lifecycle) {
     lifecycle: life,
   };
 }
+/* ══ v4.6.1 · 36 STUNDEN REICHEN UEBER EIN WOCHENENDE NICHT ══════════════════
+   BEFUND vom 08.09., erstmals GEMESSEN statt vermutet. `/api/tiingo/probe`
+   gegen NVDA um 10:10 ET lieferte mit der URL der App:
+     zeilen: 8 · hatDatum: true · felder: [date,open,high,low,close,volume]
+     probe:  {date:"2026-09-08T13:30:00.000Z", open:233.17, ..., volume:114744}
+
+   Die Abfrage war also immer richtig. `columns` unschuldig, `startDate`
+   unschuldig, die Kontoberechtigung unschuldig — alle drei Verdaechtigen, die
+   ich zwei Tage lang genannt habe, waren falsch. Es kamen ACHT Balken, und
+   `analyseStock` steigt bei `bars.length < 24` aus (Zeile 1933).
+
+   WARUM ACHT: Das Fenster reichte 36 Stunden zurueck, von Dienstag 10:10 ET
+   bis Montag 22:10 ET. Montag war Labor Day, davor Wochenende. Im ganzen
+   Fenster lag keine Sitzung ausser den 40 Minuten dieses Dienstags. Tiingos
+   `afterHours` steht ausserdem standardmaessig auf false, Premarket zaehlt
+   also nicht mit.
+
+   DAS IST KEIN FEIERTAGS-SONDERFALL. Freitag 16:00 ET bis Montag 09:30 ET
+   sind 65 Stunden. Vor etwa 11:30 ET hatte die App an JEDEM Montagvormittag
+   keine 24 Balken zusammen — sie war jeden Wochenanfang zwei Stunden blind,
+   und es ist nie aufgefallen, weil danach alles lief.
+
+   SECHS TAGE decken Wochenende, Feiertag und Brueckentag. Der Feed liefert
+   hoechstens die juengsten 2000 Punkte; sechs Tage sind bei 5min rund 470,
+   also weit darunter. Die Antwort waechst von ~16 KB auf ~35 KB. Der Pfad
+   `iex-chart` liegt bei 0,049 GB im Monat — auch verdreifacht gegen 40 GB
+   Kontingent bedeutungslos.
+
+   KEINE WIRKUNG AUF DIE BEWERTUNG, nachgewiesen statt behauptet: jedes
+   Fenster in `analyseStock` ist ein Schwanzfenster (`cs.slice(-30)`,
+   `vs.slice(-36,-1)`, `bars.slice(-26)`, `tr.slice(-n)`). Mehr Historie VORNE
+   laesst den Schwanz unberuehrt. NK85 fuehrt genau das aus.
+
+   Eine Ausnahme, die ich nicht verschweige: zwischen 24 und 36 Balken greift
+   `vs.slice(-36,-1)` kuenftig in die Vorsitzung, wo es vorher am Reihenanfang
+   abschnitt. Betroffen ist genau das Fenster, in dem die App bisher GAR
+   NICHTS geliefert hat — und eine Volumenbasis samt Vorsitzung ist dieselbe,
+   die an jedem normalen Tag gilt. */
+const SERIES_LOOKBACK_DAYS = 6;
 async function tiingoIexSeries(env,symbol){
-  const start=new Date(Date.now()-36*60*60_000).toISOString().slice(0,10);
+  const start=new Date(Date.now()-SERIES_LOOKBACK_DAYS*24*60*60_000).toISOString().slice(0,10);
   const path=`/iex/${encodeURIComponent(symbol)}/prices?startDate=${start}&resampleFreq=5min&columns=open,high,low,close,volume`;
   const d=await tiingoFetch(env,path);
   const arr=Array.isArray(d)?d:[];
@@ -9341,11 +9380,18 @@ export default {
           out.push({ variante:v.name, pfad:v.pfad, fehler:String(e?.message||e) });
         }
       }
-      const treffer = out.find(r => r.zeilen > 0 && r.hatDatum);
+      const MIN_BARS = 24;
+      const treffer = out.find(r => r.zeilen >= MIN_BARS && r.hatDatum);
+      const magere  = out.filter(r => r.zeilen > 0 && r.zeilen < MIN_BARS);
       return json({ ok:true, symbol:sym, phase:usMarketPhase().key, version:APP_VERSION,
+        minBars: MIN_BARS,
         befund: treffer
-          ? `Daten kommen mit: „${treffer.variante}\". Die App benutzt Variante 1 — dort ist der Fehler.`
-          : 'KEINE Variante liefert brauchbare Zeilen. Dann liegt es nicht an der URL, sondern am Konto oder am Endpunkt.',
+          ? (treffer.variante.startsWith('wie die App')
+              ? `Die App-Abfrage selbst ist in Ordnung: ${treffer.zeilen} Balken mit Zeitstempel. Kein URL-Fehler.`
+              : `Genug Balken kommen erst ohne die Parameter von Variante 1 (${treffer.variante}).`)
+          : magere.length
+            ? `Alle Varianten liefern Daten, aber ZU WENIGE (${magere.map(r=>r.zeilen).join('/')} statt ${MIN_BARS}). Kein URL-Fehler, sondern ein zu kurzes Zeitfenster oder eine Marktpause.`
+            : 'KEINE Variante liefert Zeilen. Dann liegt es am Konto oder am Endpunkt, nicht an der URL.',
         varianten: out }, 200, { 'cache-control':'no-store' });
     }
     if (url.pathname === '/api/tiingo/status') {

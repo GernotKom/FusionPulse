@@ -1,3 +1,73 @@
+# FusionPulse 4.6.1 — die Ursache ist gefunden: 36 Stunden über ein Wochenende
+
+## Der Befund
+
+`/api/tiingo/probe` gegen NVDA am 08.09. um 10:10 ET, mit der URL der App:
+
+    zeilen: 8 · hatDatum: true · felder: [date,open,high,low,close,volume]
+    probe:  {date:"2026-09-08T13:30:00.000Z", open:233.17, close:231.83, volume:114744}
+
+**Die Abfrage war immer richtig.** `columns` unschuldig, `startDate`
+unschuldig, die Kontoberechtigung unschuldig — alle drei Verdächtigen, die
+zwei Tage lang genannt wurden, waren falsch. Es kamen acht Balken, und
+`analyseStock` steigt bei `bars.length < 24` aus (Zeile 1933).
+
+Das Fenster reichte 36 Stunden zurück: von Dienstag 10:10 ET bis Montag
+22:10 ET. Montag war Labor Day, davor Wochenende. Keine einzige Sitzung im
+Fenster außer den 40 Minuten dieses Dienstags.
+
+**Kein Feiertagssonderfall.** Freitag 16:00 ET bis Montag 09:30 ET sind
+65 Stunden. Die App hatte an *jedem* Montagvormittag bis etwa 11:30 ET keine
+24 Balken zusammen — sie war jeden Wochenanfang zwei Stunden blind, und es
+ist nie aufgefallen, weil danach alles lief.
+
+## Die Änderung
+
+`SERIES_LOOKBACK_DAYS = 6` statt 36 Stunden. Deckt Wochenende, Feiertag und
+Brückentag. Der IEX-Feed liefert höchstens 2000 Punkte; sechs Tage sind bei
+5min rund 470. Die Antwort wächst von ~16 KB auf ~35 KB; der Pfad `iex-chart`
+liegt bei 0,049 GB im Monat, auch verdreifacht gegen 40 GB bedeutungslos.
+
+## Der Nachweis, dass die Bewertung unberührt bleibt
+
+NK85 führt `analyseStock` auf **derselben** Reihe in verschiedenen Längen aus:
+
+| Balken | Score | Ampel | CRV |
+|---|---|---|---|
+| 23 | — | — | null |
+| 24 | 2,3 | rot | 2,33 |
+| 36 | 2,2 | rot | 2,34 |
+| 60 / 84 / 150 / 300 | 2,2 | rot | 2,34 |
+
+Ab 36 Balken identisch. Zwischen 24 und 35 weicht es minimal ab, weil
+`vs.slice(-36,-1)` nicht voll besetzt werden kann — das ist im Kommentar an
+`SERIES_LOOKBACK_DAYS` benannt und wird von NK85 ausdrücklich mitgeprüft.
+
+**Zwei eigene Fehler beim Bau dieses Tests, beide protokolliert:**
+
+1. Der erste Versuch erzeugte je Länge eine *neue* Reihe. Damit war auch der
+   Schwanz verschieden, und der Test meldete eine CRV-Abweichung von 3,56 zu
+   2,34 — ein Fehlalarm aus dem Prüfstand. Die Reihe wird jetzt einmal gebaut
+   und nur vorne beschnitten.
+2. Die Schwellenprüfung lief per Regex über die *ganze* Datei und traf den
+   eigenen Kommentar, in dem die Zahl 24 ebenfalls steht. Eine auf 8 gesenkte
+   Schwelle kam anstandslos durch. Der Ausdruck ist jetzt auf den Rumpf von
+   `analyseStock` eingegrenzt.
+
+**Nebenbefund:** Unterhalb von 13 Balken *stürzt* `analyseStock` ab
+(`bars.at(-13).c` auf undefined). Die 24er-Schwelle ist also kein reiner
+Qualitätsfilter, sondern hält eine Ausnahme auf.
+
+## Selbstdiagnose korrigiert
+
+Der `befund`-Text von `/api/tiingo/probe` war falsch herum: er behauptete
+„die App benutzt Variante 1 — dort ist der Fehler", auch wenn Variante 1 der
+Treffer war. Genau das kam heraus. Jetzt zählt zusätzlich die Zeilenzahl gegen
+`MIN_BARS = 24`, und der reale Fall „Daten da, aber zu wenige" hat einen
+eigenen Satz.
+
+---
+
 # FusionPulse 4.6.0 — Selbstdiagnose statt Vermutung, und die Zähler nennen Namen
 
 ## 1 · `/api/tiingo/probe` — die App prüft ihre eigene Abfrage
