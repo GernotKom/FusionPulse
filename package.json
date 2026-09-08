@@ -1,6 +1,6 @@
 {
   "name": "fusionpulse",
-  "version": "4.5.7",
+  "version": "4.5.8",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "predeploy": "npm run sync-version",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
-    "check": "npm run lint && node --check public/app.js && node --check src/worker.js && node --check public/sw.js && npm run test:safety && npm run test:coinscope && npm run test:provider && npm run test:bandwidth && npm run test:sw && npm run test:d1 && npm run test:display && npm run test:health && node tests/signal-history.mjs && node tests/client-symbols.mjs && npm run test:symbols",
+    "check": "npm run lint && node --check public/app.js && node --check src/worker.js && node --check public/sw.js && npm run test:safety && npm run test:coinscope && npm run test:provider && npm run test:bandwidth && npm run test:sw && npm run test:d1 && npm run test:display && npm run test:header && npm run test:health && node tests/signal-history.mjs && node tests/client-symbols.mjs && npm run test:symbols",
     "test:safety": "node tests/safety-regression.mjs",
     "audit:reach": "node tests/reachability-audit.mjs",
     "test:sw": "node tests/sw-fault.mjs",
@@ -19,6 +19,7 @@
     "test:bandwidth": "node tests/bandwidth-feed.mjs",
     "test:d1": "node tests/d1-usage.mjs",
     "test:display": "node tests/display-honesty.mjs",
+    "test:header": "node tests/header-layout.mjs",
     "handbuch": "python3 scripts/build-handbuch.py",
     "release": "npm run sync-version && npm run check && npm run handbuch",
     "lint": "eslint src/worker.js public/app.js public/sw.js",
@@ -28,5 +29,8 @@
   "devDependencies": {
     "eslint": "^9.39.5",
     "wrangler": "^4.68.0"
+  },
+  "dependencies": {
+    "puppeteer-core": "^25.10.0"
   }
 }

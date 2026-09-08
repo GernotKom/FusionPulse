@@ -45,7 +45,7 @@ kbd{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padd
    traegt den Kommentar „Im Fehlerfall darf diese Leiste wachsen und
    UMBRECHEN“. Umbrechen konnte sie nie: weder `header` noch `.hcenter-tools`
    hatten `flex-wrap`. In einer Flex-Zeile ohne Umbruch fordert `flex-basis:100%`
-   die volle Breite und bekommt sie — `.hstat{min-width:0;flex:1}` schrumpft
+   die volle Breite und bekommt sie — `.hstat{min-width:0;flex:1 1 260px}` schrumpft
    dadurch auf Minimalbreite, und „Krypto · Risk-Off · 35 % ueber VWAP\" faellt
    in eine 70-Pixel-Saeule mit einem Wort je Zeile. Die sticky Kopfzeile wird
    dabei so hoch, dass vom Inhalt nur ein schmales Scrollfenster bleibt.
@@ -59,7 +59,7 @@ header{
   padding:9px var(--pad);background:#080b14f2;backdrop-filter:blur(16px);
   border-bottom:1px solid var(--line);
 }
-.hstat{min-width:0;flex:1}
+.hstat{min-width:0;flex:1 1 260px}
 .hstat b{display:block;font-size:12.5px;font-weight:700;letter-spacing:.2px}
 .hstat b.riskon{color:var(--green)} .hstat b.riskoff{color:var(--red)} .hstat b.neutral{color:var(--dim)}
 #status{display:block;font-size:10.5px;color:var(--dim2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -717,7 +717,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
 .mini-status{display:flex;align-items:center;gap:5px;padding:4px 7px;border:1px solid var(--line);border-radius:999px;background:var(--panel)}
 .mini-dot{font:800 10px ui-monospace,monospace;line-height:1;color:var(--dim2)}
 .mini-dot.ok{color:var(--green)}.mini-dot.warn{color:var(--yellow)}.mini-dot.err{color:var(--red)}.mini-dot.busy{color:var(--dim2);opacity:.75}
-.regime-btn{display:block;padding:0;border:0;background:transparent;border-radius:0;text-align:left;font-size:12.5px;font-weight:700;letter-spacing:.2px;color:var(--fg)}
+.regime-btn{display:block;padding:0;border:0;background:transparent;border-radius:0;text-align:left;font-size:12.5px;font-weight:700;letter-spacing:.2px;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .regime-btn.riskon{color:var(--green)}.regime-btn.riskoff{color:var(--red)}.regime-btn.neutral{color:var(--dim)}
 .hstat{position:relative}.regime-explain{position:absolute;left:0;top:24px;z-index:75;width:min(420px,82vw);padding:10px 12px;border:1px solid var(--line2);border-radius:10px;background:var(--panel2);box-shadow:0 12px 30px #0009;color:var(--fg);font-size:11px;line-height:1.35}
 .regime-explain b{display:inline;font-size:11px}.regime-explain small{display:block;margin-top:5px;color:var(--dim)}
@@ -751,7 +751,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"4.5.7";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"4.5.8";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -799,7 +799,8 @@ body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
    Im Fehlerfall darf diese Leiste deshalb wachsen und umbrechen. Im
    Normalfall bleibt sie schmal — dort steht ein kurzer Satz, und die
    Kopfzeile soll nicht auseinanderfallen. */
-.resource-strip.err,.resource-strip.orange{max-width:none;flex-basis:100%;order:-1}
+.resource-strip.err,.resource-strip.orange{max-width:none;flex:1 1 100%;order:99}
+.resource-strip.err span,.resource-strip.orange span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .resource-strip.err span,.resource-strip.orange span{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.35}
 .learning-report{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:10px;min-height:90px}
 .learning-report .lr-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:7px}

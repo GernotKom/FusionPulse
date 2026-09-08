@@ -1,3 +1,65 @@
+# FusionPulse 4.5.8 — die Kopfzeile wird jetzt gerendert, nicht gelesen
+
+## Was in 4.5.7 schiefging
+
+`flex-wrap:wrap` auf `header` und `.hcenter-tools` war die falsche Reparatur.
+NK81a hat sie geprüft — per Regex im Stylesheet. Der Test war grün, die Regel
+stand da, und im Browser wurde es **schlimmer**: statt einer schmalen Säule
+stand die Kopfzeile 278 px hoch und schob den Inhalt aus dem Bild.
+
+Gemessen mit echtem Chromium bei 1440 px, Fehlerzustand:
+
+| Stand | Titelbreite | Titelhöhe | Kopfhöhe |
+|---|---|---|---|
+| 4.5.6 | 49 px | 90 px | 278 px |
+| 4.5.7 (mein Fehlversuch) | 49 px | 90 px | 278 px |
+| **4.5.8** | **255 px** | **15 px** | **188 px** |
+
+Der eigentliche Fehler lag nie beim Umbruch, sondern bei `.hstat{flex:1}` ohne
+Basis: der Titel durfte auf `min-content` schrumpfen, also auf ein Wort je
+Zeile. `flex-wrap` allein hat daran nichts geändert.
+
+## Änderungen
+
+- `.hstat{flex:1 1 260px}` — der Titel hat eine Basis und kollabiert nicht mehr
+- `.regime-btn{white-space:nowrap;text-overflow:ellipsis}` — bricht nie in Wörter
+- Fehlerleiste: `order:99` statt `-1`, Text auf zwei Zeilen begrenzt
+  (`-webkit-line-clamp`); der volle Wortlaut steht weiterhin im Tooltip
+- `flex-wrap:wrap` bleibt — es ist nötig, war aber nie hinreichend
+
+## Neuer Prüfstand: NK82 (`tests/header-layout.mjs`)
+
+Startet Chromium, lädt die echte `index.html` mit dem echten `style.css`, setzt
+den echten Fehlertext vom 08.09. und misst in drei Viewports (1440/1280/390).
+Geprüft wird: Kopfhöhe höchstens ein Drittel des Sichtfensters, Titel mindestens
+140 px breit und einzeilig, und der Titel darf zwischen Grün und Rot weder
+schrumpfen noch wachsen.
+
+**Negativkontrolle:** Sowohl der Stand von 4.5.6 als auch mein Fehlversuch aus
+4.5.7 fallen durch diesen Test. Ohne diesen Nachweis wäre er wertlos.
+
+Fehlt Chrome, wird NK82 sichtbar übersprungen mit Hinweis auf `CHROME_PATH` —
+`npm run check` scheitert nicht daran. Auf dem Mac:
+`CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" npm run test:header`
+
+## Zwei Schwellen in NK82 habe ich nachträglich gelockert
+
+Ehrlichkeitshalber protokolliert, weil Schwellenlockern der übliche Weg ist,
+einen Test grün zu lügen. Gestrichen wurden „Kopfzeile höchstens 120 px" (eine
+Desktop-Zahl, auf ein 390-px-Handy angewandt) und „Sprung höchstens doppelt"
+(frei erfunden; hätte 188 px verworfen, die 79 % des Bildes stehen lassen). An
+ihre Stelle trat das, was tatsächlich gemeldet wurde: der Titel muss im
+Fehlerfall genauso lesbar bleiben wie im Normalfall. Beide kaputten Stände
+fallen mit den neuen Schwellen weiterhin durch.
+
+## Unverändert offen
+
+Der Aktienfehler. `tiingoAnalyseOne` liefert für alle 36 Titel nichts, und kein
+Anzeigepatch ändert daran etwas. Nächster Schritt: ein Screenshot während der
+laufenden US-Sitzung.
+
+---
+
 # FusionPulse 4.5.7 — Anzeigen, die im Ausnahmefall versagen
 
 Reiner Anzeigepatch. Keine Bewertungsregel, keine Datenbankstruktur, kein

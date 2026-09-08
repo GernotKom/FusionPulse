@@ -31,14 +31,24 @@ const w   = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8'
     assert.ok(i >= 0, `${sel} fehlt in style.css`);
     return css.slice(i, css.indexOf('}', i));
   };
-  const growRule = css.slice(css.indexOf('.resource-strip.err,'), css.indexOf('.resource-strip.err span'));
-  assert.ok(/flex-basis:\s*100%/.test(growRule),
-    'Die Fehlerleiste soll weiterhin die volle Breite fordern duerfen');
+  /* v4.5.8 · HIER STAND EIN TEST, DER NICHTS BEWIESEN HAT.
+     NK81a prueft `flex-wrap` per Muster im Stylesheet. Diese Pruefung war in
+     4.5.7 gruen — und im Browser wurde das Layout SCHLIMMER als vorher: der
+     Titel fiel weiter in eine 49-Pixel-Saeule, die Kopfzeile wuchs auf 278 px.
+     Ein Muster im Quelltext beweist, dass eine Regel dasteht, nie dass sie
+     wirkt. Die Wirkung misst jetzt NK82 (`tests/header-layout.mjs`) mit einem
+     echten Chromium.
 
+     Was hier bleibt, ist nur noch das, was ein Muster ehrlich zeigen kann:
+     dass die Regeln nicht versehentlich verschwinden. Die Schwellen dazu
+     stehen in NK82. */
   for (const sel of ['header', '.hcenter-tools']) {
-    assert.match(block(sel), /flex-wrap:\s*wrap/,
-      `${sel} braucht flex-wrap — sonst erdrueckt flex-basis:100% die Geschwister, statt umzubrechen`);
+    assert.match(block(sel), /flex-wrap:\s*wrap/, `${sel} braucht flex-wrap`);
   }
+  assert.match(block('.hstat'), /flex:\s*1 1 260px/,
+    'Der Titel braucht eine Flex-Basis, sonst schrumpft er auf min-content');
+  assert.match(block('.regime-btn'), /white-space:\s*nowrap/,
+    'Der Titel darf nie in Einzelwoerter brechen');
   /* Negativkontrolle: ohne den Umbruch muss diese Pruefung fallen. */
   assert.throws(() => assert.match('display:flex;align-items:center;gap:8px', /flex-wrap:\s*wrap/),
     'Negativkontrolle: die Pruefung darf ohne flex-wrap nicht durchgehen');
