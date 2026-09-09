@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#080b14">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="stylesheet" href="/style.css">
+<!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
+<script src="/version.js"></script>
+<title>FusionPulse 2.5.1</title>
+</head>
+<body>
+
+<!-- ═════════════════════════════════════════════ Update-Hinweis (v2.5.1) ═══ -->
+<div id="updateBar" class="updatebar hidden">
+  <span id="updateText">Neue FusionPulse-Version verfügbar – neu laden</span>
+  <button id="updateReload" class="primary">Jetzt neu laden</button>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ Kopfzeile ═══ -->
+<header>
+  <div class="hstat">
+    <b id="regime">–</b>
+    <!-- Systemstatus kompakt: Krypto ● | Aktien ● | v2.5.1 -->
+    <div class="sysbar" id="sysbar">
+      <span class="sys" id="sysCrypto" data-state="busy" title="Status der Krypto-Datenquelle (Bitpanda Fusion)">Krypto <i></i></span>
+      <span class="sysSep">|</span>
+      <span class="sys" id="sysStocks" data-state="busy" title="Status der Aktien-Datenquelle (Twelve Data)">Aktien <i></i></span>
+      <span class="sysSep">|</span>
+      <span class="sys ver" id="appver" title="Laufende FusionPulse-Version. Tab-Titel, Oberfläche, Worker und Service-Worker-Cache verwenden dieselbe Quelle.">v–</span>
+    </div>
+    <small id="status" data-state="busy">Verbinde…</small>
+  </div>
+
+  <div class="hclock" title="Restzeit bis Schluss der 5-Minuten-Kerze">
+    <b id="barclock">--:--</b>
+  </div>
+
+  <div class="hcounts" title="Handeln / Beobachten / Rest">
+    <span class="g"><b id="gc">0</b></span>
+    <span class="y"><b id="yc">0</b></span>
+    <span class="r"><b id="rc">0</b></span>
+  </div>
+
+  <button id="sound" title="Haupt-Ton Ein/Aus (m)">🔊</button>
+  <button id="wake" title="Display wach halten">☀</button>
+  <button id="scan" class="primary" title="Neu scannen (Leertaste)">↻</button>
+  <button id="cog" title="Einstellungen">⚙</button>
+</header>
+
+<!-- ═══════════════════════════════════ Fokus + Karte nebeneinander ═══ -->
+<div class="stage">
+  <section id="focus" class="focus"></section>
+
+  <aside class="mapwrap">
+    <div class="maphead"><span>Qualität ↑</span><span class="mdim">Handelbarkeit →</span></div>
+    <svg id="map" viewBox="0 0 200 200"></svg>
+    <div class="maplegend">
+      <span><i class="q-handeln"></i>handeln</span>
+      <span><i class="q-blockiert"></i>zu teuer</span>
+      <span><i class="q-liquide"></i>kein Setup</span>
+    </div>
+  </aside>
+</div>
+
+<!-- ═══════════════════════════════════════════ Dichte Trefferliste ═══ -->
+<nav>
+  <input id="q" placeholder="Filtern…  (/)" autocomplete="off" spellcheck="false">
+  <select id="f" title="Ampelfilter (1/2/3/0)">
+    <option value="">Alle</option>
+    <option value="green">Handeln</option>
+    <option value="yellow">Beobachten</option>
+    <option value="red">Rest</option>
+  </select>
+  <select id="iv" title="Scan-Intervall">
+    <option value="15000">15 s</option>
+    <option value="20000">20 s</option>
+    <option value="30000">30 s</option>
+    <option value="60000">60 s</option>
+  </select>
+  <small id="stamp"></small>
+</nav>
+
+<main>
+  <div class="thead">
+    <span title="Coin und Signalstatus. Grün pulsierend = Kauf-Freigabe; Lautsprecher schaltet nur diesen Coin stumm.">Coin</span><span title="Kurzfristiger Verlauf">Verlauf</span><span title="Erkannte Setup-Art; Mouseover erklärt das Muster.">Setup</span>
+    <span class="ta" title="Reife = Anzahl aufeinanderfolgender Scans, die denselben Signalzustand bestätigt haben, und die Dauer dieses Zustands.">Reife</span><span title="Position des aktuellen Preises relativ zu Stop und Einstiegszone.">Zonenlage</span>
+    <span class="ta" title="Netto-CRV: erwarteter Ertrag im Verhältnis zum Risiko nach geschätzten Kosten">CRV</span><span class="ta" title="Kaufsumme in Euro, berechnet aus Konto-Einstellung und Risiko pro Trade">Kaufsumme</span><span class="ta" title="Q = Setup-Qualität, H = Handelbarkeit/Ausführbarkeit">Q·H</span>
+  </div>
+  <section id="list"></section>
+  <button id="more" class="more hidden"></button>
+  <section id="rest" class="hidden"></section>
+
+  <!-- ═══════════════════════════════════════════════ Aktienradar ═══ -->
+  <section id="stocks" class="stocks">
+    <div class="stocks-head">
+      <div>
+        <h2>Aktienradar</h2>
+        <small id="stockCounts" title="Gescannt = Titel im Analyse-Universum. Angezeigt = Titel in dieser Liste (Einstellungen → Maximal angezeigte Aktien).">–</small>
+      </div>
+      <div class="stockbadges">
+        <span id="stockState" class="badge" title="Aktienradar-Datenquelle und Aktualisierungsstatus">Aktienradar wird geprüft…</span>
+        <span id="stockQuota" class="badge" title="API-Kontingent laut den Antwort-Headern von Twelve Data">Kontingent unbekannt</span>
+      </div>
+    </div>
+    <div id="stockGroups" class="stockgroups"></div>
+    <p class="stocknote" id="stockNote">
+      Datenquelle: <b>Twelve Data, US-Markt</b>. EUR-Beträge sind mit dem aktuellen EUR/USD-Kurs
+      <b>umgerechnet</b> und ausdrücklich <b>keine Tradegate-Kurse</b>. Vor einer Order den tatsächlichen
+      Kurs an deiner Handelsbörse prüfen.
+    </p>
+  </section>
+
+  <p class="legend">
+    <kbd>Leer</kbd> Scan · <kbd>/</kbd> Suche · <kbd>j</kbd>/<kbd>k</kbd> blättern ·
+    <kbd>c</kbd> Plan kopieren · <kbd>d</kbd> Details · <kbd>1–3</kbd> Filter · <kbd>z</kbd> nur Zone
+  </p>
+</main>
+
+<div id="dock" class="dock hidden">
+  <div class="dockinfo"><b id="dsym">–</b><span id="dplan"></span></div>
+  <button id="dcopy" class="primary">⧉ Plan</button>
+</div>
+
+<div id="modal" class="modal"><article><button id="x" aria-label="Schließen">×</button><div id="detail"></div></article></div>
+
+<div id="settings" class="modal"><article class="settings">
+  <button id="sClose" aria-label="Schließen">×</button>
+  <h2>Einstellungen · <span id="settingsVer">v–</span></h2>
+
+  <h3>Konto und Risiko</h3>
+  <label>Konto-Equity (€)<input id="sEquity" type="number" min="100" step="100"></label>
+  <label>Risiko pro Trade (%)<input id="sRisk" type="number" min="0.1" max="5" step="0.05"></label>
+  <label>Steuersatz für Gewinnschätzung (%) · Österreich KESt = 27,5<input id="sTax" type="number" min="0" max="60" step="0.1"></label>
+
+  <h3>Anzeigeumfang</h3>
+  <label title="Wie viele Coins der Worker vertieft analysiert. Mehr Coins erzeugen mehr externe API-Abfragen pro Scan.">Coins scannen (tief analysieren, 4–30)<input id="sDeep" type="number" min="4" max="30" step="1"></label>
+  <label title="Wie viele Coin-Zeilen maximal im Radar sichtbar sind. Das verändert nur die Anzeige, nicht die Anzahl der API-Abfragen.">Coins anzeigen<input id="sCoinCount" type="number" min="3" max="50" step="1"></label>
+  <label title="Wie viele der am besten bewerteten Aktien im Radar angezeigt werden. Das Aktien-Universum wird rotierend gescannt, um API-Credits zu sparen.">Aktien anzeigen<input id="sStockCount" type="number" min="3" max="50" step="1"></label>
+  <p class="hint" id="sCountsInfo">–</p>
+
+  <h3>Analyseverfahren</h3>
+  <p class="hint">Abgeschaltete Verfahren gehen <b>nicht</b> als negativ in den Score ein. Die verbleibenden Gewichte werden neu normiert.</p>
+  <div class="complist" id="sComponents">
+    <label class="row" title="VWAP: volumengewichteter Durchschnittspreis. Anker für Einstiegszone und Regimefilter."><input type="checkbox" data-comp="vwap"> VWAP (kurz/lang)</label>
+    <label class="row" title="EMA21: exponentieller Durchschnitt über 21 Perioden; zusammen mit EMA9/EMA50 die Trendstaffelung."><input type="checkbox" data-comp="ema21"> EMA21 / Trendstaffelung</label>
+    <label class="row" title="Relative Stärke: Entwicklung des Coins gegenüber Bitcoin, volatilitätsnormiert."><input type="checkbox" data-comp="rs"> Relative Stärke vs. BTC</label>
+    <label class="row" title="Momentum und Multi-Timeframe: 5m, 15m und 1h aus demselben Datensatz, ohne Zusatz-Requests."><input type="checkbox" data-comp="mtf"> Momentum / Multi-Timeframe</label>
+    <label class="row" title="Volumen: z-Score der jüngsten Umsätze gegen ein disjunktes Basisfenster."><input type="checkbox" data-comp="volume"> Volumen (z-Score)</label>
+    <label class="row" title="Orderbuch: Imbalance, Tiefe, Spread und Slippage. Abschalten spart pro Scan bis zu 10 API-Abfragen."><input type="checkbox" data-comp="book"> Orderbuch / Imbalance</label>
+    <label class="row" title="Breakout/Squeeze: Kompression der Bollinger-Bandbreite und Auflösung nach oben."><input type="checkbox" data-comp="squeeze"> Breakout / Squeeze</label>
+    <label class="row" title="Pullback: Rücksetzer an VWAP oder EMA21 innerhalb eines übergeordneten Trends."><input type="checkbox" data-comp="pullback"> Pullback</label>
+    <label class="row" title="Elliott-Wellen-Heuristik: Impuls-/Korrekturstruktur aus Swing-Extremen, Trendstaffelung und Fibonacci-nahem Rücksetzer."><input type="checkbox" data-comp="elliott"> Elliott-Wellen</label>
+  </div>
+  <div class="actions compact">
+    <button id="sCompAll">Alle aktivieren</button>
+    <button id="sCompElliott">Nur Elliott-Wellen</button>
+  </div>
+  <label>Analysemodus<select id="sMode">
+    <option value="composite">Kombiniert (empfohlen)</option>
+    <option value="elliott">Nur Elliott-Wellen-Heuristik</option>
+    <option value="momentum">Momentum + Volumen</option>
+    <option value="trend">Trend + VWAP/EMA</option>
+    <option value="micro">Orderbuch + Liquidität</option>
+  </select></label>
+
+  <h3>Filter und Darstellung</h3>
+  <label>Watchlist (immer mitscannen)<input id="sWatch" placeholder="BTC-EUR,ETH-EUR"></label>
+  <label>Mindest-Qualität in der Liste<input id="sMin" type="number" min="0" max="10" step="0.5"></label>
+  <label class="row"><input id="sZone" type="checkbox"> Nur Coins mit Preis in der Zone</label>
+  <label>Farbschema<select id="sTheme">
+    <option value="dark">Dunkel</option>
+    <option value="light">Hell gedämpft</option>
+    <option value="warm">Warm gedämpft</option>
+  </select></label>
+  <label class="row" title="Aktien-Signale akustisch melden. Gilt zusätzlich zum Hauptschalter oben rechts."><input id="sStockSound" type="checkbox"> Ton auch für Aktiensignale</label>
+
+  <h3>Zugang</h3>
+  <label>Zugriffs-Token (falls APP_TOKEN gesetzt)<input id="sToken" type="password" autocomplete="off"></label>
+
+  <div class="actions">
+    <button class="primary" id="sApply">Übernehmen</button>
+    <button id="sExport">Journal als CSV</button>
+    <button id="sReset">Cache leeren und neu laden</button>
+  </div>
+
+  <details class="methods"><summary>Verwendete Analysemethoden im Detail</summary><p>Multi-Timeframe 5m/15m/1h aus einem Kerzen-Request · Momentum volatilitätsnormiert · Volumen-z-Score gegen disjunktes Basisfenster · Wilder-ATR · VWAP kurz (24 Bars) und lang (78 Bars) · EMA9/21/50-Staffelung · RSI(14) · relative Stärke vs. BTC · Bollinger-Kompression/Squeeze · Orderbuch-Imbalance, Tiefe, Spread, VWAP-Slippage · Marktbreite über alle gescannten Coins · Strukturziele aus Swing-Hochs · Elliott-Wellen-Heuristik (Impulslänge, Struktur höherer Tiefs, Fibonacci-Nähe des Rücksetzers). Der Analysemodus schaltet Methodengruppen um, die Einzelschalter darüber schalten einzelne Verfahren.</p></details>
+  <details class="methods"><summary>Aktienradar / Twelve Data</summary><p>Optionaler Aktienfeed über das Cloudflare-Secret <code>TWELVE_API_KEY</code>. 21 liquide US-Titel werden in drei Gruppen rotierend aktualisiert (7 Titel je 5-Minuten-Zyklus, 1 Credit je Titel). Firmennamen stammen aus einer lokalen Tabelle bzw. aus den Metadaten der ohnehin abgerufenen Zeitreihe — <b>keine zusätzlichen Requests pro Refresh</b>. EUR-Beträge sind gekennzeichnete USD-Umrechnungen, keine Tradegate-Kurse. Das Kontingent stammt aus den Antwort-Headern <code>api-credits-used</code> / <code>api-credits-left</code>; liefert der Anbieter sie nicht, zeigt FusionPulse „unbekannt“ statt einer Schätzung.</p></details>
+  <details class="methods"><summary>Cloudflare Free-Modus</summary><p>FusionPulse kann Cloudflares kontoweiten Verbrauch ohne zusätzlichen Cloudflare-API-Token nicht auslesen und zeigt deshalb auch keinen. Erkennbar sind 429- und Ressourcenfehler; in diesem Fall erscheint ein Hinweis. Die Anzeige „API-Unterabfragen“ im Scanner zählt Bitpanda-Unterabfragen innerhalb eines Scans, nicht deinen Cloudflare-Tagesverbrauch.</p></details>
+  <small>Alle Werte bleiben lokal auf diesem Gerät. Die API-Keys liegen ausschließlich im Cloudflare Worker.</small>
+</article></div>
+
+<div id="quotaModal" class="modal"><article class="quota"><button id="qClose" aria-label="Schließen">×</button><h2 id="quotaTitle">Limit erreicht</h2><div id="quotaText"></div><div class="actions"><button id="qDismiss" class="primary">Verstanden</button></div></article></div>
+<script src="/app.js"></script>
+</body>
+</html>
