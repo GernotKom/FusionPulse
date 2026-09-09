@@ -1,3 +1,121 @@
+# FusionPulse 4.8.0 — die Zahlen, die die Auswahl entscheiden, werden zum ersten Mal geprüft
+
+## Der Befund
+
+`snapshotPayload` schreibt seit v3.17.0 den Situationstyp mit, seit v3.18.0 den
+Dollarumsatz, seit v3.23.0 den Spread, seit v3.27.0 den `situScore` **mit seinen
+elf Termen**, seit v4.2.0 die VWAP-Distanz und die relative Stärke. An jeder
+dieser Stellen steht derselbe Satz im Kommentar: *„was man nicht aufzeichnet,
+kann man nie kalibrieren."*
+
+Aufgezeichnet ist alles. **Ausgewertet wurde davon nichts.** `claudeAttribution`
+gruppiert ausschließlich nach `setup` und rührt keinen einzigen dieser Werte an.
+Offener Punkt 6 sagt seit 4.1.5, die Vorrang-Formel sei schwach und brauche
+einen Beleg — der Beleg lag die ganze Zeit in `market_snapshots`.
+
+**Sechzehnter Fall desselben Musters in dieser Reihe**, und diesmal auf der
+teuersten Ebene: an den Zahlen, die die Titelauswahl entscheiden.
+
+## Modul 0b · `/api/attribution/features`
+
+Je Merkmal die Rang-Korrelation (Spearman) mit dem tatsächlich eingetretenen
+Ausgang, getrennt nach In-Sample und Out-of-Sample, mit Permutationstest und
+Benjamini-Hochberg-Korrektur. Dazu eine Terzil-Tafel, weil „IC 0,12" niemandem
+etwas sagt und „oberstes Drittel 41 %, unterstes 23 %" schon.
+
+Danach ein L2-regularisiertes logistisches Modell, geschätzt **nur** auf dem
+älteren Teil, geprüft am jüngeren, und gegen das gehalten, was die App heute
+zur Reihung benutzt: `score`, `situScore`, Vorrang.
+
+**Es verändert nichts.** Die Gewichte stehen als Vorschlag in der Antwort. Ein
+Modell, das sich selbst scharf schaltet, verändert die Auswahl, aus der die
+nächste Messung entsteht — dann misst es sich selbst. NK87k prüft an den
+Aufrufstellen, dass es genau einen Aufrufer gibt und dass weder
+`serverLearningCycle` noch `analyseStock` noch `analyse` das Modul berühren.
+
+## Sieben Ehrlichkeitsregeln, jede mit Negativkontrolle
+
+1. **Fehlend ist nicht null.** Ausgeschlossen, Abdeckung ausgewiesen.
+2. **Der Schnitt ist chronologisch**, dieselbe `OOS_FRACTION` wie Modul 0 — keine zweite Zahl.
+3. **Median und Standardisierung kommen aus dem In-Sample-Teil.**
+4. **Die Merkmalsauswahl fürs Modell benutzt keine OOS-Information.**
+5. **Der p-Wert kommt aus einer Permutation**, mit festem Startwert; `(treffer+1)/(züge+1)`.
+6. **Benjamini-Hochberg.** Bei zwanzig Merkmalen liefert Zufall sonst regelmäßig einen „Fund".
+7. **Overfit schlägt Signifikanz.** Vorzeichenwechsel heißt `overfit`, auch wenn der OOS-Wert noch knapp hält.
+
+## Kosten
+
+Eine D1-Leseabfrage je Aufruf, serverseitig zehn Minuten gehalten, nur auf
+Anforderung, **nie im Cron**. Dieselbe Abfrageform wie `claudeAttribution`
+(`asset_type` + `resolved_ts` + `ts`) — es entsteht keine neue, unindizierte
+Zugriffsform (offener Punkt 22). Der Client lädt sie am Muster-Takt, also alle
+30 Minuten, nicht im Zwei-Minuten-Takt der Attribution.
+
+NK87l misst die Rechenzeit statt sie anzunehmen: 2.000 Episoden mit 15
+Merkmalen und 400 Permutationen je Merkmal bleiben unter 3 s gegen
+`cpu_ms: 5000`.
+
+## Die Anzeige steht in DERSELBEN Version wie die Rechnung
+
+`dropped` (4.2.3), die Lesezahlen (4.3.8) und `topQueries` (4.5.5) waren alle
+berechnet, übertragen und nie angezeigt. Dreimal hat das eine ganze Version
+gekostet. Neue Sektion `#featureReport` unter der Selbstauswertung, mit
+Terzil-Tafel und Modellvergleich im Tooltip. Fail-closed: zu wenig Daten heißt
+„Sammelt: 20/40 Episoden" **mit Zahl und ohne Prozentwert**; ein Lesefehler
+sieht nicht aus wie ein leerer Befund.
+
+## Zehn Negativkontrollen, alle gefeuert — und vier davon haben meine eigenen Tests entlarvt
+
+1. Fehlend als 0 in der IC-Rechnung · 2. Abdeckung zählt fehlende mit ·
+3. ohne FDR-Korrektur · 4. ohne Overfit-Erkennung · 5. Median/Standardisierung
+über den ganzen Satz · 6. Permutation mit `Math.random` · 7. Modul im Cron
+verdrahtet · 8. Hinweis aus der Kopfzeile entfernt · 9. Prozentwert im
+Sammelzustand · 10. Anzeige komplett entfernt.
+
+**Vier blieben beim ersten Anlauf grün, und das ist der eigentliche Bericht:**
+
+- **Fehlend als 0** traf nur die IC-Rechnung; mein Test prüfte die
+  *Abdeckungsanzeige*, die separat gezählt wird. Geprüft wird jetzt die
+  **Paarzahl**, aus der der IC entsteht — 240 bei 60 % von 400, nicht 400.
+- **Median über den ganzen Satz** traf nur den *Modellpfad*; mein Leck-Test
+  prüfte den IC, der nie geleckt hat. Jetzt werden die Gewichte verglichen.
+- **Hinweis aus der Kopfzeile** blieb grün, weil `nirgends verdrahtet` **auch**
+  im Tooltip des Modellblocks steht. Geprüft wird jetzt die Kopfzeile selbst.
+- **Prozentwert im Sammelzustand** blieb grün, weil mein Ausdruck
+  `[^>]*>` den Text **vor** jedem Tag mitverschluckt hat und deshalb fast alles
+  durchließ. Derselbe Fehlertyp wie der Zeichenscanner in 4.3.1: ein
+  Prüfwerkzeug, das seine Eingabe falsch zerlegt, irrt in beide Richtungen.
+
+Vier Fehlanker in einer Version. Das Muster aus 4.5.7, 4.6.1 und 4.7.0 hält an;
+der Unterschied ist nur, dass die Negativkontrollen sie diesmal alle gefunden
+haben, bevor die Version ausgeliefert wurde.
+
+## Was das für offenen Punkt 6 heißt
+
+Nichts — noch nicht. Das Modul liefert die Entscheidungsgrundlage, es trifft
+keine Entscheidung. Erst wenn die Tafel über mehrere Handelstage stabil sagt,
+welche Terme tragen, ist eine neue Gewichtung mehr als eine andere Meinung.
+Bis dahin bleibt die Formel unverändert.
+
+**Erster Blick lohnt sich an drei Stellen:** trägt `crv` tatsächlich nichts
+(4.1.5 sagt, der Term steht bei fast jedem Kandidaten am Deckel)? Zählt
+`logDollarVol` doppelt, wie dort vermutet? Und ist `relVwapPct` aus 4.2.0 die
+Aufzeichnung wert gewesen — die Frage steht seit dieser Version ausdrücklich im
+Code und war bis heute unbeantwortbar.
+
+## Weiterhin unberührt
+
+**Keine Kauf-Freigabe wurde angefasst.** Score-Schwelle, CRV-Minimum,
+Erwartungswert, Plangröße, `capFav` und das Kalenderfenster aus 4.7.0 sind
+unverändert; die Bestandssuiten laufen alle durch.
+
+**Und die fünf Altdateien im Root sind immer noch da.** `worker.js` (50 KB
+gegen 591 KB in `src/`), `app.js`, `style.css`, `index.html`, `sw.js` — alle auf
+Stand v2.5.1, alle im ausgelieferten ZIP, seit 4.0.x als „zu löschen" vermerkt.
+Ein ZIP-Upload räumt sie nicht weg; das muss im Repository passieren.
+
+---
+
 # FusionPulse 4.7.0 — schneller intraday, und dabei billiger
 
 Zwei Änderungen, die sich gegenseitig bezahlen. Netto sinkt der Verbrauch.

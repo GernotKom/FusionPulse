@@ -6835,6 +6835,531 @@ async function claudeAttribution(env){
 }
 
 /* ============================================================================
+   MODUL 0b · MERKMALS-ATTRIBUTION (v4.8.0) — welche Zahl traegt tatsaechlich?
+   ----------------------------------------------------------------------------
+   ANLASS ist der offene Punkt 6 der Uebergabe: die Vorrang-Formel ist seit
+   4.1.5 nachweislich schwach (der CRV-Term steht bei fast jedem Kandidaten am
+   Deckel, das Volumen zaehlt doppelt), und dort steht woertlich: eine neue
+   Gewichtung „braucht einen Beleg — welche Reihenfolge trifft im Nachhinein
+   besser?". Der Beleg fehlte, also blieb die Formel.
+
+   ER FEHLTE NICHT, WEIL DIE DATEN FEHLEN. `snapshotPayload` schreibt seit
+   v3.17.0 den Situationstyp mit, seit v3.18.0 den Dollarumsatz, seit v3.23.0
+   den Spread, seit v3.27.0 den `situScore` MIT SEINEN ELF TERMEN und seit
+   v4.2.0 die VWAP-Distanz und die relative Staerke. Jeder dieser Kommentare
+   sagt denselben Satz: „was man nicht aufzeichnet, kann man nie kalibrieren."
+   Aufgezeichnet ist alles. Ausgewertet wurde davon NICHTS: `claudeAttribution`
+   gruppiert ausschliesslich nach `setup` und ruehrt keinen einzigen dieser
+   Werte an.
+
+   Das ist dieselbe Krankheit wie in 4.2.3, 4.3.8, 4.5.5 — gemessen,
+   uebertragen, nie gelesen — nur auf der teuersten Ebene: an den Zahlen, die
+   die Titelauswahl entscheiden.
+
+   WAS DIESES MODUL TUT — und was ausdruecklich NICHT:
+
+     Es misst je Merkmal den Rang-Zusammenhang (Spearman) mit dem
+     tatsaechlich eingetretenen Ausgang, getrennt in In-Sample und
+     Out-of-Sample, mit Permutationstest und Mehrfachtestkorrektur. Dazu
+     schaetzt es ein L2-regularisiertes logistisches Modell auf dem
+     In-Sample-Teil und vergleicht seine OOS-Trennschaerfe mit der des
+     heutigen `score`, `situScore` und Vorrangs.
+
+     ES VERAENDERT KEINEN SCORE, KEINE AMPEL UND KEINE FREIGABE. Die
+     Modellgewichte sind ein VORSCHLAG in der Antwort, mehr nicht. Ein Modell,
+     das sich selbst scharf schaltet, waere nicht messbar — es veraenderte die
+     Auswahl, aus der die naechste Messung entsteht.
+
+   SIEBEN EHRLICHKEITSREGELN, jede mit einer Negativkontrolle in NK87:
+
+   1. FEHLEND IST NICHT NULL. Ein Merkmal ohne Wert wird aus SEINER Rechnung
+      ausgeschlossen und die Abdeckung ausgewiesen. `Number(null)===0` ist in
+      diesem Projekt schon zweimal als Entwarnung aus Unwissen durchgegangen
+      (4.2.3 `coverageNote`, 4.3.8 Lesezahl).
+   2. DER SCHNITT IST CHRONOLOGISCH. Die juengsten 30 % sind Out-of-Sample,
+      wie in Modul 0. Ein zufaelliger Schnitt liesse Wissen aus der Zukunft in
+      die Schaetzung laufen.
+   3. MEDIAN UND STANDARDISIERUNG KOMMEN AUS DEM IN-SAMPLE-TEIL. Wer sie ueber
+      den ganzen Satz rechnet, hat den OOS-Teil bereits angefasst.
+   4. DIE MERKMALSAUSWAHL FUERS MODELL BENUTZT KEINE OOS-INFORMATION. Genommen
+      wird, was ausreichend belegt ist — nicht, was sich out-of-sample bewaehrt
+      hat. Sonst misst man die eigene Auswahl.
+   5. DER P-WERT KOMMT AUS EINER PERMUTATION, nicht aus einer
+      Normalverteilungsannahme. Rang-ICs auf Kursausgaengen sind nicht normal.
+      `(treffer+1)/(zuege+1)`: eine Permutation kann nie p=0 ergeben.
+   6. MEHRFACHTESTKORREKTUR (Benjamini-Hochberg, FDR). Bei zwanzig Merkmalen
+      liefert reiner Zufall im Schnitt einen "Fund" auf dem 5-%-Niveau. Modul 0
+      korrigiert seit v3.5.4 aus demselben Grund; Bonferroni waere hier zu
+      streng, weil die Merkmale untereinander korrelieren.
+   7. OVERFIT SCHLAEGT SIGNIFIKANZ. Ein Merkmal, das in-sample stark ist und
+      out-of-sample zusammenbricht oder das Vorzeichen wechselt, heisst
+      `overfit` — auch wenn der OOS-Wert noch knapp signifikant ist.
+
+   KOSTEN: eine D1-Leseabfrage je Aufruf, serverseitig zehn Minuten gehalten,
+   nur auf Anforderung, NIE im Cron. Die Abfrageform ist dieselbe wie in
+   `claudeAttribution` (asset_type + resolved_ts + ts), es entsteht also keine
+   neue, unindizierte Zugriffsform — offener Punkt 22.
+   ========================================================================== */
+const FATTR = {
+  MIN_EPISODES: 40,      // darunter kein Urteil, egal wie schoen die Zahl aussieht
+  MIN_COVERAGE: 0.50,    // Merkmal muss in mind. der Haelfte der Episoden belegt sein
+  OOS_FRACTION: ATTR.OOS_FRACTION,  // KEINE zweite Zahl neben Modul 0
+  OOS_MIN: 20,           // mind. so viele OOS-Episoden, sonst nur "sammelt"
+  MIN_LEVEL_N: 10,       // Mindestbesetzung einer Kategorie-Auspraegung
+  IC_MIN: 0.08,          // |Rang-IC| darunter ist praktisch bedeutungslos
+  PERMUTATIONS: 400,     // Aufloesung des p-Werts: 1/401 = 0,0025
+  FDR_Q: 0.10,           // Benjamini-Hochberg-Niveau
+  OVERFIT_RATIO: 0.40,   // OOS unter 40 % des In-Sample-Betrags -> Overfit
+  HISTORY_MS: ATTR.HISTORY_MS,
+  ROW_LIMIT: 8000,
+  CACHE_MS: 10 * 60_000,
+  RIDGE: 2.0,            // L2 auf standardisierte Merkmale; Achsenabschnitt frei
+  IRLS_ITERS: 30,
+  SEED: 20260909,        // fester Startwert: dieselbe Antwort bei gleicher Eingabe
+};
+
+/** Durchschnittsraenge mit Bindungsbehandlung. Bindungen sind hier der
+ *  Normalfall (Ampel, ganzzahlige Scores), nicht die Ausnahme — wer sie
+ *  willkuerlich aufloest, erzeugt Korrelation aus Sortierreihenfolge. */
+function fattrRanks(xs) {
+  const idx = xs.map((v, i) => [v, i]).sort((a, b) => a[0] - b[0]);
+  const out = new Array(xs.length);
+  let i = 0;
+  while (i < idx.length) {
+    let j = i;
+    while (j + 1 < idx.length && idx[j + 1][0] === idx[i][0]) j++;
+    const r = (i + j) / 2 + 1;
+    for (let k = i; k <= j; k++) out[idx[k][1]] = r;
+    i = j + 1;
+  }
+  return out;
+}
+/** Pearson. Gibt bei konstanter Reihe `null` zurueck, NICHT 0 — "kein
+ *  Zusammenhang messbar" und "Zusammenhang gemessen, er ist null" sind zwei
+ *  verschiedene Aussagen. */
+function fattrPearson(a, b) {
+  const n = a.length;
+  if (n < 3 || b.length !== n) return null;
+  let sa = 0, sb = 0;
+  for (let i = 0; i < n; i++) { sa += a[i]; sb += b[i]; }
+  const ma = sa / n, mb = sb / n;
+  let num = 0, da = 0, db = 0;
+  for (let i = 0; i < n; i++) { const x = a[i] - ma, y = b[i] - mb; num += x * y; da += x * x; db += y * y; }
+  if (!(da > 0) || !(db > 0)) return null;
+  return num / Math.sqrt(da * db);
+}
+/** Rang-Korrelation zweier Reihen. Paare, in denen EINE Seite fehlt, fallen
+ *  heraus (Regel 1) — die Zahl der verbleibenden Paare wird mitgeliefert. */
+function fattrRankIC(xs, ys) {
+  const px = [], py = [];
+  for (let i = 0; i < xs.length; i++) {
+    if (Number.isFinite(xs[i]) && Number.isFinite(ys[i])) { px.push(xs[i]); py.push(ys[i]); }
+  }
+  if (px.length < 3) return { ic: null, n: px.length, reason: 'zu wenige Paare' };
+  const rx = fattrRanks(px), ry = fattrRanks(py);
+  const ic = fattrPearson(rx, ry);
+  if (ic === null) return { ic: null, n: px.length, reason: 'konstante Reihe' };
+  return { ic, n: px.length, rx, ry };
+}
+/** Deterministischer Zufall (mulberry32). Ein Permutationstest mit
+ *  `Math.random` liefert bei jedem Aufruf eine andere Antwort — dann ist der
+ *  p-Wert selbst nicht reproduzierbar und ein Test darauf wertlos. */
+function fattrRng(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+/** Permutations-p auf bereits gebildeten Raengen: wie oft erreicht reiner
+ *  Zufall denselben Betrag? `(treffer+1)/(zuege+1)` — der beobachtete Fall
+ *  zaehlt mit, sonst waere p=0 moeglich und das ist immer gelogen. */
+function fattrPermutationP(rx, ry, iters, seed) {
+  const obs = fattrPearson(rx, ry);
+  if (obs === null) return null;
+  const rnd = fattrRng(seed);
+  const y = ry.slice();
+  let ge = 0;
+  for (let it = 0; it < iters; it++) {
+    for (let i = y.length - 1; i > 0; i--) {
+      const j = Math.floor(rnd() * (i + 1));
+      const t = y[i]; y[i] = y[j]; y[j] = t;
+    }
+    const r = fattrPearson(rx, y);
+    if (r !== null && Math.abs(r) >= Math.abs(obs) - 1e-12) ge++;
+  }
+  return (ge + 1) / (iters + 1);
+}
+/** Benjamini-Hochberg: kontrolliert den Anteil falscher Funde unter den
+ *  Funden. Bonferroni waere hier zu streng, weil die Merkmale einander
+ *  ueberlappen (der Vorrang ENTHAELT den CRV- und den Volumenterm). */
+function fattrBenjaminiHochberg(ps) {
+  const valid = ps.map((p, i) => ({ p, i })).filter((x) => Number.isFinite(x.p)).sort((a, b) => a.p - b.p);
+  const m = valid.length;
+  const q = new Array(ps.length).fill(null);
+  let prev = 1;
+  for (let k = m - 1; k >= 0; k--) {
+    const v = Math.min(prev, (valid[k].p * m) / (k + 1));
+    q[valid[k].i] = v;
+    prev = v;
+  }
+  return q;
+}
+/** ROC-Flaeche ueber Raenge (Mann-Whitney), O(n log n) statt O(n²).
+ *  `aucSeparation` weiter oben rechnet dasselbe paarweise und ist bei 8.000
+ *  Episoden nicht bezahlbar. Damit daraus keine zweite Wahrheit wird, prueft
+ *  NK87 die Gleichheit beider Funktionen auf kleinen Stichproben. */
+function fattrAuc(scores, labels) {
+  const s = [], l = [];
+  for (let i = 0; i < scores.length; i++) {
+    if (Number.isFinite(scores[i]) && (labels[i] === 0 || labels[i] === 1)) { s.push(scores[i]); l.push(labels[i]); }
+  }
+  const pos = l.reduce((a, b) => a + b, 0), neg = l.length - pos;
+  if (!pos || !neg) return null;
+  const r = fattrRanks(s);
+  let sum = 0;
+  for (let i = 0; i < l.length; i++) if (l[i] === 1) sum += r[i];
+  return (sum - (pos * (pos + 1)) / 2) / (pos * neg);
+}
+/** Gauss mit Teilpivotisierung. `null` bei singulaerer Matrix — dann bricht
+ *  die Schaetzung ab, statt mit Unendlich weiterzurechnen. */
+function fattrSolve(A, b) {
+  const n = b.length;
+  const M = A.map((row, i) => row.concat([b[i]]));
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    if (Math.abs(M[p][c]) < 1e-12) return null;
+    const t = M[c]; M[c] = M[p]; M[p] = t;
+    for (let r = 0; r < n; r++) {
+      if (r === c) continue;
+      const f = M[r][c] / M[c][c];
+      if (!f) continue;
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  return M.map((row, i) => row[n] / M[i][i]);
+}
+/** Logistische Regression mit L2-Strafe, geschaetzt ueber IRLS.
+ *  Der Achsenabschnitt wird NICHT bestraft — sonst zieht die Strafe die
+ *  Grundwahrscheinlichkeit in Richtung 50 %, und die liegt hier nicht dort. */
+function fattrFitLogistic(X, y, lambda, iters) {
+  const n = X.length;
+  if (!n) return null;
+  const p = X[0].length;
+  const w = new Array(p + 1).fill(0);
+  for (let it = 0; it < iters; it++) {
+    const H = Array.from({ length: p + 1 }, () => new Array(p + 1).fill(0));
+    const g = new Array(p + 1).fill(0);
+    for (let i = 0; i < n; i++) {
+      let z = w[0];
+      for (let j = 0; j < p; j++) z += w[j + 1] * X[i][j];
+      const mu = 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))));
+      const s = Math.max(1e-6, mu * (1 - mu));
+      const r = y[i] - mu;
+      for (let a = 0; a <= p; a++) {
+        const xa = a === 0 ? 1 : X[i][a - 1];
+        g[a] += xa * r;
+        for (let b = 0; b <= p; b++) H[a][b] += xa * (b === 0 ? 1 : X[i][b - 1]) * s;
+      }
+    }
+    for (let a = 1; a <= p; a++) { H[a][a] += lambda; g[a] -= lambda * w[a]; }
+    const d = fattrSolve(H, g);
+    if (!d) break;
+    let delta = 0;
+    for (let a = 0; a <= p; a++) { w[a] += d[a]; delta += Math.abs(d[a]); }
+    if (delta < 1e-8) break;
+  }
+  return w;
+}
+function fattrNum(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+/** Merkmale einer Episode. Alles, was `snapshotPayload` seit v3.17.0 mitschreibt
+ *  und bis heute nie ausgewertet wurde — inklusive der elf `situParts`-Terme. */
+function fattrFeatures(row) {
+  let p = {};
+  try { p = JSON.parse(row?.payload || '{}') || {}; } catch { p = {}; }
+  const dv = fattrNum(p.dollarVol);
+  const num = {
+    score: fattrNum(row?.score),
+    crv: fattrNum(row?.crv),
+    vorrang: fattrNum(p.maturity),
+    situScore: fattrNum(p.situScore),
+    vwapDistPct: fattrNum(p.vwapDistancePct),
+    relVwapPct: fattrNum(p.relVwapStrengthPct),
+    spreadPct: fattrNum(p.spreadPct),
+    logDollarVol: dv !== null && dv > 0 ? Math.log10(dv) : null,
+  };
+  if (p.situParts && typeof p.situParts === 'object') {
+    for (const [k, v] of Object.entries(p.situParts)) {
+      const n = fattrNum(v);
+      if (n !== null) num['situ.' + k] = n;
+    }
+  }
+  const cat = {
+    setup: p.setup || null, situation: p.situation || null, lifecycle: p.lifecycle || null,
+    phaseAction: p.phaseAction || null, verdict: p.verdict || null,
+    vwapState: p.vwapState || null, sektor: p.prioritySector || null,
+    ampel: row?.light || null,
+  };
+  return { num, cat };
+}
+/** Ausgang einer Episode. `chance` und `risiko` bleiben GETRENNT: die
+ *  Reihenfolge von Hoch und Tief ist nicht aufgezeichnet (siehe v3.20.0), eine
+ *  Verrechnung zu einer Zahl wuerde eine Information vortaeuschen, die es
+ *  nicht gibt. Ein Merkmal, das Chance UND Risiko hebt, soll als genau das
+ *  sichtbar sein. */
+function fattrOutcome(row) {
+  const mx = Number(row?.max_pct), mn = Number(row?.min_pct);
+  return {
+    win: Number.isFinite(mx) ? (mx >= ATTR.WIN_PCT ? 1 : 0) : null,
+    chance: Number.isFinite(mx) ? mx : null,
+    risiko: Number.isFinite(mn) ? mn : null,
+  };
+}
+/** Terzil-Tafel: die interpretierbare Seite des IC. Ein Rang-IC von 0,12 sagt
+ *  niemandem etwas; "oberstes Drittel 41 % Treffer, unterstes 23 %" schon. */
+function fattrTerciles(xs, wins) {
+  const pairs = [];
+  for (let i = 0; i < xs.length; i++) if (Number.isFinite(xs[i]) && (wins[i] === 0 || wins[i] === 1)) pairs.push([xs[i], wins[i]]);
+  if (pairs.length < 9) return null;
+  pairs.sort((a, b) => a[0] - b[0]);
+  const size = Math.floor(pairs.length / 3);
+  const out = [];
+  for (let t = 0; t < 3; t++) {
+    const seg = t === 2 ? pairs.slice(2 * size) : pairs.slice(t * size, (t + 1) * size);
+    const w = seg.reduce((a, b) => a + b[1], 0);
+    out.push({
+      terzil: ['unten', 'mitte', 'oben'][t], n: seg.length,
+      von: Math.round(seg[0][0] * 100) / 100, bis: Math.round(seg[seg.length - 1][0] * 100) / 100,
+      trefferPct: Math.round((w / seg.length) * 100), wilson: Math.round(wilsonLower(w, seg.length) * 100),
+    });
+  }
+  return out;
+}
+/** Die eigentliche Auswertung. REIN — bekommt Episoden, gibt einen Bericht.
+ *  Ohne Datenbank, ohne Uhr, ohne Netz: damit NK87 sie mit gepflanzten
+ *  Signalen und mit reinem Rauschen AUSFUEHREN kann statt sie zu lesen. */
+function fattrReport(episodes, cfg) {
+  const K = { ...FATTR, ...(cfg || {}) };
+  const eps = [...(episodes || [])].sort((a, b) => Number(a.ts) - Number(b.ts));
+  const base = {
+    version: APP_VERSION, episodes: eps.length, zielweitePct: ATTR.WIN_PCT,
+    oosAnteil: K.OOS_FRACTION, icMin: K.IC_MIN, fdrQ: K.FDR_Q,
+    note: 'Reine Auswertung aufgeloester Aufzeichnungen. Kein Wert dieses Moduls wirkt auf Score, Ampel oder Kauf-Freigabe.',
+  };
+  if (eps.length < K.MIN_EPISODES) {
+    return { ...base, state: 'sammelt', reason: `${eps.length}/${K.MIN_EPISODES} Episoden – zu wenig fuer ein Urteil`, merkmale: [], kategorien: [], modell: null };
+  }
+  const splitAt = Math.max(1, Math.floor(eps.length * (1 - K.OOS_FRACTION)));
+  const inS = eps.slice(0, splitAt), oos = eps.slice(splitAt);
+  if (oos.length < K.OOS_MIN) {
+    return { ...base, state: 'sammelt', reason: `Out-of-Sample zu klein (${oos.length}/${K.OOS_MIN})`, merkmale: [], kategorien: [], modell: null };
+  }
+  const feat = eps.map(fattrFeatures), outc = eps.map(fattrOutcome);
+  const fIn = feat.slice(0, splitAt), fOos = feat.slice(splitAt);
+  const oIn = outc.slice(0, splitAt), oOos = outc.slice(splitAt);
+
+  // Vereinigungsmenge der numerischen Merkmalsnamen. `situParts` kann je nach
+  // Codestand andere Terme tragen; ein fester Namensblock wuerde neue Terme
+  // stillschweigend uebergehen.
+  const namen = [...new Set(feat.flatMap((f) => Object.keys(f.num)))].sort();
+  const spalte = (arr, name) => arr.map((f) => (f.num[name] === undefined ? null : f.num[name]));
+
+  const roh = [];
+  for (const name of namen) {
+    const alle = spalte(feat, name);
+    const belegt = alle.filter(Number.isFinite).length;
+    const coverage = belegt / eps.length;
+    const xIn = spalte(fIn, name), xOos = spalte(fOos, name);
+    const icIn = fattrRankIC(xIn, oIn.map((o) => o.chance));
+    const icOos = fattrRankIC(xOos, oOos.map((o) => o.chance));
+    const icRisk = fattrRankIC(xOos, oOos.map((o) => o.risiko));
+    const p = icOos.ic !== null && coverage >= K.MIN_COVERAGE && icOos.n >= K.OOS_MIN
+      ? fattrPermutationP(icOos.rx, icOos.ry, K.PERMUTATIONS, K.SEED)
+      : null;
+    roh.push({
+      name, abdeckungPct: Math.round(coverage * 100), coverage,
+      nIn: icIn.n, nOos: icOos.n,
+      icIn: icIn.ic === null ? null : Math.round(icIn.ic * 1000) / 1000,
+      icOos: icOos.ic === null ? null : Math.round(icOos.ic * 1000) / 1000,
+      icRisikoOos: icRisk.ic === null ? null : Math.round(icRisk.ic * 1000) / 1000,
+      p, _icInRaw: icIn.ic, _icOosRaw: icOos.ic, _konstant: icOos.reason === 'konstante Reihe',
+      terzile: fattrTerciles(xOos, oOos.map((o) => o.win)),
+    });
+  }
+  const qs = fattrBenjaminiHochberg(roh.map((r) => r.p));
+  const merkmale = roh.map((r, i) => {
+    const q = qs[i];
+    const aIn = r._icInRaw === null ? null : Math.abs(r._icInRaw);
+    const aOos = r._icOosRaw === null ? null : Math.abs(r._icOosRaw);
+    let urteil, grund;
+    if (r.coverage < K.MIN_COVERAGE) {
+      urteil = 'unbelegt';
+      grund = `nur in ${r.abdeckungPct} % der Episoden vorhanden (noetig ${Math.round(K.MIN_COVERAGE * 100)} %) – kein Urteil, KEINE Null unterstellt`;
+    } else if (r._konstant) {
+      urteil = 'konstant';
+      grund = 'der Wert ist ueber alle Episoden gleich – er kann nichts unterscheiden';
+    } else if (r.nOos < K.OOS_MIN || aOos === null) {
+      urteil = 'sammelt';
+      grund = `nur ${r.nOos}/${K.OOS_MIN} belegte OOS-Episoden`;
+    } else if (aIn !== null && aIn >= K.IC_MIN
+      && (Math.sign(r._icInRaw) !== Math.sign(r._icOosRaw) || aOos < K.OVERFIT_RATIO * aIn)) {
+      urteil = 'overfit';
+      grund = Math.sign(r._icInRaw) !== Math.sign(r._icOosRaw)
+        ? `In-Sample ${r.icIn} kehrt sich out-of-sample zu ${r.icOos} um – Vorzeichenwechsel`
+        : `In-Sample ${r.icIn} bricht out-of-sample auf ${r.icOos} ein (unter ${Math.round(K.OVERFIT_RATIO * 100)} %)`;
+    } else if (Number.isFinite(q) && q <= K.FDR_Q && aOos >= K.IC_MIN) {
+      urteil = 'traegt';
+      grund = `OOS-IC ${r.icOos} bei n=${r.nOos}, q=${Math.round(q * 1000) / 1000} – haelt der Mehrfachtestkorrektur stand`;
+    } else {
+      urteil = 'traegt nicht';
+      grund = aOos < K.IC_MIN
+        ? `OOS-IC ${r.icOos} unter der Bedeutsamkeitsschwelle ${K.IC_MIN}`
+        : `OOS-IC ${r.icOos}, aber q=${Number.isFinite(q) ? Math.round(q * 1000) / 1000 : '–'} ueber ${K.FDR_Q} – vom Zufall nicht zu trennen`;
+    }
+    const { _icInRaw, _icOosRaw, _konstant, coverage, ...rest } = r;
+    return { ...rest, p: Number.isFinite(r.p) ? Math.round(r.p * 10000) / 10000 : null, q: Number.isFinite(q) ? Math.round(q * 10000) / 10000 : null, urteil, grund };
+  }).sort((a, b) => (Math.abs(b.icOos ?? 0) - Math.abs(a.icOos ?? 0)));
+
+  // ── Kategorien: Auspraegungen mit Wilson-Untergrenze auf dem OOS-Teil ──────
+  const katNamen = [...new Set(feat.flatMap((f) => Object.keys(f.cat)))].sort();
+  const kategorien = [];
+  for (const name of katNamen) {
+    const grp = new Map();
+    for (let i = 0; i < fOos.length; i++) {
+      const v = fOos[i].cat[name];
+      if (v === null || v === undefined || v === '') continue;
+      if (oOos[i].win === null) continue;
+      const key = String(v);
+      if (!grp.has(key)) grp.set(key, { w: 0, n: 0 });
+      const g = grp.get(key);
+      g.n++; g.w += oOos[i].win;
+    }
+    const stufen = [...grp.entries()].filter(([, g]) => g.n >= K.MIN_LEVEL_N)
+      .map(([k, g]) => ({ wert: k, n: g.n, trefferPct: Math.round((g.w / g.n) * 100), wilson: Math.round(wilsonLower(g.w, g.n) * 100) }))
+      .sort((a, b) => b.wilson - a.wilson);
+    if (!stufen.length) { kategorien.push({ name, stufen: [], spreizung: null, urteil: 'sammelt', grund: `keine Auspraegung erreicht ${K.MIN_LEVEL_N} OOS-Episoden` }); continue; }
+    const spreizung = stufen[0].wilson - stufen[stufen.length - 1].wilson;
+    kategorien.push({
+      name, stufen, spreizung,
+      urteil: stufen.length >= 2 && spreizung >= 10 ? 'trennt' : 'trennt nicht',
+      grund: stufen.length < 2 ? 'nur eine ausreichend besetzte Auspraegung – nichts zu vergleichen'
+        : `Abstand der Wilson-Untergrenzen: ${spreizung} Punkte (beste ${stufen[0].wert}, schlechteste ${stufen[stufen.length - 1].wert})`,
+    });
+  }
+
+  // ── Modell ────────────────────────────────────────────────────────────────
+  // Regel 4: die Auswahl der Merkmale kennt den OOS-Teil NICHT. Genommen wird,
+  // was ausreichend belegt und nicht konstant ist.
+  const modellNamen = merkmale.filter((m) => m.abdeckungPct / 100 >= K.MIN_COVERAGE && m.urteil !== 'konstant').map((m) => m.name);
+  let modell = null;
+  if (modellNamen.length >= 2) {
+    // Regel 3: Median und Standardisierung ausschliesslich aus dem In-Sample-Teil.
+    const med = {}, mu = {}, sd = {};
+    for (const nme of modellNamen) {
+      const col = spalte(fIn, nme).filter(Number.isFinite);
+      med[nme] = medianOf(col) ?? 0;
+    }
+    const bau = (arr) => arr.map((f) => modellNamen.map((nme) => {
+      const v = f.num[nme];
+      return Number.isFinite(v) ? v : med[nme];
+    }));
+    const Xin = bau(fIn), Xoos = bau(fOos);
+    for (let j = 0; j < modellNamen.length; j++) {
+      const col = Xin.map((r) => r[j]);
+      const m = col.reduce((a, b) => a + b, 0) / col.length;
+      const s = Math.sqrt(col.reduce((a, b) => a + (b - m) * (b - m), 0) / Math.max(1, col.length - 1)) || 1;
+      mu[modellNamen[j]] = m; sd[modellNamen[j]] = s;
+      for (const r of Xin) r[j] = (r[j] - m) / s;
+      for (const r of Xoos) r[j] = (r[j] - m) / s;
+    }
+    const yIn = oIn.map((o) => o.win), yOos = oOos.map((o) => o.win);
+    const keep = [];
+    for (let i = 0; i < yIn.length; i++) if (yIn[i] === 0 || yIn[i] === 1) keep.push(i);
+    const w = fattrFitLogistic(keep.map((i) => Xin[i]), keep.map((i) => yIn[i]), K.RIDGE, K.IRLS_ITERS);
+    if (w) {
+      const scoreOf = (row) => { let z = w[0]; for (let j = 0; j < modellNamen.length; j++) z += w[j + 1] * row[j]; return z; };
+      const sOos = Xoos.map(scoreOf);
+      const aucModell = fattrAuc(sOos, yOos);
+      // Vergleich gegen das, was die App HEUTE zur Reihung benutzt.
+      const vergleich = {};
+      for (const nme of ['score', 'situScore', 'vorrang']) {
+        const v = fattrAuc(spalte(fOos, nme), yOos);
+        vergleich[nme] = v === null ? null : Math.round(v * 1000) / 1000;
+      }
+      // Permutations-p fuer die AUC selbst: dieselbe Maschinerie, damit
+      // "besser als die heutige Reihung" nicht am Rauschen haengt.
+      let pAuc = null;
+      if (aucModell !== null) {
+        const rnd = fattrRng(K.SEED + 1);
+        const lab = yOos.filter((v) => v === 0 || v === 1);
+        const sc = sOos.filter((_, i) => yOos[i] === 0 || yOos[i] === 1);
+        let ge = 0;
+        for (let it = 0; it < K.PERMUTATIONS; it++) {
+          const shuffled = lab.slice();
+          for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); const t = shuffled[i]; shuffled[i] = shuffled[j]; shuffled[j] = t; }
+          const a = fattrAuc(sc, shuffled);
+          if (a !== null && Math.abs(a - 0.5) >= Math.abs(aucModell - 0.5) - 1e-12) ge++;
+        }
+        pAuc = (ge + 1) / (K.PERMUTATIONS + 1);
+      }
+      const besteHeute = Math.max(...Object.values(vergleich).filter(Number.isFinite), 0.5);
+      const gewichte = modellNamen.map((nme, j) => ({ merkmal: nme, gewicht: Math.round(w[j + 1] * 1000) / 1000, medianErsatz: Math.round(med[nme] * 1000) / 1000 }))
+        .sort((a, b) => Math.abs(b.gewicht) - Math.abs(a.gewicht));
+      const imputiert = Xoos.length ? Math.round(
+        (modellNamen.reduce((acc, nme) => acc + fOos.filter((f) => !Number.isFinite(f.num[nme])).length, 0)
+          / (modellNamen.length * fOos.length)) * 100) : 0;
+      modell = {
+        art: 'logistische Regression, L2-Strafe ' + K.RIDGE + ', standardisiert',
+        ziel: `Treffer = max_pct >= ${ATTR.WIN_PCT} % innerhalb des Lernhorizonts`,
+        merkmale: modellNamen.length, nIn: keep.length, nOos: yOos.filter((v) => v === 0 || v === 1).length,
+        imputiertPctOos: imputiert,
+        aucOos: aucModell === null ? null : Math.round(aucModell * 1000) / 1000,
+        aucHeute: vergleich, pAuc: pAuc === null ? null : Math.round(pAuc * 10000) / 10000,
+        gewichte,
+        urteil: aucModell === null ? 'kein Urteil'
+          : (pAuc !== null && pAuc <= 0.05 && aucModell > besteHeute + 0.02) ? 'besser als die heutige Reihung'
+            : (pAuc !== null && pAuc <= 0.05) ? 'trennt, aber nicht besser als die heutige Reihung'
+              : 'vom Zufall nicht zu trennen',
+        hinweis: 'Diese Gewichte sind ein VORSCHLAG. Sie sind nirgends verdrahtet und veraendern weder Score noch Ampel noch Freigabe.',
+      };
+    }
+  }
+  return {
+    ...base, state: 'ok',
+    inSampleN: inS.length, oosN: oos.length,
+    geprueft: merkmale.length,
+    tragend: merkmale.filter((m) => m.urteil === 'traegt').map((m) => m.name),
+    overfit: merkmale.filter((m) => m.urteil === 'overfit').map((m) => m.name),
+    merkmale, kategorien, modell,
+  };
+}
+let fattrMemo = { ts: 0, key: '', data: null };
+/** Datenbankseite. Eine Leseabfrage, zehn Minuten gehalten, nur auf
+ *  Anforderung. NIE im Cron — NK87 prueft das. */
+async function featureAttribution(env, opts = {}) {
+  if (!env?.DB) return { configured: false, state: 'nodb', version: APP_VERSION };
+  const assetType = opts.assetType === 'coin' ? 'coin' : 'stock';
+  const now = Number(opts.now) || Date.now();
+  const key = assetType;
+  if (fattrMemo.data && fattrMemo.key === key && now - fattrMemo.ts < FATTR.CACHE_MS) {
+    return { ...fattrMemo.data, gehalten: true, alterMin: Math.round((now - fattrMemo.ts) / 60000) };
+  }
+  await ensureD1Schema(env);
+  const since = now - FATTR.HISTORY_MS;
+  const rows = (await env.DB.prepare(
+    `SELECT symbol,ts,max_pct,min_pct,light,score,crv,payload
+     FROM market_snapshots
+     WHERE asset_type=? AND resolved_ts IS NOT NULL AND ts>=? ORDER BY ts ASC LIMIT ${FATTR.ROW_LIMIT}`
+  ).bind(assetType, since).all()).results || [];
+  const out = { ...fattrReport(collapseEpisodes(rows), {}), anlageklasse: assetType, zeilen: rows.length, gehalten: false };
+  fattrMemo = { ts: now, key, data: out };
+  return out;
+}
+/* ============================================================================
    MODUL 1 · ALADDIN-STYLE MARKET INTELLIGENCE (v3.5.5, additiv)
    ----------------------------------------------------------------------------
    Nicht "noch ein Indikator", sondern eine hierarchische Marktmeinung aus den
@@ -9171,7 +9696,13 @@ async function tiingoStockLookup(env,raw,comp,minCrv=3,force=false){
   stockLookupMemo.set(info.symbol,{ts:Date.now(),row});const old=new Map(stockMemo.rows.map(r=>[r.symbol,r]));old.set(row.symbol,row);stockMemo.rows=[...old.values()].sort((a,b)=>b.score-a.score).slice(0,80);
   return {configured:true,state:'ok',cached:false,lookup:true,row,source:'Tiingo IEX',provider:'Tiingo',version:APP_VERSION};
 }
-export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation, alpacaPrevClose, momentumFromAlpaca, maturityBreakdown, snapshotWriteDecision, classifyError, sessionVwap, attachRelativeVwap, regularSessionWindow, d1WriteCap };
+export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation, alpacaPrevClose, momentumFromAlpaca, maturityBreakdown, snapshotWriteDecision, classifyError, sessionVwap, attachRelativeVwap, regularSessionWindow, d1WriteCap,
+  /* v4.8.0 · Modul 0b. AUSGEFUEHRT geprueft, nicht per Muster gelesen — das ist
+     die Lehre aus zehn Befunden dieser Reihe. `aucSeparation` steht hier nur
+     mit, damit NK87 die schnelle Rangfassung gegen die paarweise Urfassung
+     halten kann; zwei Wege zur selben Zahl sind sonst eine zweite Wahrheit. */
+  fattrReport, fattrRankIC, fattrAuc, fattrBenjaminiHochberg, fattrPermutationP,
+  fattrFitLogistic, fattrFeatures, fattrRanks, aucSeparation, ATTR, FATTR };
 
 export default {
   async fetch(request, env, ctx) {
@@ -9482,6 +10013,14 @@ export default {
     // Modul 0: Attribution & Overfitting-Guard. Reine Auswertung, veraendert keinen Score.
     if (url.pathname === '/api/attribution') {
       try { return json(await claudeAttribution(env),200,{ 'cache-control':'no-store' }); }
+      catch(e) { return json({configured:!!env.DB,state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
+    }
+
+    /* Modul 0b: Merkmals-Attribution. Beantwortet offenen Punkt 6 („welche
+       Rangfolge trifft besser") an den Zahlen, die seit v3.17.0 aufgezeichnet
+       und nie ausgewertet wurden. Reine Auswertung, veraendert keinen Score. */
+    if (url.pathname === '/api/attribution/features') {
+      try { return json(await featureAttribution(env,{assetType:url.searchParams.get('asset')||'stock'}),200,{ 'cache-control':'no-store' }); }
       catch(e) { return json({configured:!!env.DB,state:'error',error:e.message||String(e),version:APP_VERSION},502,{ 'cache-control':'no-store' }); }
     }
 

@@ -176,7 +176,12 @@ export function loadClient(overrides = {}) {
   get learningData(){return learningData;}, set learningData(v){learningData=v;},
   get health(){return health;}, set health(v){health=v;},
   get authDenied(){return authDenied;}, set authDenied(v){authDenied=v;},
-  get lastHttpStatus(){return lastHttpStatus;}, set lastHttpStatus(v){lastHttpStatus=v;}
+  get lastHttpStatus(){return lastHttpStatus;}, set lastHttpStatus(v){lastHttpStatus=v;},
+  /* v4.8.0: Modul 0b. Die Rechnung ist in NK87 ausgefuehrt belegt — das sagt
+     aber nichts darueber, ob jemand das Ergebnis SIEHT. Genau diese Luecke hat
+     in 4.2.3, 4.3.8 und 4.5.5 dreimal eine ganze Version gekostet. */
+  renderFeatureAttribution, featBadge,
+  get featureData(){return featureData;}, set featureData(v){featureData=v;}
 };`;
   const src = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   vm.createContext(ctx);

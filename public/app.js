@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.7.0 — Frontend
+   FusionPulse v4.8.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -3394,7 +3394,7 @@ async function loadLearning(){
 function setLearningPoll(){clearInterval(learningTimer);learningTimer=setInterval(()=>{if(document.visibilityState==='visible'){loadLearning();loadAttribution();loadAladdin();}},120_000);
   /* Muster aendern sich ueber Tage, nicht Minuten. Halbstuendlich genuegt und
      haelt die D1-Abfrage (bis 6000 Zeilen) aus dem normalen Takt heraus. */
-  clearInterval(patternTimer);patternTimer=setInterval(()=>{if(document.visibilityState==='visible'){loadPatterns();loadScoreAudit();}},30*60_000);
+  clearInterval(patternTimer);patternTimer=setInterval(()=>{if(document.visibilityState==='visible'){loadPatterns();loadScoreAudit();loadFeatureAttribution();}},30*60_000);
   /* v3.20.0: Die AUSWERTUNG aendert sich langsam, die lebenden Kandidaten
      darin schnell. Fuenf Minuten ist der Takt des Radars — schneller waere
      nur Last ohne neuen Inhalt. */
@@ -3478,6 +3478,56 @@ async function muteSetupAction(setup, action){
     await fetchWithTimeout('/api/attribution/mute?'+q,{cache:'no-store'},10_000);
     await loadAttribution(); // Ansicht + Suppression aktualisieren
   }catch(e){ /* still, kein UI-Bruch */ }
+}
+/* ══ v4.8.0 · Modul 0b UI · MERKMALS-ATTRIBUTION ═══════════════════════════
+   Der Server rechnet das seit dieser Version. Ob es jemand SIEHT, ist die
+   eigentliche Frage: `topQueries` (4.5.5), `dropped` (4.2.3) und die Lesezahlen
+   (4.3.8) wurden alle berechnet, uebertragen und nie angezeigt — dreimal
+   dieselbe Krankheit. Deshalb steht die Anzeige in derselben Version wie die
+   Rechnung, nicht in der naechsten.
+   Fail-closed: zu wenig Daten heisst „sammelt" MIT Zahl, nie eine leere Kachel
+   und nie ein Prozentwert aus Unwissen. */
+let featureData={};
+async function loadFeatureAttribution(){
+  try{
+    const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
+    const r=await fetchWithTimeout('/api/attribution/features?'+q,{cache:'no-store'},15_000);
+    featureData=await r.json()||{};
+  }catch(e){ featureData={configured:true,state:'error',error:String(e.message||e)}; }
+  renderFeatureAttribution();
+}
+function featBadge(u){
+  return u==='traegt'?'🟩 trägt':u==='overfit'?'🟥 Overfit':u==='traegt nicht'?'⬜ trägt nicht'
+    :u==='unbelegt'?'🟨 unbelegt':u==='konstant'?'⬛ konstant':'⬜ sammelt';
+}
+function renderFeatureAttribution(){
+  const el=$('#featureReport'); if(!el)return;
+  const d=featureData||{};
+  const kopf='<b>🧪 Merkmals-Attribution (Modul 0b)</b> <small>reine Auswertung · die vorgeschlagenen Gewichte sind nirgends verdrahtet</small>';
+  if(d.configured===false){ el.innerHTML=`${kopf}<small>D1 nicht verbunden – ohne Aufzeichnung gibt es nichts auszuwerten.</small>`; return; }
+  if(d.state==='error'){ el.innerHTML=`${kopf}<small class="err">Fehler: ${esc(d.error||'unbekannt')}</small>`; return; }
+  if(d.state==='sammelt'){
+    el.innerHTML=`${kopf}<div class="lr-d1" data-tone="warn" title="Es ist kein Befund, sondern ein Zustand: es liegen noch nicht genug aufgelöste Episoden vor. „Keine Belege“ und „Belege dagegen“ dürfen nicht gleich aussehen.">Sammelt: ${esc(d.reason||'noch zu wenig Daten')}</div>`;
+    return;
+  }
+  if(d.state!=='ok'){ el.innerHTML=`${kopf}<small>Noch keine Auswertung abrufbar.</small>`; return; }
+  const ms=Array.isArray(d.merkmale)?d.merkmale:[];
+  const zeilen=ms.slice(0,10).map(m=>{
+    const t=Array.isArray(m.terzile)&&m.terzile.length===3
+      ? `\nUnteres Drittel ${m.terzile[0].trefferPct} % Treffer, oberes ${m.terzile[2].trefferPct} % (Wilson ${m.terzile[0].wilson} / ${m.terzile[2].wilson}).` : '';
+    const risk=Number.isFinite(m.icRisikoOos)?`\nZusammenhang mit dem Rückschlag: ${m.icRisikoOos} (positiv = hebt auch das Risiko).`:'';
+    const title=`${m.grund}${t}${risk}\n\nAbdeckung ${m.abdeckungPct} %, ${m.nOos} Out-of-Sample-Episoden. Fehlende Werte werden ausgelassen, nicht als 0 gezählt.`;
+    return `<tr title="${esc(title)}"><td>${esc(m.name)}</td><td>${m.icOos===null?'–':m.icOos}</td><td>${m.icIn===null?'–':m.icIn}</td><td>${m.q===null?'–':m.q}</td><td>${featBadge(m.urteil)}</td></tr>`;
+  }).join('');
+  const mo=d.modell;
+  const heute=mo?Object.entries(mo.aucHeute||{}).filter(([,v])=>Number.isFinite(v)).map(([k,v])=>`${k} ${v}`).join(' · '):'';
+  const modellBlock=mo
+    ? `<div class="lr-d1" data-tone="${mo.urteil==='besser als die heutige Reihung'?'ok':mo.urteil==='vom Zufall nicht zu trennen'?'warn':'ok'}" title="${esc(`${mo.art}. Ziel: ${mo.ziel}. Geschätzt auf ${mo.nIn} In-Sample-Episoden, geprüft an ${mo.nOos} Out-of-Sample-Episoden; ${mo.imputiertPctOos} % der Merkmalswerte mussten mit dem In-Sample-Median ersetzt werden. Permutations-p ${mo.pAuc}. Schwerste Gewichte: ${(mo.gewichte||[]).slice(0,5).map(g=>g.merkmal+' '+g.gewicht).join(', ')}.\n\n${mo.hinweis}`)}">Modell OOS-AUC ${mo.aucOos??'–'} gegen heute ${heute||'–'} · ${esc(mo.urteil)}</div>`
+    : '<div class="lr-d1" data-tone="warn" title="Zu wenige ausreichend belegte Merkmale für eine Schätzung. Es wird ausdrücklich keines gerechnet, statt eines auf zwei Spalten zu erfinden.">Kein Modell geschätzt</div>';
+  el.innerHTML=`${kopf}<div class="lr-grid"><span><b>${Number(d.episodes||0)}</b>Episoden</span><span><b>${Number(d.oosN||0)}</b>Out-of-Sample</span><span><b>${(d.tragend||[]).length}</b>tragende Merkmale</span><span><b>${(d.overfit||[]).length}</b>Overfit-Verdacht</span></div>`
+    +`<table class="attr-table"><thead><tr><th>Merkmal</th><th title="Rang-Korrelation mit dem tatsächlichen Ausgang, nur auf den jüngsten 30 % gerechnet.">IC out-of-sample</th><th title="Derselbe Wert auf dem älteren Teil. Bricht er out-of-sample ein, ist es Overfitting.">IC in-sample</th><th title="Nach Benjamini-Hochberg korrigierter p-Wert. Bei zwanzig Merkmalen liefert reiner Zufall sonst regelmäßig einen „Fund“.">q</th><th>Urteil</th></tr></thead><tbody>${zeilen}</tbody></table>`
+    +modellBlock
+    +`<small>Wozu? Die Vorrang-Formel steht seit v4.1.5 unter dem ausdrücklichen Vorbehalt, dass ihre Gewichtung nie belegt wurde. Diese Tafel ist der Beleg – oder das Gegenteil. Sie verändert von sich aus nichts.</small>`;
 }
 function renderAttribution(){
   const el=$('#attributionReport'); if(!el)return;
@@ -6587,7 +6637,7 @@ $('#scan').onclick = async () => {
   // v3.4.2: manueller blauer Refresh bedeutet ECHTE Aktualisierung. FokusScope zuerst,
   // danach der gesamte Aktien-Snapshot; alte Cache-Daten duerfen nicht als Refresh gelten.
   if(focusStock) await searchStockNow(focusStock,true);
-  await Promise.allSettled([scan(true), scanStocks(true), scanOpeningMomentum(true), loadExperimental(true), loadCrowd(true), loadSentiment(false), loadEarnings(false), loadLearning(), loadAllTopPicks(), loadAttribution(), loadAladdin(), loadHealth()]);
+  await Promise.allSettled([scan(true), scanStocks(true), scanOpeningMomentum(true), loadExperimental(true), loadCrowd(true), loadSentiment(false), loadEarnings(false), loadLearning(), loadAllTopPicks(), loadAttribution(), loadFeatureAttribution(), loadAladdin(), loadHealth()]);
 };
 $('#sound').onclick = () => {
   S.sound = !S.sound; saveSettings();
@@ -6851,6 +6901,7 @@ const VIEW_SECTIONS = {
     ['#scoreAudit',         'Score-Audit',    'Was ist jeder Term des Situation-Score wirklich wert?'],
     ['#eveStudy',           'Ereignisstudie', 'Dieselben Vorabend-Regeln rückwirkend über ein Handelsjahr Tagesbalken.'],
     ['#attributionReport',  'Selbstauswertung','Modul 0: ehrliche Out-of-Sample-Bilanz je Setup.'],
+    ['#featureReport',      'Merkmale',       'Modul 0b: welche einzelne Kennzahl trägt out-of-sample etwas bei?'],
     ['#experimentalPanel',  'Lab',            'Experimentelle Einflussgrößen, 0 % BUY-Gewicht.'],
     ['#aladdinCard',        'Marktmeinung',   'Hierarchische Marktmeinung aus Regime, Rotation, Breadth und Stress.'],
   ],
@@ -7073,6 +7124,7 @@ loadJournal();
 loadEvening();
 loadLearning();
 loadAttribution();
+loadFeatureAttribution();
 loadAladdin();
 setPoll(S.interval);
 setStockPoll();
