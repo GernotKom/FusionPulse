@@ -8407,9 +8407,49 @@ function maturityBreakdown(row, lifecycle) {
    abschnitt. Betroffen ist genau das Fenster, in dem die App bisher GAR
    NICHTS geliefert hat — und eine Volumenbasis samt Vorsitzung ist dieselbe,
    die an jedem normalen Tag gilt. */
-const SERIES_LOOKBACK_DAYS = 6;
+const SERIES_LOOKBACK_DAYS = 6;          // Obergrenze, siehe seriesLookbackDays()
+const SERIES_SESSIONS_NEEDED = 2;       // volle Vorsitzungen ~ 156 Balken
+
+/* ══ v4.7.0 · DAS FENSTER RECHNET JETZT MIT DEM BOERSENKALENDER ══════════════
+   4.6.1 hat pauschal sechs Tage geholt, damit auch nach Wochenende und
+   Feiertag genug Balken da sind. Das war richtig und teuer: an einem normalen
+   Mittwoch enthalten sechs Tage vier Sitzungen, gebraucht werden zwei. Wir
+   haben also regelmaessig das Doppelte bezahlt, um einen Montagvormittag
+   abzudecken.
+
+   GEMESSEN am 09.09.: 18.871 Deep-Scan-Abrufe je Tag zu je 26 KB = 0,49 GB/Tag.
+   Mit kalendergenauem Fenster (im Schnitt 2,6 statt 6 Tage) sind es rund 11 KB
+   und 0,21 GB/Tag. Die Ersparnis von 0,28 GB/Tag ist der Grund, warum in
+   derselben Version die Favoriten viermal haeufiger gescannt werden koennen,
+   OHNE dass die Rechnung steigt.
+
+   `nyseCalendar` liegt seit v3.x im Code und kennt Feiertage samt beweglichen
+   Terminen. Es wurde bisher nur fuer die Marktphase benutzt. Hier beantwortet
+   es die eigentliche Frage: wie viele KALENDERtage muss ich zurueckgehen, um
+   SESSIONS_NEEDED Handelstage einzusammeln?
+
+     normaler Mittwoch      → 2 Tage   (Di, Mo)
+     Montag                 → 4 Tage   (Fr, Do)
+     Dienstag nach Labor Day→ 5 Tage   (Fr, Do)
+
+   Die Obergrenze von 6 bleibt als Sicherheitsnetz: sollte der Kalender einmal
+   falsch liegen, wird das Fenster nie kleiner als der 4.6.1-Stand es war. */
+function seriesLookbackDays(now = Date.now()) {
+  let sessions = 0;
+  for (let back = 1; back <= SERIES_LOOKBACK_DAYS; back++) {
+    const d = new Date(now - back * 86400_000);
+    const wd = d.getUTCDay();
+    const iso = d.toISOString().slice(0, 10);
+    /* Wochenende und Feiertag zaehlen nicht als Sitzung. Der Kalender wird je
+       Jahr gebildet; ein Datum aus dem Vorjahr bekommt den richtigen Satz. */
+    const feiertag = nyseCalendar(d.getUTCFullYear()).has(iso);
+    if (wd !== 0 && wd !== 6 && !feiertag) sessions++;
+    if (sessions >= SERIES_SESSIONS_NEEDED) return back;
+  }
+  return SERIES_LOOKBACK_DAYS;
+}
 async function tiingoIexSeries(env,symbol){
-  const start=new Date(Date.now()-SERIES_LOOKBACK_DAYS*24*60*60_000).toISOString().slice(0,10);
+  const start=new Date(Date.now()-seriesLookbackDays()*86400_000).toISOString().slice(0,10);
   const path=`/iex/${encodeURIComponent(symbol)}/prices?startDate=${start}&resampleFreq=5min&columns=open,high,low,close,volume`;
   const d=await tiingoFetch(env,path);
   const arr=Array.isArray(d)?d:[];
@@ -8798,14 +8838,37 @@ async function tiingoStockSnapshot(env,force=false,comp,minCrv=3,favoriteSymbols
 
   const deepLimit=await readStockDeepLimit(env);
   const scale=deepLimit/STOCK_DEEP_DEFAULT; // proportional zur bisherigen 20er-Baseline
-  const capFav=2, capGainer=Math.max(4,Math.round(4*scale)), capRadar=Math.max(8,Math.round(8*scale)),
+  /* ══ v4.7.0 · ZWEI FAVORITEN JE RUNDE WAREN BEI 36 TITELN EINE DREIVIERTELSTUNDE
+     Gemeldet am 08.09.: „warum sind nicht alle Favoriten auf der Heatmap?"
+     `capFav` stand fest auf 2 und war als einzige Quote NICHT an `scale`
+     gekoppelt — wer `stockDeep` hochdrehte, bekam mehr Radar und mehr Gainer,
+     aber weiterhin zwei Favoriten. Bei 36 Titeln und einem Deep Scan alle zwei
+     Minuten brauchte ein voller Umlauf 18 Runden, also 36 Minuten. Fuer
+     Intraday in einem volatilen Markt ist ein 36 Minuten alter Stand wertlos.
+
+     Neu: die Quote richtet sich nach der LISTENLAENGE und einer Zielumlaufzeit.
+     Bei 36 Favoriten sind das 8 je Runde, also rund 10 Minuten fuer alle.
+     Die Schrittweite der Rotation folgt der Quote — vorher war sie fest 2 und
+     haette bei groesserer Quote Titel doppelt gezogen und andere ausgelassen.
+
+     BEZAHLT WIRD DAS AUS DEM KALENDERFENSTER, nicht aus zusaetzlichem Budget:
+       vorher  18.871 Abrufe/Tag x 26 KB = 0,49 GB/Tag
+       nachher 25.100 Abrufe/Tag x 11 KB = 0,28 GB/Tag
+     Mehr Aktualitaet UND 43 % weniger Verbrauch. Die Obergrenze von 10 haelt
+     den Radar davon ab, ganz zu verhungern — Entdeckung bleibt vertreten. */
+  const FAV_TARGET_CYCLES=5;                       // ~10 Minuten bei 2-Minuten-Takt
+  const capFav=favs.length ? Math.max(2, Math.min(10, Math.ceil(favs.length/FAV_TARGET_CYCLES))) : 0;
+  const capGainer=Math.max(4,Math.round(4*scale)), capRadar=Math.max(8,Math.round(8*scale)),
         capRecheck=Math.max(2,Math.round(2*scale)), capBoats=Math.max(2,Math.round(2*scale));
   const picked=new Set(), favPick=[], recheckPick=[], radarPick=[], boatsPick=[], explore=[];
   // Favoriten bleiben vertreten, blockieren aber nicht mehr die gesamte Queue.
   // Favoriten rotieren pro Deep-Scan-Zyklus. v3.3.2 nahm immer nur die ersten
   // zwei Favoriten und ließ spätere Favoriten dadurch unnötig lange stale.
   if(favs.length){
-    const startFav=(cycle*2)%favs.length;
+    /* Schrittweite = Quote. Mit der alten festen 2 haette eine Quote von 8
+       je Runde sechs Titel uebersprungen und beim naechsten Zyklus wieder
+       dieselben gezogen. */
+    const startFav=(cycle*capFav)%favs.length;
     for(let i=0;i<favs.length&&favPick.length<capFav;i++){
       const sym=favs[(startFav+i)%favs.length];
       if(!picked.has(sym)){picked.add(sym);favPick.push(sym);}

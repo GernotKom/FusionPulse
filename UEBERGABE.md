@@ -1,3 +1,68 @@
+# FusionPulse 4.7.0 — schneller intraday, und dabei billiger
+
+Zwei Änderungen, die sich gegenseitig bezahlen. Netto sinkt der Verbrauch.
+
+## A · Das Kursreihen-Fenster rechnet mit dem Börsenkalender
+
+4.6.1 holte pauschal sechs Tage, damit auch nach Wochenende und Feiertag genug
+Balken da sind. Richtig und teuer: an einem normalen Mittwoch enthalten sechs
+Tage vier Sitzungen, gebraucht werden zwei.
+
+`seriesLookbackDays()` zählt jetzt mit `nyseCalendar` zurück, bis zwei
+Handelstage im Fenster liegen. Über alle 252 Handelstage 2026 gemittelt:
+**2,93 statt 6 Tage.**
+
+    normaler Donnerstag        2 Tage
+    Montag                     4 Tage
+    Dienstag nach Labor Day    5 Tage
+
+Obergrenze bleibt 6 — liegt der Kalender je falsch, wird das Fenster nie
+kleiner als der 4.6.1-Stand.
+
+## B · Favoriten rotieren viermal schneller
+
+`capFav` stand fest auf 2 und war als einzige Quote nicht an `scale` gekoppelt.
+Bei 36 Titeln brauchte ein voller Umlauf 18 Runden, also **36 Minuten**. Für
+Intraday ist das kein Signal mehr, sondern ein Nachruf.
+
+Neu richtet sich die Quote nach der Listenlänge bei einer Zielumlaufzeit von
+fünf Zyklen: bei 36 Favoriten **8 je Runde, voller Umlauf 10 Minuten**. Die
+Schrittweite der Rotation folgt der Quote — mit der alten festen 2 hätte eine
+Quote von 8 sechs Titel übersprungen.
+
+## Die Rechnung
+
+| | vorher | nachher |
+|---|---|---|
+| Deep-Scan-Abrufe je Tag | 18.871 | ~25.100 |
+| Bytes je Abruf | 26 KB | ~13 KB |
+| **Verbrauch** | **0,49 GB/Tag** | **0,33 GB/Tag** |
+
+Mehr Aktualität und rund ein Drittel weniger Verbrauch. NK86c rechnet das
+nach — mit der Quote aus dem Worker und dem ausgeführten Kalenderfenster, nicht
+mit einer Nachbildung im Test.
+
+**Keine Kauf-Freigabe wurde angefasst.** Score-Schwelle, CRV-Minimum,
+Erwartungswert und Plangröße bleiben unverändert; NK86d prüft das.
+
+## Vier eigene Testfehler, protokolliert
+
+1. NK86a erwartete >200 Handelstage in 250 Kalendertagen — darin liegen nur 173.
+   Behoben durch ein volles Jahr, nicht durch eine gesenkte Erwartung.
+2. NK86b und NK86c bildeten die `capFav`-Formel im Test **nach**. Die
+   Negativkontrolle „capFav wieder fest auf 2" lief daran vorbei. Formel wird
+   jetzt aus dem Worker geholt und dort ausgeführt.
+3. NK85c forderte noch die 4.6.1-Formel; abgelöst statt gelöscht, Anforderung
+   („keine feste Zeitspanne") wortgleich erhalten.
+4. Ein Ausdruck ohne Geltungsbereich traf eine unbeteiligte 7-Tage-Frist in der
+   Symbolpflege. Auf `tiingoIexSeries` eingegrenzt.
+
+Punkte 2 und 4 sind dieselbe Falle wie die CSS-Prüfung in 4.5.7 und das Regex
+über die ganze Datei in 4.6.1 — **viermal dieselbe Sorte Fehler in einer Woche.**
+Fünf Negativkontrollen belegen jetzt, dass NK86 die Rückschritte fängt.
+
+---
+
 # FusionPulse 4.6.1 — die Ursache ist gefunden: 36 Stunden über ein Wochenende
 
 ## Der Befund

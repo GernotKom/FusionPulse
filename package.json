@@ -1,6 +1,6 @@
 {
   "name": "fusionpulse",
-  "version": "4.6.1",
+  "version": "4.7.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "predeploy": "npm run sync-version",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
-    "check": "npm run lint && node --check public/app.js && node --check src/worker.js && node --check public/sw.js && npm run test:safety && npm run test:coinscope && npm run test:provider && npm run test:bandwidth && npm run test:sw && npm run test:d1 && npm run test:display && npm run test:header && npm run test:series && npm run test:health && node tests/signal-history.mjs && node tests/client-symbols.mjs && npm run test:symbols",
+    "check": "npm run lint && node --check public/app.js && node --check src/worker.js && node --check public/sw.js && npm run test:safety && npm run test:coinscope && npm run test:provider && npm run test:bandwidth && npm run test:sw && npm run test:d1 && npm run test:display && npm run test:header && npm run test:series && npm run test:freshness && npm run test:health && node tests/signal-history.mjs && node tests/client-symbols.mjs && npm run test:symbols",
     "test:safety": "node tests/safety-regression.mjs",
     "audit:reach": "node tests/reachability-audit.mjs",
     "test:sw": "node tests/sw-fault.mjs",
@@ -21,6 +21,7 @@
     "test:display": "node tests/display-honesty.mjs",
     "test:header": "node tests/header-layout.mjs",
     "test:series": "node tests/series-window.mjs",
+    "test:freshness": "node tests/freshness-budget.mjs",
     "handbuch": "python3 scripts/build-handbuch.py",
     "release": "npm run sync-version && npm run check && npm run handbuch",
     "lint": "eslint src/worker.js public/app.js public/sw.js",

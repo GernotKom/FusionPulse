@@ -115,8 +115,24 @@ const lauf = (n) => analyseStock('T', 'Technologie', quelle(n), 1.17, KOMP, 3);
      sie gehoert benannt, damit niemand spaeter auf 60 Tage hochdreht. */
   assert.ok(tage <= 20, `${tage} Tage naehern sich der 2000-Punkte-Grenze des Feeds`);
 
-  assert.match(w, /SERIES_LOOKBACK_DAYS\*24\*60\*60_000/,
-    'Die Serie muss die Konstante benutzen, nicht wieder 36 Stunden fest verdrahten');
+  /* v4.7.0 · ABGELOEST, NICHT GESTRICHEN. Bis 4.6.1 stand hier die Forderung
+     nach `SERIES_LOOKBACK_DAYS*24*60*60_000` — das pauschale Sechs-Tage-Fenster.
+     Es hat den Fehler behoben und dabei an jedem normalen Tag das Doppelte
+     bezahlt. Seit 4.7.0 rechnet `seriesLookbackDays()` mit dem Boersenkalender;
+     `SERIES_LOOKBACK_DAYS` ist nur noch die Obergrenze. Die eigentliche
+     Anforderung bleibt wortgleich: KEINE feste Zeitspanne in der URL. Wie
+     lang das Fenster je Tag sein muss, misst NK86a ausgefuehrt. */
+  assert.match(w, /seriesLookbackDays\(\)\*86400_000/,
+    'Die Serie muss das Kalenderfenster benutzen, nicht wieder eine feste Zeitspanne');
+  /* Auf den REIHENABRUF eingegrenzt. Ueber die ganze Datei gesucht traf der
+     Ausdruck eine unbeteiligte 7-Tage-Frist in der Symbolpflege — zum vierten
+     Mal diese Woche derselbe Fehler: ein Muster ohne Geltungsbereich. */
+  const serie = (() => {
+    const i = w.indexOf('async function tiingoIexSeries');
+    return w.slice(i, w.indexOf('\nasync function ', i + 20));
+  })();
+  assert.ok(!/Date\.now\(\)-\d+\*(86400_000|60\*60_000)/.test(serie),
+    'Im Reihenabruf darf keine feste Zeitspanne stehen');
   assert.ok(!/Date\.now\(\)-36\*60\*60_000/.test(w),
     'Das alte 36-Stunden-Fenster darf nicht zurueckkehren');
 }
