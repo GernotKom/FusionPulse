@@ -181,7 +181,14 @@ export function loadClient(overrides = {}) {
      aber nichts darueber, ob jemand das Ergebnis SIEHT. Genau diese Luecke hat
      in 4.2.3, 4.3.8 und 4.5.5 dreimal eine ganze Version gekostet. */
   renderFeatureAttribution, featBadge,
-  get featureData(){return featureData;}, set featureData(v){featureData=v;}
+  get featureData(){return featureData;}, set featureData(v){featureData=v;},
+  /* v4.9.0: Die Heatmap-Regler und die GEMEINSAME Trennung. Ausgefuehrt
+     pruefbar, weil die alte Fassung nur im Quelltext der Coin-Karte stand und
+     genau deshalb niemandem aufgefallen ist, dass die Aktien-Karte sie nie
+     bekommen hat. */
+  heatSeparate, heatFilter, heatBucketOf, heatBucketOn, heatCountLabel,
+  HEAT_BUCKETS, coinLevel, syncHeatFilterUI, renderMap, stockHeatmap,
+  get rows(){return rows;}, set rows(v){rows=v;}
 };`;
   const src = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   vm.createContext(ctx);

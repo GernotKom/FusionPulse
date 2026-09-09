@@ -1,6 +1,6 @@
 {
   "name": "fusionpulse",
-  "version": "4.8.0",
+  "version": "4.9.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "predeploy": "npm run sync-version",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
-    "check": "npm run lint && node --check public/app.js && node --check src/worker.js && node --check public/sw.js && npm run test:safety && npm run test:coinscope && npm run test:provider && npm run test:bandwidth && npm run test:sw && npm run test:d1 && npm run test:display && npm run test:header && npm run test:series && npm run test:freshness && npm run test:health && node tests/signal-history.mjs && node tests/client-symbols.mjs && npm run test:symbols && npm run test:fattr",
+    "check": "npm run lint && node --check public/app.js && node --check src/worker.js && node --check public/sw.js && npm run test:safety && npm run test:coinscope && npm run test:provider && npm run test:bandwidth && npm run test:sw && npm run test:d1 && npm run test:display && npm run test:header && npm run test:series && npm run test:freshness && npm run test:health && node tests/signal-history.mjs && node tests/client-symbols.mjs && npm run test:symbols && npm run test:fattr && npm run test:heat",
     "test:safety": "node tests/safety-regression.mjs",
     "audit:reach": "node tests/reachability-audit.mjs",
     "test:sw": "node tests/sw-fault.mjs",
@@ -27,7 +27,8 @@
     "lint": "eslint src/worker.js public/app.js public/sw.js",
     "test:symbols": "node tests/worker-symbols.mjs",
     "test:health": "node tests/health-state.mjs",
-    "test:fattr": "node tests/feature-attribution.mjs"
+    "test:fattr": "node tests/feature-attribution.mjs",
+    "test:heat": "node tests/heatmap-filter.mjs"
   },
   "devDependencies": {
     "eslint": "^9.39.5",

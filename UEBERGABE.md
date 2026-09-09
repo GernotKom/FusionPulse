@@ -1,3 +1,126 @@
+# FusionPulse 4.9.0 — die Aktien-Heatmap hat die Reparatur von 4.2.4 nie bekommen
+
+Gemeldet: *„bei den Heatmaps sind die Aktien/Coins zumeist unübersichtlich, weil
+alle Punkte übereinander liegen und somit die Differenzierung von unattraktiven
+zu beobachtbaren kaum möglich ist. Dementsprechend sollte man bei den Heatmaps
+3 on/off Regler haben mit alle anzeigen, beobachten, handeln."*
+
+Bestellt war A. Beim Nachsehen kam B dazu, und B ist der eigentliche Befund.
+
+## A · Drei Regler über beiden Karten
+
+Sie teilen nach der Stufe, die die App **ohnehin schon berechnet**
+(`stockLevel` / `coinLevel`, 0–3). Kein neuer Maßstab, keine zweite Wahrheit:
+
+    handeln      Stufe 3 — Kauf-Freigabe liegt vor
+    beobachten   Stufe 2 — grün, aber (noch) keine Freigabe
+    übrige       Stufe 0/1 — gelb, rot oder zurückgestuft
+
+**Warum kein vierter Regler „alle anzeigen".** Alle drei an *ist* „alle
+anzeigen" — das ist der Zustand bis 4.8.0 und die Voreinstellung. Ein vierter
+Schalter mit dieser Bedeutung wäre eine überlappende Zusicherung neben drei
+disjunkten, und überlappende Schalter sind in diesem Projekt der Anfang jeder
+Zweitwahrheit gewesen. Wenn die drei Beschriftungen wörtlich „alle anzeigen /
+beobachten / handeln" heißen sollen, ist das eine Zeile in `HEAT_BUCKETS`.
+
+Der Zustand liegt in den Einstellungen und überlebt einen Neustart. **Ein**
+Handler bedient beide Karten — zwei getrennte wären die nächste Stelle, an der
+die Bereiche auseinanderlaufen (Lehre aus 4.2.5 bis 4.2.8).
+
+Die Regler filtern **ausschließlich die Karte.** Score, Ampel, Freigabe und die
+Trefferliste darunter bleiben unberührt; NK88b prüft das ausgeführt, indem es
+nach dem Filtern die Eingabeliste und alle Stufen unverändert verlangt.
+
+Sind alle drei aus, sagt die Karte `0 von 24 — alle Regler aus`. Eine leere
+Fläche ohne Erklärung sieht aus wie ein Ausfall; das war in 4.2.2 schon einmal
+der teure Fall.
+
+## B · Der Befund: eine Reparatur, die nur eine von zwei Karten erreicht hat
+
+4.2.4 hat für die **Coin**-Karte belegt, dass die Trennung dem Kreis galt,
+gelesen aber die Schrift wird: `radA + radB + 2,5` sind 12–17 Einheiten, eine
+fünfstellige Aufschrift bei `font-size: 5.8px` ist bis zu **18 Einheiten breit
+und 6 hoch**. Zwei Punkte konnten sauber getrennt sein und ihre Namen
+vollständig übereinander liegen. Behoben durch ein liegendes Rechteck je Punkt
+und eine Vergaberegel nach Rang.
+
+**Die Aktien-Karte hat davon nie etwas bekommen.** Sie trennte bis 4.8.0 nach
+`radA + radB + 3` und druckte *jeder* Zeile den Namen auf. Genau das ist im
+Screenshot zu sehen: `REGN`, `FCX` und `LUMN` liegen aufeinander, ebenso `UTHR`,
+`AMZN` und `MO`.
+
+**Vierter Fall von „ich habe den falschen von zwei Ausgabepfaden repariert"**
+nach 4.1.6 (Schreibschwelle nur im Watchlist-Zweig), 4.4.1 (Watchlist nur im
+Live-Pfad) und 4.5.x. Und er ist zweieinhalb Wochen unentdeckt geblieben, weil
+der Test von 4.2.4 den Rumpf von `renderMap` gelesen hat — die eine Karte, die
+die Regel hatte.
+
+Die Geometrie liegt jetzt **einmal** in `heatSeparate` und wird von beiden
+Karten aufgerufen.
+
+## Gemessen, nicht behauptet
+
+Auf der Wolke aus dem Screenshot (20 Titel, Score 7,0–8,4, Handelbarkeit
+4,5–5,6):
+
+| | überdeckende Namenspaare |
+|---|---|
+| alte Kreisregel | 41 |
+| Rechteck-Trennung | 37 |
+| **unter den GESETZTEN Aufschriften** | **0** |
+
+**Die Trennung allein bringt fast nichts** — 41 auf 37. Das deckt sich mit dem
+Befund von 4.2.4 („mehr Iterationen oder stärkerer Druck verbessern das nicht,
+sie vergrößern nur den Versatz"). Die Arbeit leistet die Vergaberegel: von 20
+Namen werden 7 gesetzt, und unter denen überdeckt sich keiner. Die übrigen 13
+behalten Punkt, Farbe, Klickfläche und Mouseover — nur die Aufschrift entfällt.
+
+**Deshalb sind die Regler mehr als Komfort:** weniger Punkte heißt mehr
+lesbare Namen. Wie viel mehr, hängt an der echten Verteilung; mein synthetisches
+Feld ist dafür keine belastbare Grundlage, und ich schreibe hier keine Zahl hin,
+die ich nicht gemessen habe.
+
+## Was das NICHT löst — offener Punkt 17 bleibt offen
+
+Im Screenshot sitzen alle 20 Punkte im Quadranten „Muster stark / schwer
+handelbar", in einem Band von rund 1,4 Score-Punkten. Das ist der eigentliche
+Grund, warum sich „unattraktiv" und „beobachtenswert" auf der Karte kaum
+unterscheiden lassen: **beide Achsen sättigen.** Die Regler räumen auf, die
+Vergaberegel macht lesbar — aber ein Feld, in dem alles in einer Ecke sitzt,
+trägt weiterhin wenig Information.
+
+Der nächste sinnvolle Schritt wäre eine Achsenskalierung nach Perzentil statt
+nach absolutem Wert (0–10 auf die tatsächliche Spannweite des Laufs gedehnt).
+**Nicht ohne Entscheidung umgesetzt:** damit bedeutet dieselbe Position an
+verschiedenen Tagen nicht mehr dasselbe, und die Quadranten-Beschriftung
+„MUSTER STARK" wäre dann relativ statt absolut. Das ist ein echter Zielkonflikt
+und keine Verbesserung, die man nebenbei einbaut. Modul 0b aus 4.8.0 könnte
+übrigens zuerst beantworten, ob die Handelbarkeitsachse out-of-sample überhaupt
+etwas trennt — wenn nicht, ist die richtige Antwort eine andere Achse, keine
+andere Skala.
+
+## Ein Bestandstest wurde abgelöst, nicht gelöscht
+
+Die 4.2.4-Prüfung verlangte `p.label = !clash` im Rumpf von `renderMap`. Die
+**Anforderung bleibt wortgleich** — ohne Platz kein Text, Vergabe nach Rang,
+Punkt und Mouseover bleiben. Nur der Ort hat sich geändert, und der Test
+verlangt sie jetzt **beidseitig**. Das ist die schärfere Fassung: die alte
+konnte gar nicht bemerken, dass die Aktien-Karte diese Regel nie hatte.
+
+## Sechs Negativkontrollen, alle gefeuert
+
+Eimer zusammengelegt · fehlende Einstellung blendet aus (statt anzuzeigen) ·
+leere Karte schweigt · Vergaberegel abgeschaltet · Regler nur auf der
+Coin-Karte · **Aktien-Karte zurück auf die Kreisregel** — die letzte ist die,
+die den ursprünglichen Zustand wiederherstellt, und sie fällt jetzt.
+
+**Ein eigener Testfehler, protokolliert:** die ersten Vergleiche liefen über
+`assert.deepEqual` gegen Arrays aus dem vm-Kontext des Prüfstands. Die tragen
+dessen Array-Prototyp, `deepStrictEqual` fällt trotz identischem Inhalt — der
+Test fiel aus dem falschen Grund. Auf `join` umgestellt.
+
+---
+
 # FusionPulse 4.8.0 — die Zahlen, die die Auswahl entscheiden, werden zum ersten Mal geprüft
 
 ## Der Befund

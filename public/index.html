@@ -8,9 +8,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/style.css?v=4.8.0">
+<link rel="stylesheet" href="/style.css?v=4.9.0">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
-<script src="/version.js?v=4.8.0"></script>
+<script src="/version.js?v=4.9.0"></script>
 <!-- ══════════════════════════════════════════════ v3.24.0 · BOOT-WÄCHTER ═══
      ANLASS: Am 29.08. stand die Oberfläche still — Statusampeln grau, Version
      "v–", Taktuhr "--:--". Alles stand auf den STATISCHEN Startwerten aus
@@ -66,13 +66,13 @@
   });
 })();
 </script>
-<title>FusionPulse 4.8.0</title>
+<title>FusionPulse 4.9.0</title>
 <!-- v3.14.1: Versionsstempel der SHELL (index.html). Wird von sync-version.mjs
      gesetzt und beim Start gegen FP_VERSION aus version.js verglichen. Weichen
      die beiden ab, ist eine halb aktualisierte Auslieferung im Umlauf: neues
      app.js/style.css auf altem index.html. Das erzeugt Fehler, die wie
      Layout-Probleme aussehen, aber keine sind — und kostet beim Suchen Stunden. -->
-<meta name="fp-shell-version" content="4.8.0">
+<meta name="fp-shell-version" content="4.9.0">
 </head>
 <body>
 <!-- v3.24.0 · Wird nur sichtbar, wenn app.js nicht startet. -->
@@ -221,6 +221,15 @@
 
   <aside class="mapwrap">
     <div class="maphead" title="Beide Achsen sind technisch. Wirtschaftlichkeit steckt in der Punktfarbe, nicht in der Position."><span>Musterqualität ↑</span><span class="mdim">Handelbarkeit →</span></div>
+
+    <!-- v4.9.0 · Drei Regler nach der Stufe, die die App ohnehin berechnet.
+         Alle drei an = der bisherige Zustand. Sie filtern NUR die Karte. -->
+    <div class="mapfilter" data-heatside="coin" role="group" aria-label="Was die Heatmap zeigt">
+      <label class="mf" title="Stufe 3: Kauf-Freigabe liegt vor — Musterqualität, Ausführbarkeit, Datenstand und Wirtschaftlichkeit stimmen gleichzeitig."><input type="checkbox" data-heat="trade" checked><span>handeln</span></label>
+      <label class="mf" title="Stufe 2: grünes Signal, aber keine Freigabe — meist zu geringes Netto-Potenzial, veralteter Kurs oder ein stummgeschaltetes Setup."><input type="checkbox" data-heat="watch" checked><span>beobachten</span></label>
+      <label class="mf" title="Stufe 0 und 1: gelb, rot oder zurückgestuft. Ausschalten räumt die Karte am stärksten auf — genau die Punkte, die sich untereinander nicht differenzieren lassen."><input type="checkbox" data-heat="rest" checked><span>übrige</span></label>
+      <em class="mapcount" id="coinMapCount" title="Wie viele Punkte die Karte gerade zeigt und wie viele es insgesamt gibt. Die Regler ändern nur die Karte — Score, Ampel, Freigabe und die Trefferliste darunter bleiben unberührt."></em>
+    </div>
     <svg id="map" viewBox="0 0 200 200" title="Krypto-Heatmap. Nach oben: wie sauber das Kursmuster ist. Nach rechts: wie gut sich der Coin praktisch handeln lässt (Spread, Orderbuchtiefe, Slippage).&#10;&#10;WICHTIG: Beide Achsen messen nur Technik. Ob sich ein Trade lohnt, steht NICHT in der Position, sondern in der Farbe: voller Punkt = auch wirtschaftlich tragfähig, hohler Punkt = gutes Muster, aber CRV zu niedrig oder Einstieg nicht in der Zone.&#10;&#10;Mouseover auf einen Punkt zeigt Qualität, Handelbarkeit, CRV und Netto-Potenzial."></svg>
     <div class="maplegend">
       <span><i class="q-handeln"></i>handeln</span>
@@ -333,6 +342,15 @@
       <div id="stockFocus" class="stockfocus"></div>
       <aside class="stockmapwrap">
         <div class="maphead" title="Beide Achsen sind technisch. Wirtschaftlichkeit steckt in der Punktfarbe, nicht in der Position."><span>Musterqualität ↑</span><span class="mdim">Handelbarkeit →</span></div>
+
+        <!-- v4.9.0 · Drei Regler nach der Stufe, die die App ohnehin berechnet.
+             Alle drei an = der bisherige Zustand. Sie filtern NUR die Karte. -->
+        <div class="mapfilter" data-heatside="stock" role="group" aria-label="Was die Heatmap zeigt">
+          <label class="mf" title="Stufe 3: Kauf-Freigabe liegt vor — Musterqualität, Ausführbarkeit, Datenstand und Wirtschaftlichkeit stimmen gleichzeitig."><input type="checkbox" data-heat="trade" checked><span>handeln</span></label>
+          <label class="mf" title="Stufe 2: grünes Signal, aber keine Freigabe — meist zu geringes Netto-Potenzial, veralteter Kurs oder ein stummgeschaltetes Setup."><input type="checkbox" data-heat="watch" checked><span>beobachten</span></label>
+          <label class="mf" title="Stufe 0 und 1: gelb, rot oder zurückgestuft. Ausschalten räumt die Karte am stärksten auf — genau die Punkte, die sich untereinander nicht differenzieren lassen."><input type="checkbox" data-heat="rest" checked><span>übrige</span></label>
+          <em class="mapcount" id="stockMapCount" title="Wie viele Punkte die Karte gerade zeigt und wie viele es insgesamt gibt. Die Regler ändern nur die Karte — Score, Ampel, Freigabe und die Trefferliste darunter bleiben unberührt."></em>
+        </div>
         <svg id="stockMap" viewBox="0 0 200 200" title="Aktien-Heatmap. Nach oben: wie sauber das Kursmuster ist. Nach rechts: wie gut sich der Titel praktisch handeln lässt (Spread, Liquidität, Ausführbarkeit).&#10;&#10;WICHTIG: Beide Achsen messen nur Technik. Ob sich ein Trade wirtschaftlich lohnt, steht NICHT in der Position, sondern in der Farbe: voller Punkt = auch wirtschaftlich tragfähig, hohler Punkt mit gestricheltem Ring = gutes Muster, aber der Plan bringt zu wenig.&#10;&#10;Kreisgröße = Setup-Stärke, Schweif = bisherige Entwicklung. Mouseover auf einen Punkt zeigt Netto-Potenzial und CRV."></svg>
         <div class="maplegend2">
           <span title="Voller Punkt: Musterqualität und Ausführbarkeit stimmen UND der Trade lohnt sich wirtschaftlich — Netto-Potenzial und Chance-Risiko-Verhältnis liegen über deinen Grenzen."><i class="full"></i>wirtschaftlich tragfähig</span>
@@ -602,6 +620,6 @@
      Muss das LETZTE Element im Fluss bleiben. Hoehe kommt aus derselben
      Messung wie alles andere (--fp-foot-h). -->
 <div class="foot-spacer" aria-hidden="true"></div>
-<script src="/app.js?v=4.8.0"></script>
+<script src="/app.js?v=4.9.0"></script>
 </body>
 </html>

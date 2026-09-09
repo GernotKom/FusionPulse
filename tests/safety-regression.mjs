@@ -6305,12 +6305,33 @@ console.log('✓ FusionPulse v4.2.3 Abdeckung sichtbar (ausgefuehrt): OK');
 
   /* Und weil die Trennung allein nicht reicht: unlesbare Namen entfallen,
      der Punkt bleibt vollstaendig. */
+  /* ── v4.9.0 · ABGELOEST, NICHT GELOESCHT ────────────────────────────────
+     Hier stand bis 4.8.0: `p.label = !clash` und `rank = (p) =>` muessen im
+     Rumpf von `renderMap` stehen. Die ANFORDERUNG bleibt wortgleich — ohne
+     Platz kein Text, Vergabe nach Rang, Punkt und Mouseover bleiben. Nur der
+     Ort hat sich geaendert: die Geometrie liegt seit 4.9.0 in `heatSeparate`
+     und wird von BEIDEN Karten aufgerufen.
+
+     Der Test verlangt jetzt genau das, und zwar beidseitig. Das ist die
+     schaerfere Fassung: die alte konnte gar nicht bemerken, dass die
+     Aktien-Karte diese Regel seit 4.2.4 NIE hatte — sie hat nur die Coin-Seite
+     gelesen. Dieselbe Falle wie `class="stocktools"` in 4.2.7 und wie der
+     einseitig reparierte Ausgabepfad in 4.4.1. */
+  const sepFn = app.slice(app.indexOf('function heatSeparate('), app.indexOf('const HEAT_BUCKETS'));
+  assert.ok(sepFn.length > 200, 'v4.9.0: `heatSeparate` nicht gefunden');
+  assert.match(sepFn, /p\.label = !clash/, 'v4.2.3: Die Beschriftung muss nach Platz vergeben werden');
+  assert.match(sepFn, /rankOf\(a\) - rankOf\(b\)/, 'v4.2.3: … und nach Rang, nicht nach Zufall');
   const mapFn = app.slice(app.indexOf('function renderMap()'), app.indexOf('function visible()'));
-  assert.match(mapFn, /p\.label = !clash/, 'v4.2.3: Die Beschriftung muss nach Platz vergeben werden');
-  assert.match(mapFn, /rank = \(p\) =>/, 'v4.2.3: … und nach Rang, nicht nach Zufall');
-  assert.match(mapFn, /\$\{label\?`<text/, 'v4.2.3: Ohne Platz kein Text');
-  assert.match(mapFn, /<circle class="hit"/, 'v4.2.3: Klickflaeche bleibt IMMER — der Coin verschwindet nicht');
-  assert.match(mapFn, /<title>/, 'v4.2.3: … und das Mouseover nennt ihn weiterhin beim Namen');
+  const stockFn = app.slice(app.indexOf('function stockHeatmap('), app.indexOf('function heatSeparate(') > app.indexOf('function stockHeatmap(')
+    ? app.indexOf('function heatSeparate(') : app.indexOf('\nfunction ', app.indexOf('function stockHeatmap(') + 10));
+  for (const [name, fn] of [['Coin-Karte', mapFn], ['Aktien-Karte', stockFn]]) {
+    assert.ok(fn.length > 200, `v4.9.0: Rumpf der ${name} nicht gefunden`);
+    assert.match(fn, /heatSeparate\(pts, \{/, `v4.9.0: Die ${name} muss die GEMEINSAME Trennung benutzen — zwei Kopien derselben Geometrie laufen unweigerlich auseinander`);
+    assert.match(fn, /rankOf:/, `v4.9.0: Die ${name} muss eine Rangfolge fuer die Beschriftung uebergeben`);
+    assert.match(fn, /label\s*\n?\s*\?\s*`<text|\$\{label\?`<text/, `v4.2.3: Ohne Platz kein Text (${name})`);
+    assert.match(fn, /<circle class="hit"/, `v4.2.3: Klickflaeche bleibt IMMER — der Titel verschwindet nicht (${name})`);
+    assert.match(fn, /<title>/, `v4.2.3: … und das Mouseover nennt ihn weiterhin beim Namen (${name})`);
+  }
 
   /* ---- 5) Der Riegel bleibt unangetastet --------------------------------
      Der erste Versuch schrieb den Hinweis IN den verriegelten Claude-Block.

@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.8.0 — Frontend
+   FusionPulse v4.9.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -120,6 +120,11 @@ const DEFAULTS = {
   theme: 'dark', taxPct: 27.5, analysisMode: 'composite', coinCount: 12, stockCount: 12,
   maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0, minNetProfitStock: 30, minTp2PctStock: 2.0,
   claudeMode: false, stockDeep: 20,
+  /* v4.9.0 · Was die Heatmaps zeigen. Alle drei an ist der Zustand bis 4.8.0.
+     Absichtlich drei flache Schalter statt eines verschachtelten Objekts: die
+     Einstellungen werden aus dem Speicher flach ueber DEFAULTS gelegt, ein
+     verschachtelter Zweig kaeme aus einem alten Stand unvollstaendig zurueck. */
+  heatTrade: true, heatWatch: true, heatRest: true,
   /* v3.15.0 · Kachelfarben, Variante A: DEKORATION.
      Farbe traegt in dieser App Bedeutung — gruen/gelb/grau heisst handeln /
      zu teuer / kein Setup, und die Systemampel heisst stabil / eingeschraenkt /
@@ -2187,17 +2192,153 @@ function stockHeatmapMark(r){
   return {light:hl.light, weak, tip};
 }
 
+/* ══ v4.9.0 · EINE TRENNUNG FUER BEIDE KARTEN ═══════════════════════════════
+   BEFUND aus dem Screenshot vom 09.09., 19:48: in der Aktien-Heatmap lagen
+   „REGN", „FCX" und „LUMN" vollstaendig uebereinander, ebenso „UTHR", „AMZN"
+   und „MO". Genau das Bild, das 4.2.4 fuer die COIN-Karte behoben hat — dort
+   mit einem liegenden Rechteck je Punkt und einer Vergaberegel fuer die
+   Aufschrift.
+
+   Die Aktien-Karte hat davon nie etwas bekommen. Sie trennte weiter nach
+   `radA + radB + 3`, also nach dem KREIS, und druckte JEDER Zeile den Namen
+   auf, ob Platz war oder nicht. Vierter Fall von „ich habe den falschen von
+   zwei Ausgabepfaden repariert" nach 4.1.6, 4.4.1 und 4.5.x — und der Grund,
+   warum die Karte seit 4.2.4 auf der einen Seite lesbar ist und auf der
+   anderen nicht.
+
+   Die Trennung liegt jetzt EINMAL hier und wird von beiden Karten aufgerufen.
+   Zwei Kopien derselben Geometrie waeren genau die zweite Wahrheit, die in
+   diesem Projekt schon die Heatmap-Konstanten und die Bereichsanordnung
+   auseinanderlaufen liess. NK88 prueft beide Karten gegen DIESELBE Funktion. */
+const CHAR_W = 3.55, LABEL_H = 5.8;
+function heatSeparate(pts, opt) {
+  const charsOf = opt.charsOf, rankOf = opt.rankOf, tieOf = opt.tieOf || (() => 0);
+  pts.forEach((p) => {
+    const c = Math.min(5, Math.max(1, charsOf(p)));
+    p.halfW = Math.max(p.rad, (c * CHAR_W) / 2) + 1.2;
+    p.halfH = p.rad + LABEL_H * 0.5;
+  });
+  /* Normierter Abstand: 1 bedeutet „beruehrt sich gerade". Bei breiten,
+     flachen Rechtecken ergibt das automatisch mehr Seitwaerts- als
+     Hoehenversatz — die Richtung, in der Platz gebraucht wird. */
+  for (let it = 0; it < 26; it++) for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
+    const a = pts[i], b = pts[j];
+    const needX = a.halfW + b.halfW, needY = a.halfH + b.halfH;
+    const nx = (b.x - a.x) / needX, ny = (b.y - a.y) / needY, d = Math.hypot(nx, ny);
+    if (d >= 1 || d === 0) continue;
+    const push = (1 - d) * .30, ux = (nx / d) * needX, uy = (ny / d) * needY;
+    a.x -= ux * push * .5; a.y -= uy * push * .5; b.x += ux * push * .5; b.y += uy * push * .5;
+  }
+  pts.forEach((p) => { p.x = Math.max(10, Math.min(190, p.x)); p.y = Math.max(10, Math.min(190, p.y)); });
+  /* Wer keinen Platz hat, bekommt keinen Namen — behaelt aber Punkt, Farbe,
+     Klickflaeche und Mouseover. Ein Name unter zwei anderen ist keine
+     Information, er sieht nur wie eine aus. */
+  const placed = [];
+  [...pts].sort((a, b) => rankOf(a) - rankOf(b) || tieOf(b) - tieOf(a)).forEach((p) => {
+    const clash = placed.some((o) =>
+      (p.halfW + o.halfW) - Math.abs(o.x - p.x) > 0 && (p.halfH + o.halfH) - Math.abs(o.y - p.y) > 0);
+    p.label = !clash;
+    if (!clash) placed.push(p);
+  });
+  return pts;
+}
+
+/* ══ v4.9.0 · DREI REGLER STATT EINER UEBERFUELLTEN KARTE ═══════════════════
+   Gemeldet: „bei den Heatmaps sind die Aktien/Coins zumeist unuebersichtlich,
+   weil alle Punkte uebereinander liegen und somit die Differenzierung von
+   unattraktiven zu beobachtbaren kaum moeglich ist."
+
+   Die Regler teilen nach der STUFE, die die App ohnehin schon berechnet
+   (`stockLevel` / `coinLevel`, 0..3) — kein neuer Massstab, keine zweite
+   Wahrheit. Drei Eimer, ueberschneidungsfrei:
+
+     handeln      Stufe 3 — Kauf-Freigabe liegt vor
+     beobachten   Stufe 2 — gruen, aber (noch) keine Freigabe
+     uebrige      Stufe 0/1 — gelb, rot oder zurueckgestuft
+
+   Alle drei an ist der bisherige Zustand, also „alles anzeigen". Ein vierter
+   Regler mit genau dieser Bedeutung waere eine ueberlappende Zusicherung
+   neben drei disjunkten — und ueberlappende Schalter sind der Anfang jeder
+   Zweitwahrheit in diesem Projekt.
+
+   WICHTIG: die Regler filtern ausschliesslich die ANZEIGE der Karte. Weder
+   Score noch Ampel noch Freigabe noch die Trefferliste darunter aendern sich.
+   NK88 prueft das. */
+const HEAT_BUCKETS = [
+  { key: 'trade', flag: 'heatTrade', label: 'handeln',
+    tip: 'Stufe 3: Kauf-Freigabe liegt vor — Musterqualität, Ausführbarkeit, Datenstand und Wirtschaftlichkeit stimmen gleichzeitig.' },
+  { key: 'watch', flag: 'heatWatch', label: 'beobachten',
+    tip: 'Stufe 2: grünes Signal, aber keine Freigabe — meist zu geringes Netto-Potenzial, veralteter Kurs oder ein stummgeschaltetes Setup.' },
+  { key: 'rest', flag: 'heatRest', label: 'übrige',
+    tip: 'Stufe 0 und 1: gelb, rot oder zurückgestuft. Ausschalten räumt die Karte am stärksten auf — genau die Punkte, die sich nicht differenzieren lassen.' },
+];
+function heatBucketOf(level) { return level >= 3 ? 'trade' : level === 2 ? 'watch' : 'rest'; }
+function heatBucketOn(key) {
+  const b = HEAT_BUCKETS.find((x) => x.key === key);
+  if (!b) return true;
+  /* Fehlt die Einstellung (alter gespeicherter Stand), wird ANGEZEIGT. Ein
+     unbekannter Zustand ist kein ausgeschalteter — dieselbe Regel wie bei der
+     Schreibschwelle in 4.1.0. */
+  return S[b.flag] !== false;
+}
+/** Filtert eine Zeilenliste fuer die KARTE. `levelOf` ist die vorhandene
+ *  Stufenfunktion der jeweiligen Anlageklasse; hier wird nichts neu bewertet. */
+function heatFilter(list, levelOf) {
+  return (list || []).filter((r) => heatBucketOn(heatBucketOf(levelOf(r))));
+}
+/** Text unter den Reglern. Sagt IMMER etwas — auch und gerade dann, wenn
+ *  nichts uebrig bleibt. Eine leere Karte ohne Erklaerung sieht aus wie ein
+ *  Fehler, und das war in 4.2.2 schon einmal der teure Fall. */
+function heatCountLabel(gezeigt, gesamt) {
+  if (!gesamt) return 'keine Daten';
+  if (!gezeigt) return `0 von ${gesamt} — alle Regler aus`;
+  return `${gezeigt} von ${gesamt}`;
+}
+
+/* v4.9.0 · Verdrahtung der Regler. EIN Handler fuer beide Karten: zwei
+   getrennte Handler waeren die naechste Stelle, an der die Bereiche
+   auseinanderlaufen (Lehre aus 4.2.5). Der Zustand liegt in den Einstellungen
+   und ueberlebt damit einen Neustart der App. */
+function syncHeatFilterUI() {
+  $$('.mapfilter input[data-heat]').forEach((box) => { box.checked = heatBucketOn(box.dataset.heat); });
+}
+function wireHeatFilters() {
+  $$('.mapfilter input[data-heat]').forEach((box) => box.addEventListener('change', () => {
+    const b = HEAT_BUCKETS.find((x) => x.key === box.dataset.heat);
+    if (!b) return;
+    S[b.flag] = !!box.checked;
+    saveSettings();
+    syncHeatFilterUI();   // beide Karten tragen dieselben Regler
+    renderMap(); renderStocks();
+  }));
+  syncHeatFilterUI();
+}
+
 function stockHeatmap(shown) {
   const svg = $('#stockMap'); if (!svg) return;
   const g = (x) => 14 + (Math.max(0, Math.min(10, x)) / 10) * 172;
-  const pts = shown.slice(0, 24).map((r) => {
+  /* v4.9.0 · Erst filtern, dann zeichnen. Der Schnitt auf 24 Punkte kommt
+     NACH dem Filter — sonst waere ein ausgeschalteter Eimer stiller Platz-
+     verbrauch: 24 Zeilen weggeworfen, von denen die Haelfte gar nicht
+     gezeichnet werden sollte. */
+  const alle = shown || [];
+  const gefiltert = heatFilter(alle, stockLevel);
+  const cnt = $('#stockMapCount');
+  if (cnt) cnt.textContent = heatCountLabel(Math.min(24, gefiltert.length), alle.length);
+  const pts = gefiltert.slice(0, 24).map((r) => {
     const ex = Number.isFinite(Number(r.executability)) ? Number(r.executability) : 0;
     return { r, x:g(ex), y:200-g(Number(r.score||0)), rad:5+Math.max(0,(Number(r.score||0)-5)*.7) };
   });
-  for(let it=0;it<15;it++) for(let i=0;i<pts.length;i++) for(let j=i+1;j<pts.length;j++){
-    const a=pts[i],b=pts[j],dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||.1,m=a.rad+b.rad+3;
-    if(d<m){const q=(m-d)*.16,ux=dx/d,uy=dy/d;a.x-=ux*q;a.y-=uy*q;b.x+=ux*q;b.y+=uy*q;}
-  }
+  /* v4.9.0: dieselbe Trennung wie die Coin-Karte. Bis hierher rechnete sie mit
+     `radA+radB+3` — dem KREIS — waehrend gelesen wird die SCHRIFT. Genau der
+     Befund, den 4.2.4 fuer die andere Karte behoben hat.
+     Rang: der ausgewaehlte Titel -> Favorit -> Kauf-Freigabe -> Musterqualitaet. */
+  heatSeparate(pts, {
+    charsOf: (p) => String(p.r.symbol || '').length,
+    rankOf: (p) => (String(p.r.symbol||'').toUpperCase() === String(focusStock||'').toUpperCase() ? 0
+      : isFavStock(p.r.symbol) ? 1 : stockLevel(p.r) === 3 ? 2 : 3),
+    tieOf: (p) => Number(p.r.score) || 0,
+  });
   /* v3.6.4: Die Spur sagt jetzt, WOHIN sich ein Titel bewegt. Nach rechts oben
      = Muster wird sauberer UND besser handelbar; das ist die Ecke, in der ein
      Trade ueberhaupt erst moeglich wird. Solche Spuren werden gruen und mit
@@ -2264,9 +2405,16 @@ function stockHeatmap(shown) {
      und der Mouseover nennt das Netto-Potenzial. Vorher konnte ein Titel im
      Feld oben rechts gruen leuchten, waehrend sein Plan netto 20 EUR brachte —
      die Achsen messen naemlich BEIDE nur Technik, nie Ertrag. */
-  pts.map(({r,x,y,rad})=>{
+  pts.map(({r,x,y,rad,label})=>{
     const hl=stockHeatmapMark(r);
-    return `<g class="dot light-${hl.light} ${stockLevel(r)===3?'buy-ready':''} ${hl.weak?'econ-weak':''}" data-openstock="${esc(r.symbol)}" transform="translate(${Math.max(10,Math.min(190,x)).toFixed(1)} ${Math.max(10,Math.min(190,y)).toFixed(1)})"><circle class="hit" r="${rad+7}"/><circle class="core" r="${rad}"/><text x="0" y="2.2">${esc(r.symbol.slice(0,5))}</text><title>${esc(hl.tip)}</title></g>`;
+    /* v4.9.0: ohne freien Platz entfaellt die AUFSCHRIFT, nicht der Punkt.
+       Klickflaeche, Farbe und Mouseover bleiben vollstaendig — dieselbe Regel
+       wie in der Coin-Karte seit 4.2.4. */
+    const inner = label
+      ? `<text x="0" y="2.2">${esc(r.symbol.slice(0,5))}</text>`
+      : '<circle class="unnamed" cx="0" cy="0" r="1.5"/>';
+    const namensNote = label ? '' : '\nOhne Aufschrift, weil an dieser Stelle kein lesbarer Platz ist — anklicken oder mit ★ markieren, dann wird der Name gesetzt.';
+    return `<g class="dot light-${hl.light} ${stockLevel(r)===3?'buy-ready':''} ${hl.weak?'econ-weak':''}" data-openstock="${esc(r.symbol)}" transform="translate(${Math.max(10,Math.min(190,x)).toFixed(1)} ${Math.max(10,Math.min(190,y)).toFixed(1)})"><circle class="hit" r="${rad+7}"/><circle class="core" r="${rad}"/>${inner}<title>${esc(hl.tip+namensNote)}</title></g>`;
   }).join('');
   svg.querySelectorAll('[data-openstock]').forEach(dot=>dot.addEventListener('click',async()=>{
     focusStock=dot.dataset.openstock||''; renderStocks();
@@ -4961,7 +5109,14 @@ function capNotice(s) {
 function renderMap() {
   const svg = $('#map');
   const g = (x) => 12 + (x / 10) * 176;
-  const pts = rows.map((r) => ({ r, x: g(r.executability), y: 200 - g(r.quality), baseX: g(r.executability), baseY: 200 - g(r.quality), rad: 4.5 + Math.max(0, Math.min(3.2, (Number(r.quality || 0) - 5) * .75)) }));
+  /* v4.9.0: Erst filtern, dann zeichnen — spiegelbildlich zur Aktien-Karte.
+     Beide Bereiche gleich gebaut ist in diesem Projekt eine Zusicherung
+     (4.2.5/4.2.7/4.2.8), keine Geschmacksfrage. */
+  const alle = rows || [];
+  const gefiltert = heatFilter(alle, coinLevel);
+  const cnt = $('#coinMapCount');
+  if (cnt) cnt.textContent = heatCountLabel(gefiltert.length, alle.length);
+  const pts = gefiltert.map((r) => ({ r, x: g(r.executability), y: 200 - g(r.quality), baseX: g(r.executability), baseY: 200 - g(r.quality), rad: 4.5 + Math.max(0, Math.min(3.2, (Number(r.quality || 0) - 5) * .75)) }));
   /* ══ v4.2.3 · DIE TRENNUNG GALT DEM KREIS, GELESEN WIRD DIE SCHRIFT ══════
      Befund aus dem Betrieb (03.09., Coin-Heatmap): BTC war gezeichnet und
      trotzdem nicht auffindbar — die Beschriftung lag unter APT und XRP.
@@ -4983,55 +5138,14 @@ function renderMap() {
 
      Die analytische Position bleibt die Basis; verschoben wird nur so weit
      wie noetig. Beide Achsen behalten ihre Bedeutung. */
-  const CHAR_W = 3.55, LABEL_H = 5.8;
-  pts.forEach((p) => {
-    const chars = Math.min(5, sym(p.r.pair).length);
-    p.halfW = Math.max(p.rad, (chars * CHAR_W) / 2) + 1.2;
-    p.halfH = p.rad + LABEL_H * 0.5;
+  /* v4.9.0: Geometrie und Vergaberegel liegen jetzt in `heatSeparate` und
+     werden von BEIDEN Karten benutzt. Der Kommentarblock zur Herleitung steht
+     dort. Rang: ausgewaehlt -> Favorit -> Freigabe -> Qualitaet. */
+  heatSeparate(pts, {
+    charsOf: (p) => sym(p.r.pair).length,
+    rankOf: (p) => (p.r.pair === selected ? 0 : isFavPair(p.r.pair) ? 1 : buyReady(p.r) ? 2 : 3),
+    tieOf: (p) => Number(p.r.quality) || 0,
   });
-  for (let it = 0; it < 26; it++) for (let i = 0; i < pts.length; i++) for (let j = i+1; j < pts.length; j++) {
-    const a=pts[i], b=pts[j];
-    const needX=a.halfW+b.halfW, needY=a.halfH+b.halfH;
-    const dx=b.x-a.x, dy=b.y-a.y;
-    /* Normierter Abstand: 1 bedeutet „beruehrt sich gerade". Unter 1 wird
-       auseinandergeschoben, und zwar entlang der normierten Richtung — das
-       ergibt bei breiten, flachen Rechtecken automatisch mehr Seitwaerts- als
-       Hoehenversatz. */
-    const nx=dx/needX, ny=dy/needY, d=Math.hypot(nx,ny);
-    if (d >= 1 || d === 0) continue;
-    const push=(1-d)*.30, ux=(nx/d)*needX, uy=(ny/d)*needY;
-    a.x-=ux*push*.5; a.y-=uy*push*.5; b.x+=ux*push*.5; b.y+=uy*push*.5;
-  }
-  pts.forEach((p) => { p.x = Math.max(10, Math.min(190, p.x)); p.y = Math.max(10, Math.min(190, p.y)); });
-
-  /* ══ v4.2.3 · WER KEINEN PLATZ HAT, BEKOMMT KEINEN NAMEN ════════════════
-     Die Trennung oben loest BTC aus seinem Cluster, aber sie kann das
-     Grundproblem nicht loesen: 20 fuenfstellige Namen passen in ein Feld von
-     200x200 Einheiten nicht ueberschneidungsfrei, ohne die Punkte so weit zu
-     verschieben, dass die Achsen ihre Bedeutung verlieren. Gemessen bleiben
-     nach der Trennung rund 26 sich beruehrende Beschriftungspaare, und mehr
-     Iterationen oder staerkerer Druck verbessern das nicht — sie vergroessern
-     nur den Versatz.
-
-     Deshalb wird die Beschriftung nach Rang vergeben und nur gesetzt, wenn sie
-     frei steht. Reihenfolge: der ausgewaehlte Coin, dann Favoriten, dann
-     Kauf-Freigaben, dann absteigende Qualitaet. Was keinen Platz hat, behaelt
-     Punkt, Farbe, Klickflaeche und Mouseover — nur der aufgedruckte Name
-     entfaellt.
-
-     Das ist bewusst KEIN stilles Verschwinden im Sinne von 4.2.2: der Coin
-     bleibt vollstaendig vorhanden und benannt, lediglich die Aufschrift
-     weicht. Ein Name, der unter zwei anderen liegt, ist keine Information —
-     er sieht nur wie eine aus. Genau das war der Befund zu BTC. */
-  const rank = (p) => (p.r.pair === selected ? 0 : isFavPair(p.r.pair) ? 1 : buyReady(p.r) ? 2 : 3);
-  const placed = [];
-  [...pts].sort((a, b) => rank(a) - rank(b) || (Number(b.r.quality) || 0) - (Number(a.r.quality) || 0))
-    .forEach((p) => {
-      const clash = placed.some((o) =>
-        (p.halfW + o.halfW) - Math.abs(o.x - p.x) > 0 && (p.halfH + o.halfH) - Math.abs(o.y - p.y) > 0);
-      p.label = !clash;
-      if (!clash) placed.push(p);
-    });
 
   /* v3.9.3: Gleicher Befund wie in der Aktien-Heatmap — die Spuren wurden aus
      Rohkoordinaten gezeichnet, die Punkte aber vorher auseinandergeschoben und
@@ -6997,6 +7111,7 @@ function applyPrimaryBlockOrder(){
 
 /* --------------------------------------------------------------------- Boot */
 applyPrimaryBlockOrder();
+wireHeatFilters();   // v4.9.0 · Regler beider Karten an EINEN Handler
 /* v4.2.9: Der Verlauf wird EINMAL beim Start und danach alle 15 Minuten
    geholt. Er aendert sich nicht sekuendlich, und jeder Abruf ist ein
    D1-Lesevorgang — bei 90.000 Schreibzeilen Tagesbudget waere ein Abruf im

@@ -157,6 +157,19 @@ header{
 /* ────────────────────────────────────────────────────────── 2D-Karte ─── */
 .mapwrap{background:var(--panel);border:1px solid var(--line);border-radius:15px;padding:11px}
 .maphead{display:flex;justify-content:space-between;font-size:9.5px;color:var(--dim);margin-bottom:6px}
+/* v4.9.0 · Regler ueber beiden Heatmaps. Bewusst klein und einzeilig: die
+   Kopfzeile hat in 4.5.8/4.5.9 schon einmal Bildflaeche gefressen, und NK82
+   deckelt sie seither. Die Schalter tragen KEINE Ampelfarbe — gruen/gelb/rot
+   heisst in dieser App Bewertung, nicht Bedienzustand. */
+.mapfilter{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;margin:0 0 6px;font-size:9.5px;color:var(--dim)}
+.mapfilter .mf{display:inline-flex;align-items:center;gap:4px;cursor:pointer;padding:2px 6px;border:1px solid var(--line,#2a3446);border-radius:999px;line-height:1.4;user-select:none}
+.mapfilter .mf:hover{border-color:var(--accent,#6ea8fe)}
+.mapfilter .mf input{width:11px;height:11px;margin:0;accent-color:var(--accent,#6ea8fe);cursor:pointer}
+.mapfilter .mf input:not(:checked)+span{opacity:.5;text-decoration:line-through}
+.mapfilter .mapcount{margin-left:auto;font-style:normal;opacity:.75;white-space:nowrap}
+/* Ohne Aufschrift gezeichnete Punkte behalten eine sichtbare Mitte, damit sie
+   nicht wie ein leerer Kreis aussehen (Regel aus 4.2.4). */
+#stockMap .unnamed{fill:currentColor;opacity:.55;pointer-events:none}
 .mdim{color:var(--dim2)}
 #map{width:100%;aspect-ratio:1;display:block;border-radius:9px;overflow:visible}
 #map .quad{opacity:.5}
@@ -751,7 +764,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"4.8.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"4.9.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
