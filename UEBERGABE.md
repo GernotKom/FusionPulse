@@ -1,3 +1,77 @@
+# FusionPulse 4.9.1 — die Regler hießen wie etwas anderes
+
+Gemeldet unmittelbar nach 4.9.0: *„RGTI aktuell egal auf beobachten — scheint
+aber in Heatmap bei Einstellung ‚beobachten' nicht auf. Heatmap zeigt Aktien nur
+an, wenn auf ‚übrige' gestellt wird. Detto bei den Coins."*
+
+Reproduziert und bestätigt. Der Fehler ist meiner, und er ist benennbar.
+
+## Die Ursache
+
+4.9.0 sortierte nach `stockLevel` / `coinLevel` (0–3). Stufe 2 verlangt dort
+`light === 'green'`. Am 09.09. um 20:29 stand die Kopfzeile auf **0 grün, 2
+gelb, 18 rot** — es gab keine einzige grüne Zeile. Damit fiel *alles* in
+„übrige", auch die zwei gelben.
+
+Gleichzeitig nennt die App diese gelben Zeilen an **drei** anderen Stellen
+„Beobachten": `COUNT_LABEL` für die Zähler in der Kopfzeile, `MODEL_VERDICT` im
+Modellvergleich und die Kopfzeile der Fokuskarte, in der RGTI genau so
+dastand.
+
+**Zwei verschiedene Dinge, ein Wort.** Dieselbe Krankheit wie „Reife" in 4.1.5,
+das dort gleichzeitig Sortierschlüssel und Bestätigungs-Streak hieß. Ich habe
+für die Regler eigene Bezeichnungen erfunden, während die App dieselben
+Zustände längst benennt.
+
+## Die Korrektur
+
+Der Eimer folgt jetzt **derselben Funktion, die den Punkt einfärbt**
+(`stockHeadline` / `coinHeadline`). Ein gelb gezeichneter Punkt kann damit nicht
+mehr außerhalb von „beobachten" liegen — was man sieht, ist was man filtert.
+
+Die Aufschrift kommt aus `COUNT_LABEL`, nicht mehr aus dem Markup und nicht aus
+einer eigenen Liste. Sie lautet daher **handeln / beobachten / rest**; „übrige"
+war das vierte Wort für dieselbe Sache und ist raus. Auch die Erklärtexte
+hängen jetzt an `HEAT_BUCKETS` statt im HTML — zwei Wörter für einen Eimer in
+zwei Dateien war der Anfang des Fehlers.
+
+**Eine Nebenfolge, die ausdrücklich gewollt ist:** ein grünes Muster ohne
+Kauf-Freigabe wird von der Kopfzeile gelb gezeichnet und liegt deshalb unter
+„beobachten", nicht unter „handeln". „Handeln" enthält damit ausschließlich
+echte Freigaben. Das weicht von den rohen Ampelzählern in der Kopfzeile ab —
+aber es stimmt mit dem überein, was auf der Karte zu sehen ist, und das ist der
+Maßstab, an dem der Regler gemessen wird.
+
+## Ein zweiter Fehler im selben Screenshot
+
+Die Zählanzeige meldete `0 von 20 — alle Regler aus`, **während „beobachten"
+eingeschaltet war**. `heatCountLabel` gab diesen Text bei jeder Null aus. Der
+Satz war schlicht falsch und hat die Fehlersuche in die verkehrte Richtung
+geschickt. Jetzt werden zwei Zustände unterschieden: `0 von 20 — keiner ist
+beobachten` gegen `0 von 20 — alle Regler aus`.
+
+## Drei Negativkontrollen
+
+| Kontrolle | Ergebnis |
+|---|---|
+| Eimer wieder an der rohen Musterampel statt an der Punktfarbe | Test hat den Fehler erkannt |
+| eigene Wörter statt `COUNT_LABEL` | Test hat den Fehler erkannt |
+| der falsche Grund aus dem Screenshot | Test hat den Fehler erkannt |
+
+Die erste stellt exakt den gemeldeten Zustand wieder her.
+
+## Zur Sprache in diesem Dokument (Nutzerwunsch)
+
+Bis 4.9.0 hieß es hier „die Negativkontrolle hat gefeuert". Der Begriff
+beschreibt den Vorgang, nicht das Ergebnis, und zwingt beim Lesen zu einer
+Umrechnung: in der Kontrolle ist Rot der Erfolg, im Normallauf der Fehler.
+**Ab 4.9.1 steht das Ergebnis da:** „Test hat den Fehler erkannt" bzw. „Test hat
+den Fehler nicht erkannt — Test unbrauchbar". Die Altbestände bleiben
+unverändert, damit die alten Einträge nachvollziehbar bleiben; „gefeuert" dort
+heißt „hat den Fehler erkannt".
+
+---
+
 # FusionPulse 4.9.0 — die Aktien-Heatmap hat die Reparatur von 4.2.4 nie bekommen
 
 Gemeldet: *„bei den Heatmaps sind die Aktien/Coins zumeist unübersichtlich, weil

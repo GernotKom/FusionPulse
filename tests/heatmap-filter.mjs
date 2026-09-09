@@ -44,81 +44,128 @@ const ueberdeckungen = (pts) => {
   return n;
 };
 
-/* ═══ NK88a · Die drei Eimer sind vollstaendig und ueberschneidungsfrei ════
-   Ueberlappende Schalter waeren der Anfang der naechsten Zweitwahrheit. Jede
-   Stufe 0..3 muss in genau einem Eimer landen, und jeder Eimer muss von genau
-   einem Regler geschaltet werden. */
+/* ═══ NK88a · Der Eimer folgt der FARBE DES PUNKTES ══════════════════════
+   BEFUND aus dem Betrieb (09.09., 20:29): RGTI stand in der Karte als
+   „Beobachten", die Heatmap zeigte bei eingeschaltetem Regler „beobachten"
+   aber `0 von 20`. Erst „übrige" brachte alle 20 Punkte zurück. Auf der
+   Coin-Seite dasselbe.
+
+   URSACHE, und sie ist ein Namensfehler: die erste Fassung sortierte nach
+   `stockLevel` (0–3). Stufe 2 verlangt dort `light === 'green'`; an diesem
+   Nachmittag war KEINE Zeile gruen (Kopfzeile 0/2/18). Alles fiel damit in
+   „übrige", auch die zwei gelben. Gleichzeitig nennt die App an drei anderen
+   Stellen — `COUNT_LABEL`, `MODEL_VERDICT` und die Kopfzeile der Fokuskarte —
+   genau diese gelben Zeilen „Beobachten".
+
+   Zwei verschiedene Dinge, ein Wort. Dieselbe Krankheit wie „Reife" in 4.1.5,
+   die dort Sortierschluessel UND Bestaetigungs-Streak hiess.
+
+   Der Eimer folgt jetzt derselben Funktion, die den Punkt EINFAERBT. Damit
+   kann kein gelber Punkt mehr ausserhalb von „beobachten" liegen. */
 {
-  const eimer = [0, 1, 2, 3].map((l) => C.heatBucketOf(l));
-  assert.deepEqual(eimer, ['rest', 'rest', 'watch', 'trade'],
-    'NK88a: die Zuordnung Stufe -> Eimer stimmt nicht');
-  assert.equal(C.HEAT_BUCKETS.length, 3, 'NK88a: es sind genau drei Regler bestellt');
-  /* Vergleich ueber `join`, nicht `deepEqual`: `HEAT_BUCKETS` stammt aus dem
-     vm-Kontext des Pruefstands und traegt dessen Array-Prototyp. `deepStrictEqual`
-     faellt dann trotz gleichem Inhalt — ein Test, der aus dem falschen Grund
-     faellt, ist kein Test. */
-  assert.equal(C.HEAT_BUCKETS.map((b) => b.key).sort().join(','), 'rest,trade,watch');
-  assert.equal(new Set(C.HEAT_BUCKETS.map((b) => b.flag)).size, 3,
-    'NK88a: zwei Regler duerfen nicht auf dieselbe Einstellung zeigen');
+  const H = C.stockHeadline;
+  const gruen = { symbol: 'X', light: 'green', verdict: 'v' };
+  const gelb = { symbol: 'RGTI', light: 'yellow', score: 5.9, executability: 4.1, verdict: 'Beobachten' };
+  const rot = { symbol: 'Z', light: 'red', verdict: 'v' };
+
+  /* Der gemeldete Fall selbst, als Zusicherung: was die Karte „Beobachten"
+     nennt, muss unter „beobachten" liegen. */
+  assert.equal(H(gelb).text, 'Beobachten', 'NK88a: Vorbedingung — die Kopfzeile nennt RGTI „Beobachten"');
+  assert.equal(C.heatBucketOf(gelb, H), 'watch',
+    'NK88a: genau der gemeldete Fehler — die Karte sagt „Beobachten", der Regler sortiert woanders hin');
+
+  /* Und die allgemeine Fassung: der Eimer ist IMMER die Punktfarbe. Eine
+     Stichprobe ueber alle drei Ampeln, gerechnet mit derselben Funktion, die
+     `stockHeatmapMark` fuer die Farbe benutzt. */
+  for (const r of [gruen, gelb, rot]) {
+    const farbe = H(r).light;
+    const erwartet = farbe === 'green' ? 'trade' : farbe === 'yellow' ? 'watch' : 'rest';
+    assert.equal(C.heatBucketOf(r, H), erwartet,
+      `NK88a: ${r.symbol} wird ${farbe} gezeichnet und muss deshalb in „${erwartet}" liegen`);
+  }
+  /* Ein gruenes Muster OHNE Freigabe wird gelb gezeichnet — es gehoert dann
+     auch unter „beobachten" und nicht unter „handeln". Sonst waere der Regler
+     wieder etwas anderes als das, was man sieht. */
+  assert.equal(H(gruen).light, 'yellow', 'NK88a: Vorbedingung — gruenes Muster ohne Freigabe wird gelb gezeichnet');
+  assert.equal(C.heatBucketOf(gruen, H), 'watch');
 }
 
-/* ═══ NK88b · Der Filter filtert — und zwar AUSGEFUEHRT ═══════════════════ */
+/* ═══ NK88b · Die Beschriftung hat EINE Quelle ═══════════════════════════
+   Der Fehler oben war moeglich, weil ich fuer die Regler eigene Woerter
+   erfunden habe, waehrend die App dieselben Zustaende schon benennt. Die
+   Beschriftung kommt jetzt aus `COUNT_LABEL`. */
 {
+  assert.equal(C.HEAT_BUCKETS.length, 3, 'NK88b: es sind genau drei Regler bestellt');
+  assert.equal(new Set(C.HEAT_BUCKETS.map((b) => b.flag)).size, 3,
+    'NK88b: zwei Regler duerfen nicht auf dieselbe Einstellung zeigen');
+  assert.equal(new Set(C.HEAT_BUCKETS.map((b) => b.light)).size, 3,
+    'NK88b: die drei Eimer muessen ueberschneidungsfrei sein');
+  for (const b of C.HEAT_BUCKETS) {
+    assert.equal(C.heatBucketLabel(b), String(C.COUNT_LABEL[b.light]).toLowerCase(),
+      `NK88b: die Aufschrift von „${b.key}" muss aus COUNT_LABEL kommen — ein eigenes Wort waere die dritte Bezeichnung fuer dieselbe Sache`);
+  }
+}
+
+/* ═══ NK88c · Der Filter filtert — und zwar AUSGEFUEHRT ══════════════════ */
+{
+  const H = C.stockHeadline;
   const rows = [
-    { symbol: 'A', lvl: 3 }, { symbol: 'B', lvl: 3 },
-    { symbol: 'C', lvl: 2 }, { symbol: 'D', lvl: 2 }, { symbol: 'E', lvl: 2 },
-    { symbol: 'F', lvl: 1 }, { symbol: 'G', lvl: 0 },
+    { symbol: 'A', light: 'yellow', verdict: 'v' }, { symbol: 'B', light: 'yellow', verdict: 'v' },
+    { symbol: 'C', light: 'red', verdict: 'v' }, { symbol: 'D', light: 'red', verdict: 'v' },
   ];
-  const lvl = (r) => r.lvl;
   const setze = (t, w, re) => { C.S.heatTrade = t; C.S.heatWatch = w; C.S.heatRest = re; };
 
   setze(true, true, true);
-  assert.equal(C.heatFilter(rows, lvl).length, 7, 'NK88b: alle drei an muss der bisherige Zustand sein');
-  setze(true, false, false);
-  assert.equal(C.heatFilter(rows, lvl).map((r) => r.symbol).join(''), 'AB');
+  assert.equal(C.heatFilter(rows, H).length, 4, 'NK88c: alle drei an muss der bisherige Zustand sein');
   setze(false, true, false);
-  assert.equal(C.heatFilter(rows, lvl).map((r) => r.symbol).join(''), 'CDE');
+  assert.equal(C.heatFilter(rows, H).map((r) => r.symbol).join(''), 'AB',
+    'NK88c: der gemeldete Fall — „beobachten" allein muss die gelben Titel zeigen, nicht nichts');
   setze(false, false, true);
-  assert.equal(C.heatFilter(rows, lvl).map((r) => r.symbol).join(''), 'FG');
+  assert.equal(C.heatFilter(rows, H).map((r) => r.symbol).join(''), 'CD');
   setze(true, true, false);
-  assert.equal(C.heatFilter(rows, lvl).length, 5,
-    'NK88b: „übrige\" aus ist der Griff, der die Karte am staerksten aufraeumt');
+  assert.equal(C.heatFilter(rows, H).length, 2,
+    'NK88c: „Rest" aus ist der Griff, der die Karte am staerksten aufraeumt');
 
-  /* Die eigentliche Zusicherung: der Regler aendert die ANZEIGE, sonst nichts.
-     Weder die uebergebene Liste noch die Stufen duerfen sich bewegen. */
+  /* Die eigentliche Zusicherung: der Regler aendert die ANZEIGE, sonst nichts. */
   const vorher = JSON.stringify(rows);
   setze(false, false, false);
-  C.heatFilter(rows, lvl);
+  C.heatFilter(rows, H);
   assert.equal(JSON.stringify(rows), vorher,
-    'NK88b: der Filter darf die Zeilenliste nicht anfassen — die Trefferliste unter der Karte haengt daran');
-  assert.equal(rows.map(lvl).join(','), '3,3,2,2,2,1,0',
-    'NK88b: … und die Stufen erst recht nicht. Ein Anzeigefilter, der bewertet, waere eine stille Regeländerung');
+    'NK88c: der Filter darf die Zeilenliste nicht anfassen — die Trefferliste unter der Karte haengt daran');
+  assert.equal(rows.map((r) => H(r).light).join(','), 'yellow,yellow,red,red',
+    'NK88c: … und die Bewertung erst recht nicht. Ein Anzeigefilter, der bewertet, waere eine stille Regelaenderung');
 }
 
-/* ═══ NK88c · Alle Regler aus heisst SAGEN, nicht schweigen ═══════════════
-   Eine leere Karte ohne Erklaerung sieht aus wie ein Fehler. Das war in 4.2.2
-   schon einmal der teure Fall („die VWAP-Kachel fehlte ersatzlos"). */
+/* ═══ NK88d · Eine leere Karte nennt den RICHTIGEN Grund ═════════════════
+   Im Screenshot vom 09.09. stand „0 von 20 — alle Regler aus", WAEHREND
+   „beobachten" eingeschaltet war. Der Text war schlicht falsch und hat die
+   Fehlersuche in die verkehrte Richtung geschickt. „Alle Regler aus" und
+   „kein Titel in der gewaehlten Auswahl" sind zwei Zustaende. */
 {
+  C.S.heatTrade = false; C.S.heatWatch = true; C.S.heatRest = false;
+  const t1 = C.heatCountLabel(0, 20);
+  assert.match(t1, /0 von 20/, 'NK88d: die Zahl gehoert dazu');
+  assert.ok(!/alle Regler aus/.test(t1),
+    `NK88d: bei eingeschaltetem Regler darf dort nicht „alle Regler aus" stehen — genau das stand im Screenshot (${t1})`);
+  assert.match(t1, /beobachten/, 'NK88d: … stattdessen muss die aktive Auswahl benannt werden');
+
   C.S.heatTrade = false; C.S.heatWatch = false; C.S.heatRest = false;
-  const t = C.heatCountLabel(0, 24);
-  assert.match(t, /0 von 24/, 'NK88c: die Zahl gehoert dazu');
-  assert.match(t, /Regler/, 'NK88c: … und der GRUND, sonst sieht die leere Karte wie ein Ausfall aus');
+  assert.match(C.heatCountLabel(0, 20), /alle Regler aus/,
+    'NK88d: und wenn wirklich alle aus sind, muss genau das dastehen');
+
   assert.equal(C.heatCountLabel(0, 0), 'keine Daten',
-    'NK88c: „keine Daten\" und „alles weggefiltert\" duerfen nicht gleich aussehen');
-  assert.equal(C.heatCountLabel(7, 24), '7 von 24');
+    'NK88d: „keine Daten" und „alles weggefiltert" duerfen nicht gleich aussehen');
+  assert.equal(C.heatCountLabel(7, 20), '7 von 20');
+  C.S.heatTrade = true; C.S.heatWatch = true; C.S.heatRest = true;
 }
 
-/* ═══ NK88d · Eine fehlende Einstellung zeigt AN ══════════════════════════
-   Ein gespeicherter Stand von vor 4.9.0 kennt die Schalter nicht. Fail-open
-   ist hier richtig: ein unbekannter Zustand ist kein ausgeschalteter. Der
-   umgekehrte Fall waere eine Karte, die nach dem Update leer startet. */
+/* ═══ NK88e2 · Eine fehlende Einstellung zeigt AN ════════════════════════ */
 {
   delete C.S.heatTrade; delete C.S.heatWatch; delete C.S.heatRest;
   assert.equal(C.heatBucketOn('trade'), true);
   assert.equal(C.heatBucketOn('watch'), true);
   assert.equal(C.heatBucketOn('rest'), true);
-  assert.equal(C.heatBucketOn('gibtsnicht'), true,
-    'NK88d: ein unbekannter Eimer darf nichts ausblenden');
+  assert.equal(C.heatBucketOn('gibtsnicht'), true, 'NK88e2: ein unbekannter Eimer darf nichts ausblenden');
   C.S.heatTrade = true; C.S.heatWatch = true; C.S.heatRest = true;
 }
 

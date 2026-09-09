@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.9.0 — Frontend
+   FusionPulse v4.9.1 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2265,14 +2265,27 @@ function heatSeparate(pts, opt) {
    Score noch Ampel noch Freigabe noch die Trefferliste darunter aendern sich.
    NK88 prueft das. */
 const HEAT_BUCKETS = [
-  { key: 'trade', flag: 'heatTrade', label: 'handeln',
-    tip: 'Stufe 3: Kauf-Freigabe liegt vor — Musterqualität, Ausführbarkeit, Datenstand und Wirtschaftlichkeit stimmen gleichzeitig.' },
-  { key: 'watch', flag: 'heatWatch', label: 'beobachten',
-    tip: 'Stufe 2: grünes Signal, aber keine Freigabe — meist zu geringes Netto-Potenzial, veralteter Kurs oder ein stummgeschaltetes Setup.' },
-  { key: 'rest', flag: 'heatRest', label: 'übrige',
-    tip: 'Stufe 0 und 1: gelb, rot oder zurückgestuft. Ausschalten räumt die Karte am stärksten auf — genau die Punkte, die sich nicht differenzieren lassen.' },
+  { key: 'trade', flag: 'heatTrade', light: 'green',
+    tip: 'Grün gezeichnete Punkte: die Kopfzeile der Karte sagt BUY, also liegt eine Kauf-Freigabe vor.\n\nDer Regler folgt der FARBE DES PUNKTES, nicht der rohen Musterampel. Ein grünes Muster, dem eine Freigabebedingung fehlt, wird gelb gezeichnet und liegt deshalb unter „beobachten" — dort, wo es auch in der Karte steht.' },
+  { key: 'watch', flag: 'heatWatch', light: 'yellow',
+    tip: 'Gelb gezeichnete Punkte: Setup ist da, mindestens eine Freigabebedingung fehlt — veraltete Daten, zu kleiner Plan, außerhalb des Handelsfensters, Modus A, stummgeschaltetes Setup.\n\nDas ist derselbe Zustand, den die Kopfzeile der Karte „Beobachten" nennt.' },
+  { key: 'rest', flag: 'heatRest', light: 'red',
+    tip: 'Rot gezeichnete Punkte: kein Trade. Ausschalten räumt die Karte am stärksten auf — das sind die Titel, die sich untereinander ohnehin nicht differenzieren lassen.' },
 ];
-function heatBucketOf(level) { return level >= 3 ? 'trade' : level === 2 ? 'watch' : 'rest'; }
+/* Die Beschriftung kommt aus COUNT_LABEL, der Tabelle, die auch die Zaehler in
+   der Kopfzeile beschriftet. Ein eigenes Wort hier waere die dritte Bezeichnung
+   fuer dieselbe Sache — und genau daran ist 4.9.0 gescheitert.
+   Als FUNKTION und nicht als Zuweisung: `COUNT_LABEL` steht weiter unten in der
+   Datei, eine Zuweisung hier liefe in die temporale Totzone. */
+function heatBucketLabel(b) { return String(COUNT_LABEL[b.light] || b.key).toLowerCase(); }
+
+/* Der Eimer folgt der KOPFZEILE der Zeile, also genau der Funktion, die auch
+   den Punkt einfaerbt. Ein gelber Punkt liegt damit zwingend unter
+   „beobachten", ein gruener unter „handeln". */
+function heatBucketOf(r, headlineOf) {
+  const l = String(headlineOf(r)?.light || 'red');
+  return l === 'green' ? 'trade' : l === 'yellow' ? 'watch' : 'rest';
+}
 function heatBucketOn(key) {
   const b = HEAT_BUCKETS.find((x) => x.key === key);
   if (!b) return true;
@@ -2281,18 +2294,22 @@ function heatBucketOn(key) {
      Schreibschwelle in 4.1.0. */
   return S[b.flag] !== false;
 }
-/** Filtert eine Zeilenliste fuer die KARTE. `levelOf` ist die vorhandene
- *  Stufenfunktion der jeweiligen Anlageklasse; hier wird nichts neu bewertet. */
-function heatFilter(list, levelOf) {
-  return (list || []).filter((r) => heatBucketOn(heatBucketOf(levelOf(r))));
+/** Filtert eine Zeilenliste fuer die KARTE. `headlineOf` ist die vorhandene
+ *  Kopfzeilenfunktion der jeweiligen Anlageklasse; hier wird nichts neu
+ *  bewertet und nichts neu benannt. */
+function heatFilter(list, headlineOf) {
+  return (list || []).filter((r) => heatBucketOn(heatBucketOf(r, headlineOf)));
 }
 /** Text unter den Reglern. Sagt IMMER etwas — auch und gerade dann, wenn
- *  nichts uebrig bleibt. Eine leere Karte ohne Erklaerung sieht aus wie ein
- *  Fehler, und das war in 4.2.2 schon einmal der teure Fall. */
+ *  nichts uebrig bleibt, und dann den RICHTIGEN Grund: „alle Regler aus" und
+ *  „kein Titel in der gewaehlten Auswahl" sind zwei verschiedene Zustaende,
+ *  und der erste Entwurf hat sie beide „alle Regler aus" genannt. */
 function heatCountLabel(gezeigt, gesamt) {
   if (!gesamt) return 'keine Daten';
-  if (!gezeigt) return `0 von ${gesamt} — alle Regler aus`;
-  return `${gezeigt} von ${gesamt}`;
+  if (gezeigt) return `${gezeigt} von ${gesamt}`;
+  const an = HEAT_BUCKETS.filter((b) => heatBucketOn(b.key));
+  if (!an.length) return `0 von ${gesamt} — alle Regler aus`;
+  return `0 von ${gesamt} — keiner ist ${an.map(heatBucketLabel).join(' / ')}`;
 }
 
 /* v4.9.0 · Verdrahtung der Regler. EIN Handler fuer beide Karten: zwei
@@ -2300,7 +2317,16 @@ function heatCountLabel(gezeigt, gesamt) {
    auseinanderlaufen (Lehre aus 4.2.5). Der Zustand liegt in den Einstellungen
    und ueberlebt damit einen Neustart der App. */
 function syncHeatFilterUI() {
-  $$('.mapfilter input[data-heat]').forEach((box) => { box.checked = heatBucketOn(box.dataset.heat); });
+  $$('.mapfilter input[data-heat]').forEach((box) => {
+    box.checked = heatBucketOn(box.dataset.heat);
+    /* Beschriftung und Erklaerung kommen aus HEAT_BUCKETS, nicht aus dem
+       Markup: sonst stehen zwei Woerter fuer denselben Eimer in zwei Dateien. */
+    const b = HEAT_BUCKETS.find((x) => x.key === box.dataset.heat);
+    if (!b) return;
+    const span = box.parentElement?.querySelector('span');
+    if (span) span.textContent = heatBucketLabel(b);
+    box.parentElement?.setAttribute('title', b.tip);
+  });
 }
 function wireHeatFilters() {
   $$('.mapfilter input[data-heat]').forEach((box) => box.addEventListener('change', () => {
@@ -2322,7 +2348,7 @@ function stockHeatmap(shown) {
      verbrauch: 24 Zeilen weggeworfen, von denen die Haelfte gar nicht
      gezeichnet werden sollte. */
   const alle = shown || [];
-  const gefiltert = heatFilter(alle, stockLevel);
+  const gefiltert = heatFilter(alle, stockHeadline);
   const cnt = $('#stockMapCount');
   if (cnt) cnt.textContent = heatCountLabel(Math.min(24, gefiltert.length), alle.length);
   const pts = gefiltert.slice(0, 24).map((r) => {
@@ -5113,7 +5139,7 @@ function renderMap() {
      Beide Bereiche gleich gebaut ist in diesem Projekt eine Zusicherung
      (4.2.5/4.2.7/4.2.8), keine Geschmacksfrage. */
   const alle = rows || [];
-  const gefiltert = heatFilter(alle, coinLevel);
+  const gefiltert = heatFilter(alle, coinHeadline);
   const cnt = $('#coinMapCount');
   if (cnt) cnt.textContent = heatCountLabel(gefiltert.length, alle.length);
   const pts = gefiltert.map((r) => ({ r, x: g(r.executability), y: 200 - g(r.quality), baseX: g(r.executability), baseY: 200 - g(r.quality), rad: 4.5 + Math.max(0, Math.min(3.2, (Number(r.quality || 0) - 5) * .75)) }));

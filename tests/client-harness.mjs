@@ -186,7 +186,8 @@ export function loadClient(overrides = {}) {
      pruefbar, weil die alte Fassung nur im Quelltext der Coin-Karte stand und
      genau deshalb niemandem aufgefallen ist, dass die Aktien-Karte sie nie
      bekommen hat. */
-  heatSeparate, heatFilter, heatBucketOf, heatBucketOn, heatCountLabel,
+  heatSeparate, heatFilter, heatBucketOf, heatBucketOn, heatCountLabel, heatBucketLabel,
+  stockHeadline, COUNT_LABEL,
   HEAT_BUCKETS, coinLevel, syncHeatFilterUI, renderMap, stockHeatmap,
   get rows(){return rows;}, set rows(v){rows=v;}
 };`;
