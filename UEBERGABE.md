@@ -1,3 +1,173 @@
+# FusionPulse 4.10.0 — die Gewichte lagen seit 4.8.0 da und waren nicht anwendbar
+
+Gemeldet: *„Hauptsache wir haben zügig Empfehlungen aus der App durch kreatives
+machine learning, ohne Kosten in die Höhe zu treiben."*
+
+Ausgangslage war der Screenshot aus 4.9.1: **0 grün, 2 gelb, 18 rot.** Die App
+war in diesem Zustand nicht falsch — sie war **stumm**. Zwanzig Zeilen, keine
+Freigabe, und keine Aussage darüber, welche der zwanzig einen zweiten Blick
+verdient.
+
+## Was ausdrücklich NICHT gemacht wurde
+
+Ein Gatter zu senken. Das hätte sofort „Empfehlungen" erzeugt — und zwar
+Freigaben, die keine sind. Es ist die teuerste Art, Stummheit zu beenden, und
+es wäre die dritte Zweitwahrheit nach „Reife" (4.1.5) und „Beobachten" (4.9.1).
+
+## Der Befund: die Maschinerie war längst da
+
+Modul 0b schätzt seit 4.8.0 eine logistische Regression mit L2-Strafe,
+Permutationstest und Benjamini-Hochberg-Korrektur. Über ihre Gewichte stand im
+Bericht wörtlich: *„Sie sind nirgends verdrahtet."*
+
+Sie waren nicht nur unverdrahtet, sie waren **nicht anwendbar**. Exportiert
+wurden `gewicht` und `medianErsatz` — nicht aber `mu` und `sd`, gegen die sie
+geschätzt wurden, und nicht der Achsenabschnitt. Ein Gewicht ohne seine
+Standardisierung gehört zu einer Skala, die der Aufrufer nicht kennt; das ist
+keine halbe Anwendbarkeit, sondern gar keine. Drei Zeilen im Export.
+
+## Die Korrektur: eine REIHENFOLGE, keine Freigabe
+
+Sie beantwortet eine andere Frage als das Gatter — „worauf schaue ich zuerst"
+statt „darf ich kaufen" — und darf deshalb daneben stehen, ohne eine zweite
+Wahrheit zu sein. Score, Ampel und Freigabe bleiben unberührt; NK89c prüft das
+ausgeführt an einer Tiefenkopie.
+
+**Drei Basen, genau eine aktiv, immer benannt:**
+
+    modell     Die Regression aus Modul 0b — nur wenn sie out-of-sample
+               bestanden hat.
+    merkmal    Kein Modell, aber ein Einzelmerkmal, das die
+               Mehrfachtestkorrektur übersteht. Gereiht in Richtung seines
+               OOS-IC.
+    reihung    Nichts belegt. Dann der Score — und das steht so in der
+               Aufschrift. Ausdrücklich KEIN Lernergebnis.
+
+Damit steht ab dem ersten Tag eine Liste da, und das Lernen schaltet sich von
+selbst dazu, sobald D1 genug aufgelöst hat. **Kein vierter Zustand „unklar"** —
+die drei sind disjunkt und decken alles ab.
+
+## Was der Test gefunden hat, und das ist der eigentliche Ertrag
+
+NK89a war beim ersten Lauf grün. Über **30** Rauschläufe hat dieselbe Regel in
+**2 Fällen** ein reines Zufallsmodell zur Reihungsbasis gemacht — Startwert 122:
+AUC 0,602 bei p = 0,0499. Knapp unter 5 %, also exakt das, was ein 5-%-Test in
+5 % der Fälle liefern MUSS.
+
+**Wer einen Zufallstest an einem Startwert prüft, prüft seinen Startwert.**
+
+Zwei Verschärfungen, beide ohne neue geratene Zahl:
+
+1. Nur noch das Urteil „besser als die heutige Reihung". Ein Modell, das nicht
+   besser ist als der Score, ist als Reihung kein Gewinn, sondern ein zweites
+   Risiko.
+2. Zusätzlich muss mindestens ein Einzelmerkmal die BH-Korrektur überstehen —
+   ein **unabhängiger** zweiter Test aus vorhandener Maschinerie.
+
+| | vorher | nachher |
+|---|---|---|
+| reines Rauschen wird zur Modellbasis | 2 von 30 | **0 von 30** |
+| echtes Signal wird zur Modellbasis | 30 von 30 | **30 von 30** |
+
+Der Preis steht im Code: ein Modell, das mehrere je einzeln schwache Merkmale
+bündelt, wird abgewiesen. Dieser Fall ist real. In diesem Projekt ist der
+Falschtreffer der teurere Fehler — eine Rangliste aus Rauschen ist von einer
+echten nicht zu unterscheiden.
+
+## Kosten: nachgerechnet, nicht behauptet
+
+Null zusätzliche Anbieter-Abrufe. Gereiht wird, was ohnehin im Speicher liegt.
+
+`featureAttribution` liest bis zu 8.000 Zeilen. Sie an jeden Aktien-Abruf zu
+hängen hieße, diese Abfrage an den Takt der offenen Oberfläche zu binden —
+derselbe Fehler, der in 3.32.9 das D1-Limit gerissen hat.
+
+    Neuschätzung   höchstens alle 6 h, im Cron, Minute 7 bzw. 8 von 30
+                   (keine davon durch 5 teilbar → nie im selben Aufruf wie
+                   der Krypto-Job, Regel aus 3.2.5)
+    Ablage         EINE Zeile in fp_meta, wenige Kilobyte
+    Abrufpfad      liest diese eine Zeile, und die nur alle 15 min je Isolat
+
+Ergebnis: **48 winzige TTL-Lesungen und höchstens 4 schwere Schätzungen am Tag.**
+
+CPU gemessen statt angenommen (NK87l warnt vor `cpu_ms 5000`):
+
+| Episoden | Dauer |
+|---|---|
+| 2.000 | 386 ms |
+| 4.000 | 390 ms |
+| 8.000 (Zeilenlimit) | **757 ms** |
+
+## Der Merkmalsbau ist DERSELBE
+
+Die Merkmale der lebenden Zeile entstehen über `learningFeatures` und
+`snapshotPayload` — genau die Funktionen, mit denen die Episoden aufgezeichnet
+wurden, gegen die das Modell geschätzt ist. Ein zweiter Merkmalsbau wäre eine
+zweite Wahrheit und würde genau dann auffallen, wenn es teuer wird. NK89e prüft
+das ausgeführt.
+
+## NK87k musste umgeschrieben werden — und wurde dabei strenger
+
+Die Kontrolle hieß *„Das Modul ist NIRGENDS verdrahtet"* und zählte Aufrufer.
+Mein Cron-Refit war der dritte. Ihre Begründung ist ernstzunehmen: *„Ein Modell,
+das sich selbst scharf schaltet, verändert die Auswahl, aus der die nächste
+Messung entsteht — dann misst es sich selbst."*
+
+Eine Kontrolle, die man nur besteht, indem man nichts baut, wird früher oder
+später abgeschwächt. Sie ist deshalb **nicht** abgeschwächt, sondern auf ihren
+Grund umgestellt worden:
+
+1. Nur zwei benannte Aufrufer, sonst keiner.
+2. Der Speicher-Aufrufer liest und schreibt, sonst nichts.
+3. **Die Reihung taucht in KEINER Funktion auf, die aufzeichnet, bewertet oder
+   die Scan-Auswahl trifft** — `d1StoreRows`, `d1NoteObservations`,
+   `snapshotPayload`, `learningFeatures`, `analyse`, `analyseStock`,
+   `tiingoStockSnapshot`, `getSnapshot`, `snapshotWriteDecision`.
+
+Punkt 3 ist die eigentliche Zusicherung und war in der alten Fassung **gar nicht
+geprüft**.
+
+## Ein Folgefehler, selbst erzeugt
+
+Der Bericht sagte weiter „nirgends verdrahtet" — seit der Reihung falsch, und
+sichtbar in der Kopfzeile von Modul 0b. Genau der Fehlertyp, der 4.9.1 gekostet
+hat: ein Hinweis, der die Änderung nicht mitmacht, ist ab dem Tag der Änderung
+falsch. Worker und Kopfzeile tragen jetzt die Zusicherung, die weiter gilt.
+
+## Die Kontrollen
+
+| Kontrolle | Ergebnis |
+|---|---|
+| Zufallsmodell reiht (30 Startwerte) | Test hat den Fehler erkannt |
+| Modellbasis künstlich unerreichbar gemacht | Test hat den Fehler erkannt |
+| Rückkopplung: `reihungRank` in `d1StoreRows` | Test hat den Fehler erkannt |
+| Cron liest die Reihung statt sie nur zu speichern | Test hat den Fehler erkannt |
+| Container aus dem Markup entfernt | Test hat den Fehler erkannt |
+| Abgrenzung zur Freigabe aus der Zeile entfernt | Test hat den Fehler erkannt |
+| Ampel aus der Rangzeile entfernt | Test hat den Fehler erkannt |
+| Wartezustand als Leerzustand gezeichnet | Test hat den Fehler erkannt |
+
+**Zwei Fehlanker in den Kontrollen selbst gefunden:**
+
+- `assert.ok(C.el(sel))` war immer wahr — der Harness liefert für JEDEN Selektor
+  ein Stub-Element. Das Markup wird jetzt direkt gelesen.
+- „keine Kauf-Freigabe" stand AUCH im Tooltip. Die Kontrolle blieb grün, als der
+  Satz aus der sichtbaren Zeile verschwand. Zweiter Fall derselben Bauart nach
+  NK87m. Geprüft wird jetzt der Text ohne `title`-Attribute — was man ohne
+  Mauszeiger liest, ist der Maßstab.
+
+Beide sind nur aufgefallen, weil jede Kontrolle selbst gegengeprüft wurde. Eine
+Negativkontrolle, die nicht anschlägt, ist keine.
+
+## Was diese Version NICHT tut
+
+Sie erzeugt **keine einzige zusätzliche Kauf-Freigabe.** Stand die Kopfzeile
+gestern auf 0 grün, steht sie heute auf 0 grün. Was dazukommt, ist eine
+benannte Reihenfolge über denselben zwanzig Zeilen — nicht mehr, und
+ausdrücklich nicht weniger.
+
+---
+
 # FusionPulse 4.9.1 — die Regler hießen wie etwas anderes
 
 Gemeldet unmittelbar nach 4.9.0: *„RGTI aktuell egal auf beobachten — scheint

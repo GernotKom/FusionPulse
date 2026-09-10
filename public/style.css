@@ -764,7 +764,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"4.9.1";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"4.10.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1777,3 +1777,21 @@ table.sighist tr[data-tone="idle"] td:last-child{color:var(--dim)}
   background:var(--panel);border:1px solid var(--line);color:var(--dim)}
 .dsr.bad{color:var(--yellow);border-color:color-mix(in srgb,var(--yellow) 45%,var(--line))}
 .dsr.hidden{display:none!important}
+
+/* ══ v4.10.0 · MODELLREIHUNG ═══════════════════════════════════════════════
+   Vierter Fall der Klasse „korrekt berechnet, aber nicht ablesbar" wurde in
+   v3.29.0 damit erklaert, dass 17 erzeugte Klassen null CSS-Regeln hatten.
+   Deshalb steht die Gestaltung hier in DERSELBEN Version wie der Renderer und
+   nicht in der naechsten. */
+.ranklist{margin-top:10px;font-size:10px;color:var(--dim)}
+.ranklist b{color:var(--fg,#e6edf7);font-size:10.5px}
+.ranklist .rank-basis{margin-left:6px;opacity:.8;cursor:help;border-bottom:1px dotted var(--line,#2a3446)}
+.ranklist .rk-list{list-style:none;margin:6px 0 4px;padding:0;display:flex;flex-direction:column;gap:2px}
+.ranklist .rk-list li{display:flex;align-items:center;gap:6px;padding:2px 5px;border:1px solid var(--line,#2a3446);border-radius:5px;line-height:1.5;cursor:help}
+.ranklist .rk-list li:hover{border-color:var(--accent,#6ea8fe)}
+.ranklist .rk-n{flex:0 0 auto;min-width:12px;text-align:right;opacity:.55;font-variant-numeric:tabular-nums}
+.ranklist .rk-sym{flex:0 0 auto;color:var(--fg,#e6edf7);letter-spacing:.02em}
+.ranklist .rk-l{flex:0 0 auto;font-size:8.5px}
+.ranklist .rk-v{margin-left:auto;opacity:.85;white-space:nowrap;font-variant-numeric:tabular-nums}
+.ranklist .rk-foot{display:block;margin-top:2px;opacity:.65;line-height:1.45;cursor:help}
+.ranklist .err{color:var(--red,#ff6b6b)}

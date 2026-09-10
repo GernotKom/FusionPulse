@@ -1,15 +1,32 @@
-FusionPulse v2.5.0 – Update
+FusionPulse v4.10.0 – Update (Modellreihung)
 
 GH (GitHub):
-- Dateien/Ordner direkt ins Repository-Root hochladen: public/, src/, package.json, wrangler.jsonc, README.md usw.
+- Dateien/Ordner direkt ins Repository-Root hochladen: public/, src/, tests/,
+  migrations/, scripts/, package.json, wrangler.jsonc, README.md usw.
 - Keine zusätzliche FusionPulse-Unterebene.
 
 CF (Cloudflare):
 - Build-Stammverzeichnis: /
-- Bestehende FUSION_API_KEY und APP_TOKEN nicht verändern.
-- Für Aktienradar zusätzlich TWELVE_API_KEY als Geheimnis anlegen.
-- Nach Secret-Änderung ggf. unter Bereitstellungen die neueste Version auf 100 % befördern.
+- Bestehende Secrets NICHT verändern (FUSION_API_KEY, APP_TOKEN, TIINGO_API_TOKEN,
+  TWELVE_API_KEY, ALPACA_*).
+- Keine neuen Secrets, keine neue Migration, kein neues Binding nötig.
+  Die Reihungsbasis liegt in der bestehenden Tabelle fp_meta.
+- Nach dem Deploy ggf. unter Bereitstellungen die neueste Version auf 100 % befördern.
 
 PWA:
-- neu laden; Version v2.5.0 prüfen.
-- Aktienradar braucht im Free-Modus bis ca. 15 Minuten, bis alle 21 Titel einmal aktualisiert wurden.
+- Neu laden; Version v4.10.0 prüfen.
+
+WAS NEU IST:
+- Unter beiden Heatmaps steht jetzt eine Kachel „🎯 Kandidaten“.
+  Sie sagt, worauf zuerst zu schauen ist — sie ist KEINE Kauf-Freigabe.
+  Score, Ampel und Freigabe sind unverändert.
+- Die Kachel nennt immer ihre Basis: „Modell“, „Einzelmerkmal“ oder
+  „heutige Reihung“. Am Anfang steht dort „heutige Reihung“ (= nach Score),
+  weil noch nichts Gelerntes belegt ist. Das ist der richtige Zustand,
+  kein Fehler.
+- Auf „Modell“ springt sie erst um, wenn die Auswertung out-of-sample
+  besteht. Rechne mit einigen Tagen Aufzeichnung. Die Basis wird höchstens
+  alle 6 Stunden neu geschätzt.
+
+KOSTEN: keine zusätzlichen Anbieter-Abrufe. Zusätzlich pro Tag rund 48 winzige
+D1-Lesungen und höchstens 4 Neuschätzungen (je ~0,8 s CPU).

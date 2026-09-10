@@ -226,7 +226,16 @@ const nimm = (rep, name) => rep.merkmale.find((m) => m.name === 'situ.' + name);
   const gr = rep.modell.gewichte.find((x) => x.merkmal === 'situ.rausch');
   assert.ok(Math.abs(g.gewicht) > Math.abs(gr.gewicht) * 2,
     `das echte Merkmal (${g.gewicht}) muss deutlich schwerer wiegen als das Rauschen (${gr.gewicht})`);
-  assert.ok(/VORSCHLAG/.test(rep.modell.hinweis), 'der Vorschlagscharakter muss in der Antwort stehen');
+  /* v4.10.0 · Hier stand `/VORSCHLAG/`. Der Anker ist gefallen, weil sich die
+     zugesicherte Sache geaendert hat: seit der Modellreihung ORDNEN diese
+     Gewichte die Kandidatenliste, sind also verdrahtet. Der Test ist deshalb
+     nicht abgeschwaecht, sondern auf die Zusicherung umgestellt, die weiter
+     gilt und die eigentlich schuetzenswerte ist — die Gewichte fassen Score,
+     Ampel und Kauf-Freigabe NICHT an. */
+  assert.match(rep.modell.hinweis, /weder Score/i, 'der Hinweis muss die Abgrenzung zum Score tragen');
+  assert.match(rep.modell.hinweis, /Freigabe/i, 'der Hinweis muss die Abgrenzung zur Kauf-Freigabe tragen');
+  assert.ok(!/nirgends verdrahtet/i.test(rep.modell.hinweis),
+    'der Hinweis behauptet noch, die Gewichte seien nirgends verdrahtet – seit v4.10.0 reihen sie die Kandidatenliste');
 
   /* Gegenprobe: reines Rauschen darf kein "besser als heute" ergeben. */
   const noise = episoden(500, 82, (i, r) => ({ a: r() * 100, b: r() * 100 }), (s, r) => r() * 6 - 1);
@@ -248,36 +257,80 @@ const nimm = (rep, name) => rep.merkmale.find((m) => m.name === 'situ.' + name);
   assert.ok(!('tragend' in wenig), 'ohne Urteil darf keine Tragend-Liste erscheinen');
 }
 
-/* ═══ NK87k · Das Modul ist NIRGENDS verdrahtet ═══════════════════════════
-   Die Zusicherung, auf der alles andere ruht. Ein Modell, das sich selbst
+/* ═══ NK87k · Das Modul fasst die AUFZEICHNUNG und die BEWERTUNG nicht an ══
+   Bis 4.9.1 hiess diese Kontrolle „das Modul ist nirgends verdrahtet\" und
+   zaehlte Aufrufstellen. Mit v4.10.0 ist sie in dieser Form nicht mehr
+   haltbar: die Modellreihung ruft `featureAttribution` ein zweites Mal, um die
+   Reihungsbasis zu speichern. Eine Kontrolle, die man nur bestehen kann, indem
+   man nichts baut, wird frueher oder spaeter abgeschwaecht — deshalb hier
+   ausdruecklich NICHT abgeschwaecht, sondern auf den Grund umgestellt, aus dem
+   sie ueberhaupt geschrieben wurde.
+
+   DER GRUND, woertlich aus der alten Fassung: „Ein Modell, das sich selbst
    scharf schaltet, veraendert die Auswahl, aus der die naechste Messung
-   entsteht — dann misst es sich selbst. Geprueft wird an den AUFRUFSTELLEN,
-   nicht an einer Erwaehnung: die Suche ignoriert Kommentare. */
+   entsteht — dann misst es sich selbst.\" Genau dagegen wird jetzt geprueft,
+   und zwar an drei Stellen statt an einer Zaehlung:
+
+     1. Nur zwei benannte Aufrufer, sonst keiner.
+     2. Der Speicher-Aufrufer liest und schreibt, sonst nichts.
+     3. Die Reihung taucht in KEINER Funktion auf, die aufzeichnet, bewertet
+        oder die Scan-Auswahl trifft.
+
+   Punkt 3 ist die eigentliche Zusicherung und in der alten Fassung gar nicht
+   geprueft worden. */
 {
   const ohneKommentar = w
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
     .split('\n').map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n');
   const stellen = (name) => (ohneKommentar.match(new RegExp('\\b' + name + '\\s*\\(', 'g')) || []).length;
-  /* je eine Definition + je ein Aufruf. Mehr Aufrufer waeren eine Verdrahtung. */
-  assert.equal(stellen('featureAttribution'), 2,
-    'featureAttribution hat mehr als einen Aufrufer – das Modul ist verdrahtet');
+  /* Definition + Route + Speicher-Aufrufer. Ein VIERTER waere eine Verdrahtung. */
+  assert.equal(stellen('featureAttribution'), 3,
+    'featureAttribution hat einen unbekannten Aufrufer – erlaubt sind die Route und refreshReihungModell');
   assert.equal(stellen('fattrReport'), 2,
     'fattrReport hat mehr als einen Aufrufer');
   const route = ohneKommentar.indexOf("'/api/attribution/features'");
   assert.ok(route > 0, 'die Route fehlt');
   const aufruf = ohneKommentar.indexOf('featureAttribution(env', route);
   assert.ok(aufruf > route && aufruf - route < 400,
-    'der einzige Aufruf muss in der Route stehen, nicht anderswo');
+    'der Aufruf in der Route muss in der Route stehen, nicht anderswo');
 
-  /* Der Cron-Pfad beginnt bei serverLearningCycle. Weder er noch die
-     Bewertungsfunktionen duerfen das Modul beruehren. */
-  for (const fn of ['serverLearningCycle', 'analyseStock', 'analyse']) {
-    const i = ohneKommentar.indexOf('function ' + fn + '(');
-    assert.ok(i > 0, fn + ' nicht gefunden');
-    const rumpf = ohneKommentar.slice(i, ohneKommentar.indexOf('\nfunction ', i + 1));
-    assert.ok(!/fattr|featureAttribution/.test(rumpf),
-      `${fn} beruehrt Modul 0b – die Auswertung darf die Bewertung nicht anfassen`);
+  /* 2 · Der zweite Aufrufer darf NUR speichern. Kein Scan, kein Schreiben von
+     Beobachtungen, keine Bewertung — sonst waere genau die Rueckkopplung da,
+     gegen die diese Kontrolle geschrieben wurde. */
+  const iRef = ohneKommentar.indexOf('async function refreshReihungModell(');
+  assert.ok(iRef > 0, 'refreshReihungModell nicht gefunden');
+  const refRumpf = ohneKommentar.slice(iRef, ohneKommentar.indexOf('\nasync function ', iRef + 1));
+  for (const verboten of ['d1StoreRows', 'd1NoteObservations', 'analyseStock', 'getSnapshot', 'tiingoStockSnapshot']) {
+    assert.ok(!new RegExp('\\b' + verboten + '\\s*\\(').test(refRumpf),
+      `refreshReihungModell ruft ${verboten} – der Speicherpfad darf nichts aufzeichnen oder bewerten`);
   }
+  assert.match(refRumpf, /fp_meta/, 'refreshReihungModell schreibt die Basis nicht in fp_meta');
+
+  /* 3 · DIE ZUSICHERUNG. Keine Funktion, die aufzeichnet, bewertet oder
+     auswaehlt, darf die Reihung kennen. Waere sie dort, entschiede das Modell
+     mit, welche Zeilen es beim naechsten Mal zu sehen bekommt. */
+  const aufzeichnend = ['d1StoreRows', 'd1NoteObservations', 'snapshotPayload', 'learningFeatures',
+    'analyseStock', 'analyse', 'tiingoStockSnapshot', 'getSnapshot', 'snapshotWriteDecision'];
+  for (const fn of aufzeichnend) {
+    const i = ohneKommentar.search(new RegExp('(async )?function ' + fn + '\\('));
+    assert.ok(i > 0, fn + ' nicht gefunden');
+    const rest = ohneKommentar.slice(i + 10);
+    const naechste = rest.search(/\n(async )?function /);
+    const rumpf = naechste > 0 ? rest.slice(0, naechste) : rest;
+    assert.ok(!/\breihung|\bREIHUNG\b|fattr|featureAttribution/i.test(rumpf),
+      `${fn} beruehrt Modul 0b/0c – die Auswertung darf weder die Aufzeichnung noch die Bewertung anfassen`);
+  }
+
+  /* Und der Cron: er darf die Basis speichern, aber nichts von ihr lesen.
+     `reihungRank`/`reihungFuer` gehoeren in den Abrufpfad, nicht in den Takt,
+     der die Aufzeichnung erzeugt. */
+  const iCron = ohneKommentar.indexOf('async function serverLearningCycle(');
+  assert.ok(iCron > 0, 'serverLearningCycle nicht gefunden');
+  const cronRumpf = ohneKommentar.slice(iCron, ohneKommentar.indexOf('\nfunction ', iCron + 1));
+  assert.ok(!/\breihungRank\s*\(|\breihungFuer\s*\(/.test(cronRumpf),
+    'der Cron liest die Reihung – damit koennte sie die Aufzeichnung mitbestimmen');
+  assert.match(cronRumpf, /refreshReihungModell\s*\(/,
+    'der Cron schaetzt die Reihungsbasis nicht neu – ohne das altert sie stillschweigend');
 }
 
 /* ═══ NK87l · Der Bericht bleibt im CPU-Budget ═══════════════════════════
@@ -323,10 +376,20 @@ const nimm = (rep, name) => rep.merkmale.find((m) => m.name === 'situ.' + name);
      der Teil, den man ohne Mauszeiger liest. */
   const kopfzeile = html.slice(0, html.indexOf('<div class="lr-grid"'));
   assert.ok(kopfzeile.length > 0, 'die Kopfzeile fehlt');
-  assert.match(kopfzeile, /nirgends verdrahtet/,
-    'die sichtbare Kopfzeile muss sagen, dass die Gewichte nichts steuern – sonst liest sich die Tafel wie eine Umstellung');
-  assert.match(html.slice(html.indexOf('OOS-AUC') - 800, html.indexOf('OOS-AUC')), /VORSCHLAG/,
-    'auch der Modellblock selbst muss seinen Vorschlagscharakter tragen');
+  /* v4.10.0 · Bis hierher wurde `/nirgends verdrahtet/` verlangt. Der Satz ist
+     seit der Modellreihung falsch — und eine Kopfzeile, die eine ueberholte
+     Zusicherung traegt, ist schlimmer als gar keine. Geprueft wird jetzt die
+     Zusicherung, die weiter gilt: die Gewichte fassen Score, Ampel und
+     Freigabe nicht an. Beide Haelften einzeln, damit nicht eine davon
+     unbemerkt herausfallen kann. */
+  assert.match(kopfzeile, /weder Score/i,
+    'die sichtbare Kopfzeile muss sagen, dass die Gewichte den Score nicht anfassen');
+  assert.match(kopfzeile, /Freigabe/i,
+    'die sichtbare Kopfzeile muss die Abgrenzung zur Kauf-Freigabe tragen');
+  assert.ok(!/nirgends verdrahtet/i.test(kopfzeile),
+    'die Kopfzeile behauptet noch, die Gewichte seien nirgends verdrahtet');
+  assert.match(html.slice(html.indexOf('OOS-AUC') - 800, html.indexOf('OOS-AUC')), /weder Score/i,
+    'auch der Modellblock selbst muss seine Abgrenzung tragen');
 
   // Sammelzustand: benannt, mit Zahl, und OHNE Prozentwert aus Unwissen.
   C.featureData = fattrReport(eps.slice(0, 20), {});

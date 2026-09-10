@@ -189,6 +189,13 @@ export function loadClient(overrides = {}) {
   heatSeparate, heatFilter, heatBucketOf, heatBucketOn, heatCountLabel, heatBucketLabel,
   stockHeadline, COUNT_LABEL,
   HEAT_BUCKETS, coinLevel, syncHeatFilterUI, renderMap, stockHeatmap,
+  /* v4.10.0: Modul 0c. Dieselbe Luecke wie oben, eine Ebene weiter: die
+     Reihung ist in NK89 ausgefuehrt belegt — das sagt nichts darueber, ob sie
+     jemand SIEHT. Beide Halter stehen mit, damit NK89h beide Karten prueft
+     und nicht nur die, an die gerade gedacht wurde. */
+  renderReihung, rankLightIcon, RANK_BASIS_HINT,
+  get stockRangliste(){return stockRangliste;}, set stockRangliste(v){stockRangliste=v;},
+  get coinRangliste(){return coinRangliste;}, set coinRangliste(v){coinRangliste=v;},
   get rows(){return rows;}, set rows(v){rows=v;}
 };`;
   const src = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');

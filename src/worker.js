@@ -7307,8 +7307,20 @@ function fattrReport(episodes, cfg) {
         pAuc = (ge + 1) / (K.PERMUTATIONS + 1);
       }
       const besteHeute = Math.max(...Object.values(vergleich).filter(Number.isFinite), 0.5);
-      const gewichte = modellNamen.map((nme, j) => ({ merkmal: nme, gewicht: Math.round(w[j + 1] * 1000) / 1000, medianErsatz: Math.round(med[nme] * 1000) / 1000 }))
-        .sort((a, b) => Math.abs(b.gewicht) - Math.abs(a.gewicht));
+      /* v4.10.0 · `mu`, `sd` und der Achsenabschnitt stehen ab hier MIT im
+         Bericht. Bis 4.9.1 war `gewichte` eine Leseliste: die Zahlen liessen
+         sich anschauen, aber nicht anwenden, weil die Standardisierung, gegen
+         die sie geschaetzt wurden, in dieser Funktion blieb. Ein Gewicht ohne
+         sein `mu`/`sd` ist keine halbe Anwendung, sondern gar keine — es
+         gehoert zu einer Skala, die der Aufrufer nicht kennt.
+         Sechs Nachkommastellen statt drei: `logDollarVol` liegt um 8,5, eine
+         auf 0,001 gerundete Streuung waere dort schon die dritte Stelle. */
+      const r6 = (x) => Math.round(x * 1e6) / 1e6;
+      const gewichte = modellNamen.map((nme, j) => ({
+        merkmal: nme, gewicht: Math.round(w[j + 1] * 1000) / 1000,
+        medianErsatz: Math.round(med[nme] * 1000) / 1000,
+        mu: r6(mu[nme]), sd: r6(sd[nme]),
+      })).sort((a, b) => Math.abs(b.gewicht) - Math.abs(a.gewicht));
       const imputiert = Xoos.length ? Math.round(
         (modellNamen.reduce((acc, nme) => acc + fOos.filter((f) => !Number.isFinite(f.num[nme])).length, 0)
           / (modellNamen.length * fOos.length)) * 100) : 0;
@@ -7319,12 +7331,19 @@ function fattrReport(episodes, cfg) {
         imputiertPctOos: imputiert,
         aucOos: aucModell === null ? null : Math.round(aucModell * 1000) / 1000,
         aucHeute: vergleich, pAuc: pAuc === null ? null : Math.round(pAuc * 10000) / 10000,
+        achsenabschnitt: r6(w[0]),
         gewichte,
         urteil: aucModell === null ? 'kein Urteil'
           : (pAuc !== null && pAuc <= 0.05 && aucModell > besteHeute + 0.02) ? 'besser als die heutige Reihung'
             : (pAuc !== null && pAuc <= 0.05) ? 'trennt, aber nicht besser als die heutige Reihung'
               : 'vom Zufall nicht zu trennen',
-        hinweis: 'Diese Gewichte sind ein VORSCHLAG. Sie sind nirgends verdrahtet und veraendern weder Score noch Ampel noch Freigabe.',
+        /* v4.10.0 · Der Satz musste mitwandern. Bis 4.9.1 stand hier „nirgends
+           verdrahtet\", und das war wahr. Seit der Modellreihung ordnen diese
+           Gewichte die Kandidatenliste — sie sind also verdrahtet, nur eben an
+           EINER Stelle und nur fuer die REIHENFOLGE. Ein Hinweis, der die
+           Aenderung nicht mitmacht, ist ab dem Tag der Aenderung falsch; genau
+           dieser Fehlertyp hat 4.9.1 gekostet. */
+        hinweis: 'Diese Gewichte ordnen ab v4.10.0 die Kandidatenliste (Modellreihung). Sie veraendern WEDER Score NOCH Ampel NOCH Kauf-Freigabe — eine Reihenfolge ist keine Freigabe.',
       };
     }
   }
@@ -7358,6 +7377,184 @@ async function featureAttribution(env, opts = {}) {
   const out = { ...fattrReport(collapseEpisodes(rows), {}), anlageklasse: assetType, zeilen: rows.length, gehalten: false };
   fattrMemo = { ts: now, key, data: out };
   return out;
+}
+/* ============================================================================
+   MODUL 0c · MODELLREIHUNG (v4.10.0)
+   ----------------------------------------------------------------------------
+   ANLASS: Am 09.09. stand die Kopfzeile auf 0 gruen, 2 gelb, 18 rot. Die App
+   war in diesem Zustand nicht falsch — sie war stumm. Zwanzig Zeilen, keine
+   Freigabe, und keine Aussage darueber, welche der zwanzig ueberhaupt einen
+   zweiten Blick verdient. Die Antwort darauf ist NICHT, ein Gatter zu senken.
+   Ein gesenktes Gatter erzeugt Freigaben, die keine sind; das waere die
+   teuerste Art, die Stummheit zu beenden.
+
+   WAS STATTDESSEN: eine REIHENFOLGE. Sie beantwortet eine andere Frage als das
+   Gatter ("worauf schaue ich zuerst" statt "darf ich kaufen") und darf deshalb
+   neben ihm stehen, ohne eine zweite Wahrheit zu sein. Sie veraendert weder
+   Score noch Ampel noch Freigabe — NK89c prueft das ausgefuehrt.
+
+   DREI BASEN, GENAU EINE AKTIV, IMMER BENANNT. Ueberlappende Zusicherungen
+   waren in diesem Projekt der Anfang jeder Zweitwahrheit (siehe 4.9.0):
+
+     modell    Die logistische Regression aus Modul 0b — ABER nur, wenn sie
+               out-of-sample gegen Permutationen bestanden hat. Ein Modell mit
+               dem Urteil "vom Zufall nicht zu trennen" reiht hier NICHTS.
+     merkmal   Kein tragfaehiges Modell, aber mindestens ein Einzelmerkmal,
+               das die Mehrfachtestkorrektur ueberstanden hat. Gereiht wird
+               nach dem staerksten, in Richtung seines OOS-IC.
+     reihung   Nichts davon belegt. Dann gilt die Reihung, die die App ohnehin
+               benutzt (Score). Das ist ausdruecklich KEIN maschinelles Lernen,
+               und es steht genau so in der Aufschrift.
+
+   KOSTEN: null zusaetzliche Anbieter-Abrufe. Gereiht werden Zeilen, die bereits
+   im Speicher liegen; die Merkmale entstehen aus `learningFeatures` und
+   `snapshotPayload` — DENSELBEN Funktionen, mit denen die Episoden aufgezeichnet
+   wurden, gegen die das Modell geschaetzt ist. Ein zweiter Merkmalsbau waere
+   eine zweite Wahrheit und wuerde genau dann auffallen, wenn es teuer wird.
+   ============================================================================ */
+const REIHUNG = {
+  TOP_N: 6,
+  /* Eine Zeile, deren Merkmale zu grossen Teilen durch den In-Sample-Median
+     ersetzt werden mussten, bekommt KEINEN Wert — sie faellt aus der Liste und
+     wird gezaehlt. Der Median ist ein Platzhalter, kein Messwert; ihn
+     durchzureichen hiesse, aus Unwissen eine mittlere Wahrscheinlichkeit zu
+     erzeugen. Sechster Fall derselben Lehre wie `Number(null) === 0`. */
+  MAX_ERSETZT_PCT: 40,
+  IC_MIN: FATTR.IC_MIN,
+  /* ══ WELCHES MODELL DARF REIHEN — GEMESSEN, NICHT GESCHAETZT ══════════════
+     Erster Entwurf liess auch "trennt, aber nicht besser als die heutige
+     Reihung" zu. NK89a hat das an EINEM Startwert nicht gefangen; ueber 30
+     Rauschlaeufe hat die Regel in 2 Faellen ein Zufallsmodell zur Reihungsbasis
+     gemacht (Startwert 122: AUC 0,602 bei p=0,0499 — knapp unter 5 %, also
+     genau das, was ein 5-%-Test in 5 % der Faelle liefern MUSS).
+
+     Zwei Verschaerfungen, beide ohne neue geratene Zahl:
+       1. Nur noch "besser als die heutige Reihung". Ein Modell, das nicht
+          besser ist als der Score, ist als Reihung kein Gewinn, sondern nur
+          ein zweites Risiko.
+       2. Zusaetzlich muss MINDESTENS EIN EINZELMERKMAL die
+          Benjamini-Hochberg-Korrektur ueberstanden haben. Das ist ein
+          UNABHAENGIGER zweiter Test aus derselben, schon vorhandenen
+          Maschinerie — kein neuer Schwellenwert.
+
+     Gemessen ueber je 30 Laeufe: Rauschen 2/30 -> 0/30, echtes Signal
+     30/30 -> 30/30. Die Verschaerfung kostet also nichts an Empfindlichkeit.
+
+     WAS SIE KOSTET, und das steht hier, damit es niemand spaeter „findet\":
+     ein Modell, das mehrere je einzeln schwache Merkmale zu einem echten
+     Signal buendelt, waehrend keines davon allein die Korrektur uebersteht,
+     wird von Regel 2 abgewiesen. Dieser Fall ist real. In diesem Projekt ist
+     der Falschtreffer aber der teurere Fehler: eine Rangliste aus Rauschen ist
+     von einer echten nicht zu unterscheiden. */
+  MODELL_TRENNT: ['besser als die heutige Reihung'],
+  BASIS_LABEL: { modell: 'Modell', merkmal: 'Einzelmerkmal', reihung: 'heutige Reihung' },
+};
+
+/** Merkmale einer LEBENDEN Zeile — ueber genau die Funktionen, die auch die
+ *  Aufzeichnung baut. Aendert sich `snapshotPayload`, wandert die Aenderung
+ *  automatisch mit; das ist der ganze Zweck dieser drei Zeilen. */
+function reihungFeatures(row) {
+  const f = learningFeatures(row || {});
+  return fattrFeatures({ score: f.score, crv: f.crv, light: row?.light || null, payload: snapshotPayload(row || {}) });
+}
+
+/** Wendet das geschaetzte Modell auf einen Merkmalsvektor an.
+ *  Gibt `null` zurueck, wenn die Skala unvollstaendig ist — lieber keine Zahl
+ *  als eine, die gegen ein anderes `mu` gerechnet wurde. */
+function reihungModellWert(modell, feat) {
+  const gs = Array.isArray(modell?.gewichte) ? modell.gewichte : [];
+  const b0 = Number(modell?.achsenabschnitt);
+  if (!gs.length || !Number.isFinite(b0)) return null;
+  let z = b0, ersetzt = 0;
+  const treiber = [];
+  for (const g of gs) {
+    const mu = Number(g?.mu), sd = Number(g?.sd), gew = Number(g?.gewicht);
+    if (!Number.isFinite(mu) || !Number.isFinite(sd) || sd === 0 || !Number.isFinite(gew)) return null;
+    const roh = feat?.num?.[g.merkmal];
+    const belegt = Number.isFinite(roh);
+    const v = belegt ? roh : Number(g?.medianErsatz);
+    if (!Number.isFinite(v)) return null;
+    if (!belegt) ersetzt++;
+    const beitrag = gew * ((v - mu) / sd);
+    z += beitrag;
+    treiber.push({ merkmal: g.merkmal, beitrag: Math.round(beitrag * 1000) / 1000, ersetzt: !belegt });
+  }
+  const ersetztPct = Math.round((ersetzt / gs.length) * 100);
+  treiber.sort((a, b) => Math.abs(b.beitrag) - Math.abs(a.beitrag));
+  return { z: Math.round(z * 1000) / 1000, p: 1 / (1 + Math.exp(-z)), ersetztPct, treiber: treiber.slice(0, 3) };
+}
+
+/** Welche Basis gilt — und warum. Reine Funktion auf dem Bericht aus Modul 0b. */
+function reihungBasis(bericht) {
+  const mo = bericht?.modell;
+  const traegt = (Array.isArray(bericht?.merkmale) ? bericht.merkmale : [])
+    .filter((m) => m.urteil === 'traegt' && Number.isFinite(m.icOos) && Math.abs(m.icOos) >= REIHUNG.IC_MIN)
+    .sort((a, b) => Math.abs(b.icOos) - Math.abs(a.icOos));
+  if (mo && REIHUNG.MODELL_TRENNT.includes(mo.urteil) && traegt.length
+      && Array.isArray(mo.gewichte) && mo.gewichte.length >= 2 && Number.isFinite(Number(mo.achsenabschnitt))) {
+    return { basis: 'modell', modell: mo,
+      grund: `Modell trennt out-of-sample: AUC ${mo.aucOos} gegen Score ${mo.aucHeute?.score ?? '–'}, Permutations-p ${mo.pAuc}, ${mo.nOos} Pruefepisoden. Bestaetigt durch "${traegt[0].name}" (OOS-IC ${traegt[0].icOos}).` };
+  }
+  if (traegt.length) {
+    const m = traegt[0];
+    return { basis: 'merkmal', merkmal: m,
+      grund: `Kein tragfaehiges Modell (${mo ? mo.urteil : 'keines geschaetzt'}), aber "${m.name}" haelt der Mehrfachtestkorrektur stand: OOS-IC ${m.icOos} bei n=${m.nOos}, q=${m.q}.` };
+  }
+  return { basis: 'reihung',
+    grund: bericht?.state === 'sammelt'
+      ? `Noch kein belegtes Muster: ${bericht.reason}. Gereiht wird nach dem Score, wie ohne dieses Modul.`
+      : 'Weder das Modell noch ein Einzelmerkmal hat out-of-sample bestanden. Gereiht wird nach dem Score, wie ohne dieses Modul.' };
+}
+
+/** Die Reihung selbst. REIN: Bericht + Zeilen rein, Liste raus. Keine Uhr,
+ *  kein Netz, keine Datenbank — damit NK89 sie AUSFUEHREN kann. */
+function reihungRank(bericht, rows, opts = {}) {
+  const topN = Number.isFinite(Number(opts.topN)) ? Math.max(1, Math.round(Number(opts.topN))) : REIHUNG.TOP_N;
+  const alle = (Array.isArray(rows) ? rows : []).filter((r) => r && r.symbol);
+  const kopf = {
+    version: APP_VERSION, geprueft: alle.length, topN,
+    hinweis: 'Reihenfolge, keine Kauf-Freigabe. Score, Ampel und Freigabe bleiben unveraendert; diese Liste sagt nur, worauf zuerst zu schauen ist.',
+  };
+  if (!alle.length) return { ...kopf, state: 'leer', basis: null, basisText: '', grund: 'keine Zeilen zu reihen', liste: [], ohneWert: 0 };
+  const b = reihungBasis(bericht);
+  const bewertet = [];
+  let ohneWert = 0;
+  for (const r of alle) {
+    const feat = reihungFeatures(r);
+    const gemein = { symbol: String(r.symbol), licht: r.light || null, verdict: r.verdict || null, score: Number.isFinite(Number(r.score)) ? Number(r.score) : null };
+    if (b.basis === 'modell') {
+      const w = reihungModellWert(b.modell, feat);
+      if (!w || w.ersetztPct > REIHUNG.MAX_ERSETZT_PCT) {
+        ohneWert++;
+        continue;
+      }
+      bewertet.push({ ...gemein, wert: Math.round(w.p * 10000) / 10000, wertText: `${Math.round(w.p * 100)} %`,
+        ersetztPct: w.ersetztPct, treiber: w.treiber });
+    } else if (b.basis === 'merkmal') {
+      const roh = feat?.num?.[b.merkmal.name];
+      if (!Number.isFinite(roh)) { ohneWert++; continue; }
+      const vz = Math.sign(b.merkmal.icOos) || 1;
+      bewertet.push({ ...gemein, wert: Math.round(roh * vz * 1000) / 1000, wertText: `${b.merkmal.name} ${Math.round(roh * 1000) / 1000}`,
+        ersetztPct: 0, treiber: [{ merkmal: b.merkmal.name, beitrag: Math.round(roh * vz * 1000) / 1000, ersetzt: false }] });
+    } else {
+      const s = Number(r.score);
+      if (!Number.isFinite(s)) { ohneWert++; continue; }
+      bewertet.push({ ...gemein, wert: Math.round(s * 1000) / 1000, wertText: `Score ${Math.round(s * 10) / 10}`,
+        ersetztPct: 0, treiber: [] });
+    }
+  }
+  bewertet.sort((x, y) => y.wert - x.wert || String(x.symbol).localeCompare(String(y.symbol)));
+  const liste = bewertet.slice(0, topN).map((e, i) => ({ rang: i + 1, ...e }));
+  return {
+    ...kopf, state: liste.length ? 'ok' : 'leer', basis: b.basis, basisText: REIHUNG.BASIS_LABEL[b.basis],
+    grund: b.grund, bewertet: bewertet.length, ohneWert,
+    ohneWertGrund: ohneWert
+      ? (b.basis === 'modell'
+        ? `${ohneWert} Zeile(n) ohne Wert: mehr als ${REIHUNG.MAX_ERSETZT_PCT} % der Modellmerkmale haetten durch den Median ersetzt werden muessen.`
+        : `${ohneWert} Zeile(n) ohne Wert: das Reihungsmerkmal ist dort nicht belegt.`)
+      : null,
+    liste,
+  };
 }
 /* ============================================================================
    MODUL 1 · ALADDIN-STYLE MARKET INTELLIGENCE (v3.5.5, additiv)
@@ -7563,6 +7760,91 @@ function aladdinIntelligence(rows, opts={}){
     note:'Aladdin-Style Marktmeinung. Speist die Empfehlung, veraendert KEINEN Claude-/FusionPulse-Score. Kombination (Setup x Marktpassung) ist separat trackbar.',
     version:APP_VERSION,
   };
+}
+
+/* ── Speicherseite der Modellreihung ────────────────────────────────────────
+   DIE KOSTENFRAGE, und sie ist der Grund, warum dieser Block existiert.
+   `featureAttribution` liest bis zu 8.000 Zeilen. Die Reihung an jeden
+   Aktien-Abruf zu haengen hiesse, diese Abfrage an den Takt der offenen
+   Oberflaeche zu binden — genau der Fehlertyp, der in v3.32.9 das D1-Limit
+   gerissen hat (Volltabellen-Aggregation bei JEDEM Aufruf).
+
+   Stattdessen: die Schaetzung laeuft HOECHSTENS alle sechs Stunden im Cron,
+   das Ergebnis ist ein paar Kilobyte gross und liegt als EINE Zeile in
+   `fp_meta`. Der Abrufpfad liest diese eine Zeile, und auch die nur alle 15
+   Minuten je Isolat. Die Reihung selbst kostet keinen einzigen
+   Anbieter-Abruf: gereiht werden Zeilen, die ohnehin schon im Speicher sind. */
+const RANK_MODEL_PREFIX = 'rank_model:';
+const RANK_MODEL_TTL_MS = 6 * 3600_000;    // Neuschaetzung fruehestens nach 6 h
+const RANK_MODEL_MEMO_MS = 15 * 60_000;    // Lesecache je Isolat
+const rankModelMemo = { stock: { ts: 0, data: null }, coin: { ts: 0, data: null } };
+
+/** Nur das, was `reihungBasis`/`reihungRank` wirklich lesen. Der volle Bericht
+ *  aus Modul 0b traegt Terzil-Tafeln und Kategorien mit — die gehoeren in die
+ *  Anzeige, nicht in die gespeicherte Reihungsbasis. */
+function reihungTrim(bericht, now = Date.now()) {
+  if (!bericht) return null;
+  const mo = bericht.modell;
+  return {
+    ts: now, state: bericht.state || null, reason: bericht.reason || null,
+    episodes: bericht.episodes ?? null, oosN: bericht.oosN ?? null,
+    modell: mo ? {
+      urteil: mo.urteil, aucOos: mo.aucOos, aucHeute: mo.aucHeute, pAuc: mo.pAuc,
+      nIn: mo.nIn, nOos: mo.nOos, achsenabschnitt: mo.achsenabschnitt, gewichte: mo.gewichte,
+    } : null,
+    merkmale: (Array.isArray(bericht.merkmale) ? bericht.merkmale : [])
+      .map((m) => ({ name: m.name, urteil: m.urteil, icOos: m.icOos, nOos: m.nOos, q: m.q })),
+  };
+}
+
+async function readReihungModell(env, assetType, now = Date.now()) {
+  const key = assetType === 'coin' ? 'coin' : 'stock';
+  const memo = rankModelMemo[key];
+  if (memo.data && now - memo.ts < RANK_MODEL_MEMO_MS) return memo.data;
+  if (!env?.DB) return null;
+  try {
+    const row = await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind(RANK_MODEL_PREFIX + key).first();
+    const data = row?.value ? JSON.parse(row.value) : null;
+    memo.ts = now; memo.data = data;
+    return data;
+  } catch { return memo.data; }   // fail-open: lieber die alte Basis als gar keine Liste
+}
+
+/** Neuschaetzung. Laeuft NUR im Cron und nur, wenn die 6-Stunden-Sperre offen
+ *  ist. Rueckgabe ist reine Diagnose fuer das Cron-Log. */
+async function refreshReihungModell(env, assetType, now = Date.now()) {
+  const key = assetType === 'coin' ? 'coin' : 'stock';
+  if (!env?.DB) return { key, done: false, reason: 'kein D1' };
+  const gate = await ttlGate(env, RANK_MODEL_PREFIX + key, RANK_MODEL_TTL_MS, now);
+  if (!gate.allowed) return { key, done: false, reason: gate.reason };
+  try {
+    const bericht = await featureAttribution(env, { assetType: key, now });
+    const trimmed = reihungTrim(bericht, now);
+    await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts')
+      .bind(RANK_MODEL_PREFIX + key, JSON.stringify(trimmed), now).run();
+    await ttlMark(env, RANK_MODEL_PREFIX + key, now);
+    rankModelMemo[key] = { ts: now, data: trimmed };
+    return { key, done: true, state: trimmed?.state || null, urteil: trimmed?.modell?.urteil || null };
+  } catch (e) {
+    return { key, done: false, reason: String(e?.message || e) };
+  }
+}
+
+/** Der EINE Aufrufpunkt fuer beide Anlageklassen. Zwei getrennte waeren die
+ *  naechste Stelle, an der Aktien und Coins auseinanderlaufen — Lehre aus
+ *  4.2.5 bis 4.2.8 und zuletzt aus 4.9.0, wo eine Reparatur nur EINE von zwei
+ *  Karten erreicht hat. */
+async function reihungFuer(env, assetType, rows, now = Date.now()) {
+  try {
+    const bericht = await readReihungModell(env, assetType, now);
+    const out = reihungRank(bericht, rows);
+    return { ...out, anlageklasse: assetType === 'coin' ? 'coin' : 'stock',
+      modellAlterMin: bericht?.ts ? Math.round((now - bericht.ts) / 60000) : null };
+  } catch (e) {
+    /* Fail-open: die Reihung ist ein Zusatz. Faellt sie aus, darf sie den
+       Abruf nicht mitnehmen — die Zeilen selbst sind das Produkt. */
+    return { state: 'error', basis: null, liste: [], grund: String(e?.message || e), version: APP_VERSION };
+  }
 }
 
 async function learningPayload(env, stocks=[], coins=[]){
@@ -7851,6 +8133,27 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
       setApiState('stocks','ok',`${st.rows?.length||0} Rows`);
       await persistApiState(env,'stocks','ok',`${st.rows?.length||0} Rows`,now);
     }catch(e){ await noteProviderFailure(env,'stocks',e,now,'stocks'); }
+  }
+  /* v4.10.0 · Neuschaetzung der Reihungsbasis. ZWEI Bremsen hintereinander,
+     und beide sind Absicht:
+       1. Die Minutenpruefung ist rein oertlich — sie kostet nichts. Ohne sie
+          liefe die TTL-Abfrage 1.440-mal am Tag gegen D1, nur um 1.436-mal
+          „noch gesperrt\" zu hoeren.
+       2. Erst danach die 6-Stunden-Sperre in `fp_meta`, die auch ueber
+          Neustarts und mehrere Isolate hinweg gilt.
+     Ergebnis: 48 winzige TTL-Lesungen und hoechstens 4 schwere Schaetzungen am
+     Tag — statt einer schweren Abfrage an jedem Abruf der Oberflaeche.
+     Die Krypto-Seite laeuft in der Minute darauf, damit nie beide im selben
+     CPU-Budget liegen (Regel aus v3.2.5). */
+  {
+    const m = cronMinute % 30;
+    const klasse = m === 7 ? 'stock' : m === 8 ? 'coin' : null;
+    if (klasse) {
+      try {
+        const res = await refreshReihungModell(env, klasse, now);
+        if (res.done) cronLog('reihung', 'ok', `${klasse}: ${res.state}${res.urteil ? ' · ' + res.urteil : ''}`, res);
+      } catch (e) { cronLog('reihung', 'error', e?.message); }
+    }
   }
 }
 
@@ -9702,7 +10005,12 @@ export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSecto
      mit, damit NK87 die schnelle Rangfassung gegen die paarweise Urfassung
      halten kann; zwei Wege zur selben Zahl sind sonst eine zweite Wahrheit. */
   fattrReport, fattrRankIC, fattrAuc, fattrBenjaminiHochberg, fattrPermutationP,
-  fattrFitLogistic, fattrFeatures, fattrRanks, aucSeparation, ATTR, FATTR };
+  fattrFitLogistic, fattrFeatures, fattrRanks, aucSeparation, ATTR, FATTR,
+  /* v4.10.0 · Modul 0c. Dieselbe Bedingung wie oben: NK89 fuehrt die Reihung
+     AUS. `reihungFeatures` steht mit in der Liste, damit der Test belegen
+     kann, dass der Merkmalsbau der lebenden Zeile derselbe ist wie der der
+     Aufzeichnung — waeren es zwei, faende es niemand. */
+  reihungRank, reihungBasis, reihungFeatures, reihungModellWert, REIHUNG };
 
 export default {
   async fetch(request, env, ctx) {
@@ -10174,7 +10482,17 @@ export default {
           try{ const wl=await readWatchlist(env); if(wl?.mode==='watchlist') wlSyms=wl.symbols||[]; }catch{ /* fail-open */ }
         }
         const stockOpts = wlSyms.length ? { onlySymbols: wlSyms } : {};
-        return json(tiingoStocksMode(env)==='primary' ? await tiingoStockSnapshot(env,url.searchParams.get('force')==='1',comp,minCrv,favorites,'client',stockOpts) : await stockSnapshot(env,url.searchParams.get('force')==='1',comp,minCrv,favorites),200,{ 'cache-control':'no-store' });
+        const snap = tiingoStocksMode(env)==='primary'
+          ? await tiingoStockSnapshot(env,url.searchParams.get('force')==='1',comp,minCrv,favorites,'client',stockOpts)
+          : await stockSnapshot(env,url.searchParams.get('force')==='1',comp,minCrv,favorites);
+        /* v4.10.0 · Die Reihung wird HIER angehaengt und nicht in
+           `tiingoStockSnapshot`. Die Funktion hat fuenf Rueckgabepunkte
+           (frisch, gehalten, aus D1, Notstand, Twelve-Data-Pfad); an fuenf
+           Stellen dasselbe anzuhaengen ist die Bauform, mit der in 4.9.0 eine
+           Reparatur nur eine von zwei Karten erreicht hat.
+           KOPIE statt Mutation: `snap` kann das gehaltene Memo-Objekt sein —
+           eine Reihung hineinzuschreiben wuerde den Cache vergiften. */
+        return json({ ...snap, rangliste: await reihungFuer(env,'stock',snap?.rows||[]) },200,{ 'cache-control':'no-store' });
       } catch (e) {
         const state = classifyError(e);
         setApiState('stocks', state, e?.message);
@@ -10198,7 +10516,8 @@ export default {
         const force = url.searchParams.get('force') === '1';
         const snap=await getSnapshot(env, opts, force);
         if(snap?.rows?.length) ctx.waitUntil(persistApiState(env,'crypto','ok',`${snap.rows.length} Rows · PWA bestätigt`).catch(()=>{}));
-        return json(snap, 200, { 'cache-control':'no-store' });
+        // v4.10.0 · Derselbe Aufrufpunkt wie bei den Aktien, siehe /api/stocks.
+        return json({ ...snap, rangliste: await reihungFuer(env,'coin',snap?.rows||[]) }, 200, { 'cache-control':'no-store' });
       } catch (e) {
         const state = classifyError(e);
         return json({ error: e.message || String(e), state, version: APP_VERSION },

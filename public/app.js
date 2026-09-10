@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.9.1 — Frontend
+   FusionPulse v4.10.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -704,6 +704,12 @@ function stockTradeability(r) {
    3. Wo es sinnvoll ist: sagen, was es ausdruecklich NICHT bedeutet.
    Der Fachbegriff steht dabei, wird aber nie vorausgesetzt.                  */
 const GLOSS = {
+  /* v4.10.0 · Modellreihung. Die Begriffe stehen HIER und nicht im Markup —
+     dieselbe Sache zweimal zu benennen war in 4.9.1 der Fehler. */
+  rangBasis:'Auf welcher Grundlage die Kandidatenliste geordnet ist. Drei Möglichkeiten, immer genau eine, und sie steht dabei: "Modell" — eine an zurückliegenden, aufgelösten Aufzeichnungen geschätzte Rechnung, die an einem davon getrennten Teil geprüft wurde. "Einzelmerkmal" — kein Modell hat bestanden, aber eine einzelne Kennzahl trägt nachweislich etwas bei. "heutige Reihung" — noch nichts Gelerntes belegt, sortiert wird nach dem Score, also genau wie ohne dieses Modul.',
+  rangKeineFreigabe:'Die Kandidatenliste ist eine REIHENFOLGE, keine Kauf-Freigabe. Sie beantwortet "worauf schaue ich zuerst", nicht "darf ich kaufen". Score, Ampel und Freigabe bleiben davon unberührt — eine rote Zeile darf ganz oben stehen und bleibt rot.',
+  rangErsetzt:'Anteil der Merkmale, die an dieser Zeile nicht gemessen werden konnten und durch den Mittelwert aus der Aufzeichnung ersetzt wurden. Liegt er zu hoch, bekommt die Zeile GAR KEINEN Wert und fällt aus der Liste — eine Wahrscheinlichkeit, die überwiegend aus Platzhaltern entsteht, wäre eine Zahl aus Unwissen.',
+  rangTreiber:'Welche Merkmale den Rang dieser Zeile tragen, mit ihrem Beitrag und Vorzeichen. Eine Reihenfolge ohne Begründung ist ein Orakel.',
   /* --- Setup-Typen (das, was Modul 0 stummschalten kann) --- */
   pullback:'Pullback (Rücksetzer): Der Kurs ist zuerst gestiegen und gibt danach ein Stück nach. Die Idee dahinter ist, günstiger einzusteigen als am Hoch — aber nur, wenn der Aufwärtstrend danach wieder anspringt. Ein Rücksetzer allein ist noch kein Kaufsignal; er kann genauso gut der Anfang einer Trendwende sein.',
   breakout:'Breakout (Ausbruch): Der Kurs verlässt nach oben eine Spanne, in der er längere Zeit gefangen war. Die Idee ist, dass sich aufgestaute Kaufbereitschaft entlädt. Ausbrüche scheitern häufig („Fehlausbruch"), deshalb zählt hier zusätzlich das Volumen.',
@@ -1691,6 +1697,8 @@ async function scan(force = false) {
     }
 
     rows = data.rows || [];
+    // v4.10.0 · siehe Aktienpfad: mitgeliefert, nicht nachgeladen.
+    if (data && data.rangliste) coinRangliste = data.rangliste;
     /* v4.2.3 · Erst merken, dann ergaenzen. Waehlt der naechste Scan einen
        Favoriten nicht aus (Umsatzrangfolge, `deep`-Schnitt), bleibt er als
        gemerkte Zeile sichtbar statt spurlos zu verschwinden — die Lehre aus
@@ -2340,6 +2348,67 @@ function wireHeatFilters() {
   syncHeatFilterUI();
 }
 
+/* ══ v4.10.0 · MODELLREIHUNG — ANZEIGE ═══════════════════════════════════════
+   EIN Renderer fuer beide Karten. Zwei getrennte waeren die naechste Stelle,
+   an der Aktien und Coins auseinanderlaufen (4.2.5–4.2.8, zuletzt 4.9.0).
+
+   Die Aufschrift kommt vollstaendig aus der Nutzlast des Servers — Basis,
+   Begruendung und Hinweis stehen dort, nicht hier. In 4.9.1 war genau das der
+   Fehler: dieselbe Sache hiess im Markup anders als in der Rechnung.
+
+   Der Zustand „keine Liste\" wird MIT Grund gezeigt, nie als leere Flaeche.
+   Lehre aus 4.2.2: eine leere Kachel ohne Erklaerung sieht aus wie ein
+   Ausfall. */
+const RANK_BASIS_HINT = {
+  modell: 'Gereiht nach einem Modell, das an zurueckliegenden, aufgeloesten Aufzeichnungen geschaetzt und an einem davon getrennten Teil geprueft wurde. Es reiht nur, wenn es dort besser trennt als der Score UND mindestens ein Einzelmerkmal die Mehrfachtestkorrektur uebersteht.',
+  merkmal: 'Kein Modell hat bestanden. Gereiht wird nach der einen Kennzahl, die out-of-sample nachweislich etwas beitraegt — in der Richtung, die dort gemessen wurde.',
+  reihung: 'Noch nichts Gelerntes belegt. Gereiht wird nach dem Score, also genau so, wie die App auch ohne dieses Modul sortiert. Das ist ausdruecklich KEIN Lernergebnis.',
+};
+function rankLightIcon(l) { return l === 'green' ? '🟢' : l === 'yellow' ? '🟡' : l === 'muted' ? '🔇' : '🔴'; }
+/* Der Server liefert die Reihung mit dem Abruf mit; hier liegt sie, bis die
+   jeweilige Karte neu gezeichnet wird. `null` heisst „noch nichts geladen\"
+   und wird bewusst NICHT als leere Liste gezeichnet. */
+let stockRangliste = null, coinRangliste = null;
+function renderReihung(sel, data) {
+  const el = $(sel); if (!el) return;
+  const d = data || null;
+  /* Noch nichts geladen heisst NICHTS zeichnen — nicht „leer\". Ein Ausfall und
+     ein noch nicht eingetroffener Abruf duerfen nicht gleich aussehen. */
+  if (!d) { el.innerHTML = ''; return; }
+  const kopf = '<b>🎯 Kandidaten</b>';
+  if (d.state === 'error') {
+    el.innerHTML = `${kopf}<small class="err" title="Die Reihung ist ein Zusatz. Faellt sie aus, bleiben Zeilen, Ampel und Freigabe unveraendert.">Reihung nicht verfuegbar: ${esc(d.grund || 'unbekannt')}</small>`;
+    return;
+  }
+  const basisText = d.basisText || '–';
+  /* v4.10.0 · Die Glossartexte haengen an der Anzeige, nicht nur in GLOSS.
+     In 3.29.0 standen Texte im Glossar, ohne dass irgendeine Stelle sie
+     aufrief — erklaert und unerreichbar ist so gut wie nicht erklaert. */
+  const titel = `${d.grund || ''}\n\n${RANK_BASIS_HINT[d.basis] || ''}\n\n${gloss('rangBasis')}\n\n${d.hinweis || ''}`;
+  if (!Array.isArray(d.liste) || !d.liste.length) {
+    el.innerHTML = `${kopf} <small class="rank-basis" title="${esc(titel)}">Basis: ${esc(basisText)}</small>`
+      + `<div class="lr-d1" data-tone="warn" title="${esc(titel)}">Keine Reihung: ${esc(d.grund || 'keine bewertbaren Zeilen')}</div>`;
+    return;
+  }
+  const zeilen = d.liste.map((e) => {
+    const treiber = (e.treiber || []).map((t) => `${t.merkmal} ${t.beitrag > 0 ? '+' : ''}${t.beitrag}${t.ersetzt ? ' (ersetzt)' : ''}`).join(' · ');
+    const t = `Ampel dieser Zeile: ${esc(e.verdict || e.licht || '–')}.\n\nDie Reihung aendert daran NICHTS — sie sagt nur, worauf zuerst zu schauen ist.`
+      + (treiber ? `\n\nWas den Rang traegt: ${treiber}` : '')
+      + (Number.isFinite(e.ersetztPct) && e.ersetztPct > 0 ? `\n\n${e.ersetztPct} % der Modellmerkmale waren an dieser Zeile nicht belegt und wurden durch den Median ersetzt.` : '');
+    return `<li title="${esc(t)}"><span class="rk-n">${e.rang}</span><b class="rk-sym">${esc(e.symbol)}</b>`
+      + `<span class="rk-l">${rankLightIcon(e.licht)}</span>`
+      + `<span class="rk-v">${esc(e.wertText || '')}</span></li>`;
+  }).join('');
+  const fuss = [
+    d.ohneWertGrund ? esc(d.ohneWertGrund) : '',
+    Number.isFinite(d.modellAlterMin) ? `Basis ${d.modellAlterMin} min alt.` : '',
+    `${d.bewertet ?? 0} von ${d.geprueft ?? 0} Zeilen bewertbar.`,
+  ].filter(Boolean).join(' ');
+  el.innerHTML = `${kopf} <small class="rank-basis" title="${esc(titel)}">Basis: ${esc(basisText)}</small>`
+    + `<ol class="rk-list">${zeilen}</ol>`
+    + `<small class="rk-foot" title="${esc(gloss('rangKeineFreigabe') + '\n\n' + gloss('rangTreiber') + (fuss ? '\n\n' + gloss('rangErsetzt') : ''))}">Reihenfolge, keine Kauf-Freigabe. ${fuss}</small>`;
+}
+
 function stockHeatmap(shown) {
   const svg = $('#stockMap'); if (!svg) return;
   const g = (x) => 14 + (Math.max(0, Math.min(10, x)) / 10) * 172;
@@ -2447,6 +2516,10 @@ function stockHeatmap(shown) {
     const found=stockRows.some(r=>r.symbol===focusStock); if(!found) await searchStockNow(focusStock);
     $('#stockFocus')?.scrollIntoView({behavior:'smooth',block:'start'});
   }));
+  /* v4.10.0 · HIER und nicht an den Aufrufstellen. `stockHeatmap` wird aus
+     zwei Zweigen gerufen; die Reihung an beide zu haengen waere die Bauform,
+     mit der in 4.9.0 eine Reparatur nur eine von zwei Karten erreicht hat. */
+  renderReihung('#stockRank', stockRangliste);
 }
 
 /* v3.5.9 · Modul 2 UI: eine Kachel, die ehrlich sagt wie viel Risiko wirklich
@@ -2469,9 +2542,12 @@ const GLOSS_GROUPS = [
   {title:'Vorabend-Liste (v3.29.0)',                          keys:['eveTrigger','eveStructStop','eveRunway','eveKompression','eveRueckkehr']},
   {title:'Quartalstermine (v3.16.0)',                         keys:['earnManual']},
   {title:'Kandidat statt Freigabe (v3.16.0)',                 keys:['modeANoRelease']},
+  {title:'Kandidatenliste / Modellreihung (v4.10.0)',         keys:['rangBasis','rangKeineFreigabe','rangErsetzt','rangTreiber']},
   {title:'Portfolio-Risiko (Modul 2)',                        keys:['riskPerTrade','portfolioBudget','cluster','diversify','stopReal']},
 ];
 const GLOSS_LABEL = {
+  rangBasis:'Basis der Reihung', rangKeineFreigabe:'Reihenfolge ≠ Freigabe',
+  rangErsetzt:'Ersetzte Merkmale', rangTreiber:'Was den Rang trägt',
   pullback:'Pullback / Rücksetzer', breakout:'Breakout / Ausbruch', squeeze:'Squeeze / Kompression',
   reclaim:'Reclaim / Rückeroberung', elliott:'Elliott-Wellen & Fibonacci', relative:'Relative Stärke',
   vwap:'VWAP', ema21:'EMA / Trendstaffelung', rs:'Relative Stärke vs. BTC', mtf:'Multi-Timeframe',
@@ -3677,7 +3753,7 @@ function featBadge(u){
 function renderFeatureAttribution(){
   const el=$('#featureReport'); if(!el)return;
   const d=featureData||{};
-  const kopf='<b>🧪 Merkmals-Attribution (Modul 0b)</b> <small>reine Auswertung · die vorgeschlagenen Gewichte sind nirgends verdrahtet</small>';
+  const kopf='<b>🧪 Merkmals-Attribution (Modul 0b)</b> <small>reine Auswertung · die Gewichte ordnen die Kandidatenliste, sie ändern weder Score noch Ampel noch Kauf-Freigabe</small>';
   if(d.configured===false){ el.innerHTML=`${kopf}<small>D1 nicht verbunden – ohne Aufzeichnung gibt es nichts auszuwerten.</small>`; return; }
   if(d.state==='error'){ el.innerHTML=`${kopf}<small class="err">Fehler: ${esc(d.error||'unbekannt')}</small>`; return; }
   if(d.state==='sammelt'){
@@ -4759,6 +4835,11 @@ async function scanStocks(force = false) {
     const data = await res.json();
     if(req!==stockReqSeq)return;
     stockMeta = data;
+    /* v4.10.0 · Die Reihung kommt mit dem Abruf mit — kein zweiter Request.
+       Fehlt sie (alter Worker, Fehlerzweig), bleibt der letzte Stand stehen
+       statt die Kachel leer zu raeumen: eine leere Flaeche saehe aus wie ein
+       Ausfall, und das war in 4.2.2 schon einmal der teure Fall. */
+    if (data && data.rangliste) stockRangliste = data.rangliste;
     // Bei 429 oder einem frischen Worker-Isolate niemals bereits sichtbare
     // Aktien durch ein leeres Fallback-Array ersetzen. Letzte gute Werte bleiben
     // sichtbar, bis eine echte neue Teilgruppe angekommen ist.
@@ -5222,6 +5303,8 @@ Achtung: beide Achsen sind TECHNISCH. Ob sich der Trade lohnt, steht in der Farb
     <text class="quad-label ql-bl" x="49" y="187">MUSTER SCHWACH<tspan class="ql2" x="49" dy="7.4">schwer handelbar</tspan></text>
     ${trails}${dots}`;
   $$('#map .dot').forEach((d) => d.addEventListener('click', () => select(d.dataset.pair, true)));
+  // v4.10.0 · Spiegelbildlich zur Aktien-Karte, siehe `stockHeatmap`.
+  renderReihung('#coinRank', coinRangliste);
 }
 
 /* ------------------------------------------------------------ Dichte Liste */
@@ -7007,6 +7090,7 @@ const VIEW_SECTIONS = {
     ['#bandCoin',         'Krypto',       'Anfang des Kryptobereichs.'],
     ['.stage',            'Skope',        'Krypto-Fokusfenster mit Suche und Heatmap — der ausgewählte Coin im Detail.'],
     ['#coinTools',        'Suche',        'Coin-Suche, Filter (auch ★ Favoriten) und Scan-Intervall. Steht im Skope-Fenster.'],
+    ['#coinRank',         'Kandidaten',   'Modellreihung: worauf zuerst schauen. Reihenfolge, keine Kauf-Freigabe.'],
     ['#coinFavStrip',     'Favoriten',    'Deine mit ★ markierten Coins. Sie werden dem Scan vorangestellt.'],
     ['#coinList',         'Coin-Liste',   'Die vollständige Trefferliste, direkt unter dem Skope-Fenster.'],
     ['#topPicksCoin',     'Top Picks',    'Rangfolge nach erwartetem Netto-Euro je Tag, aus aufgezeichneten Fällen.'],
@@ -7021,6 +7105,7 @@ const VIEW_SECTIONS = {
     ['#bandStock',        'Aktien',       'Anfang des Aktienbereichs.'],
     ['.stockstage',       'Skope',        'Aktien-Fokusfenster mit Suche und Heatmap.'],
     ['#stockQ',           'Suche',        'Aktiensuche, Filter und Radar-/Watchlist-Schalter. Steht im Skope-Fenster.'],
+    ['#stockRank',        'Kandidaten',   'Modellreihung: worauf zuerst schauen. Reihenfolge, keine Kauf-Freigabe.'],
     ['#depotStrip',       'Depot',        'Deine mit ★ markierten Titel.'],
     ['#stockGroups',      'Liste',        'Die vollständige Aktien-Trefferliste, direkt unter dem Skope-Fenster.'],
     ['#topPicks',         'Top Picks',    'Rangfolge nach erwartetem Netto-Euro je Handelstag, aus aufgezeichneten Fällen.'],
