@@ -1,21 +1,19 @@
-FusionPulse v4.11.0 – Update (Watchlist über mehrere Geräte)
+FusionPulse v4.12.0 – Update (Merkmalsprüfung)
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
 Keine neuen Secrets, keine neue Migration, kein neues Binding.
 
-WICHTIG – REIHENFOLGE NACH DEM DEPLOY:
-1. Zuerst am MAC die App neu laden (Strg/Cmd+Shift+R).
-   Der Mac hat die vollständige Sternliste. Beim ersten Start wird sie EINMAL
-   additiv zum Server geschickt – dabei kann nichts gelöscht werden.
-2. Danach am Windows-PC neu laden. Er übernimmt die Serverliste.
-3. Steht der Server auf Radar: am Mac den Knopf einmal auf Watchlist stellen.
-   Der Knopf schickt jetzt KEINE Liste mehr, er schaltet nur den Modus.
-
 WAS NEU IST:
-- Ein Stern (★) wird sofort serverseitig gespeichert – einzeln, nicht als
-  ganze Liste. Ein Gerät kann die Titel eines anderen nicht mehr löschen.
-- Der Watchlist-Knopf schaltet nur noch den Modus. Die Liste pflegst du über
-  die Sterne.
-- Weichen Serverliste und lokale Sterne ab, steht das am Knopf:
-  "Watchlist · 36 (hier ★ 1)", gelb umrandet.
-- Die Premarket-Analyse im Hintergrund kennt jetzt deine Watchlist.
+- In Modul 0b gibt es ein neues Urteil: 🟧 ungeprüft.
+  Es trifft Merkmale, deren Overfit-Kontrolle gar nicht laufen konnte, weil im
+  Lernteil kein vergleichbarer Wert vorliegt. Bisher fielen genau die auf
+  "trägt" – und wurden damit zur Grundlage der Kandidatenliste.
+- Solche Merkmale werden jetzt weder gereiht noch ins Modell genommen.
+- Die Abdeckung steht getrennt nach Lern- und Prüfteil im Zeilentext.
+- Ein ⚠ in der Zeile markiert unplausibel große IC-Werte (ab 0,40).
+
+ERWARTUNG NACH DEM DEPLOY:
+Auf der Kryptoseite dürfte situ.rvol von "trägt" auf "ungeprüft" wechseln.
+Die Zahl der tragenden Merkmale sinkt dadurch – das ist die Korrektur, kein
+Rückschritt. Die Kandidatenliste ordnet dann nach dem nächststärksten
+geprüften Merkmal oder nach dem Score.

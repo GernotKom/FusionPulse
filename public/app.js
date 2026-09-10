@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.11.0 — Frontend
+   FusionPulse v4.12.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -3776,8 +3776,13 @@ async function loadFeatureAttribution(){
   renderFeatureAttribution();
 }
 function featBadge(u){
+  /* v4.12.0 · `ungeprüft` ist NICHT dasselbe wie `trägt nicht`. „Trägt nicht"
+     heißt: geprüft, kein Zusammenhang. „Ungeprüft" heißt: die Kontrolle konnte
+     gar nicht laufen. Beides unter ein Wort zu legen wäre genau der Fehler,
+     der v4.9.1 gekostet hat — und im Fall vom 10.09. war der ungeprüfteste
+     Wert der Tafel zugleich der stärkste. */
   return u==='traegt'?'🟩 trägt':u==='overfit'?'🟥 Overfit':u==='traegt nicht'?'⬜ trägt nicht'
-    :u==='unbelegt'?'🟨 unbelegt':u==='konstant'?'⬛ konstant':'⬜ sammelt';
+    :u==='ungeprueft'?'🟧 ungeprüft':u==='unbelegt'?'🟨 unbelegt':u==='konstant'?'⬛ konstant':'⬜ sammelt';
 }
 function renderFeatureAttribution(){
   const el=$('#featureReport'); if(!el)return;
@@ -3795,8 +3800,15 @@ function renderFeatureAttribution(){
     const t=Array.isArray(m.terzile)&&m.terzile.length===3
       ? `\nUnteres Drittel ${m.terzile[0].trefferPct} % Treffer, oberes ${m.terzile[2].trefferPct} % (Wilson ${m.terzile[0].wilson} / ${m.terzile[2].wilson}).` : '';
     const risk=Number.isFinite(m.icRisikoOos)?`\nZusammenhang mit dem Rückschlag: ${m.icRisikoOos} (positiv = hebt auch das Risiko).`:'';
-    const title=`${m.grund}${t}${risk}\n\nAbdeckung ${m.abdeckungPct} %, ${m.nOos} Out-of-Sample-Episoden. Fehlende Werte werden ausgelassen, nicht als 0 gezählt.`;
-    return `<tr title="${esc(title)}"><td>${esc(m.name)}</td><td>${m.icOos===null?'–':m.icOos}</td><td>${m.icIn===null?'–':m.icIn}</td><td>${m.q===null?'–':m.q}</td><td>${featBadge(m.urteil)}</td></tr>`;
+    /* v4.12.0 · Die getrennte Abdeckung steht MIT im Text. Eine Gesamtzahl
+       verdeckt den Fall, um den es geht: „im Lernteil nichts, im Prüfteil
+       alles" sieht als Mittelwert harmlos aus. */
+    const abd=Number.isFinite(m.abdeckungInPct)&&Number.isFinite(m.abdeckungOosPct)
+      ? `Abdeckung ${m.abdeckungPct} % (Lernteil ${m.abdeckungInPct} %, Prüfteil ${m.abdeckungOosPct} %)`
+      : `Abdeckung ${m.abdeckungPct} %`;
+    const warn=m.unplausibel?`\n\n⚠ ${m.unplausibel}`:'';
+    const title=`${m.grund}${t}${risk}${warn}\n\n${abd}, ${m.nOos} Out-of-Sample-Episoden. Fehlende Werte werden ausgelassen, nicht als 0 gezählt.`;
+    return `<tr title="${esc(title)}"><td>${esc(m.name)}${m.unplausibel?' <span class="ic-warn" title="unplausibel großer Wert – siehe Zeilentext">⚠</span>':''}</td><td>${m.icOos===null?'–':m.icOos}</td><td>${m.icIn===null?'–':m.icIn}</td><td>${m.q===null?'–':m.q}</td><td>${featBadge(m.urteil)}</td></tr>`;
   }).join('');
   const mo=d.modell;
   const heute=mo?Object.entries(mo.aucHeute||{}).filter(([,v])=>Number.isFinite(v)).map(([k,v])=>`${k} ${v}`).join(' · '):'';

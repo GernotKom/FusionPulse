@@ -1,3 +1,99 @@
+# FusionPulse 4.12.0 — der ungeprüfteste Wert der Tafel war der stärkste
+
+Befund vom 10.09., Kryptoseite, 544 Episoden:
+
+    situ.rvol   IC out-of-sample −0.644   IC in-sample  –   q 0.0175   trägt
+    Modell      OOS-AUC 0.398 gegen score 0.729 — schlechter als Münzwurf
+
+## Die Lücke
+
+Der Overfit-Wächter prüft:
+
+    aIn !== null && aIn >= K.IC_MIN && (Vorzeichenwechsel || Einbruch)
+
+Ist der In-Sample-IC `null`, ist die Bedingung falsch, der Zweig wird
+**übersprungen**, und das Merkmal fällt direkt in „trägt". Der stärkste Wert
+der ganzen Tafel war damit ausgerechnet der, der nie gegen Überanpassung
+geprüft wurde.
+
+Und seit v4.10.0 hatte das Folgen: fällt das Modell durch — bei OOS-AUC 0.398
+tat es das —, ordnet die Kandidatenliste nach dem stärksten tragenden
+Einzelmerkmal. Das war dieses hier.
+
+Dieselbe Lehre wie `Number(null) === 0`, eine Ebene höher: **der fehlende Wert
+war keine Zahl, sondern eine nicht stattgefundene Kontrolle — und die wurde als
+bestandene gelesen.**
+
+## Die Korrektur
+
+- **Neues Urteil `ungeprüft`** (🟧), eigener Zweig vor „trägt". Es greift, wenn
+  der In-Sample-IC fehlt oder die Abdeckung im Lernteil unter der Schwelle liegt.
+  `ungeprüft` ist ausdrücklich **nicht** dasselbe wie „trägt nicht": das eine
+  heißt geprüft und kein Zusammenhang, das andere heißt, die Prüfung konnte gar
+  nicht laufen.
+- **Nicht Reihungsgrundlage.** `reihungBasis` filtert auf `urteil === 'traegt'`,
+  greift also automatisch.
+- **Nicht ins Modell.** `modellNamen` schließt `ungeprüft` aus.
+- **Abdeckung getrennt** für Lern- und Prüfteil, in Nutzlast und Anzeige. Eine
+  Gesamtzahl von 60 % kann „überall die Hälfte" heißen oder „im Lernteil nichts,
+  im Prüfteil alles". Zwei völlig verschiedene Lagen unter einer Zahl.
+- **Warnung ab |IC| ≥ 0.40**, sichtbar als ⚠ in der Zeile. Die Schwelle ist
+  GERATEN und steht so im Code — sie meldet, sie entscheidet nicht. Ein Urteil
+  darf nicht an einer Zahl hängen, die niemand gemessen hat.
+- **Eine Konstante für beide Abdeckungsprüfungen** (`FATTR_MIN_COVERAGE`).
+
+## Ein falscher Kommentar, selbst geschrieben und selbst korrigiert
+
+Die erste Fassung der Begründung im Code behauptete, `medianOf(col) ?? 0` mache
+aus der leeren Lernspalte lauter Nullen, und das erkläre die AUC von 0.398.
+
+**Das ist nachrechenbar falsch.** Eine leere Lernspalte setzt voraus, dass das
+Merkmal im Lernteil vollständig fehlt. Der Lernteil ist 70 % der Episoden, die
+Gesamtabdeckung läge also bei höchstens 30 % — und der `unbelegt`-Zweig hätte
+schon abgefangen. Der `?? 0`-Pfad ist an dieser Stelle unerreichbar.
+
+Der tatsächliche Mechanismus ist ein anderer: die Lernspalte ist **voll, aber
+ohne Streuung** (ein Vorgabewert, bevor das Merkmal wirklich gemessen wurde).
+`sd` wird 0 und auf 1 gefangen; geschätzt wird ein Gewicht gegen eine Spalte,
+die im Lernteil nichts unterscheidet, und out-of-sample auf echte, schwankende
+Werte angewandt.
+
+Ob das den Befund von 0.398 erklärt, ist damit **nicht gezeigt** — nur, dass ein
+Merkmal ohne durchlaufene Overfit-Kontrolle auch im Modell nichts zu suchen hat.
+NK91d prüft den Ausschluss, nicht die Ursache.
+
+## Zwei Fehlanker in den eigenen Kontrollen
+
+**Erster.** NK91a war beim ersten Lauf grün — und wäre es auch vor v4.12.0
+gewesen. Der Testfall ließ das Merkmal früh einfach *weg*; Gesamtabdeckung 25 %,
+abgefangen vom alten `unbelegt`-Zweig. Der wirkliche Fall hat **volle
+Abdeckung** und eine konstante Lernspalte. Erst diese Fassung trifft den neuen
+Zweig. NK91a verlangt jetzt ausdrücklich `abdeckungPct === 100`.
+
+**Zweiter.** Die Anzeigekontrolle prüfte auf `/Lernteil/` — das Wort steht auch
+im Begründungstext des Urteils. Die Kontrolle blieb grün, als die
+Abdeckungsanzeige entfernt wurde. Geprüft wird jetzt das ganze Muster
+`Abdeckung N % (Lernteil N %, Prüfteil N %)`.
+
+Beide fielen nur an der Gegenkontrolle auf, nicht beim Schreiben. Zweiter und
+dritter Fall dieser Bauart nach NK87m und NK89h.
+
+## Die Kontrollen
+
+| Rückbau | Ergebnis |
+|---|---|
+| kein `ungeprüft`-Zweig (Stand v4.11.0) | Test hat den Fehler erkannt |
+| Modell nimmt `ungeprüft` wieder mit | Test hat den Fehler erkannt |
+| getrennte Abdeckung fällt aus der Nutzlast | Test hat den Fehler erkannt |
+| Badge fällt auf „sammelt" zurück | Test hat den Fehler erkannt |
+| Abdeckungsanzeige entfernt | Test hat den Fehler erkannt |
+
+NK91b ist die Gegenprobe, ohne die alles andere wertlos wäre: ein durchgehend
+belegtes, echt tragendes Merkmal muss weiterhin „trägt" heißen und ins Modell
+kommen. Eine Tafel, die nie etwas belegt, ist ebenso kaputt — nur unauffälliger.
+
+---
+
 # FusionPulse 4.11.0 — ein Gerät konnte die Liste eines anderen löschen
 
 Gemeldet (10.09.): Am Windows-PC stand auf dem Knopf **„Watchlist · 36"**,

@@ -6982,9 +6982,12 @@ async function claudeAttribution(env){
    `claudeAttribution` (asset_type + resolved_ts + ts), es entsteht also keine
    neue, unindizierte Zugriffsform — offener Punkt 22.
    ========================================================================== */
+/* EINE Zahl fuer beide Abdeckungspruefungen (gesamt und Lernteil). Zwei
+   getrennte Literale waeren die naechste Stelle, an der sie auseinanderlaufen. */
+const FATTR_MIN_COVERAGE = 0.50;
 const FATTR = {
   MIN_EPISODES: 40,      // darunter kein Urteil, egal wie schoen die Zahl aussieht
-  MIN_COVERAGE: 0.50,    // Merkmal muss in mind. der Haelfte der Episoden belegt sein
+  MIN_COVERAGE: FATTR_MIN_COVERAGE,   // Merkmal muss in mind. der Haelfte der Episoden belegt sein
   OOS_FRACTION: ATTR.OOS_FRACTION,  // KEINE zweite Zahl neben Modul 0
   OOS_MIN: 20,           // mind. so viele OOS-Episoden, sonst nur "sammelt"
   MIN_LEVEL_N: 10,       // Mindestbesetzung einer Kategorie-Auspraegung
@@ -6992,6 +6995,16 @@ const FATTR = {
   PERMUTATIONS: 400,     // Aufloesung des p-Werts: 1/401 = 0,0025
   FDR_Q: 0.10,           // Benjamini-Hochberg-Niveau
   OVERFIT_RATIO: 0.40,   // OOS unter 40 % des In-Sample-Betrags -> Overfit
+  /* v4.12.0 · Mindestabdeckung im LERNTEIL. Bewusst derselbe Wert wie
+     MIN_COVERAGE: es ist dieselbe Frage („ist genug da, um etwas zu sagen"),
+     nur auf der Haelfte gestellt, auf der die Overfit-Kontrolle stattfindet.
+     Eine eigene, davon abweichende Zahl waere eine zweite Wahrheit. */
+  MIN_COVERAGE_IN: FATTR_MIN_COVERAGE,
+  /* Ab diesem Betrag ist ein Rang-IC in diesen Daten ein VERDACHT, kein
+     Ergebnis. Die Zahl ist GERATEN und gehoert auf dieselbe Liste offener
+     Kalibrierungen wie SECTOR_RESERVE_PER_SECTOR — sie loest nur eine
+     Warnung aus und veraendert kein Urteil. */
+  IC_IMPLAUSIBEL: 0.40,
   HISTORY_MS: ATTR.HISTORY_MS,
   ROW_LIMIT: 8000,
   CACHE_MS: 10 * 60_000,
@@ -7256,6 +7269,19 @@ function fattrReport(episodes, cfg) {
     const belegt = alle.filter(Number.isFinite).length;
     const coverage = belegt / eps.length;
     const xIn = spalte(fIn, name), xOos = spalte(fOos, name);
+    /* v4.12.0 · Die Abdeckung wird ab hier GETRENNT gemessen. Bis 4.11.0 gab
+       es nur eine Zahl ueber alle Episoden — und die verdeckt genau den Fall,
+       der am 10.09. auffiel: `situ.rvol` zeigte OOS-IC −0,644 bei leerem
+       In-Sample-Feld. Ein Merkmal, das erst ab einem bestimmten Tag befuellt
+       wird, faellt mit der Zeittrennung zusammen. Gemessen wird dann nicht der
+       Zusammenhang, sondern der Stichtag.
+       Eine gemeinsame Abdeckung von 60 % kann „ueberall die Haelfte\" heissen
+       oder „im Lernteil nichts, im Pruefteil alles\". Das sind zwei voellig
+       verschiedene Lagen unter einer Zahl. */
+    const belegtIn = xIn.filter(Number.isFinite).length;
+    const belegtOos = xOos.filter(Number.isFinite).length;
+    const coverageIn = inS.length ? belegtIn / inS.length : 0;
+    const coverageOos = oos.length ? belegtOos / oos.length : 0;
     const icIn = fattrRankIC(xIn, oIn.map((o) => o.chance));
     const icOos = fattrRankIC(xOos, oOos.map((o) => o.chance));
     const icRisk = fattrRankIC(xOos, oOos.map((o) => o.risiko));
@@ -7264,6 +7290,8 @@ function fattrReport(episodes, cfg) {
       : null;
     roh.push({
       name, abdeckungPct: Math.round(coverage * 100), coverage,
+      abdeckungInPct: Math.round(coverageIn * 100), abdeckungOosPct: Math.round(coverageOos * 100),
+      coverageIn, coverageOos,
       nIn: icIn.n, nOos: icOos.n,
       icIn: icIn.ic === null ? null : Math.round(icIn.ic * 1000) / 1000,
       icOos: icOos.ic === null ? null : Math.round(icOos.ic * 1000) / 1000,
@@ -7293,6 +7321,32 @@ function fattrReport(episodes, cfg) {
       grund = Math.sign(r._icInRaw) !== Math.sign(r._icOosRaw)
         ? `In-Sample ${r.icIn} kehrt sich out-of-sample zu ${r.icOos} um – Vorzeichenwechsel`
         : `In-Sample ${r.icIn} bricht out-of-sample auf ${r.icOos} ein (unter ${Math.round(K.OVERFIT_RATIO * 100)} %)`;
+    } else if (r._icInRaw === null || r.coverageIn < K.MIN_COVERAGE_IN) {
+      /* ══ v4.12.0 · FEHLENDE PRUEFUNG IST KEINE BESTANDENE PRUEFUNG ═══════
+         BEFUND vom 10.09., Kryptoseite: `situ.rvol` stand mit OOS-IC −0,644
+         auf „traegt\" — dem staerksten Wert der ganzen Tafel — und hatte im
+         Feld „IC in-sample\" einen Strich. Kein In-Sample-Wert heisst: die
+         Overfit-Pruefung eine Zeile darueber verlangt `aIn !== null` und wurde
+         schlicht UEBERSPRUNGEN. Das Merkmal fiel danach direkt in „traegt\".
+
+         Damit war ausgerechnet der ungepruefteste Wert der Tafel der
+         staerkste — und seit v4.10.0 wurde er zur Reihungsgrundlage der
+         Kandidatenliste, sobald das Modell durchfiel. Genau so war es an dem
+         Tag: Modell OOS-AUC 0,398, also schlechter als Muenzwurf, Basis fiel
+         auf „Einzelmerkmal\", und das Einzelmerkmal war dieses hier.
+
+         URSACHE ist fast immer, dass ein Merkmal erst ab einem bestimmten
+         Codestand befuellt wird. Die zeitliche Trennung Lern-/Pruefteil faellt
+         dann mit „existiert nicht / existiert\" zusammen. Ein |IC| von 0,644
+         ist in diesen Daten kein Ergebnis, sondern ein Stichtag.
+
+         Dieselbe Lehre wie `Number(null) === 0`, eine Ebene hoeher: der
+         fehlende Wert war hier keine Zahl, sondern eine nicht stattgefundene
+         KONTROLLE — und die wurde als bestandene gelesen. */
+      urteil = 'ungeprueft';
+      grund = r._icInRaw === null
+        ? `out-of-sample ${r.icOos} bei n=${r.nOos}, aber im Lernteil kein Wert (Abdeckung dort ${r.abdeckungInPct} %, hier ${r.abdeckungOosPct} %) – die Overfit-Kontrolle konnte nicht laufen. Wahrscheinlich ein Merkmal, das erst spaeter befuellt wurde; dann misst der IC den Stichtag, nicht den Zusammenhang.`
+        : `im Lernteil nur ${r.abdeckungInPct} % belegt (noetig ${Math.round(K.MIN_COVERAGE_IN * 100)} %), out-of-sample ${r.abdeckungOosPct} % – der Unterschied faellt mit der Zeittrennung zusammen, ein Vergleich waere keiner.`;
     } else if (Number.isFinite(q) && q <= K.FDR_Q && aOos >= K.IC_MIN) {
       urteil = 'traegt';
       grund = `OOS-IC ${r.icOos} bei n=${r.nOos}, q=${Math.round(q * 1000) / 1000} – haelt der Mehrfachtestkorrektur stand`;
@@ -7302,8 +7356,15 @@ function fattrReport(episodes, cfg) {
         ? `OOS-IC ${r.icOos} unter der Bedeutsamkeitsschwelle ${K.IC_MIN}`
         : `OOS-IC ${r.icOos}, aber q=${Number.isFinite(q) ? Math.round(q * 1000) / 1000 : '–'} ueber ${K.FDR_Q} – vom Zufall nicht zu trennen`;
     }
-    const { _icInRaw, _icOosRaw, _konstant, coverage, ...rest } = r;
-    return { ...rest, p: Number.isFinite(r.p) ? Math.round(r.p * 10000) / 10000 : null, q: Number.isFinite(q) ? Math.round(q * 10000) / 10000 : null, urteil, grund };
+    const { _icInRaw, _icOosRaw, _konstant, coverage, coverageIn, coverageOos, ...rest } = r;
+    /* v4.12.0 · Warnung, kein Urteil. Ein Rang-IC ueber 0,40 ist in diesen
+       Daten praktisch immer ein Artefakt — aber „praktisch immer" ist kein
+       Beleg, und ein geratener Schwellenwert darf kein Urteil kippen. Er sagt
+       nur, wo man hinschauen soll. */
+    const unplausibel = aOos !== null && aOos >= K.IC_IMPLAUSIBEL
+      ? `|IC| ${r.icOos} ist fuer eine Marktkennzahl aussergewoehnlich hoch – in diesen Daten fast immer ein Artefakt (spaet befuelltes Merkmal, Ausreisser, zu kleine Stichprobe). Nachsehen, bevor darauf gebaut wird.`
+      : null;
+    return { ...rest, p: Number.isFinite(r.p) ? Math.round(r.p * 10000) / 10000 : null, q: Number.isFinite(q) ? Math.round(q * 10000) / 10000 : null, urteil, grund, unplausibel };
   }).sort((a, b) => (Math.abs(b.icOos ?? 0) - Math.abs(a.icOos ?? 0)));
 
   // ── Kategorien: Auspraegungen mit Wilson-Untergrenze auf dem OOS-Teil ──────
@@ -7336,7 +7397,52 @@ function fattrReport(episodes, cfg) {
   // ── Modell ────────────────────────────────────────────────────────────────
   // Regel 4: die Auswahl der Merkmale kennt den OOS-Teil NICHT. Genommen wird,
   // was ausreichend belegt und nicht konstant ist.
-  const modellNamen = merkmale.filter((m) => m.abdeckungPct / 100 >= K.MIN_COVERAGE && m.urteil !== 'konstant').map((m) => m.name);
+  /* ══ v4.12.0 · DAS MODELL BEKOMMT SIE AUCH NICHT ══════════════════════════
+     Hier stand nur `urteil !== 'konstant'`. Ein Merkmal mit leerer
+     In-Sample-Spalte kam damit MIT ins Modell — und was dort passiert, ist
+     schlimmer als beim Einzel-IC:
+
+       `med[nme] = medianOf(col) ?? 0`
+
+     Ist die Lernspalte leer, wird der Median `null` und faellt auf 0. Das
+     Modell schaetzt also ein Gewicht gegen eine Spalte, die im Lernteil aus
+     lauter Nullen besteht, und wendet dieses Gewicht out-of-sample auf ECHTE
+     Werte an. Das Ergebnis ist nicht ungenau, es ist beliebig.
+
+     Das ist die naheliegendste Erklaerung fuer den Befund vom 10.09.: Modell
+     OOS-AUC 0,398 — nicht nur wertlos, sondern UNTER dem Muenzwurf. Ein Modell
+     wird schlechter als Zufall, wenn es systematisch falsch herum zeigt, und
+     genau das erzeugt ein Gewicht, das gegen Nullen gelernt und auf Messwerte
+     angewandt wird.
+
+  /* ══ v4.12.0 · DAS MODELL BEKOMMT SIE AUCH NICHT ══════════════════════════
+     Hier stand nur `urteil !== 'konstant'`. Ein Merkmal ohne In-Sample-IC kam
+     damit MIT ins Modell.
+
+     WAS DORT PASSIERT — und die erste Fassung dieses Kommentars hatte es
+     falsch. Sie behauptete, `med[nme] = medianOf(col) ?? 0` mache aus der
+     Lernspalte lauter Nullen. Das kann hier gar nicht eintreten: die leere
+     Lernspalte setzt voraus, dass das Merkmal im Lernteil vollstaendig fehlt,
+     und der Lernteil ist 70 % der Episoden — die Gesamtabdeckung laege dann
+     bei hoechstens 30 % und der `unbelegt`-Zweig haette schon abgefangen. Der
+     `?? 0`-Pfad ist an dieser Stelle unerreichbar. Eine plausible Erklaerung,
+     die niemand nachgerechnet hat, ist in diesem Projekt keine.
+
+     Der tatsaechliche Mechanismus ist ein anderer und immer noch schlimm
+     genug: die Lernspalte ist VOLL, aber ohne Streuung (ein Vorgabewert,
+     bevor das Merkmal wirklich gemessen wurde). Die Standardisierung sieht
+     dort mu = die Konstante und sd = 0, das wird auf 1 gefangen. Geschaetzt
+     wird ein Gewicht gegen eine Spalte, die im Lernteil NICHTS unterscheidet —
+     die Ridge-Strafe drueckt es Richtung null, festgelegt ist es nicht.
+     Angewandt wird es out-of-sample auf echte, schwankende Werte. Die
+     Vorhersage bekommt dort einen Beitrag, fuer den es keinen Beleg gibt.
+
+     Ob das den Befund vom 10.09. (OOS-AUC 0,398, unter dem Muenzwurf) erklaert,
+     ist damit NICHT gezeigt — nur, dass ein Merkmal, das die eigene
+     Overfit-Kontrolle nicht durchlaufen konnte, auch im Modell nichts zu
+     suchen hat. NK91d prueft den Ausschluss, nicht die Ursache. */
+  const modellNamen = merkmale.filter((m) => m.abdeckungPct / 100 >= K.MIN_COVERAGE
+    && m.urteil !== 'konstant' && m.urteil !== 'ungeprueft').map((m) => m.name);
   let modell = null;
   if (modellNamen.length >= 2) {
     // Regel 3: Median und Standardisierung ausschliesslich aus dem In-Sample-Teil.

@@ -194,6 +194,9 @@ export function loadClient(overrides = {}) {
      jemand SIEHT. Beide Halter stehen mit, damit NK89h beide Karten prueft
      und nicht nur die, an die gerade gedacht wurde. */
   renderReihung, rankLightIcon, RANK_BASIS_HINT,
+  /* v4.12.0 · NK91g fuehrt die Modul-0b-Tafel aus. */
+  renderFeatureAttribution, featBadge,
+  get featureData(){return featureData;}, set featureData(v){featureData=v;},
   get stockRangliste(){return stockRangliste;}, set stockRangliste(v){stockRangliste=v;},
   get coinRangliste(){return coinRangliste;}, set coinRangliste(v){coinRangliste=v;},
   get rows(){return rows;}, set rows(v){rows=v;}
