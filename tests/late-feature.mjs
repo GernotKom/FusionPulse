@@ -198,4 +198,84 @@ assert.equal(rep.state, 'ok', `kein Urteil moeglich: ${rep.reason}`);
     'die getrennte Abdeckung fehlt in der Anzeige');
 }
 
-console.log('✓ FusionPulse v4.12.0 NK91 spaet befuellte Merkmale (ausgefuehrt): OK');
+/* ═══ NK91h · STICHTAG UND DUENN SIND ZWEI VERSCHIEDENE DINGE ═════════════
+   v4.12.0 legte beide unter „ungeprueft\". In der Tafel stand daraufhin bei
+   `situ.extended` ein In-Sample-IC von −0,21 NEBEN dem Urteil „ungeprueft\" —
+   wenn dort eine Zahl steht, IST die Kontrolle gelaufen.
+
+   Geprueft wird an den beiden Faellen, an denen die Schwelle ausgerichtet ist:
+     · Lernteil 42 %, Pruefteil 100 %  (gemessen am 10.09. an situ.extended)
+     · Lernteil 45 %, Pruefteil 48 %   (gleichmaessig duenn)
+   Der erste MUSS „stichtag\" heissen, der zweite darf es NICHT. */
+{
+  /** `x` ist im Lernteil nur zu `cIn`, im Pruefteil zu `cOos` belegt — und
+   *  traegt, wo es belegt ist, echt. Die Wahrheit steht im Test. */
+  const mitAbdeckung = (n, seed, cIn, cOos) => {
+    const r = rng(seed);
+    const out = [];
+    const grenze = Math.floor(n * (1 - 0.3));
+    for (let i = 0; i < n; i++) {
+      const ehrlich = r(), wuerfel = r();
+      const chance = ehrlich * 6 - 1 + (r() - 0.5) * 2;
+      const situ = { ehrlich: ehrlich * 100 };
+      if (wuerfel < (i < grenze ? cIn : cOos)) situ.x = chance * 8 + (r() - 0.5) * 6;
+      out.push({
+        symbol: 'S' + (i % 40), ts: T0 + i * 3_600_000,
+        max_pct: Math.max(0, chance), min_pct: -Math.abs(r() * 2),
+        light: chance >= ATTR.WIN_PCT ? 'green' : 'red',
+        score: 50 + r() * 10, crv: 3.2,
+        payload: JSON.stringify({ setup: 'A', situParts: situ }),
+      });
+    }
+    return out;
+  };
+
+  const bruch = fattrReport(mitAbdeckung(900, 90210, 0.42, 1.0), {});
+  const xb = bruch.merkmale.find((m) => m.name === 'situ.x');
+  assert.ok(xb, 'situ.x fehlt in der Bruch-Tafel');
+  assert.equal(xb.urteil, 'stichtag',
+    `Lernteil ${xb.abdeckungInPct} %, Pruefteil ${xb.abdeckungOosPct} % ergibt "${xb.urteil}" statt "stichtag"`);
+  assert.ok(/Grundgesamtheiten|Zeittrennung/.test(xb.grund), `der Grund benennt den Bruch nicht: ${xb.grund}`);
+  assert.ok(!bruch.tragend.includes('situ.x'), 'das gebrochene Merkmal steht in `tragend`');
+  assert.ok(!(bruch.modell?.gewichte || []).some((g) => g.merkmal === 'situ.x'),
+    'das gebrochene Merkmal ist im Modell');
+
+  /* ══ DIE GEGENPROBE, und sie ist der eigentliche Zweck von v4.12.1 ═══════
+     Gleichmaessig duenn ist KEIN Stichtag. Ohne diese Kontrolle waere v4.12.1
+     von v4.12.0 nicht zu unterscheiden. */
+  /* 62 % / 66 % und nicht 45 % / 48 %. Der erste Entwurf nahm 45/48 — und die
+     Gesamtabdeckung lag damit bei 46 %, also unter der 50-%-Schranke. Das
+     Merkmal bekam „unbelegt\" vom ALTEN Zweig, und die Gegenprobe prueft dann
+     nichts von v4.12.1. Dritter Fehlanker dieser Bauart in dieser Reihe,
+     wieder an der Negativkontrolle gefunden.
+     Die Zusicherung darunter macht es unmoeglich, dass es unbemerkt
+     zurueckrutscht. */
+  const duenn = fattrReport(mitAbdeckung(900, 90210, 0.62, 0.66), {});
+  const xd = duenn.merkmale.find((m) => m.name === 'situ.x');
+  assert.ok(xd, 'situ.x fehlt in der duennen Tafel');
+  assert.ok(xd.abdeckungPct >= 50,
+    `Gesamtabdeckung ${xd.abdeckungPct} % – unter 50 % faengt der alte unbelegt-Zweig ab und diese Gegenprobe prueft nichts`);
+  assert.ok(Math.abs(xd.abdeckungInPct - xd.abdeckungOosPct) < 25,
+    'die beiden Haelften liegen zu weit auseinander – das ist dann kein duenner, sondern ein gebrochener Fall');
+  assert.notEqual(xd.urteil, 'stichtag',
+    `gleichmaessig duenn (${xd.abdeckungInPct} % / ${xd.abdeckungOosPct} %) wurde als Stichtag abgetan`);
+  assert.notEqual(xd.urteil, 'ungeprueft',
+    `gleichmaessig duenn wurde als ungeprueft abgetan – genau der Fehler aus v4.12.0`);
+  assert.ok(Number.isFinite(xd.icIn),
+    'ohne In-Sample-IC prueft diese Gegenprobe nicht, was sie soll');
+
+  /* ══ DER WIDERSPRUCH AUS DER OBERFLAECHE, als Regel ══════════════════════
+     Steht ein In-Sample-IC da, darf das Urteil NICHT „ungeprueft" sein.
+     Genau das war am 10.09. in der Tafel zu sehen. Geprueft ueber alle
+     Merkmale beider Tafeln, nicht nur ueber das gepflanzte. */
+  for (const rep2 of [bruch, duenn, rep]) {
+    for (const m of rep2.merkmale) {
+      if (m.urteil === 'ungeprueft') {
+        assert.equal(m.icIn, null,
+          `${m.name} heisst "ungeprueft", zeigt aber einen In-Sample-IC von ${m.icIn} – Widerspruch in der Tafel`);
+      }
+    }
+  }
+}
+
+console.log('✓ FusionPulse v4.12.1 NK91 spaet befuellte Merkmale (ausgefuehrt): OK');

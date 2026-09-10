@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.12.0 — Frontend
+   FusionPulse v4.12.1 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -3776,13 +3776,19 @@ async function loadFeatureAttribution(){
   renderFeatureAttribution();
 }
 function featBadge(u){
-  /* v4.12.0 · `ungeprüft` ist NICHT dasselbe wie `trägt nicht`. „Trägt nicht"
-     heißt: geprüft, kein Zusammenhang. „Ungeprüft" heißt: die Kontrolle konnte
-     gar nicht laufen. Beides unter ein Wort zu legen wäre genau der Fehler,
-     der v4.9.1 gekostet hat — und im Fall vom 10.09. war der ungeprüfteste
-     Wert der Tafel zugleich der stärkste. */
+  /* v4.12.1 · DREI verschiedene Sachverhalte, drei verschiedene Wörter:
+       trägt nicht  geprüft, kein Zusammenhang
+       ungeprüft    die Overfit-Kontrolle konnte gar nicht laufen (kein
+                    In-Sample-Wert)
+       Stichtag     geprüft, aber Lern- und Prüfteil sind verschieden stark
+                    belegt — verglichen werden zwei Grundgesamtheiten
+     v4.12.0 hatte die letzten beiden unter „ungeprüft" zusammengelegt. In der
+     Tafel stand daraufhin bei `situ.extended` ein In-Sample-IC von −0,21 NEBEN
+     dem Urteil „ungeprüft" — ein sichtbarer Widerspruch. Zwei Sachen, ein
+     Wort: derselbe Fehler, den 4.9.1 gekostet hat, hier von mir selbst
+     eingebaut. */
   return u==='traegt'?'🟩 trägt':u==='overfit'?'🟥 Overfit':u==='traegt nicht'?'⬜ trägt nicht'
-    :u==='ungeprueft'?'🟧 ungeprüft':u==='unbelegt'?'🟨 unbelegt':u==='konstant'?'⬛ konstant':'⬜ sammelt';
+    :u==='ungeprueft'?'🟧 ungeprüft':u==='stichtag'?'🟠 Stichtag':u==='unbelegt'?'🟨 unbelegt':u==='konstant'?'⬛ konstant':'⬜ sammelt';
 }
 function renderFeatureAttribution(){
   const el=$('#featureReport'); if(!el)return;

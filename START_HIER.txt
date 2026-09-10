@@ -1,19 +1,19 @@
-FusionPulse v4.12.0 – Update (Merkmalsprüfung)
+FusionPulse v4.12.1 – Update (Korrektur zu 4.12.0)
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
 Keine neuen Secrets, keine neue Migration, kein neues Binding.
 
-WAS NEU IST:
-- In Modul 0b gibt es ein neues Urteil: 🟧 ungeprüft.
-  Es trifft Merkmale, deren Overfit-Kontrolle gar nicht laufen konnte, weil im
-  Lernteil kein vergleichbarer Wert vorliegt. Bisher fielen genau die auf
-  "trägt" – und wurden damit zur Grundlage der Kandidatenliste.
-- Solche Merkmale werden jetzt weder gereiht noch ins Modell genommen.
-- Die Abdeckung steht getrennt nach Lern- und Prüfteil im Zeilentext.
-- Ein ⚠ in der Zeile markiert unplausibel große IC-Werte (ab 0,40).
+WAS SICH ÄNDERT:
+In Modul 0b gibt es jetzt DREI unterscheidbare Urteile statt zwei:
+  ⬜ trägt nicht  geprüft, kein Zusammenhang
+  🟧 ungeprüft    kein In-Sample-Wert, die Kontrolle konnte nicht laufen
+  🟠 Stichtag     geprüft, aber Lern- und Prüfteil verschieden stark belegt
+
+4.12.0 hatte die letzten beiden zusammengelegt. Sichtbar war das daran, dass
+situ.extended einen In-Sample-IC von -0,21 zeigte UND "ungeprüft" hieß.
 
 ERWARTUNG NACH DEM DEPLOY:
-Auf der Kryptoseite dürfte situ.rvol von "trägt" auf "ungeprüft" wechseln.
-Die Zahl der tragenden Merkmale sinkt dadurch – das ist die Korrektur, kein
-Rückschritt. Die Kandidatenliste ordnet dann nach dem nächststärksten
-geprüften Merkmal oder nach dem Score.
+situ.rvol bleibt 🟧 ungeprüft (dort steht wirklich kein In-Sample-Wert).
+situ.extended, situ.squeeze, situScore, vorrang, situ.vacuum, situ.pullback
+wechseln voraussichtlich auf 🟠 Stichtag. An der Sache ändert das nichts –
+ihre q-Werte lagen ohnehin über 0,10. Es ändert die Aufschrift.

@@ -7000,6 +7000,19 @@ const FATTR = {
      nur auf der Haelfte gestellt, auf der die Overfit-Kontrolle stattfindet.
      Eine eigene, davon abweichende Zahl waere eine zweite Wahrheit. */
   MIN_COVERAGE_IN: FATTR_MIN_COVERAGE,
+  /* v4.12.1 · Wie weit duerfen die Abdeckungen von Lern- und Pruefteil
+     auseinanderliegen, bevor der Vergleich keiner mehr ist. GERATEN, gehoert
+     auf dieselbe Liste offener Kalibrierungen wie IC_IMPLAUSIBEL — aber an
+     zwei gemessenen Faellen ausgerichtet:
+       situ.extended am 10.09.: Lernteil 42 %, Pruefteil 100 % -> 58 Punkte.
+         Das MUSS greifen; hier faellt „Merkmal existiert" mit der
+         Zeittrennung zusammen.
+       Ein gleichmaessig duennes Merkmal (etwa 45 % / 48 %) -> 3 Punkte.
+         Das darf NICHT greifen; duenn belegt heisst auf schmalerer Basis
+         geprueft, nicht ungeprueft.
+     25 Punkte liegen zwischen beiden, mit reichlich Abstand nach beiden
+     Seiten. */
+  COVERAGE_GAP: 0.25,
   /* Ab diesem Betrag ist ein Rang-IC in diesen Daten ein VERDACHT, kein
      Ergebnis. Die Zahl ist GERATEN und gehoert auf dieselbe Liste offener
      Kalibrierungen wie SECTOR_RESERVE_PER_SECTOR — sie loest nur eine
@@ -7321,7 +7334,7 @@ function fattrReport(episodes, cfg) {
       grund = Math.sign(r._icInRaw) !== Math.sign(r._icOosRaw)
         ? `In-Sample ${r.icIn} kehrt sich out-of-sample zu ${r.icOos} um – Vorzeichenwechsel`
         : `In-Sample ${r.icIn} bricht out-of-sample auf ${r.icOos} ein (unter ${Math.round(K.OVERFIT_RATIO * 100)} %)`;
-    } else if (r._icInRaw === null || r.coverageIn < K.MIN_COVERAGE_IN) {
+    } else if (r._icInRaw === null) {
       /* ══ v4.12.0 · FEHLENDE PRUEFUNG IST KEINE BESTANDENE PRUEFUNG ═══════
          BEFUND vom 10.09., Kryptoseite: `situ.rvol` stand mit OOS-IC −0,644
          auf „traegt\" — dem staerksten Wert der ganzen Tafel — und hatte im
@@ -7344,9 +7357,31 @@ function fattrReport(episodes, cfg) {
          fehlende Wert war hier keine Zahl, sondern eine nicht stattgefundene
          KONTROLLE — und die wurde als bestandene gelesen. */
       urteil = 'ungeprueft';
-      grund = r._icInRaw === null
-        ? `out-of-sample ${r.icOos} bei n=${r.nOos}, aber im Lernteil kein Wert (Abdeckung dort ${r.abdeckungInPct} %, hier ${r.abdeckungOosPct} %) – die Overfit-Kontrolle konnte nicht laufen. Wahrscheinlich ein Merkmal, das erst spaeter befuellt wurde; dann misst der IC den Stichtag, nicht den Zusammenhang.`
-        : `im Lernteil nur ${r.abdeckungInPct} % belegt (noetig ${Math.round(K.MIN_COVERAGE_IN * 100)} %), out-of-sample ${r.abdeckungOosPct} % – der Unterschied faellt mit der Zeittrennung zusammen, ein Vergleich waere keiner.`;
+      grund = `out-of-sample ${r.icOos} bei n=${r.nOos}, aber im Lernteil kein Wert – die Overfit-Kontrolle konnte nicht laufen. Wahrscheinlich ein Merkmal, das dort noch einen festen Vorgabewert trug; dann misst der IC den Stichtag, nicht den Zusammenhang.`;
+    } else if (Math.abs(r.coverageIn - r.coverageOos) >= K.COVERAGE_GAP) {
+      /* ══ v4.12.1 · ZWEI DINGE, DIE V4.12.0 UNTER EIN WORT GELEGT HAT ══════
+         Die erste Fassung stellte auch `coverageIn < MIN_COVERAGE_IN` unter
+         „ungeprueft". Das war falsch, und es war IN DER OBERFLAECHE zu sehen:
+         `situ.extended` zeigte einen In-Sample-IC von −0,21 UND das Urteil
+         „ungeprueft" — wenn dort eine Zahl steht, ist die Kontrolle gelaufen.
+
+         Der Fehler ist derselbe, den dieses Projekt seit 4.9.1 jagt: zwei
+         verschiedene Sachverhalte unter einem Wort.
+             duenn belegt   = auf schmalerer Basis GEPRUEFT
+             ungeprueft     = die Pruefung konnte nicht stattfinden
+         Und der wirklich gefaehrliche Fall ist ein dritter, den die Hoehe der
+         Abdeckung gar nicht anzeigt: der ABSTAND zwischen beiden Haelften.
+
+         Gemessen am 10.09. an `situ.extended`: Lernteil 42 %, Pruefteil 100 %.
+         Verglichen werden dort zwei verschiedene Grundgesamtheiten — nicht
+         weil 42 % wenig waere, sondern weil 100 % etwas anderes ist. Ein
+         gleichmaessig duennes Merkmal mit 45 % / 48 % ist dagegen voellig in
+         Ordnung und wird ab hier auch so behandelt.
+
+         Die alte Schwelle haette beide gleich behandelt. Sie traf den
+         richtigen Fall aus dem falschen Grund. */
+      urteil = 'stichtag';
+      grund = `Abdeckung im Lernteil ${r.abdeckungInPct} %, im Pruefteil ${r.abdeckungOosPct} % – der Unterschied von ${Math.round(Math.abs(r.coverageIn - r.coverageOos) * 100)} Punkten faellt mit der Zeittrennung zusammen. Verglichen werden zwei verschiedene Grundgesamtheiten; der IC misst diesen Bruch mit. Nicht „kein Zusammenhang", sondern „so nicht vergleichbar".`;
     } else if (Number.isFinite(q) && q <= K.FDR_Q && aOos >= K.IC_MIN) {
       urteil = 'traegt';
       grund = `OOS-IC ${r.icOos} bei n=${r.nOos}, q=${Math.round(q * 1000) / 1000} – haelt der Mehrfachtestkorrektur stand`;
@@ -7442,7 +7477,7 @@ function fattrReport(episodes, cfg) {
      Overfit-Kontrolle nicht durchlaufen konnte, auch im Modell nichts zu
      suchen hat. NK91d prueft den Ausschluss, nicht die Ursache. */
   const modellNamen = merkmale.filter((m) => m.abdeckungPct / 100 >= K.MIN_COVERAGE
-    && m.urteil !== 'konstant' && m.urteil !== 'ungeprueft').map((m) => m.name);
+    && m.urteil !== 'konstant' && m.urteil !== 'ungeprueft' && m.urteil !== 'stichtag').map((m) => m.name);
   let modell = null;
   if (modellNamen.length >= 2) {
     // Regel 3: Median und Standardisierung ausschliesslich aus dem In-Sample-Teil.

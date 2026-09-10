@@ -1,3 +1,86 @@
+# FusionPulse 4.12.1 — „dünn belegt" und „ungeprüft" sind nicht dasselbe
+
+Der Fehler war in der Oberfläche zu sehen, keine 90 Minuten nach dem Deploy von
+4.12.0:
+
+    situ.extended   IC out-of-sample −0.135   IC in-sample −0.21   🟧 ungeprüft
+
+**Wenn dort eine Zahl steht, IST die Kontrolle gelaufen.** Meine Bedingung
+lautete:
+
+    r._icInRaw === null || r.coverageIn < K.MIN_COVERAGE_IN
+
+Der erste Teil ist richtig. Der zweite legt einen zweiten Sachverhalt unter
+dasselbe Wort — genau der Fehler, den dieses Projekt seit 4.9.1 jagt, diesmal
+von mir selbst eingebaut.
+
+## Drei Sachverhalte, drei Wörter
+
+    trägt nicht   geprüft, kein Zusammenhang
+    ungeprüft     die Overfit-Kontrolle konnte nicht laufen (kein In-Sample-IC)
+    Stichtag      geprüft, aber Lern- und Prüfteil sind verschieden stark
+                  belegt — verglichen werden zwei Grundgesamtheiten
+
+## Die richtige Prüfgröße ist der ABSTAND, nicht die HÖHE
+
+Aus dem Tooltip vom 10.09., `situ.extended`:
+
+> im Lernteil nur 42 % belegt, out-of-sample 100 % · Abdeckung 59 %
+
+Gefährlich ist daran nicht, dass 42 % wenig wäre — sondern dass 100 % etwas
+anderes ist. Ein gleichmäßig dünnes Merkmal mit 45 % / 48 % ist dagegen völlig
+in Ordnung und wird ab hier auch so behandelt.
+
+`COVERAGE_GAP = 0.25` ist GERATEN und steht so im Code, auf derselben Liste
+offener Kalibrierungen wie `IC_IMPLAUSIBEL`. Ausgerichtet an zwei Fällen:
+58 Punkte (muss greifen) gegen 3 Punkte (darf nicht greifen). 25 liegt mit
+Abstand nach beiden Seiten dazwischen.
+
+Stichtag-Merkmale werden wie `ungeprüft` behandelt: nicht gereiht, nicht ins
+Modell.
+
+## Was mein voriges Urteil überzogen hat
+
+Ich hatte geschrieben, meine Schwelle habe den falschen Fall erwischt. Der
+Tooltip zeigt: sie hat den **richtigen** Fall erwischt — 42 % gegen 100 % ist
+ein echter Stichtag. Falsch war der GRUND (die Höhe statt des Abstands) und das
+WORT. Ein gleichmäßig dünnes Merkmal wäre mit derselben Regel zu Unrecht
+mitgefangen worden; nur lag ein solches an dem Tag nicht vor.
+
+## Was sich an der Bewertung NICHT ändert
+
+Die betroffenen Merkmale hatten q zwischen 0,148 und 0,508 und wären ohnehin
+auf „trägt nicht" gefallen. **Praktisch ändert v4.12.1 kein einziges Urteil in
+der Sache — nur seine Aufschrift.** Das ist trotzdem der Punkt: ein Wort, das
+zwei Dinge bedeutet, kostet in diesem Projekt regelmäßig eine ganze Version.
+
+## Ein dritter Fehlanker in den eigenen Kontrollen
+
+Die Gegenprobe „gleichmäßig dünn darf kein Stichtag sein" nahm 45 % / 48 %.
+Gesamtabdeckung damit 46 % — unter der 50-%-Schranke, abgefangen vom ALTEN
+`unbelegt`-Zweig. Die Kontrolle prüfte nichts von v4.12.1 und war trotzdem grün.
+
+Jetzt 62 % / 66 %, plus zwei Zusicherungen, die verhindern, dass es unbemerkt
+zurückrutscht: Gesamtabdeckung ≥ 50 % und Abstand < 25 Punkte.
+
+Dritter Fall dieser Bauart nach NK87m und NK89h. Alle drei fielen an der
+Negativkontrolle auf, keiner beim Schreiben.
+
+## Die Kontrollen
+
+| Rückbau | Ergebnis |
+|---|---|
+| zurück auf v4.12.0 (dünn = ungeprüft) | Test hat den Fehler erkannt |
+| Stichtag-Erkennung ausgeschaltet | Test hat den Fehler erkannt |
+| Schwelle auf 0.80 (Stichtag rutscht durch) | Test hat den Fehler erkannt |
+| Schwelle auf 0.02 (dünn fällt mit rein) | Test hat den Fehler erkannt |
+
+Dazu eine Zusicherung über ALLE Merkmale aller Testtafeln: steht ein
+In-Sample-IC da, darf das Urteil nicht „ungeprüft" sein. Genau der Widerspruch,
+der am 10.09. in der Tafel zu sehen war — jetzt als Regel.
+
+---
+
 # FusionPulse 4.12.0 — der ungeprüfteste Wert der Tafel war der stärkste
 
 Befund vom 10.09., Kryptoseite, 544 Episoden:
