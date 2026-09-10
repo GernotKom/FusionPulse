@@ -1,32 +1,21 @@
-FusionPulse v4.10.0 – Update (Modellreihung)
+FusionPulse v4.11.0 – Update (Watchlist über mehrere Geräte)
 
-GH (GitHub):
-- Dateien/Ordner direkt ins Repository-Root hochladen: public/, src/, tests/,
-  migrations/, scripts/, package.json, wrangler.jsonc, README.md usw.
-- Keine zusätzliche FusionPulse-Unterebene.
+GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
+Keine neuen Secrets, keine neue Migration, kein neues Binding.
 
-CF (Cloudflare):
-- Build-Stammverzeichnis: /
-- Bestehende Secrets NICHT verändern (FUSION_API_KEY, APP_TOKEN, TIINGO_API_TOKEN,
-  TWELVE_API_KEY, ALPACA_*).
-- Keine neuen Secrets, keine neue Migration, kein neues Binding nötig.
-  Die Reihungsbasis liegt in der bestehenden Tabelle fp_meta.
-- Nach dem Deploy ggf. unter Bereitstellungen die neueste Version auf 100 % befördern.
-
-PWA:
-- Neu laden; Version v4.10.0 prüfen.
+WICHTIG – REIHENFOLGE NACH DEM DEPLOY:
+1. Zuerst am MAC die App neu laden (Strg/Cmd+Shift+R).
+   Der Mac hat die vollständige Sternliste. Beim ersten Start wird sie EINMAL
+   additiv zum Server geschickt – dabei kann nichts gelöscht werden.
+2. Danach am Windows-PC neu laden. Er übernimmt die Serverliste.
+3. Steht der Server auf Radar: am Mac den Knopf einmal auf Watchlist stellen.
+   Der Knopf schickt jetzt KEINE Liste mehr, er schaltet nur den Modus.
 
 WAS NEU IST:
-- Unter beiden Heatmaps steht jetzt eine Kachel „🎯 Kandidaten“.
-  Sie sagt, worauf zuerst zu schauen ist — sie ist KEINE Kauf-Freigabe.
-  Score, Ampel und Freigabe sind unverändert.
-- Die Kachel nennt immer ihre Basis: „Modell“, „Einzelmerkmal“ oder
-  „heutige Reihung“. Am Anfang steht dort „heutige Reihung“ (= nach Score),
-  weil noch nichts Gelerntes belegt ist. Das ist der richtige Zustand,
-  kein Fehler.
-- Auf „Modell“ springt sie erst um, wenn die Auswertung out-of-sample
-  besteht. Rechne mit einigen Tagen Aufzeichnung. Die Basis wird höchstens
-  alle 6 Stunden neu geschätzt.
-
-KOSTEN: keine zusätzlichen Anbieter-Abrufe. Zusätzlich pro Tag rund 48 winzige
-D1-Lesungen und höchstens 4 Neuschätzungen (je ~0,8 s CPU).
+- Ein Stern (★) wird sofort serverseitig gespeichert – einzeln, nicht als
+  ganze Liste. Ein Gerät kann die Titel eines anderen nicht mehr löschen.
+- Der Watchlist-Knopf schaltet nur noch den Modus. Die Liste pflegst du über
+  die Sterne.
+- Weichen Serverliste und lokale Sterne ab, steht das am Knopf:
+  "Watchlist · 36 (hier ★ 1)", gelb umrandet.
+- Die Premarket-Analyse im Hintergrund kennt jetzt deine Watchlist.

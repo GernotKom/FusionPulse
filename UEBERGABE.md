@@ -1,3 +1,86 @@
+# FusionPulse 4.11.0 — ein Gerät konnte die Liste eines anderen löschen
+
+Gemeldet (10.09.): Am Windows-PC stand auf dem Knopf **„Watchlist · 36"**,
+während in der Kopfzeile daneben **„★ 1"** stand. Angelegt war dort genau ein
+Favorit, IONQ.
+
+## Zwei verschiedene Dinge unter einem Wort
+
+Die 36 sind die **Serverliste** aus D1 (`watchlistState.symbols`, gesetzt vom
+Mac). Die 1 sind die **lokalen Sterne** dieses Rechners (`S.favoriteStocks` im
+`localStorage`). Der Knopf zeigte die eine, die Kopfzeile die andere, und
+nichts sagte, dass es zwei Listen sind. Derselbe Fehlertyp wie in 4.9.1.
+
+## Der Schaden lag nicht im Anzeigen, sondern im Drücken
+
+`toggleWatchlist()` schickte `symbols: [...(S.favoriteStocks||[])]` — die
+**lokale** Liste, als Ganzes. Ein einziger Druck am Windows-PC ersetzte damit
+die 36 durch die 1. Ohne Rückfrage, ohne Meldung, und der Mac merkte nichts.
+
+Dazu kam eine falsche Vorbedingung: geprüft wurde „hat DIESER Rechner
+Favoriten". Die richtige Frage ist, ob der **Server** etwas zu beobachten hat.
+
+## Die Korrektur: übertragen wird die ÄNDERUNG, nicht der Zustand
+
+Das ist der eigentliche Punkt. Ein Zustand von Gerät A ersetzt zwangsläufig den
+von Gerät B, weil A nicht wissen kann, was B inzwischen getan hat. Jede
+Reparatur auf dieser Ebene — Zeitstempel, Gerätekennung, „letzter gewinnt" —
+verwaltet das Problem nur.
+
+    Stern gesetzt     →  { op:'merge',  symbol:'IONQ' }
+    Stern entfernt    →  { op:'remove', symbol:'IONQ' }
+    Knopf gedrückt    →  { op:'mode',   mode:'watchlist' }     ← ohne Liste
+
+Ein Gerät kann jetzt nicht mehr löschen, was es nie gesehen hat — nicht weil
+eine Regel es verbietet, sondern **weil die Nachricht dafür keine Form hat.**
+Die Gerätekennung, die ich beim letzten Mal noch für nötig hielt, entfällt
+damit: „entfernen" und „kenne ich nicht" sind jetzt zwei verschiedene
+Nachrichten statt derselben Lücke in einer Liste.
+
+Weitere Änderungen:
+
+- **Modus und Liste sind getrennt.** Dass beides an einem Knopf hing, war der
+  Konstruktionsfehler. Der Knopf schaltet um, der Stern pflegt die Liste.
+- **`writeWatchlist` heißt jetzt `writeWatchlistRaw`** und ist von außen nicht
+  mehr erreichbar. Jeder Schreibvorgang geht über `mutateWatchlist`, und der
+  **liest vorher**. Ohne diesen Lesevorgang wäre jede Änderung wieder ein
+  Ersetzen mit dem, was das Gerät zufällig kennt.
+- **Der Stern meldet sich sofort**, nicht erst beim Umschalten.
+- **Einmalige Vereinigung beim Start**, danach ist die Serverliste die Wahrheit.
+  Eine LEERE Serverliste löscht dabei keine lokalen Sterne — „noch nichts
+  hinterlegt" ist nicht „alles entfernt". Sechster Fall von `Number(null) === 0`.
+- **Der Knopf sagt beides**, wenn die Listen abweichen: `Watchlist · 36 (hier ★ 1)`,
+  gelb umrandet.
+- **Premarket im Hintergrund bekommt die Serverliste.** Dort stand
+  `openingMomentum(env,true)` — der dritte Parameter blieb auf `[]`. Die
+  Gap-Analyse vor der Eröffnung lief ohne jede Favoritenkenntnis, und nur der
+  Abruf aus dem offenen Browser reichte sie durch. Genau umgekehrt gebraucht.
+
+## Der alte Client aus dem Zwischenspeicher
+
+Eine PWA lädt nach einem Update nicht zwingend neu. Ein alter Client schickt
+weiter `{mode, symbols}` und **meint** „ersetze". Er bekommt jetzt eine
+Vereinigung. Das ist Absicht: hinge die Zusicherung daran, dass jeder
+rechtzeitig neu lädt, wäre sie keine.
+
+## Die Kontrollen
+
+| Rückbau | Ergebnis |
+|---|---|
+| `merge` verhält sich wieder wie `replace` | Test hat den Fehler erkannt |
+| Umschalten fasst die Liste an | Test hat den Fehler erkannt |
+| `remove` entfernt die ganze Liste | Test hat den Fehler erkannt |
+
+NK90 prüft ausgeführt, mit **genau den 36 Symbolen aus dem Screenshot**: der
+gemeldete Fall, die Gegenrichtung (ein neuer Titel muss ankommen), Modus/Liste
+getrennt, Einzelentfernung, fünf Varianten alter Clients, ausdrückliches
+Ersetzen (sonst wäre NK90a auch grün, wenn gar nichts mehr ginge), die
+Obergrenze mit benanntem Verwurf, und `changed` — ein falsches `true` wäre ein
+Schreibvorgang je Seitenaufruf, die Sorte Kosten, die in 3.32.9 das D1-Limit
+gerissen hat.
+
+---
+
 # FusionPulse 4.10.0 — die Gewichte lagen seit 4.8.0 da und waren nicht anwendbar
 
 Gemeldet: *„Hauptsache wir haben zügig Empfehlungen aus der App durch kreatives

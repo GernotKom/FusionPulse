@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.10.0 — Frontend
+   FusionPulse v4.11.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -529,11 +529,40 @@ function togglePairFavorite(pair, ev) {
   rememberCoinRows(rows); rows = mergeFavoriteCoinRows(rows);
   saveSettings(); syncCoinWatch(); render();
 }
+/* ══ v4.11.0 · DER STERN MELDET SICH SOFORT — UND NUR SICH SELBST ══════════
+   Bis 4.10.0 verliess die Favoritenliste den Rechner nur beim Umschalten des
+   Watchlist-Knopfs, und dann als GANZES. Beides war falsch: zu spaet, und zu
+   viel. Ab hier meldet jeder Stern genau eine Aenderung — `merge` mit einem
+   Symbol oder `remove` mit einem Symbol. Damit kann dieses Geraet nicht mehr
+   loeschen, was es nie gesehen hat. */
+async function syncStockWatch(symbol, gesetzt) {
+  try {
+    const q = new URLSearchParams(); if (S.token) q.set('t', S.token);
+    const r = await fetchWithTimeout(`/api/watchlist?${q}`, {
+      method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ op: gesetzt ? 'merge' : 'remove', symbol }),
+    }, 8000);
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d?.saved !== true) {
+      /* Kein stiller Halberfolg: der Stern bleibt im Browser sichtbar, aber
+         der Hintergrundlauf kennt ihn nicht — und genau das steht dann da. */
+      wlSay(`„${symbol}" ist auf DIESEM Rechner markiert, aber nicht serverseitig gespeichert: ${d?.hint || d?.error || 'Grund unbekannt'}. Der Hintergrundlauf beobachtet den Titel deshalb nicht.`);
+      return;
+    }
+    watchlistState = { mode: d.mode, symbols: d.symbols || [] };
+    if (d.hint) wlSay(d.hint);
+    paintWatchlist();
+  } catch {
+    wlSay(`„${symbol}" konnte serverseitig nicht gespeichert werden — der Hintergrundlauf beobachtet den Titel nicht.`);
+  }
+}
 function toggleStockFavorite(symbol, ev) {
   ev?.stopPropagation();
   const set = new Set(S.favoriteStocks || []);
+  const gesetzt = !set.has(symbol);
   if (set.has(symbol)) set.delete(symbol); else set.add(symbol);
   S.favoriteStocks = [...set]; rememberStockRows(stockRows); stockRows=mergeFavoriteRows(stockRows); saveSettings(); renderStocks();
+  syncStockWatch(symbol, gesetzt);
 }
 
 function togglePairMute(pair, ev) {
@@ -6902,7 +6931,18 @@ function wlSay(msg){ const n=$('#watchlistNote'); if(!n)return; n.classList.remo
 function paintWatchlist(){
   const b=$('#watchlistToggle'), n=$('#watchlistNote'); if(!b)return;
   const on=watchlistState.mode==='watchlist';
-  b.textContent = on ? `🎯 Watchlist · ${watchlistState.symbols.length}` : '📡 Radar';
+  /* ══ v4.11.0 · DER KNOPF ZEIGTE DIE FALSCHE LISTE ═══
+     Am 10.09. stand hier „Watchlist · 36", waehrend daneben „★ 1" stand. Die
+     36 sind die SERVERLISTE, die 1 die lokalen Sterne — zwei verschiedene
+     Dinge unter einem Wort, derselbe Fehlertyp wie in 4.9.1. Weichen sie ab,
+     steht das jetzt DRAN, statt dass zwei Zahlen einander still widersprechen. */
+  const lokalAnz = (S.favoriteStocks||[]).length, serverAnz = watchlistState.symbols.length;
+  const abweichung = on && lokalAnz !== serverAnz;
+  b.textContent = on ? `🎯 Watchlist · ${serverAnz}${abweichung?` (hier ★ ${lokalAnz})`:''}` : '📡 Radar';
+  b.classList.toggle('wl-drift', !!abweichung);
+  b.title = on
+    ? `Der Server beobachtet ${serverAnz} Titel. ${abweichung?`Auf DIESEM Rechner sind ${lokalAnz} markiert — die Listen weichen ab, vermutlich weil eine Speicherung fehlgeschlagen ist. Maßgeblich ist die Serverliste.`:'Die Sterne auf diesem Rechner stimmen damit überein.'} Der Knopf schaltet nur den Modus um; die Liste pflegst du über die Sterne (★).`
+    : 'Whole-Market-Radar: der Server durchsucht das gesamte Universum. Umschalten beobachtet stattdessen ausschließlich deine markierten Titel.';
   b.classList.toggle('on', on);
   b.setAttribute('aria-pressed', on?'true':'false');
   if(!n)return;
@@ -6912,6 +6952,52 @@ function paintWatchlist(){
     + `<b>Du screenst selbst.</b> Ein Titel, der nicht in dieser Liste steht, wird nicht gefunden — `
     + `eine leere Trefferliste bedeutet hier also nicht „keine Gelegenheit am Markt", sondern nur „keine in deiner Auswahl".`;
 }
+/* ══ v4.11.0 · EINMALIGE VEREINIGUNG, DANN IST DER SERVER DIE WAHRHEIT ══════
+   Beim ersten Start nach dem Umbau hat jeder Rechner noch seine eigene lokale
+   Liste. Die wird EINMAL additiv hochgeschickt — `merge` kann nichts loeschen,
+   die Vereinigung ist also gefahrlos, egal in welcher Reihenfolge die Geraete
+   starten. Danach gilt die Serverliste, und die Sterne werden aus ihr gesetzt.
+
+   WICHTIG, und der Grund fuer die zweite Bedingung: ist die Serverliste LEER,
+   werden die lokalen Sterne NICHT geloescht. Eine leere Serverliste heisst
+   „noch nichts hinterlegt\", nicht „alles entfernt". Diese beiden zu
+   verwechseln waere derselbe Fehler wie `Number(null) === 0`. */
+async function reconcileFavorites() {
+  const lokal = [...(S.favoriteStocks || [])];
+  if (!S.wlUnionDone) {
+    const fehlend = lokal.filter((s) => !(watchlistState.symbols || []).includes(s));
+    if (fehlend.length) {
+      try {
+        const q = new URLSearchParams(); if (S.token) q.set('t', S.token);
+        const r = await fetchWithTimeout(`/api/watchlist?${q}`, {
+          method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ op: 'merge', symbols: fehlend }),
+        }, 10_000);
+        const d = await r.json().catch(() => ({}));
+        if (r.ok && d?.saved === true) {
+          watchlistState = { mode: d.mode, symbols: d.symbols || [] };
+          S.wlUnionDone = true;
+          if (d.hint) wlSay(d.hint);
+        }
+      } catch { /* Beim naechsten Start erneut — die Marke bleibt ungesetzt. */ }
+    } else S.wlUnionDone = true;
+    saveSettings();
+  }
+  const server = watchlistState.symbols || [];
+  if (!server.length) return;
+  /* Reihenfolge des Geraets erhalten, Neues hinten anhaengen: `moveFav` hat
+     eine vom Nutzer gesetzte Ordnung, die eine alphabetische Uebernahme still
+     zerstoeren wuerde. */
+  const bekannt = lokal.filter((s) => server.includes(s));
+  const neu = server.filter((s) => !bekannt.includes(s));
+  const naechste = [...bekannt, ...neu];
+  if (naechste.length !== lokal.length || naechste.some((s, i) => s !== lokal[i])) {
+    S.favoriteStocks = naechste;
+    saveSettings();
+    stockRows = mergeFavoriteRows(stockRows);
+    renderStocks();
+  }
+}
 async function loadWatchlist(){
   try{
     const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
@@ -6919,6 +7005,7 @@ async function loadWatchlist(){
     if(!r.ok)return;
     const d=await r.json();
     watchlistState={mode:d.mode==='watchlist'?'watchlist':'radar',symbols:d.symbols||[]};
+    await reconcileFavorites();   // v4.11.0
     paintWatchlist();
   }catch(e){ /* Anzeige bleibt auf Radar — der ehrlichere Ausfallzustand. */ }
 }
@@ -6926,13 +7013,23 @@ async function toggleWatchlist(){
   const b=$('#watchlistToggle'); if(b)b.disabled=true;
   try{
     const want = watchlistState.mode==='watchlist' ? 'radar' : 'watchlist';
-    const syms = [...(S.favoriteStocks||[])];
-    if(want==='watchlist' && !syms.length){
-      wlSay('Keine Favoriten gesetzt. Der Watchlist-Modus braucht mindestens einen Titel — sonst gäbe es nichts zu beobachten.');
+    /* ══ v4.11.0 · DER KNOPF SCHICKT KEINE LISTE MEHR ═══════════════════════
+       Hier stand `symbols: [...(S.favoriteStocks||[])]`. Genau diese Zeile hat
+       am 10.09. die 36 Titel des Macs durch den einen des Windows-PCs ersetzt.
+       Der Knopf schaltet den MODUS. Die Liste pflegt der Stern.
+
+       Und die Vorbedingung wird jetzt an der SERVERLISTE geprueft, nicht an
+       der lokalen: „hat dieser Rechner Favoriten\" war nie die Frage — die
+       Frage ist, ob der Server etwas zu beobachten hat. Am Windows-PC mit
+       einem Stern und 36 Titeln auf dem Server war die alte Pruefung schlicht
+       die falsche Zahl. */
+    const serverSyms = watchlistState.symbols || [];
+    if(want==='watchlist' && !serverSyms.length){
+      wlSay('Die Watchlist ist leer. Setz erst einen Stern (★) bei den Titeln, die beobachtet werden sollen — sonst gäbe es nichts zu beobachten.');
       return;
     }
     const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
-    const r=await fetch('/api/watchlist?'+q,{method:'POST',cache:'no-store',headers:{'content-type':'application/json'},body:JSON.stringify({mode:want,symbols:syms})});
+    const r=await fetch('/api/watchlist?'+q,{method:'POST',cache:'no-store',headers:{'content-type':'application/json'},body:JSON.stringify({op:'mode',mode:want})});
     const d=await r.json().catch(()=>({}));
     /* v4.1.2 · Ein fehlgeschlagener Schreibvorgang sah vorher exakt aus wie
        eine Umschaltung auf Radar: die Antwort trug kein `mode`, der Ausdruck
@@ -6954,9 +7051,12 @@ async function toggleWatchlist(){
       return;
     }
     if(d?.saved!==true && d?.applied===true){
-      watchlistState={mode:want, symbols:syms, sessionOnly:true};
+      /* v4.11.0 · Der Sitzungsmodus behaelt die SERVERLISTE. Frueher stand
+         hier `syms` — die lokale Liste. Damit sah der Nutzer im Notbetrieb
+         eine andere Liste als die, die der Server kennt. */
+      watchlistState={mode:want, symbols:serverSyms, sessionOnly:true};
       paintWatchlist(); scanStocks(true);
-      wlSay(`${want==='watchlist'?`Watchlist-Modus für diese Sitzung aktiv · ${syms.length} Titel`:'Whole-Market-Radar für diese Sitzung aktiv'} — aber NICHT gespeichert: ${d?.hint||d?.error||'Grund unbekannt'}`);
+      wlSay(`${want==='watchlist'?`Watchlist-Modus für diese Sitzung aktiv · ${serverSyms.length} Titel`:'Whole-Market-Radar für diese Sitzung aktiv'} — aber NICHT gespeichert: ${d?.hint||d?.error||'Grund unbekannt'}`);
       return;
     }
     watchlistState={mode:d.mode==='watchlist'?'watchlist':'radar',symbols:d.symbols||[]};

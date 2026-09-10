@@ -1405,7 +1405,89 @@ async function readWatchlist(env, maxAgeMs=60_000){
   }catch(e){ console.warn(JSON.stringify({event:'watchlist_read_failed',message:String(e?.message||e),ts:Date.now()})); }
   return watchlistMemo;
 }
-async function writeWatchlist(env, mode, symbols){
+/* ══ v4.11.0 · EIN GERAET DARF DIE LISTE EINES ANDEREN NICHT LOESCHEN ═══════
+   BEFUND aus dem Betrieb (10.09.): Auf dem Mac lagen 36 Titel, auf dem
+   Windows-PC genau einer. Der Knopf am Windows-PC zeigte trotzdem „Watchlist ·
+   36\" — denn er zeigt die SERVERLISTE, waehrend die Sterne daneben aus dem
+   `localStorage` DIESES Geraets kommen. Ein einziger Druck schickte dann die
+   lokale Liste als Ganzes und ersetzte damit die 36 durch die 1. Ohne
+   Rueckfrage, ohne Meldung, ohne dass der Mac etwas davon merkte.
+
+   DIE URSACHE ist nicht das Ueberschreiben, sondern WAS uebertragen wurde: ein
+   ZUSTAND. Ein Zustand von Geraet A ersetzt zwangslaeufig den von Geraet B,
+   weil A nicht wissen kann, was B inzwischen getan hat. Jede Reparatur auf
+   dieser Ebene (Zeitstempel, Gerätekennung, „letzter gewinnt\") verwaltet das
+   Problem nur.
+
+   DIE KORREKTUR: uebertragen wird ab hier die AENDERUNG, nicht der Zustand.
+   `merge` und `remove` nennen einzelne Symbole. Ein Geraet kann damit gar
+   nicht mehr loeschen, was es nie gesehen hat — nicht weil eine Regel es
+   verbietet, sondern weil die Nachricht dafuer keine Form hat.
+
+   `replace` gibt es weiterhin, aber nur AUSDRUECKLICH. Und der Modus ist vom
+   Listeninhalt getrennt: der Knopf schaltet um, der Stern pflegt die Liste.
+   Dass beides an einem Knopf hing, war der eigentliche Konstruktionsfehler. */
+const WATCHLIST_MAX = 40;
+function watchlistApply(state, op = {}) {
+  const vorherSym = normalizeWatchlist(state?.symbols);
+  const vorherMode = state?.mode === 'watchlist' ? 'watchlist' : 'radar';
+  const art = String(op?.op || '').toLowerCase();
+  const genannt = normalizeWatchlist(op?.symbols ?? (op?.symbol ? [op.symbol] : []));
+  let sym = vorherSym, mode = vorherMode, grund = null, abgewiesen = [];
+
+  if (art === 'remove') {
+    const weg = new Set(genannt);
+    sym = vorherSym.filter((s) => !weg.has(s));
+  } else if (art === 'replace') {
+    sym = genannt;
+    grund = 'ausdrueckliches Ersetzen';
+  } else if (art === 'mode') {
+    /* Modus OHNE Listenberuehrung. Genau das konnte die alte Fassung nicht. */
+  } else {
+    /* Standard ist `merge` — auch fuer Anfragen OHNE `op`. Ein alter, aus dem
+       Service-Worker-Zwischenspeicher geladener Client schickt weiterhin
+       `{mode, symbols}` und meint damit „ersetze\". Er bekommt hier eine
+       Vereinigung. Das ist Absicht: eine veraltete PWA im Zwischenspeicher
+       darf keine Daten kosten, und sie kann es jetzt nicht mehr. */
+    const zusammen = [...vorherSym];
+    for (const s of genannt) {
+      if (zusammen.includes(s)) continue;
+      if (zusammen.length >= WATCHLIST_MAX) { abgewiesen.push(s); continue; }
+      zusammen.push(s);
+    }
+    sym = zusammen;
+    if (abgewiesen.length) grund = `Liste voll (${WATCHLIST_MAX}) — nicht aufgenommen: ${abgewiesen.join(', ')}`;
+  }
+
+  if (op?.mode === 'watchlist' || op?.mode === 'radar') mode = op.mode;
+  /* Dieselbe Regel wie in `readWatchlist`: Watchlist-Modus ohne Symbole waere
+     ein Scanner, der nichts scannt. Er faellt auf den Radar zurueck — und sagt
+     es, statt still leer zu laufen. */
+  if (mode === 'watchlist' && !sym.length) {
+    mode = 'radar';
+    grund = 'Watchlist-Modus ohne Titel ist nicht moeglich — auf Radar zurueckgefallen.';
+  }
+  const changed = mode !== vorherMode || sym.length !== vorherSym.length || sym.some((s, i) => s !== vorherSym[i]);
+  return { mode, symbols: sym, changed, grund, abgewiesen, vorher: { mode: vorherMode, anzahl: vorherSym.length } };
+}
+
+/** Liest den aktuellen Stand, wendet EINE Aenderung an, schreibt zurueck.
+ *  Der Lesevorgang davor ist der Punkt: ohne ihn waere jede Aenderung wieder
+ *  ein Ersetzen mit dem, was das Geraet zufaellig kennt. */
+async function mutateWatchlist(env, op){
+  const jetzt = await readWatchlist(env, 0);
+  const next = watchlistApply(jetzt, op);
+  if(!next.changed){
+    return { mode: next.mode, symbols: next.symbols, saved: true, changed: false, hint: next.grund };
+  }
+  const gespeichert = await writeWatchlistRaw(env, next.mode, next.symbols);
+  return { ...gespeichert, saved: true, changed: true, hint: next.grund, abgewiesen: next.abgewiesen };
+}
+
+/* Der rohe Schreibvorgang. Frueher hiess er `writeWatchlist` und war von
+   aussen erreichbar — genau darin lag der Schaden. Er ist ab v4.11.0 nur noch
+   ueber `mutateWatchlist` zu erreichen, und der liest vorher. */
+async function writeWatchlistRaw(env, mode, symbols){
   const clean=normalizeWatchlist(symbols);
   const m=(mode==='watchlist'&&clean.length)?'watchlist':'radar';
   const payload=JSON.stringify({mode:m,symbols:clean});
@@ -7951,7 +8033,13 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
   const np=nyParts(new Date(now)),minsET=Number(np.hour)*60+Number(np.minute);
   if(!cryptoMinute && env.ALPACA_API_KEY_ID&&env.ALPACA_API_SECRET_KEY&&minsET>=480&&minsET<=1020&&phase.key!=='closed'){
     try{
-      const op=await openingMomentum(env,true);
+      /* v4.11.0 · Hier stand `openingMomentum(env,true)` — der dritte
+         Parameter blieb auf `[]`. Die Gap-Analyse VOR der Eroeffnung lief im
+         Hintergrund also ohne jede Favoritenkenntnis, und nur der Abruf aus
+         dem offenen Browser reichte sie durch. Genau umgekehrt gebraucht: der
+         Browser ist morgens um sechs zu, der Cron laeuft. */
+      const opWl=await readWatchlist(env);
+      const op=await openingMomentum(env,true,opWl.symbols||[]);
       if(Math.floor(now/60_000)%5===0) await d1StoreRows(env,op.rows||[],{source:alpacaFeed(env)==='sip'?'Alpaca SIP':'Alpaca IEX',assetType:'opening',now,onlyChanged:true});
       setApiState('alpaca','ok',`${op.rows?.length||0} Rows`);
       await persistApiState(env,'alpaca','ok',`${op.rows?.length||0} Rows`,now);
@@ -10004,6 +10092,8 @@ export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSecto
      die Lehre aus zehn Befunden dieser Reihe. `aucSeparation` steht hier nur
      mit, damit NK87 die schnelle Rangfassung gegen die paarweise Urfassung
      halten kann; zwei Wege zur selben Zahl sind sonst eine zweite Wahrheit. */
+  /* v4.11.0 · NK90 fuehrt die Listenlogik AUS. */
+  watchlistApply, normalizeWatchlist, WATCHLIST_MAX,
   fattrReport, fattrRankIC, fattrAuc, fattrBenjaminiHochberg, fattrPermutationP,
   fattrFitLogistic, fattrFeatures, fattrRanks, aucSeparation, ATTR, FATTR,
   /* v4.10.0 · Modul 0c. Dieselbe Bedingung wie oben: NK89 fuehrt die Reihung
@@ -10192,8 +10282,11 @@ export default {
            beim Abschreiben dieses Musters uebernommen. */
         if(request.method==='POST'){
           const body=await request.json().catch(()=>({}));
-          const wl=await writeWatchlist(env, body?.mode, body?.symbols);
-          return json({...wl, saved:true, applied:true, version:APP_VERSION},200,{ 'cache-control':'no-store' });
+          /* v4.11.0 · Kein `writeWatchlist(mode, symbols)` mehr. Der Aufruf
+             sah harmlos aus und war die Stelle, an der ein Geraet die Liste
+             eines anderen ersetzt hat. `mutateWatchlist` liest zuerst. */
+          const wl=await mutateWatchlist(env, body);
+          return json({...wl, applied:true, version:APP_VERSION},200,{ 'cache-control':'no-store' });
         }
         const wl=await readWatchlist(env,0);
         return json({...wl, version:APP_VERSION},200,{ 'cache-control':'no-store' });
