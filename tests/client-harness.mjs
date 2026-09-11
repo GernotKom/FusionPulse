@@ -194,9 +194,12 @@ export function loadClient(overrides = {}) {
      jemand SIEHT. Beide Halter stehen mit, damit NK89h beide Karten prueft
      und nicht nur die, an die gerade gedacht wurde. */
   renderReihung, rankLightIcon, RANK_BASIS_HINT,
-  /* v4.12.0 · NK91g fuehrt die Modul-0b-Tafel aus. */
-  renderFeatureAttribution, featBadge,
-  get featureData(){return featureData;}, set featureData(v){featureData=v;},
+  /* v4.13.0 · NK92 fuehrt die Positionsliste aus. Modul 0b steht schon oben —
+     der v4.12.0-Eingriff hatte es ein zweites Mal eingetragen; doppelte
+     Schluessel in einem Objektliteral sind gueltig und deshalb still. */
+  renderPortfolioRisk, portfolioExposure, posKey,
+  get stockPositions(){return stockPositions;}, set stockPositions(v){stockPositions=v;},
+  get S(){return S;},
   get stockRangliste(){return stockRangliste;}, set stockRangliste(v){stockRangliste=v;},
   get coinRangliste(){return coinRangliste;}, set coinRangliste(v){coinRangliste=v;},
   get rows(){return rows;}, set rows(v){rows=v;}

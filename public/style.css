@@ -764,7 +764,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"4.12.1";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"4.13.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1804,3 +1804,21 @@ table.sighist tr[data-tone="idle"] td:last-child{color:var(--dim)}
 /* v4.12.0 · Warnung bei unplausibel großem IC. Sichtbar in der Zeile, nicht
    nur im Tooltip — die Lehre aus NK89h, wo genau das ein Fehlanker war. */
 .ic-warn{color:var(--yellow,#f5c451);cursor:help;font-size:10px}
+
+/* ══ v4.13.0 · LISTE DER ERFASSTEN POSITIONEN ═══════════════════════════════
+   Sechster Fall von „berechnet, aber nicht ablesbar": die Positionen gab es
+   nur als Prozentzahl. Gestaltung in DERSELBEN Version wie der Renderer. */
+.pf-poswrap{margin-top:10px}
+.pf-poshead{font-size:10px;color:var(--fg,#e6edf7);margin-bottom:4px}
+.pf-poshead small{color:var(--dim);margin-left:6px;font-size:9px}
+.pf-poslist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3px}
+.pf-pos{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 7px;border:1px solid var(--line,#2a3446);border-radius:6px;font-size:10px;color:var(--dim)}
+.pf-pos.unknown{border-color:var(--yellow,#f5c451);opacity:.9}
+.pf-sym{color:var(--fg,#e6edf7);flex:0 0 auto;min-width:46px}
+.pf-qty{font-variant-numeric:tabular-nums}
+.pf-sec2{opacity:.7}
+.pf-risk{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--fg,#e6edf7)}
+.pf-pos.unknown .pf-risk{color:var(--yellow,#f5c451)}
+.pf-when{opacity:.55;font-size:9px}
+.pf-close{background:none;border:1px solid var(--line,#2a3446);color:var(--dim);border-radius:5px;padding:1px 7px;font-size:9px;cursor:pointer}
+.pf-close:hover{border-color:var(--red,#ff6b6b);color:var(--red,#ff6b6b)}

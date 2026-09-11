@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.12.1 — Frontend
+   FusionPulse v4.13.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2644,8 +2644,62 @@ function renderPortfolioRisk(){
   else if(px.budgetWarn) warn+=`<div class="pf-warn near">⚠ ${num(px.usedPct,0)} % des Gesamt-Risikobudgets sind gebunden. Nach dem naechsten Trade zu ${eur(px.perTrade,0)} waeren es ${num(px.budget>0?((px.usedRisk+px.perTrade)/px.budget)*100:0,0)} %.</div>`;
   if(px.unknownCount) warn+=`<div class="pf-warn unknown">ℹ ${px.unknownCount} Position${px.unknownCount===1?'':'en'} (${eur(px.unknownNotional,0)} Kaufsumme) ${px.unknownCount===1?'ist':'sind'} nicht bewertbar, weil die Aktie gerade nicht geladen ist und damit kein technischer Stop vorliegt. ${px.unknownCount===1?'Sie ist':'Sie sind'} bewusst NICHT geschaetzt und fehlt in der Summe oben — das gebundene Risiko ist also eher hoeher als angezeigt.</div>`;
 
-  el.innerHTML=head+budgetLine+bar+secList+warn+
+  /* ══ v4.13.0 · DIE POSITIONEN WAREN NIRGENDS AUFGELISTET ══════════════════
+     BEFUND aus dem Betrieb (11.09.): Die Kachel zeigte 588 % ausgeschoepft —
+     und der Nutzer fragte, wo er das denn eingegeben habe. Zu Recht.
+     `stockPositions` wurde an genau ZWEI Stellen beruehrt: beim Eintragen im
+     Fokusfenster und beim Aufsummieren hier. KEINE Stelle hat sie je
+     aufgelistet. Eine erfasste Position existierte als Anteil in einer
+     Prozentzahl und sonst nirgends; um sie zu finden, musste man raten,
+     welchen Titel man damals offen hatte.
+
+     Schlimmer: ist der Titel gerade nicht geladen, liefert `positionRiskEur`
+     `known:false` — die Position faellt aus der Summe UND war bis hier auch
+     nicht auffindbar. Sechster Fall von „berechnet, aber nicht ablesbar".
+
+     Die Liste zeigt deshalb ausdruecklich AUCH die nicht bewertbaren Zeilen,
+     markiert als solche. Eine Aufraeumliste, die genau die Eintraege
+     verschweigt, die Aerger machen, waere keine. */
+  const posZeilen=(px.items||[]).slice().sort((a,b)=>(Number(b.risk)||0)-(Number(a.risk)||0)).map((it)=>{
+    const p=stockPositions[posKey(it.symbol)]||{};
+    const stk=Number(p.restQty??p.qty??0), ein=Number(p.entryEur||0);
+    const seit=Number(p.openedTs)?`seit ${new Date(Number(p.openedTs)).toLocaleDateString('de-AT',{day:'2-digit',month:'2-digit',year:'2-digit'})}`:'';
+    const risiko=it.known?eur(it.risk,0):'nicht bewertbar';
+    const t=it.known
+      ? `Verlust bis zum technischen Stop, inklusive geschätzter Ausführungskosten. Das ist NICHT die Kaufsumme (${esc(eur(it.notional,0))}).`
+      : `Für diesen Titel liegt gerade keine geladene Analyse und damit kein technischer Stop vor. Das Risiko ist bewusst NICHT geschätzt und fehlt in der Summe oben — das gebundene Gesamtrisiko ist also eher höher als angezeigt.`;
+    return `<li class="pf-pos${it.known?'':' unknown'}" title="${esc(t)}">
+      <b class="pf-sym">${esc(it.symbol)}</b>
+      <span class="pf-qty">${num(stk,0)} Stk · ${eur(ein,2)}</span>
+      <span class="pf-sec2">${esc(it.sector||'Sektor unbekannt')}</span>
+      <span class="pf-risk">${esc(risiko)}</span>
+      <span class="pf-when">${esc(seit)}</span>
+      <button type="button" class="pf-close" data-closepos="${esc(it.symbol)}" title="Position schließen. Sie zählt danach nicht mehr ins gebundene Risiko. Kaufkurs und Stückzahl werden dabei verworfen — das ist kein Verkauf, sondern nur das Austragen aus dieser Liste.">schließen</button>
+    </li>`;
+  }).join('');
+  const posListe=posZeilen
+    ? `<div class="pf-poswrap"><div class="pf-poshead">Erfasste Positionen <small>lokal auf diesem Gerät gespeichert, nicht auf dem Server</small></div><ul class="pf-poslist">${posZeilen}</ul></div>`
+    : '';
+
+  el.innerHTML=head+budgetLine+bar+secList+posListe+warn+
     `<small class="pf-note" title="Was diese Kachel bewusst NICHT tut.">Grundlage sind deine erfassten realen Positionen und die technischen Stops aus der Analyse. Die Klumpung ist eine <b>Sektor-Naeherung</b>: zwei Titel im selben Sektor koennen gegenlaeufig laufen, zwei aus verschiedenen Sektoren am selben Zins- oder Dollarfaktor haengen. Eine echte Preisreihen-Korrelation ist noch nicht gerechnet.${px.guard?'':' Die Budget-Sperre ist derzeit AUS: diese Kachel warnt, blockiert aber nichts.'}</small>`;
+
+  /* Der Knopf muss NACH dem Setzen von innerHTML gebunden werden — sonst
+     haengt der Zuhoerer an einem Element, das es nicht mehr gibt. */
+  el.querySelectorAll('[data-closepos]').forEach((b)=>b.addEventListener('click',()=>{
+    const k=posKey(b.dataset.closepos||'');
+    if(!k||!stockPositions[k])return;
+    /* Rueckfrage mit ZAHL, nicht nur mit Namen: „schliessen" ist hier kein
+       Verkauf, sondern das Verwerfen einer Aufzeichnung. Wer sie faelschlich
+       loescht, merkt es erst, wenn das Gesamtrisiko zu niedrig steht. */
+    const p=stockPositions[k];
+    const txt=`Position ${k} austragen?\n\n${num(Number(p.restQty??p.qty??0),0)} Stück zu ${eur(Number(p.entryEur||0),2)}\n\nDas ist KEIN Verkauf — es entfernt die Position nur aus der Risikorechnung dieses Geräts. Kaufkurs und Stückzahl gehen dabei verloren.`;
+    if(!window.confirm(txt))return;
+    delete stockPositions[k];
+    savePositions();
+    renderPortfolioRisk();
+    renderStocks();
+  }));
 }
 
 /* ══ v4.2.9 · VERLAUF DER KAUF-FREIGABEN ═══════════════════════════════════

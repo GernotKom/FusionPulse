@@ -1,6 +1,6 @@
 {
   "name": "fusionpulse",
-  "version": "4.12.1",
+  "version": "4.13.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "predeploy": "npm run sync-version",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
-    "check": "npm run lint && node --check public/app.js && node --check src/worker.js && node --check public/sw.js && npm run test:safety && npm run test:coinscope && npm run test:provider && npm run test:bandwidth && npm run test:sw && npm run test:d1 && npm run test:display && npm run test:header && npm run test:series && npm run test:freshness && npm run test:health && node tests/signal-history.mjs && node tests/client-symbols.mjs && npm run test:symbols && npm run test:fattr && npm run test:heat && npm run test:rank && npm run test:watchlist && npm run test:latefeat",
+    "check": "npm run lint && node --check public/app.js && node --check src/worker.js && node --check public/sw.js && npm run test:safety && npm run test:coinscope && npm run test:provider && npm run test:bandwidth && npm run test:sw && npm run test:d1 && npm run test:display && npm run test:header && npm run test:series && npm run test:freshness && npm run test:health && node tests/signal-history.mjs && node tests/client-symbols.mjs && npm run test:symbols && npm run test:fattr && npm run test:heat && npm run test:rank && npm run test:watchlist && npm run test:latefeat && npm run test:positions",
     "test:safety": "node tests/safety-regression.mjs",
     "audit:reach": "node tests/reachability-audit.mjs",
     "test:sw": "node tests/sw-fault.mjs",
@@ -31,7 +31,8 @@
     "test:heat": "node tests/heatmap-filter.mjs",
     "test:rank": "node tests/model-rank.mjs",
     "test:watchlist": "node tests/watchlist-merge.mjs",
-    "test:latefeat": "node tests/late-feature.mjs"
+    "test:latefeat": "node tests/late-feature.mjs",
+    "test:positions": "node tests/positions-list.mjs"
   },
   "devDependencies": {
     "eslint": "^9.39.5",

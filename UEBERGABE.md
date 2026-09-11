@@ -1,3 +1,65 @@
+# FusionPulse 4.13.0 — die Positionen gab es nur als Prozentzahl
+
+Gemeldet (11.09.): *„Was ist das mit dem Portfoliorisiko — wo soll ich da was
+eingegeben haben?"* Die Kachel zeigte **588 % ausgeschöpft**, €1.324 gebunden
+gegen €225 Budget.
+
+## Der Befund
+
+`stockPositions` wurde an genau **zwei** Stellen berührt:
+
+    Zeile 1304   Eintragen im Fokusfenster („Position übernehmen")
+    Zeile  921   Aufsummieren im Risiko-Modul
+
+**Keine einzige Stelle hat sie je aufgelistet.** Eine erfasste Position
+existierte als Anteil in einer Prozentzahl und sonst nirgends. Um sie zu
+finden, musste man raten, welchen Titel man damals offen hatte, ihn suchen und
+das Detailfenster öffnen.
+
+Schlimmer: ist der Titel gerade nicht geladen, liefert `positionRiskEur`
+`known:false`. Die Position fällt dann aus der Risikosumme heraus **und** war
+bis hier auch nicht auffindbar — sie war doppelt unsichtbar.
+
+Sechster Fall von „berechnet, aber nicht ablesbar" nach Modul-0-Schalter,
+Fußleiste, Wächter-Spalte, Vorabend-Schicht und `mae_pre`.
+
+## Die Korrektur
+
+Eine Liste in der Risiko-Kachel mit Symbol, Stückzahl, Kaufkurs, Sektor,
+gebundenem Risiko und Eröffnungsdatum. Dazu:
+
+- **Nicht bewertbare Positionen stehen ausdrücklich MIT drin**, gelb markiert.
+  Eine Aufräumliste, die genau die Einträge verschweigt, die Ärger machen, wäre
+  keine.
+- **Ein Knopf zum Austragen je Zeile**, mit Rückfrage, die die Zahlen nennt —
+  „schließen" ist hier kein Verkauf, sondern das Verwerfen einer Aufzeichnung.
+  Wer sie fälschlich löscht, merkt es erst, wenn das Gesamtrisiko zu niedrig
+  steht.
+- **Die Liste sagt, dass sie lokal ist.** Dieselbe Falle wie bei den Sternen vor
+  v4.11.0: was nur im Browser liegt, muss das dranstehen haben.
+
+## Ein doppelter Eintrag aus v4.12.0, mit aufgeräumt
+
+Die Test-Harness enthielt `renderFeatureAttribution, featBadge` und den
+`featureData`-Halter **zweimal** im selben Objektliteral — mein Eingriff von
+gestern hatte sie ein zweites Mal eingetragen. Doppelte Schlüssel in einem
+Objektliteral sind gültig, der letzte gewinnt, und nichts warnt davor. Genau
+deshalb ist es aufgefallen erst, als ich daneben etwas Neues eintragen wollte.
+
+## Die Kontrollen
+
+| Rückbau | Ergebnis |
+|---|---|
+| Liste aus der Kachel weggelassen | Test hat den Fehler erkannt |
+| unbewertbare Zeilen herausgefiltert | Test hat den Fehler erkannt |
+| Hinweis auf lokale Speicherung entfernt | Test hat den Fehler erkannt |
+
+NK92 führt die Kachel aus und prüft den sichtbaren Text ohne `title`-Attribute —
+die Lehre aus NK87m, NK89h und NK91g, wo dreimal ein Tooltip die Kontrolle
+grün gehalten hat.
+
+---
+
 # FusionPulse 4.12.1 — „dünn belegt" und „ungeprüft" sind nicht dasselbe
 
 Der Fehler war in der Oberfläche zu sehen, keine 90 Minuten nach dem Deploy von
