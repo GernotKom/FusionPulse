@@ -1,3 +1,105 @@
+# FusionPulse 4.14.0 — Marktkontext, über das Datum verknüpft
+
+Vorschlag: *„Mehrere Tage rückläufiger Markt, Gesamtmarkt zieht vor Eröffnung
+an, Risk-On positiv — dann ist die Wahrscheinlichkeit für einen erfolgreichen
+Intraday-Trade höher."*
+
+## Was schon da war, und wie halb
+
+`marketRegime` existiert, wirkt aber **nur in eine Richtung**:
+
+    if (marketRegime === 'Risk-Off') {
+      if (row.light === 'green' && row.regime !== 'Reversal') row.light = 'yellow';
+    }
+
+Risk-Off bremst. **Risk-On tut nichts.** Und das Regime wird in `analyse()`
+gerechnet, also auf der Kryptoseite; die Aktienseite hat kein eigenes.
+Mehrtägiger Marktkontext und Marktbreite vor Eröffnung fehlten vollständig.
+
+## Der Einfall: nicht mitschreiben, sondern nach Datum anschließen
+
+Der nahe liegende Weg wäre, diese Größen ab heute in `snapshotPayload`
+mitzuschreiben. Er ist falsch, und v4.12.1 sagt auch warum: ein Merkmal, das
+HEUTE anfängt, hat im Lernteil 0 % Abdeckung. Modul 0b würde es völlig zu Recht
+als 🟠 **Stichtag** abweisen — wochenlang.
+
+**Der Marktkontext ist aber keine Eigenschaft der Episode, sondern des TAGES.**
+Er muss deshalb gar nicht in der Episode stehen. Es genügt eine Tafel
+`Datum → Kontext`, die sich aus Tagesbalken **rückwirkend** füllen lässt; beim
+Auswerten wird sie über das Datum der Episode angeschlossen.
+
+Folge: volle Abdeckung in **beiden** Hälften ab dem ersten Tag. NK93f prüft das
+ausgeführt — 100 % / 100 %, Urteil weder `stichtag` noch `ungeprüft`.
+
+Was nicht rückwirkend geht, steht ebenso klar im Code: `riskOn` und
+`preOpenBreite` sind Momentaufnahmen. Sie werden ab jetzt täglich abgelegt und
+bleiben bis auf Weiteres `stichtag`. Das ist kein Fehler, sondern die Kontrolle.
+
+## Die teuerste Falle, und sie steht an erster Stelle
+
+Der Kontext eines Tages darf **ausschließlich** aus Tagen davor stammen:
+
+    if (i < tage) continue;
+    const heute = rein[i - 1].close;   // letzter Schluss VOR diesem Tag
+
+Nähme man den Schlusskurs des Tages selbst mit hinein, würde das Merkmal den
+Ausgang mitmessen, den es erklären soll. **Ein solcher Fehler fällt in keiner
+Kennzahl auf — er sieht wie ein Erfolg aus.** Ein IC von 0,6 wäre dann kein
+Fund, sondern der Beweis, dass man sich selbst betrogen hat.
+
+NK93a prüft das, indem der Schlusskurs des letzten Tages verfünffacht wird: sein
+Kontext darf sich dadurch nicht ändern. Plus Gegenprobe am Vortag — ohne die
+wäre die Zusicherung durch Nichtstun erfüllt.
+
+## Was ausdrücklich NICHT passiert ist
+
+**Keine dieser Größen geht in Score, Ampel oder Freigabe.** Sie werden gemessen.
+Sagt die Attributionstafel, dass `markt.tage3` trägt, wandert es in die Reihung.
+Sagt sie es nicht, hast du eine Antwort statt einer Vermutung.
+
+Das ist die Konsequenz aus dem eigenen Befund: von neun Score-Komponenten trägt
+genau eine (`crv`, q = 0,05). `score` liegt bei q = 0,38. Eine zehnte plausible
+Größe dazuzurechnen erzeugt eine zehnte Zahl, deren Beitrag niemand kennt.
+
+## Kosten
+
+Ein Tagesbalken-Abruf für einen Proxy, höchstens alle sechs Stunden. In der
+Verbrauchstabelle steht `daily-bars` bei 29 Abrufen und 0,001 GB — das ist die
+ganze Rechnung. Die Momentaufnahme wird dort abgegriffen, wo sie ohnehin
+entsteht (Kryptoblock); ein eigener Scan nur für diese Zahl wäre die teuerste
+denkbare Lösung. Cron-Minute 9 von 30, nicht durch 5 teilbar — kollidiert nie
+mit dem Kryptoblock.
+
+Die Tafel wird auf 200 Tage gekürzt. Eine Zeile, die nur wächst, ist ein
+Kostenproblem mit Anlauf.
+
+## Die Kontrollen
+
+| Rückbau | Ergebnis |
+|---|---|
+| Blick in die Zukunft eingebaut | Test hat den Fehler erkannt |
+| Kontext nicht an die Episode gehängt | Test hat den Fehler erkannt |
+| fehlender Kontext als 0 durchgereicht | Test hat den Fehler erkannt |
+
+Dazu zwei Stellen, an denen ich beim Bauen fast selbst hineingelaufen wäre:
+
+- `eps.map(fattrFeatures)` hätte den **Index** als zweites Argument
+  durchgereicht — `map` übergibt drei. Der Index wäre als Kontexttafel gelandet
+  und hätte stillschweigend nichts getan. Deshalb ausgeschrieben.
+- Beim Neuaufbau der Tafel wären die Momentaufnahmen verloren gegangen, weil sie
+  nur in der alten stehen. Zusammenführen statt ersetzen — dieselbe Lehre wie
+  bei der Watchlist in v4.11.0.
+
+## Eine angehobene Schranke
+
+`safety-regression` begrenzt die Länge des Cron-Ausschnitts auf 16.000 Zeichen;
+mit dem neuen Zweig sind es 16.754. Die Schranke ist ausdrücklich eine
+Plausibilitätsgrenze („keine Zeilenbremse") und wurde in v4.5.0 aus demselben
+Grund schon einmal angehoben. Jetzt 20.000. Wer sie als Zeilenbremse liest,
+entfernt irgendwann die Begründungen statt den Code.
+
+---
+
 # FusionPulse 4.13.0 — die Positionen gab es nur als Prozentzahl
 
 Gemeldet (11.09.): *„Was ist das mit dem Portfoliorisiko — wo soll ich da was

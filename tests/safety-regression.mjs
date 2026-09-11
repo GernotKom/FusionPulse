@@ -127,7 +127,12 @@ assert.match(workerText,/await tiingoFetch\(env,'\/iex'\)/,'Whole-market Radar m
      dass der Ausschnitt versehentlich die halbe Datei umfasst — sie ist keine
      Zeilenbremse. Der Tageslauf-Zweig samt Begruendung ist bewusst
      dazugekommen; die Zahl wird deshalb angehoben und nicht entfernt. */
-  assert.ok(cycle.length > 1000 && cycle.length < 16000,
+  /* v4.14.0 · 16.000 -> 20.000. Dazugekommen ist der Marktkontext-Zweig
+     (Minute 9) samt Herleitung. Die Schranke prueft, dass der AUSSCHNITT der
+     Zyklus ist und nicht versehentlich die halbe Datei — ihre Aussage aendert
+     sich dadurch nicht. Wer sie als Zeilenbremse liest, entfernt irgendwann
+     die Begruendungen statt den Code, und genau das soll sie nicht bewirken. */
+  assert.ok(cycle.length > 1000 && cycle.length < 20000,
     `Der geprueffte Ausschnitt muss der Cron-Zyklus sein, ist ${cycle.length} Zeichen`);
   /* v4.5.0 · Zwischen Torwaechter und Abruf steht jetzt die TAGESSPERRE, und
      die ist ein paar Zeilen Begruendung lang. Der Abstand wird deshalb weiter

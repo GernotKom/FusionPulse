@@ -7186,7 +7186,68 @@ function fattrFitLogistic(X, y, lambda, iters) {
 function fattrNum(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 /** Merkmale einer Episode. Alles, was `snapshotPayload` seit v3.17.0 mitschreibt
  *  und bis heute nie ausgewertet wurde — inklusive der elf `situParts`-Terme. */
-function fattrFeatures(row) {
+/* ══ v4.14.0 · MARKTKONTEXT — NACH DATUM VERKNUEPFT, NICHT MITGESCHRIEBEN ═══
+   ANLASS: „Sollte man nicht einbeziehen, ob der Markt mehrere Tage ruecklaeufig
+   war und ob er vor Eroeffnung nach oben zieht?"
+
+   Der nahe liegende Weg waere, diese Groessen ab heute in `snapshotPayload`
+   mitzuschreiben. Er ist falsch, und v4.12.1 sagt auch warum: ein Merkmal, das
+   HEUTE anfaengt, hat im Lernteil 0 % Abdeckung. Modul 0b wuerde es korrekt als
+   `stichtag` abweisen — und zwar wochenlang.
+
+   DIE UMGEHUNG, und sie ist der ganze Einfall: der Marktkontext ist keine
+   Eigenschaft der EPISODE, sondern des TAGES. Er muss deshalb gar nicht in der
+   Episode stehen. Es genuegt eine kleine Tafel `Datum -> Kontext`, die sich aus
+   Tagesbalken RUECKWIRKEND fuellen laesst — 420 Tage liegen ohnehin vor. Beim
+   Auswerten wird sie ueber das Datum der Episode angeschlossen.
+
+   Folge: das Merkmal hat vom ersten Tag an volle Abdeckung in BEIDEN Haelften
+   und ist sofort beurteilbar, statt in vier Wochen.
+
+   Was NICHT rueckwirkend geht, steht ebenso klar: `riskOn` und `preOpenBreite`
+   sind Momentaufnahmen. Sie werden ab jetzt taeglich abgelegt und bleiben bis
+   auf Weiteres `stichtag`. Das ist kein Fehler, sondern die Kontrolle. */
+const MARKT_KONTEXT_KEY = 'markt_kontext:v1';
+const MARKT_PROXY = 'SPY';          // ein Titel, ein Abruf, 420 Tage
+const MARKT_TAGE = 3;               // „mehrere Tage ruecklaeufig" = Summe der letzten 3
+const MARKT_BACKFILL_DAYS = 200;    // so weit reicht die Aufzeichnung ohnehin nicht zurueck
+
+/** Wiener Datumsschluessel einer Episode. Bewusst dieselbe Funktion wie bei der
+ *  Tagessperre — zwei Datumsbegriffe waeren die naechste Zweitwahrheit. */
+function marktTagKey(ts) {
+  const d = new Date(Number(ts) || 0);
+  if (!Number.isFinite(d.getTime())) return null;
+  return viennaDateKey(d);
+}
+
+/** Aus Tagesbalken (aufsteigend nach Datum) die Tafel bauen. REIN: Balken rein,
+ *  Tafel raus. Damit NK93 sie ausfuehren kann. */
+function marktKontextAusBalken(bars, tage = MARKT_TAGE) {
+  const rein = (Array.isArray(bars) ? bars : [])
+    .map((b) => ({ datum: String(b?.date || b?.datum || '').slice(0, 10), close: Number(b?.close ?? b?.adjClose) }))
+    .filter((b) => /^\d{4}-\d{2}-\d{2}$/.test(b.datum) && Number.isFinite(b.close) && b.close > 0)
+    .sort((a, b) => a.datum.localeCompare(b.datum));
+  const out = {};
+  for (let i = 0; i < rein.length; i++) {
+    /* Der Kontext eines Tages darf NUR aus Tagen davor stammen. Nimmt man den
+       Schlusskurs des Tages selbst mit hinein, sagt das Merkmal etwas ueber den
+       Ausgang voraus, den es erklaeren soll — der klassische Blick in die
+       Zukunft, und er faellt in keiner Kennzahl auf. */
+    if (i < tage) continue;
+    const heute = rein[i - 1].close;                  // letzter Schluss VOR diesem Tag
+    const davor = rein[i - 1 - tage]?.close;
+    if (!Number.isFinite(davor) || davor <= 0) continue;
+    const tageN = Math.round(((heute / davor) - 1) * 10000) / 100;   // Prozent
+    let folge = 0;
+    for (let k = i - 1; k > 0 && folge < 10; k--) {
+      if (rein[k].close < rein[k - 1].close) folge++; else break;
+    }
+    out[rein[i].datum] = { tageN, folge };
+  }
+  return out;
+}
+
+function fattrFeatures(row, kontext = null) {
   let p = {};
   try { p = JSON.parse(row?.payload || '{}') || {}; } catch { p = {}; }
   const dv = fattrNum(p.dollarVol);
@@ -7200,6 +7261,18 @@ function fattrFeatures(row) {
     spreadPct: fattrNum(p.spreadPct),
     logDollarVol: dv !== null && dv > 0 ? Math.log10(dv) : null,
   };
+  /* v4.14.0 · Marktkontext des TAGES, ueber das Datum angeschlossen. Fehlt die
+     Tafel, entstehen die Schluessel gar nicht erst — kein `null`, das spaeter
+     als 0 gelesen werden koennte. */
+  if (kontext) {
+    const k = kontext[marktTagKey(row?.ts)] || null;
+    if (k) {
+      if (Number.isFinite(Number(k.tageN))) num['markt.tage' + MARKT_TAGE] = Number(k.tageN);
+      if (Number.isFinite(Number(k.folge))) num['markt.minusTage'] = Number(k.folge);
+      if (Number.isFinite(Number(k.riskOn))) num['markt.riskOn'] = Number(k.riskOn);
+      if (Number.isFinite(Number(k.preOpen))) num['markt.preOpenBreite'] = Number(k.preOpen);
+    }
+  }
   if (p.situParts && typeof p.situParts === 'object') {
     for (const [k, v] of Object.entries(p.situParts)) {
       const n = fattrNum(v);
@@ -7266,7 +7339,11 @@ function fattrReport(episodes, cfg) {
   if (oos.length < K.OOS_MIN) {
     return { ...base, state: 'sammelt', reason: `Out-of-Sample zu klein (${oos.length}/${K.OOS_MIN})`, merkmale: [], kategorien: [], modell: null };
   }
-  const feat = eps.map(fattrFeatures), outc = eps.map(fattrOutcome);
+  /* v4.14.0 · `eps.map(fattrFeatures)` haette den INDEX als zweites Argument
+     durchgereicht — `map` uebergibt drei. Das waere als Kontexttafel gelandet
+     und haette stillschweigend nichts getan. Deshalb ausgeschrieben. */
+  const kontext = (cfg && cfg.marktKontext) || null;
+  const feat = eps.map((e) => fattrFeatures(e, kontext)), outc = eps.map(fattrOutcome);
   const fIn = feat.slice(0, splitAt), fOos = feat.slice(splitAt);
   const oIn = outc.slice(0, splitAt), oOos = outc.slice(splitAt);
 
@@ -7597,7 +7674,10 @@ async function featureAttribution(env, opts = {}) {
      FROM market_snapshots
      WHERE asset_type=? AND resolved_ts IS NOT NULL AND ts>=? ORDER BY ts ASC LIMIT ${FATTR.ROW_LIMIT}`
   ).bind(assetType, since).all()).results || [];
-  const out = { ...fattrReport(collapseEpisodes(rows), {}), anlageklasse: assetType, zeilen: rows.length, gehalten: false };
+  /* v4.14.0 · Der Marktkontext wird HIER angeschlossen, nicht in den Episoden
+     mitgeschrieben — siehe die Herleitung an `marktKontextAusBalken`. */
+  const marktKontext = await readMarktKontext(env, now);
+  const out = { ...fattrReport(collapseEpisodes(rows), { marktKontext }), anlageklasse: assetType, zeilen: rows.length, gehalten: false };
   fattrMemo = { ts: now, key, data: out };
   return out;
 }
@@ -8070,6 +8150,64 @@ async function reihungFuer(env, assetType, rows, now = Date.now()) {
   }
 }
 
+/* ── Beschaffung und Ablage des Marktkontextes ──────────────────────────────
+   EIN Tagesbalken-Abruf fuer EINEN Proxy, einmal taeglich. In der
+   Verbrauchstabelle des Nutzers steht `daily-bars` bei 29 Abrufen und
+   0,001 GB — diese Groessenordnung ist hier die ganze Rechnung.
+
+   Die Tafel liegt als EINE Zeile in `fp_meta`. Sie wird beim Schreiben auf die
+   letzten `MARKT_BACKFILL_DAYS` Tage gekuerzt; ohne das waechst sie
+   unbegrenzt, und eine Zeile, die nur groesser wird, ist ein Kostenproblem mit
+   Anlauf. */
+let marktKontextMemo = { ts: 0, data: null };
+let marktMoment = null;   // letzte Regime-Aufnahme aus dem Kryptoblock
+const MARKT_KONTEXT_MEMO_MS = 30 * 60_000;
+
+async function readMarktKontext(env, now = Date.now()) {
+  if (marktKontextMemo.data && now - marktKontextMemo.ts < MARKT_KONTEXT_MEMO_MS) return marktKontextMemo.data;
+  if (!env?.DB) return null;
+  try {
+    const row = await env.DB.prepare('SELECT value FROM fp_meta WHERE key=? LIMIT 1').bind(MARKT_KONTEXT_KEY).first();
+    const data = row?.value ? JSON.parse(row.value) : null;
+    marktKontextMemo = { ts: now, data };
+    return data;
+  } catch { return marktKontextMemo.data; }
+}
+
+/** Taeglich im Cron. Holt die Tagesbalken des Proxys, baut die Tafel neu und
+ *  traegt die Momentaufnahmen des heutigen Tages nach. */
+async function refreshMarktKontext(env, now = Date.now(), momentan = null) {
+  if (!env?.DB || !env.TIINGO_API_TOKEN) return { done: false, reason: 'kein D1/Token' };
+  const gate = await ttlGate(env, MARKT_KONTEXT_KEY, 6 * 3600_000, now);
+  if (!gate.allowed && !momentan) return { done: false, reason: gate.reason };
+  try {
+    let tafel = (await readMarktKontext(env, now)) || {};
+    if (gate.allowed) {
+      const start = new Date(now - (MARKT_BACKFILL_DAYS + 20) * 86400_000).toISOString().slice(0, 10);
+      const bars = await tiingoFetch(env, `/tiingo/daily/${MARKT_PROXY}/prices?startDate=${start}&columns=date,close`);
+      const neu = marktKontextAusBalken(Array.isArray(bars) ? bars : []);
+      /* Zusammenfuehren statt ersetzen: die Momentaufnahmen (`riskOn`,
+         `preOpen`) stehen nur in der alten Tafel und wuerden sonst bei jedem
+         Lauf verloren gehen. Dieselbe Lehre wie bei der Watchlist. */
+      for (const [tag, v] of Object.entries(neu)) tafel[tag] = { ...(tafel[tag] || {}), ...v };
+      await ttlMark(env, MARKT_KONTEXT_KEY, now);
+    }
+    if (momentan) {
+      const tag = viennaDateKey(new Date(now));
+      if (tag) tafel[tag] = { ...(tafel[tag] || {}), ...momentan };
+    }
+    const tage = Object.keys(tafel).sort();
+    if (tage.length > MARKT_BACKFILL_DAYS) {
+      const weg = tage.slice(0, tage.length - MARKT_BACKFILL_DAYS);
+      for (const t of weg) delete tafel[t];
+    }
+    await env.DB.prepare('INSERT INTO fp_meta(key,value,updated_ts) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts')
+      .bind(MARKT_KONTEXT_KEY, JSON.stringify(tafel), now).run();
+    marktKontextMemo = { ts: now, data: tafel };
+    return { done: true, tage: Object.keys(tafel).length };
+  } catch (e) { return { done: false, reason: String(e?.message || e) }; }
+}
+
 async function learningPayload(env, stocks=[], coins=[]){
   if(!env.DB)return {configured:false,state:'nodb',message:'D1-Binding DB fehlt',version:APP_VERSION};
   await ensureD1Schema(env);
@@ -8166,6 +8304,10 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
          das schreibt der Cron einen Stand ohne sie nach `crypto_scan:last`,
          und genau der bedient die Oberflaeche zwischen zwei Browser-Scans. */
       const snap=await getSnapshot(env,{ watch: await readCoinWatch(env) },true);
+      /* v4.14.0 · Momentaufnahme des Regimes. Sie wird HIER abgegriffen, wo
+         sie ohnehin entsteht, und in Minute 9 abgelegt — ein eigener Scan nur
+         fuer diese Zahl waere die teuerste denkbare Loesung. */
+      if(Number.isFinite(Number(snap?.meta?.breadth))) marktMoment={ts:now, breadth:Number(snap.meta.breadth), regime:snap.meta.marketRegime||null};
       await d1StoreRows(env,snap.rows||[],{source:'Bitpanda Fusion',assetType:'coin',now,onlyChanged:true});
       await persistCoinLive(env,snap.rows||[]);
       setApiState('crypto','ok'); await persistApiState(env,'crypto','ok',`${snap.rows?.length||0} Rows`,now);
@@ -8374,6 +8516,21 @@ async function serverLearningCycle(env, scheduledTime=Date.now()){
      Tag — statt einer schweren Abfrage an jedem Abruf der Oberflaeche.
      Die Krypto-Seite laeuft in der Minute darauf, damit nie beide im selben
      CPU-Budget liegen (Regel aus v3.2.5). */
+  /* v4.14.0 · Marktkontext. Minute 9 von 30 — wieder keine, die durch 5
+     teilbar ist, also nie im selben Aufruf wie der Kryptoblock (Regel aus
+     v3.2.5). Die 6-Stunden-Sperre begrenzt den Tagesbalken-Abruf; die
+     Momentaufnahme des Regimes wird bei jedem Durchlauf nachgetragen, weil sie
+     nichts kostet. */
+  if (cronMinute % 30 === 9) {
+    try {
+      /* Nur verwenden, wenn die Aufnahme aus DIESEM Tag stammt. Eine alte
+         Zahl unter dem heutigen Datum abzulegen waere eine erfundene Messung. */
+      const frisch = marktMoment && (now - marktMoment.ts) < 2*3600_000;
+      const momentan = frisch ? { riskOn: marktMoment.breadth } : null;
+      const res = await refreshMarktKontext(env, now, momentan);
+      if (res.done) cronLog('marktkontext', 'ok', `${res.tage} Tage`, res);
+    } catch (e) { cronLog('marktkontext', 'error', e?.message); }
+  }
   {
     const m = cronMinute % 30;
     const klasse = m === 7 ? 'stock' : m === 8 ? 'coin' : null;
@@ -10241,7 +10398,9 @@ export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSecto
      AUS. `reihungFeatures` steht mit in der Liste, damit der Test belegen
      kann, dass der Merkmalsbau der lebenden Zeile derselbe ist wie der der
      Aufzeichnung — waeren es zwei, faende es niemand. */
-  reihungRank, reihungBasis, reihungFeatures, reihungModellWert, REIHUNG };
+  reihungRank, reihungBasis, reihungFeatures, reihungModellWert, REIHUNG,
+  /* v4.14.0 · NK93 fuehrt den Marktkontext aus. */
+  marktKontextAusBalken, marktTagKey, MARKT_TAGE };
 
 export default {
   async fetch(request, env, ctx) {

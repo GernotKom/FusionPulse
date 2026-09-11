@@ -1,18 +1,22 @@
-FusionPulse v4.13.0 – Update (Positionsliste)
+FusionPulse v4.14.0 – Update (Marktkontext + Positionsliste)
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
 Keine neuen Secrets, keine neue Migration, kein neues Binding.
 
 WAS NEU IST:
-In der Risiko-Kachel (Reiter Aktien > Risiko) steht jetzt eine Liste aller
-erfassten Positionen: Symbol, Stückzahl, Kaufkurs, Sektor, gebundenes Risiko,
-Eröffnungsdatum – und je Zeile ein Knopf zum Austragen.
+1. RISIKO-KACHEL (Aktien > Risiko): Liste aller erfassten Positionen mit
+   Symbol, Stückzahl, Kaufkurs, Sektor, Risiko – und je Zeile ein Knopf zum
+   Austragen. Damit räumst du die 588 % auf.
+2. MARKTKONTEXT: Die App legt ab jetzt täglich eine Tafel Datum -> Marktlage
+   an (Summe der letzten 3 Tage, Anzahl aufeinanderfolgender Minustage,
+   Marktbreite). Die Tagesdaten werden RÜCKWIRKEND aus Tagesbalken gefüllt.
 
-DAMIT KANNST DU AUFRÄUMEN:
-Die 588 % kommen aus Positionen, die irgendwann im Fokusfenster unter
-"Position übernehmen" eingetragen und nie geschlossen wurden. Trag aus, was
-nicht mehr real ist. Das ist KEIN Verkauf – es entfernt die Position nur aus
-der Risikorechnung dieses Geräts.
+WAS DU IN MODUL 0b SEHEN WIRST (Lab/Learning > Verlauf):
+Neue Zeilen markt.tage3 und markt.minusTage – mit VOLLER Abdeckung in beiden
+Hälften, also sofort beurteilbar. Ob sie tragen, sagt dir die Spalte Urteil.
+markt.riskOn wird erst ab heute gesammelt und bleibt einige Wochen
+"Stichtag" – das ist die Kontrolle, kein Fehler.
 
-ACHTUNG: Die Positionen liegen im localStorage DIESES Browsers. Auf dem
-Windows-PC kann eine andere Liste stehen. Das steht jetzt auch dran.
+WICHTIG: Keine dieser Größen verändert Score, Ampel oder Kauf-Freigabe.
+Sie werden gemessen. Erst wenn die Tafel sagt, dass sie tragen, wandern sie
+in die Kandidatenreihung.
