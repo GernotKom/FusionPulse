@@ -1621,10 +1621,21 @@ async function signalHistory(env, assetType='coin', days=7, limit=25){
               entryPrice:dbNum(r.price), score:dbNum(r.score), crv:dbNum(r.crv),
               setup:p?.setup||null, situation:p?.situation||null, lifecycle:p?.lifecycle||null,
               maxPct:dbNum(r.max_pct), minPct:dbNum(r.min_pct), maePre:dbNum(r.mae_pre),
+              /* v4.15.0 · „nie nachgemessen\" ist ein eigener Zustand. Bis 4.14.0
+                 war die Messung im Aktienpfad praktisch nie gelaufen (siehe
+                 `d1StoreRows`), und die Anzeige hat die unberuehrte Zeile als
+                 „0,0 %\" ausgegeben — eine Behauptung ueber den Kursverlauf, wo
+                 gar keine Beobachtung vorlag. Beruehrt heisst: irgendein
+                 Extremwert ist von Null verschieden oder ein Zeitstempel steht.
+                 Eine echte Punktlandung auf exakt 0,0000 ueber beide Extreme
+                 gibt es in der Praxis nicht; wo sie doch auftraete, ist
+                 „nicht gemessen\" die vorsichtigere der beiden Aussagen. */
+              touched: Number(r.max_pct)!==0 || Number(r.min_pct)!==0 || !!r.success_ts || !!r.reach_ts,
               reached:!!r.success_ts||!!r.reach_ts, resolved:!!r.resolved_ts, dropped:!!r.dropped_ts };
       }else{
         cur.lastTs=ts; cur.buckets++;
         const mx=dbNum(r.max_pct), mn=dbNum(r.min_pct);
+        if(Number(r.max_pct)!==0 || Number(r.min_pct)!==0 || r.success_ts || r.reach_ts) cur.touched=true;
         if(Number.isFinite(mx)) cur.maxPct=Math.max(cur.maxPct??-Infinity,mx);
         if(Number.isFinite(mn)) cur.minPct=Math.min(cur.minPct??Infinity,mn);
         if(r.success_ts||r.reach_ts) cur.reached=true;
@@ -1638,6 +1649,10 @@ async function signalHistory(env, assetType='coin', days=7, limit=25){
   out.episodes=eps.slice(0,Math.max(1,Math.min(60,limit))).map(e=>({
     ...e,
     minutes: Math.max(5, Math.round((e.lastTs-e.firstTs)/60_000)+5),
+    /* Getrennt vom Ausgang: „gemessen\" sagt, ob ueberhaupt nachgesehen wurde,
+       „outcome\" sagt, was dabei herauskam. Ohne die Trennung sieht eine
+       fehlende Messung aus wie ein bewegungsloser Kurs. */
+    measured: !!e.touched,
     /* Der Ausgang wird BENANNT, nicht geraten. „offen" heisst: der Horizont
        ist noch nicht abgelaufen. „ohne Beleg" heisst: die Zeile wurde
        verworfen, weil zu selten nachgesehen wurde — das ist KEIN Verlust,
@@ -3269,6 +3284,11 @@ const LEARN_MIN_OBS = 6;
  *  D1-Reads — der Rest kommt in der naechsten Minute dran, nicht nie. */
 const LEARN_RESOLVE_BUDGET = 400;
 const LEARN_HISTORY_MS = 120 * 60_000;
+/** v4.15.0 · Ab welcher Aenderung eines Extremwerts ein Snapshot neu
+ *  geschrieben wird, in Prozentpunkten. Siehe die ausfuehrliche Begruendung in
+ *  `d1StoreRows`: sie ist eine Kostenbremse, keine Messgrenze — Zielschwellen
+ *  und Zeitstempel bleiben davon unberuehrt. */
+const OUTCOME_MIN_STEP_PCT = 0.2;
 const LEARN_SIGNAL_LABELS = ['attention','crowd','sector','rvol','vacuum','elliott','momentum','technical'];
 
 let d1SchemaReady=false;
@@ -4300,22 +4320,46 @@ async function d1StoreRows(env, rows, opts={}){
      Ampel. Feiner waere Selbstbetrug — unterhalb davon ist die Bewegung fuer
      jede Auswertung dieser App Rauschen. Fehlt ein Vergleichswert, wird
      GESCHRIEBEN: ein unbekannter Zustand ist kein unveraenderter. */
-  if(opts.onlyChanged){
-    const kept=[];
-    for(const c of clean){
-      const d=snapshotWriteDecision(source,assetType,c.symbol,c.price,c.row?.light,now);
-      if(d.write) kept.push(c);
-    }
-    if(!kept.length) return;
-    clean.length=0; clean.push(...kept);
-  }
-  const symbols=[...new Set(clean.map(x=>x.symbol))];
-  const placeholders=symbols.map(()=>'?').join(',');
+  /* ══ v4.15.0 · DER VERLAUF DER AKTIEN STAND AUF 0,0 % — HIER WAR DER GRUND ══
+     BEFUND, gemeldet als „bei den Aktien funktioniert das gar nicht": im
+     „Verlauf der Kauf-Freigaben · Aktien" trug JEDE Episode `bester Ausschlag
+     0,0 %` und `tiefster 0,0 %`, dazu den Ausgang „ausgewertet". Also: als
+     GEMESSEN ausgewiesen und als bewegungslos behauptet.
+
+     Es war nie gemessen. Bis 4.14.0 stand die Messung der Exkursionen HINTER
+     der Schreibschwelle, und zwar doppelt gesperrt:
+       1. `if(!kept.length) return;` — kam in einem Takt kein einziger Titel
+          ueber 0,15 % Bewegung, kehrte die Funktion zurueck, BEVOR ein
+          einziger offener Snapshot angesehen wurde.
+       2. `clean` wurde auf `kept` eingedampft, und die Abfrage darunter las
+          `symbols` aus dem eingedampften `clean`. Ein ruhiger Titel war damit
+          selbst dann ausgeschlossen, wenn ein anderer Titel den Takt
+          freigeschaltet hatte.
+     Krypto lief 24/7 mit Bewegungen weit ueber 0,15 % je Minutentakt und hat
+     die Sperre praktisch immer durchbrochen — dort war der Verlauf brauchbar.
+     Aktien im 5-Minuten-Takt, ausserhalb der Kernzeit vollends stillstehend,
+     kamen kaum je durch. Nach 180 Minuten lief der Horizont ab, der Aufloeser
+     fand genuegend BEOBACHTUNGEN (die wurden ja protokolliert, siehe oben) und
+     schrieb `resolved_ts` — auf eine Zeile mit `max_pct = 0`.
+
+     Das ist exakt der Fehler, vor dem `d1ResolveDue` im eigenen Kommentar
+     warnt: „der Kurs ist nicht gestiegen" aufgezeichnet, wo „wir haben nicht
+     hingesehen" gilt. Systematisch negativ, und in der Lernschicht seit
+     Monaten als Scheinverlierer gezaehlt.
+
+     BEOBACHTEN UND SCHREIBEN SIND ZWEI DINGE. Die Schwelle gehoert zum
+     Schreiben neuer Zeilen (Kosten) — nicht zum Nachmessen bereits
+     freigegebener Zeilen (Wahrheit). Die Messung laeuft deshalb ab jetzt ueber
+     ALLE beobachteten Symbole und VOR der Schwelle, mit derselben Liste, die
+     `d1NoteObservations` eben protokolliert hat. Sonst zaehlt die Abdeckung
+     eine Beobachtung, die nicht stattgefunden hat. */
+  const obsSymbols=[...new Set(clean.map(x=>x.symbol))];
+  const obsPlaceholders=obsSymbols.map(()=>'?').join(',');
 
   // Outcomes in EINER Abfrage laden und anschließend gebündelt aktualisieren.
   const unresolved=(await env.DB.prepare(`SELECT id,symbol,ts,price,max_pct,min_pct,success_ts,reach_ts,mae_pre FROM market_snapshots
-    WHERE symbol IN (${placeholders}) AND asset_type=? AND source=? AND resolved_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 3000`)
-    .bind(...symbols,assetType,source,now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
+    WHERE symbol IN (${obsPlaceholders}) AND asset_type=? AND source=? AND resolved_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 3000`)
+    .bind(...obsSymbols,assetType,source,now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
   const pxBySym=new Map(clean.map(x=>[x.symbol,x.price])), updates=[];
   for(const x of unresolved){
     const price=pxBySym.get(String(x.symbol).toUpperCase()); if(!(price>0)||!(Number(x.price)>0)) continue;
@@ -4343,11 +4387,21 @@ async function d1StoreRows(env, rows, opts={}){
        Nachkommastellen gerundet, damit Gleitkomma-Rauschen keine Aenderung
        vortaeuscht. Die Auswertung selbst bleibt unangetastet — es wird nichts
        weggelassen, nur nichts Identisches wiederholt. */
-    const r4=(v)=>Math.round(Number(v)*10000)/10000;
+    /* v4.15.0 · Die Schrittweite ersetzt die vier Nachkommastellen. Seit die
+       Messung ALLE beobachteten Symbole erfasst statt nur die bewegten, waere
+       ein Schwellenwert von 0,0001 Prozentpunkten eine Schreibmaschine: jede
+       offene Zeile jedes Titels in jedem Takt. 0,2 Prozentpunkte sind gegen
+       die wirtschaftliche Schwelle (ECON_WIN_PCT) Rauschen.
+       WICHTIG, und deshalb ausdruecklich: die ZEITSTEMPEL bleiben exakt.
+       `mx` wird in jedem Takt aus dem tatsaechlichen Kurs neu gebildet, also
+       loest ein Beruehren der Zielschwelle den Schreibvorgang unabhaengig von
+       der Schrittweite aus. Ungenau wird allein der aufgezeichnete Extremwert,
+       und zwar um hoechstens 0,2 Punkte nach unten. */
+    const step=(a,b)=>Math.abs(Number(a)-Number(b))>=OUTCOME_MIN_STEP_PCT;
     const changed =
-      r4(mx)!==r4(Number(x.max_pct)||0) ||
-      r4(mn)!==r4(Number(x.min_pct)||0) ||
-      r4(maePre)!==r4(Number.isFinite(Number(x.mae_pre))?Number(x.mae_pre):mn) ||
+      step(mx,Number(x.max_pct)||0) ||
+      step(mn,Number(x.min_pct)||0) ||
+      step(maePre,Number.isFinite(Number(x.mae_pre))?Number(x.mae_pre):mn) ||
       (!x.success_ts && successTs) ||          // Erfolg zum ersten Mal erreicht
       (!x.reach_ts   && reachTs)   ||          // Ziel zum ersten Mal beruehrt
       (!!resolved);                            // Horizont abgelaufen: einmalig
@@ -4357,6 +4411,21 @@ async function d1StoreRows(env, rows, opts={}){
       .bind(mx,mn,successTs,reachTs,maePre,resolved,x.id));
   }
   if(updates.length) await d1BatchChunks(env,updates);
+
+  /* Ab hier geht es um das ANLEGEN neuer Zeilen — und nur dafuer gilt die
+     Schwelle. Die Messung oben ist zu diesem Zeitpunkt bereits geschrieben;
+     ein Ruecksprung hier verliert sie nicht mehr. */
+  if(opts.onlyChanged){
+    const kept=[];
+    for(const c of clean){
+      const d=snapshotWriteDecision(source,assetType,c.symbol,c.price,c.row?.light,now);
+      if(d.write) kept.push(c);
+    }
+    if(!kept.length) return;
+    clean.length=0; clean.push(...kept);
+  }
+  const symbols=[...new Set(clean.map(x=>x.symbol))];
+  const placeholders=symbols.map(()=>'?').join(',');
 
   // Crowd-Scores ebenfalls in einer Abfrage statt pro Symbol.
   const crowdRows=(await env.DB.prepare(`SELECT symbol,score FROM crowd_cache WHERE symbol IN (${placeholders}) AND ts > ?`).bind(...symbols,now-6*60*60_000).all()).results||[];

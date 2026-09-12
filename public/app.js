@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.14.0 — Frontend
+   FusionPulse v4.15.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1167,6 +1167,61 @@ const MODEL_LABEL={
   momentum:{name:'Momentum (Modus A)',how:'Kein Overextended-Malus, Ziel als Vielfaches der Tagesspanne'},
 };
 const MODEL_VERDICT={green:'Kauf-Setup',yellow:'Beobachten',red:'Kein Trade'};
+/* v4.15.0 · Zeit im Zustand je Modell. Der Server historisiert `claude`,
+   `fusion` und `momentum` NICHT — sie werden je Abruf frisch gerechnet. Die
+   Uhrzeit entsteht deshalb hier, aus beobachteten Wechseln, im Browser.
+   EHRLICHKEITSGRENZE: beim ERSTEN Sehen ist unbekannt, wie lange der Zustand
+   schon gilt; solche Eintraege tragen `known:false` und heissen „beobachtet
+   ab", nicht „seit". 0 % Einfluss auf Score, Ampel und Freigabe. */
+const MODEL_KEYS=['claude','fusion','momentum'];
+const MODEL_LIGHT_KEY='fp.modelLight.v1';
+const MODEL_LIGHT_TTL_MS=7*24*3600_000;
+let modelLightStore=(()=>{
+  try{
+    const raw=JSON.parse(localStorage.getItem(MODEL_LIGHT_KEY)||'{}'), cutoff=Date.now()-MODEL_LIGHT_TTL_MS, out={};
+    for(const [k,v] of Object.entries(raw||{})){
+      if(!v||!v.light||!(Number(v.since)>=cutoff)) continue;
+      out[k]={light:String(v.light),since:Number(v.since),known:v.known===true};
+    }
+    return out;
+  }catch{ return {}; }
+})();
+const modelLightKey=(id,model)=>`${String(id||'').toUpperCase()}|${model}`;
+function trackModelLights(list){
+  const now=Date.now(); let changed=false;
+  for(const r of list||[]){
+    const id=r?.symbol||r?.pair; if(!id) continue;
+    for(const k of MODEL_KEYS){
+      const amp=r?.[k]?.light; if(!amp) continue;   // nicht berechnet ist kein Zustand
+      const key=modelLightKey(id,k), prev=modelLightStore[key];
+      if(prev && String(prev.light)===String(amp)) continue;
+      /* `known` heisst: der Wechsel wurde beobachtet, nicht bloss der Zustand
+         vorgefunden. Genau diese Unterscheidung traegt die Anzeige weiter. */
+      modelLightStore[key]={light:String(amp),since:now,known:!!prev};
+      changed=true;
+    }
+  }
+  if(changed){ try{ localStorage.setItem(MODEL_LIGHT_KEY,JSON.stringify(modelLightStore)); }catch{ /* Speicher voll/blockiert */ } }
+}
+function modelSince(id,model,amp){
+  const e=modelLightStore[modelLightKey(id,model)];
+  if(!e||!amp||e.light!==String(amp)) return null;
+  const since=Number(e.since); if(!Number.isFinite(since)) return null;
+  const heute=new Date(since).toDateString()===new Date().toDateString();
+  const uhr=new Date(since).toLocaleString('de-AT',heute
+    ?{hour:'2-digit',minute:'2-digit'}
+    :{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+  const min=Math.max(0,Math.round((Date.now()-since)/60_000));
+  const dauer=min<60?`${min} min`:`${Math.floor(min/60)} h ${min%60} min`;
+  const urteil=MODEL_VERDICT[amp]||amp;
+  return {
+    label:e.known?`seit ${uhr} · ${dauer}`:`beobachtet ab ${uhr} · ${dauer}`,
+    detail:e.known
+      ? `Dieses Modell ist um ${uhr} auf „${urteil}" gewechselt — der Umschlag wurde beobachtet. Seither ${dauer}.`
+      : `Seit ${uhr} steht dieses Modell auf „${urteil}"; das war die ERSTE Beobachtung nach dem Start der App. Wie lange der Zustand davor schon galt, ist nicht bekannt und wird deshalb nicht behauptet.`,
+    known:e.known,
+  };
+}
 function activeModelKey(){
   if(typeof momentumModeOn==='function' && momentumModeOn()) return 'momentum';
   return S.claudeMode?'claude':'fusion';
@@ -1174,7 +1229,8 @@ function activeModelKey(){
 function modelCompare(r){
   if(!r) return '';
   const active=activeModelKey();
-  const cells=['claude','fusion','momentum'].map(k=>{
+  const id=r.symbol||r.pair;
+  const cells=MODEL_KEYS.map(k=>{
     const m=r[k]; const L=MODEL_LABEL[k];
     if(!m||!m.light) return `<span class="mc-cell mc-na"><b>${esc(L.name)}</b><i>nicht berechnet</i><small>${esc(L.how)}</small></span>`;
     const parts=[];
@@ -1182,14 +1238,16 @@ function modelCompare(r){
     if(m.netCRV!=null) parts.push('Netto-CRV '+num(m.netCRV,2)+':1');
     if(m.expectancyR!=null) parts.push('EV '+num(m.expectancyR,2)+'R');
     const block=Array.isArray(m.blockers)&&m.blockers.length?m.blockers[0]:'';
+    const sc=modelSince(id,k,m.light);
     return `<span class="mc-cell hl-${esc(m.light)}${k===active?' mc-active':''}" title="${esc(L.name+' · '+L.how+(block?' · Wichtigster Blocker: '+block:''))}">`
       +`<b>${esc(L.name)}${k===active?' · aktiv':''}</b>`
       +`<i>${esc(MODEL_VERDICT[m.light]||m.light)}</i>`
+      +(sc?`<small class="mc-since${sc.known?'':' mc-since-unknown'}" title="${esc(sc.detail)}">🕒 ${esc(sc.label)}</small>`:'')
       +`<small>${esc(parts.join(' · ')||'keine Kennzahlen')}</small>`
       +(block?`<small class="mc-block">⛔ ${esc(String(block).slice(0,90))}</small>`:'')
       +`</span>`;
   }).join('');
-  const lights=['claude','fusion','momentum'].map(k=>r[k]?.light).filter(Boolean);
+  const lights=MODEL_KEYS.map(k=>r[k]?.light).filter(Boolean);
   const dissent=new Set(lights).size>1;
   return `<div class="model-compare${dissent?' dissent':''}">`
     +`<b>Modellvergleich <small>rein darstellend · 0 % Einfluss auf Score und Freigabe</small></b>`
@@ -1197,6 +1255,7 @@ function modelCompare(r){
     +`<small>${dissent
       ? 'Die Modelle sind sich UNEINIG. Nur der als aktiv markierte Strang bestimmt den Handelsvorschlag; die anderen stehen hier zur Einordnung.'
       : 'Alle berechneten Modelle urteilen gleich. Das ist KEINE Bestätigung: sie arbeiten auf denselben Kursdaten, ihre Fehler sind daher korreliert.'}</small>`
+    +`<small>🕒 <b>seit</b> nennt den Zeitpunkt, zu dem dieses Modell beim Umschalten beobachtet wurde. <b>beobachtet ab</b> heißt: der Zustand lag beim ersten Nachsehen schon vor — wie lange schon, ist nicht bekannt und wird nicht behauptet. Die Zeiten entstehen im Browser aus beobachteten Wechseln; der Server historisiert die drei Modellurteile nicht.</small>`
     +`</div>`;
 }
 /* ============================================================================
@@ -2750,14 +2809,28 @@ function renderSignalHistory(domain) {
     return;
   }
   const pct = (v) => (Number.isFinite(Number(v)) ? `${Number(v) > 0 ? '+' : ''}${Number(v).toFixed(1)} %` : '–');
+  /* ══ v4.15.0 · „0,0 %" WAR EINE BEHAUPTUNG, KEINE MESSUNG ═════════════════
+     Nutzerbefund: im Aktienverlauf stand in jeder Zeile „bester Ausschlag
+     0,0 % · tiefster 0,0 %" bei Ausgang „ausgewertet". Die Ursache lag im
+     Worker (die Nachmessung lief für Aktien praktisch nie, siehe dort), aber
+     die Anzeige hat den Rohwert 0 ungeprüft als gemessene Null ausgegeben.
+     Der Server unterscheidet die beiden Fälle jetzt über `measured`; hier wird
+     die Unterscheidung sichtbar. Ältere Aufzeichnungen ohne Nachmessung
+     bleiben unmessbar — rückwirkend lässt sich daran nichts heilen, und genau
+     deshalb darf dort keine Zahl stehen. */
+  const unmeasured = eps.filter((e) => e.measured === false).length;
   const zeilen = eps.map((e) => {
-    const ton = e.outcome === 'Ziel erreicht' ? 'ok' : e.outcome === 'ohne Beleg' ? 'warn' : e.outcome === 'offen' ? 'idle' : 'neutral';
+    const ton = e.measured === false ? 'warn'
+      : e.outcome === 'Ziel erreicht' ? 'ok' : e.outcome === 'ohne Beleg' ? 'warn' : e.outcome === 'offen' ? 'idle' : 'neutral';
     const wann = new Date(e.firstTs).toLocaleString('de-AT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const ausschlag = e.measured === false
+      ? `<i title="Für diese Freigabe wurde nach der Freigabe kein Kurs nachgemessen. Das ist eine fehlende Messung, keine Bewegung von null.">nicht gemessen</i>`
+      : `${pct(e.maxPct)}<small>tiefster ${pct(e.minPct)}</small>`;
     return `<tr data-tone="${ton}">
       <td><b>${esc(String(e.symbol).replace(/-EUR$/, ''))}</b><small>${esc(e.setup || e.situation || '–')}</small></td>
       <td>${esc(wann)}<small>${e.minutes} min · ${e.buckets}×</small></td>
-      <td class="ta">${pct(e.maxPct)}<small>tiefster ${pct(e.minPct)}</small></td>
-      <td>${esc(e.outcome)}</td>
+      <td class="ta">${ausschlag}</td>
+      <td>${esc(e.outcome)}${e.measured === false ? '<small>ohne Nachmessung</small>' : ''}</td>
     </tr>`;
   }).join('');
   el.innerHTML = `${kopf}
@@ -2767,6 +2840,7 @@ function renderSignalHistory(domain) {
     <small class="op-note">„Bester Ausschlag" ist die größte Bewegung nach der Freigabe, nicht ein erzielter Gewinn — ohne Ausstieg ist er nur eine Möglichkeit gewesen.
     „Ohne Beleg" heißt: zu selten nachgesehen, um den Verlauf zu messen — das ist eine fehlende Messung und <b>kein</b> Fehlschlag.
     Aufeinanderfolgende grüne Takte sind EINE Gelegenheit; die Zahl dahinter (z.\u00A0B. 12×) nennt die Takte.
+    ${unmeasured ? `<b>${unmeasured} von ${eps.length} Episoden wurden nie nachgemessen</b> — dort steht „nicht gemessen\" statt einer Zahl. Bis v4.14.0 lief die Nachmessung nur für Titel, die im selben Takt die Schreibschwelle rissen; im Aktienbereich traf das fast nie zu. Behoben ab v4.15.0, aber nur für neue Freigaben — Altbestand bleibt ohne Messung.` : ''}
     ${d.truncated ? '<b>Die Abfrage wurde gekürzt</b> — es gab mehr Aufzeichnungen als abgerufen.' : ''}</small>`;
 }
 /* v4.2.3 · Gegenstueck zu `renderDepotStrip`. Die Coin-Favoriten existierten
@@ -4910,6 +4984,7 @@ function trackStocks() {
     if (!learningStock.get(r.symbol)?.history?.length) r._history = st.history;
     stockState.set(r.symbol, st);
   }
+  trackModelLights(stockRows);
   persistHistory(STOCK_HISTORY_KEY, stockHistoryStore);
   learnStocks();
   updateLeadLearning();
@@ -5112,6 +5187,7 @@ function track() {
     r._prevLight = oldLight;
     r._history = st.history;
   }
+  trackModelLights(rows);
   persistHistory(COIN_HISTORY_KEY, coinHistoryStore);
 }
 

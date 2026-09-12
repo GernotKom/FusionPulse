@@ -1,3 +1,117 @@
+# FusionPulse 4.15.0 — der Aktienverlauf stand auf 0,0 %, weil nie gemessen wurde
+
+Nutzerbefund, 11.09.: im Panel „Verlauf der Kauf-Freigaben · Aktien" trug
+**jede** Zeile `bester Ausschlag 0,0 % · tiefster 0,0 %` bei Ausgang
+`ausgewertet`. Drei RGTI-Episoden, alle identisch null. Krypto war unauffällig.
+
+## Der Befund, und er ist schlimmer als die Anzeige
+
+Die Zahlen waren nicht falsch gerechnet. Sie waren **nie gerechnet**.
+
+In `d1StoreRows` stand die Nachmessung der Exkursionen HINTER der
+Schreibschwelle `onlyChanged`. Zwei Sperren, beide tödlich:
+
+    if(opts.onlyChanged){
+      const kept=[];
+      for(const c of clean){ … if(d.write) kept.push(c); }
+      if(!kept.length) return;            // (1)
+      clean.length=0; clean.push(...kept);
+    }
+    const symbols=[...new Set(clean.map(x=>x.symbol))];   // (2)
+    const unresolved = … WHERE symbol IN (…)
+
+1. Riss in einem Takt kein einziger Titel die Schwelle von 0,15 %, kehrte die
+   Funktion zurück, **bevor** ein offener Snapshot auch nur angesehen wurde.
+2. Die Symbolliste der Messabfrage kam aus dem auf `kept` eingedampften
+   `clean`. Ein ruhiger Titel fiel also selbst dann heraus, wenn ein anderer
+   Titel den Takt freigeschaltet hatte.
+
+Krypto läuft im Minutentakt mit Bewegungen weit über 0,15 % und hat die Sperre
+praktisch immer durchbrochen. Aktien im 5-Minuten-Takt, außerhalb der Kernzeit
+vollends stillstehend, kamen kaum je durch.
+
+Danach griff die zweite Hälfte des Schadens: `d1NoteObservations` steht seit
+4.2.3 korrekt VOR der Schwelle, die Abdeckung wuchs also weiter. Nach 180
+Minuten fand `d1ResolveDue` genügend Beobachtungen und schrieb `resolved_ts`
+auf eine Zeile mit `max_pct = 0`.
+
+**Das ist exakt der Fehler, vor dem `d1ResolveDue` im eigenen Kommentar warnt:**
+aufgezeichnet wurde „der Kurs ist nicht gestiegen", wo „wir haben nicht
+hingesehen" galt. Systematisch negativ, in der Lernschicht seit Monaten als
+Scheinverlierer gezählt — und die Zahl sah dabei gut belegt aus.
+
+## Die Trennung, die gefehlt hat
+
+**Beobachten und Schreiben sind zwei Dinge.** Die Schwelle gehört zum ANLEGEN
+neuer Zeilen — das sind die Kosten. Sie gehört nicht zum NACHMESSEN bereits
+freigegebener Zeilen — das ist die Wahrheit. Die Messung läuft jetzt vor der
+Schwelle, über dieselbe Symbolliste, die `d1NoteObservations` eben protokolliert
+hat. Anders wäre die Abdeckung eine Beobachtung, die nicht stattgefunden hat.
+
+## Die Kostenbremse, die dadurch nötig wurde
+
+Vorher entschied `r4` (vier Nachkommastellen), ob ein UPDATE entsteht. Solange
+nur bewegte Titel gemessen wurden, war das tragbar. Über alle beobachteten
+Symbole wäre es eine Schreibmaschine: jede offene Zeile jedes Titels in jedem
+Takt. Ersetzt durch `OUTCOME_MIN_STEP_PCT = 0.2` Prozentpunkte.
+
+Was dabei NICHT unter die Bremse fällt, und das ist der Punkt: `success_ts`,
+`reach_ts` und `resolved_ts`. `mx` wird in jedem Takt aus dem tatsächlichen
+Kurs neu gebildet, das Berühren der Zielschwelle löst den Schreibvorgang also
+unabhängig von der Schrittweite aus. Ungenau wird allein der aufgezeichnete
+Extremwert, um höchstens 0,2 Punkte nach unten. **Eine Kostenbremse darf die
+Erfolgsdefinition nicht verschieben** — M5 prüft genau das ausgeführt.
+
+## „nicht gemessen" ist ein eigener Zustand
+
+`signalHistory` liefert je Episode `measured`. Berührt heißt: irgendein
+Extremwert ist von null verschieden oder ein Zeitstempel steht. Die Anzeige
+schreibt dort „nicht gemessen" statt einer Zahl und nennt in der Fußnote, wie
+viele Episoden betroffen sind.
+
+**Der Altbestand bleibt unmessbar.** Der Kursverlauf nach den Freigaben vom
+08./09.09. wurde nie aufgezeichnet; rückwirkend ist daran nichts zu heilen.
+Dieselbe Lehre wie bei Situationstyp, Dollarumsatz, Spread und `situScore`:
+was man nicht aufzeichnet, kann man nie kalibrieren. Fünfte Wiederholung.
+
+## Zeit im Zustand je Modell
+
+Zweite Anforderung aus derselben Meldung: im Modellvergleich (Claude/Aladdin,
+ChatGPT-Strang, Momentum) soll stehen, ab wann ein Modell auf Gelb oder Grün
+geschaltet hat. „Beobachten" seit zehn Minuten und „Beobachten" seit drei
+Stunden sind nicht dasselbe.
+
+Der Server historisiert die drei Urteile NICHT — sie werden je Abruf frisch
+gerechnet. Die Zeit entsteht deshalb im Browser, aus beobachteten Wechseln,
+in `localStorage` unter `fp.modelLight.v1` (7 Tage Verfall).
+
+**Die Ehrlichkeitsgrenze ist der ganze Punkt:** beim ERSTEN Sehen eines Modells
+ist unbekannt, wie lange der Zustand schon gilt. Eine Uhrzeit dafür wäre
+erfunden — die App hätte gerade erst nachgesehen und täte so, als hätte sie den
+Umschlag beobachtet. Solche Einträge tragen `known:false` und heißen
+**„beobachtet ab"**, nicht „seit". Erst ein tatsächlich gesehener Wechsel ergibt
+ein „seit". Die Fußnote sagt beides.
+
+0 % Einfluss auf Score, Ampel und Freigabe — wie der Modellvergleich selbst.
+
+## Geänderte Dateien
+
+| Datei | Was |
+|---|---|
+| `src/worker.js` | Messung vor die Schwelle; `OUTCOME_MIN_STEP_PCT`; `measured` in `signalHistory` |
+| `public/app.js` | „nicht gemessen" im Verlauf; Zeit im Zustand je Modell |
+| `public/style.css` | `.mc-since`, gedämpfte Variante für den unbekannten Fall |
+| `tests/outcome-measure.mjs` | **neu**, M1–M6, ausgeführt |
+| `tests/signal-history.mjs` | NK-SH9 zu `measured` |
+| `tests/safety-regression.mjs` | v4.1.3-Block auf die Schrittweite umgestellt; Blockgrenze Modellvergleich 6.000 → 7.500 |
+
+## Was beim nächsten Mal zu prüfen ist
+
+Der Verbrauch. Die Messung erfasst jetzt alle beobachteten Symbole; wie viele
+Schreibvorgänge daraus je Tag werden, ist gerechnet, nicht gemessen. Steigt
+`rowsWritten` deutlich, ist `OUTCOME_MIN_STEP_PCT` die Stellschraube — **nicht**
+die Rückkehr hinter die Schwelle.
+
 # FusionPulse 4.14.0 — Marktkontext, über das Datum verknüpft
 
 Vorschlag: *„Mehrere Tage rückläufiger Markt, Gesamtmarkt zieht vor Eröffnung

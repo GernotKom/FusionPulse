@@ -1,4 +1,4 @@
-# FusionPulse v4.14.0
+# FusionPulse v4.15.0
 
 Autonomer Momentum- und Opportunity-Wächter für Krypto (Bitpanda Fusion) und
 liquide US-Aktien, betrieben als Cloudflare Worker mit PWA-Oberfläche.
@@ -24,6 +24,13 @@ tests/             Regressionssuiten
 scripts/           sync-version.mjs
 migrations/        D1-Schema
 ```
+
+Im Repository-Root liegen **keine** `app.js`, `worker.js`, `index.html`,
+`style.css`, `sw.js` oder `sync-version.mjs`. Bis v4.14.0 lagen dort Altstaende
+aus v2.5.1, die nie ausgeliefert wurden (`main: src/worker.js`,
+`assets: ./public`) und beim Lesen wie der lebende Code aussahen. Seit v4.15.0
+sind sie entfernt. Der lebende Stand steht ausschliesslich in `src/`, `public/`
+und `scripts/`.
 
 Ab v3.31.0 gilt: **eine neue Version legt keine neue Markdown-Datei an.**
 `HANDOVER.md` und `RELEASE_NOTES.md` werden fortgeschrieben. Vorher lagen hier

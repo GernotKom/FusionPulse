@@ -1,22 +1,33 @@
-FusionPulse v4.14.0 – Update (Marktkontext + Positionsliste)
+FusionPulse v4.15.0 – Update (Nachmessung der Kauf-Freigaben + Zeit je Modell)
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
 Keine neuen Secrets, keine neue Migration, kein neues Binding.
 
-WAS NEU IST:
-1. RISIKO-KACHEL (Aktien > Risiko): Liste aller erfassten Positionen mit
-   Symbol, Stückzahl, Kaufkurs, Sektor, Risiko – und je Zeile ein Knopf zum
-   Austragen. Damit räumst du die 588 % auf.
-2. MARKTKONTEXT: Die App legt ab jetzt täglich eine Tafel Datum -> Marktlage
-   an (Summe der letzten 3 Tage, Anzahl aufeinanderfolgender Minustage,
-   Marktbreite). Die Tagesdaten werden RÜCKWIRKEND aus Tagesbalken gefüllt.
+VOR DEM HOCHLADEN – SECHS ALTSTAENDE LOESCHEN:
+Im Repository-Root liegen seit langem Dateien aus v2.5.1, die NICHT
+ausgeliefert werden (wrangler.jsonc: main=src/worker.js, assets=./public),
+aber wie aktueller Code aussehen. Dieses Paket enthaelt sie nicht mehr; ein
+Upload loescht sie deshalb NICHT von selbst. Von Hand entfernen:
+  app.js  worker.js  index.html  style.css  sw.js  sync-version.mjs
+(jeweils im ROOT – die gleichnamigen Dateien in public/, src/ und scripts/
+bleiben! Die sind der lebende Stand.)
 
-WAS DU IN MODUL 0b SEHEN WIRST (Lab/Learning > Verlauf):
-Neue Zeilen markt.tage3 und markt.minusTage – mit VOLLER Abdeckung in beiden
-Hälften, also sofort beurteilbar. Ob sie tragen, sagt dir die Spalte Urteil.
-markt.riskOn wird erst ab heute gesammelt und bleibt einige Wochen
-"Stichtag" – das ist die Kontrolle, kein Fehler.
+WAS BEHOBEN IST:
+1. VERLAUF DER KAUF-FREIGABEN · AKTIEN stand durchgehend auf 0,0 %.
+   Die Nachmessung lag hinter der Schreibschwelle und lief bei Aktien
+   praktisch nie. Sie laeuft jetzt VOR der Schwelle ueber alle beobachteten
+   Symbole. Neue Freigaben tragen ab jetzt echte Werte – sichtbar nach rund
+   drei Stunden (Lernhorizont). Der Altbestand bleibt unmessbar.
+2. „NICHT GEMESSEN" ist ein eigener Zustand. Wo nie nachgesehen wurde, steht
+   das jetzt da – statt einer erfundenen 0,0 %.
+3. ZEIT IM ZUSTAND je Modell im Modellvergleich: „seit 22:36 · 1 h 12 min".
+   Beim ersten Sehen steht „beobachtet ab" statt „seit" – der Umschlag wurde
+   dann naemlich nicht beobachtet und wird deshalb nicht behauptet.
 
-WICHTIG: Keine dieser Größen verändert Score, Ampel oder Kauf-Freigabe.
-Sie werden gemessen. Erst wenn die Tafel sagt, dass sie tragen, wandern sie
-in die Kandidatenreihung.
+WAS DU BEOBACHTEN SOLLTEST:
+Den D1-Schreibstand (Kopfzeile „DB x/1000k"). Die Messung erfasst jetzt mehr
+Zeilen; gerechnet etwa eine Verdopplung, gemessen ist das noch nicht.
+Stellschraube waere OUTCOME_MIN_STEP_PCT in src/worker.js – NICHT die
+Rueckkehr hinter die Schwelle.
+
+WICHTIG: Keine dieser Aenderungen veraendert Score, Ampel oder Kauf-Freigabe.

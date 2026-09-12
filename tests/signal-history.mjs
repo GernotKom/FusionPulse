@@ -125,6 +125,34 @@ const gruen = (symbol, ts, extra = {}) => ({ ts, symbol, source: 'Bitpanda Fusio
     'NK-SH8: Der Verlauf zeigt Fälle, keine Statistik — eine Quote aus wenigen Fällen ist keine Quote');
 }
 
+/* 9 · v4.15.0 · „NICHT GEMESSEN" IST KEIN „0,0 %" ─────────────────────────
+   Gemeldeter Fall: im Aktienverlauf stand in jeder Zeile „bester Ausschlag
+   0,0 % · tiefster 0,0 %" bei Ausgang „ausgewertet". Die Nachmessung lief dort
+   praktisch nie (siehe `d1StoreRows` und tests/outcome-measure.mjs), die Zeile
+   blieb unberuehrt — und eine unberuehrte Zeile als gemessene Null auszugeben
+   ist eine BEHAUPTUNG ueber den Kursverlauf. `measured` trennt die beiden
+   Aussagen, damit die Anzeige sie nicht mehr vermischen kann. */
+{
+  const f = (extra) => { frisch(); return M.signalHistory({ DB: db([gruen('A', T0, extra)]) }, 'stock', 7, 25); };
+  assert.equal((await f({ resolved_ts: T0 + 3600_000 })).episodes[0].measured, false,
+    'NK-SH9: eine nie nachgemessene Zeile darf nicht als gemessen gelten, auch wenn sie aufgeloest wurde');
+  assert.equal((await f({ max_pct: 3.4, resolved_ts: T0 + 3600_000 })).episodes[0].measured, true,
+    'NK-SH9: ein von null verschiedener Ausschlag belegt die Messung');
+  assert.equal((await f({ min_pct: -1.2 })).episodes[0].measured, true,
+    'NK-SH9: … ein Rueckgang ebenso');
+  assert.equal((await f({ reach_ts: T0 + 60_000 })).episodes[0].measured, true,
+    'NK-SH9: … und ein gesetzter Zeitstempel auch ohne Extremwert');
+  /* Innerhalb einer Episode genuegt EIN nachgemessener Takt. Sonst wuerde ein
+     einzelner unberuehrter Takt eine gemessene Episode entwerten. */
+  frisch();
+  const gemischt = await M.signalHistory({ DB: db([
+    gruen('B', T0), gruen('B', T0 + B, { max_pct: 5 }), gruen('B', T0 + 2 * B),
+  ]) }, 'stock', 7, 25);
+  assert.equal(gemischt.episodes[0].measured, true,
+    'NK-SH9: ein nachgemessener Takt macht die Episode gemessen');
+  assert.equal(gemischt.episodes[0].maxPct, 5, 'NK-SH9: … und der Ausschlag bleibt erhalten');
+}
+
 console.log('✓ FusionPulse v4.2.9 Verlauf der Kauf-Freigaben (ausgefuehrt): OK');
 
 /* ══ v4.3.2 · EIN LEERER TIEFENSCAN MUSS SEINEN GRUND NENNEN ═══════════════

@@ -2884,7 +2884,14 @@ console.log('✓ FusionPulse v3.14.6 system-lamp-visibility regressions: OK');
 
   /* ---- 1. Modellvergleich ------------------------------------------------ */
   const mcSrc = app.slice(app.indexOf('const MODEL_LABEL='), app.indexOf('const TINTABLE_TILES='));
-  assert.ok(mcSrc.length > 800 && mcSrc.length < 6000, 'Der Modellvergleich muss gefunden werden');
+  /* v4.15.0: Obergrenze von 6.000 auf 7.500 angehoben. Der Block traegt seit
+     dieser Version die Zeit im Zustand je Modell („seit 22:36") mit — Speicher,
+     Tracker und Formatierung liegen bewusst HIER, damit der ausgefuehrte
+     Nachweis weiter unten sie mitlaedt statt sie zu stubben. Die Schranke ist
+     eine Plausibilitaetsgrenze fuer die Schnittmarken, keine Invariante; die
+     Invarianten sind die verbotenen Muster darunter und die ausgefuehrten
+     Faelle. Sie wird angehoben, wenn der Block waechst — nicht aufgehoben. */
+  assert.ok(mcSrc.length > 800 && mcSrc.length < 7500, 'Der Modellvergleich muss gefunden werden');
   // Er darf LESEN, nicht RECHNEN. Keine Score-/Gate-Arithmetik in diesem Block.
   for (const forbidden of ['S.minCrvStock', 'S.minCrvCoin', 'buyReady', 'light=', 'score=']) {
     assert.ok(!mcSrc.includes(forbidden),
@@ -5565,10 +5572,27 @@ console.log('✓ FusionPulse v4.1.2 Umschalt-Fehlermeldung (ausgefuehrt): OK');
       `v4.1.3: „${bed}" muss weiterhin ein Schreiben ausloesen — sonst gehen Ergebnisse verloren`);
   }
 
-  /* Rundung gegen Gleitkomma-Rauschen: ohne sie wuerde eine Differenz in der
-     zwoelften Nachkommastelle als Aenderung gelten und der Fix waere wirkungslos. */
-  assert.match(w, /const r4=\(v\)=>Math\.round\(Number\(v\)\*10000\)\/10000;/,
-    'v4.1.3: ohne Rundung taeuscht Gleitkomma-Rauschen eine Aenderung vor');
+  /* Schwelle gegen Gleitkomma-Rauschen: ohne sie wuerde eine Differenz in der
+     zwoelften Nachkommastelle als Aenderung gelten und der Fix waere wirkungslos.
+     v4.15.0: Die Rundung auf vier Nachkommastellen (`r4`) ist durch eine
+     SCHRITTWEITE in Prozentpunkten ersetzt. Grund: seit dieser Version misst
+     `d1StoreRows` ALLE beobachteten Symbole nach, nicht mehr nur die, die im
+     selben Takt die Schreibschwelle reissen (das war der Grund, warum der
+     Aktienverlauf durchgehend auf 0,0 % stand). Vier Nachkommastellen waeren
+     dabei keine Bremse mehr, sondern eine Schreibmaschine. Die Schwelle ist
+     damit STRENGER als vorher, nicht laxer — die Zusicherung aus v4.1.3
+     bleibt also erfuellt. */
+  assert.match(w, /const OUTCOME_MIN_STEP_PCT = [\d.]+;/,
+    'v4.1.3/4.15.0: es muss eine benannte Schrittweite geben, gegen die die Aenderung geprueft wird');
+  assert.match(w, /const step=\(a,b\)=>Math\.abs\(Number\(a\)-Number\(b\)\)>=OUTCOME_MIN_STEP_PCT;/,
+    'v4.1.3/4.15.0: ohne Schwelle taeuscht Gleitkomma-Rauschen eine Aenderung vor');
+  /* Und sie darf NUR die Extremwerte bremsen. Die Zeitstempel gehoeren nicht
+     unter eine Kostenbremse: sonst verschoebe der Sparzwang still die
+     Erfolgsdefinition. Ausgefuehrt geprueft in tests/outcome-measure.mjs (M5). */
+  const chg = w.slice(w.indexOf('const step=(a,b)=>'), w.indexOf('if(!changed) continue;'));
+  for (const feld of ['success_ts', 'reach_ts', 'resolved'])
+    assert.ok(!/step\(/.test(chg.split(feld)[1] || ''),
+      `v4.15.0: „${feld}" darf nicht hinter der Schrittweite haengen`);
 
   /* Groessenordnung, die den Befund erklaert. */
   const proMinute = 3000, proTag = proMinute * 1440;
