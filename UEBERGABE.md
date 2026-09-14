@@ -1,3 +1,128 @@
+# FusionPulse 4.16.0 — was heute passiert ist, stand nirgends
+
+Nutzerbefund vom 14.09., wörtlich: **„Fusion Pulse meldet nichts – ist ja dann
+völlig umsonst."** CRWD stand mit +15,4 % im Tag und lag in der Watchlist.
+
+## Der Befund war richtig, und er war kein Fehler
+
+Der einzige akustische Melder bei Aktien hängt an `stockLevel >= 2`, also an
+KAUF-Qualität. Ein Titel, der bereits 15 % gelaufen ist, fällt im
+Positionsmodus durch: Abstand zur EMA21 wird bestraft, der Stop läge weit
+unten, das CRV wäre mies. **Diese Ablehnung ist richtig.** Dafür gibt es Modus
+A, und der gibt ausdrücklich keine Freigabe, sondern ist ein
+Aufmerksamkeitsfilter.
+
+Die App beantwortete also sauber „was soll ich jetzt kaufen" — und nirgends
+„was ist heute in meiner Liste passiert". Bei 37 selbst zusammengestellten
+Titeln ist die zweite Frage genauso legitim wie die erste. Sie hatte nur keine
+Antwort.
+
+Verschärft durch v4.5.0: die laufende Vollmarkt-Entdeckung wurde gestrichen
+(39 von 40 GB), übrig blieb ein Lauf um 20:00 Wiener Zeit. CRWD sprang um
+15:30. Der Tageslauf hätte es 4,5 Stunden später gefunden, da war es vorbei.
+
+## Die Trennung, die die Kachel trägt
+
+`sessionMove` rechnet die Tagesbewegung gegen den Schluss der vorherigen
+regulären Sitzung, aus derselben Bar-Serie, die die Analyse ohnehin holt. Kein
+zusätzlicher Abruf, keine Bandbreite.
+
+**Die Kachel bewertet nichts.** Keine Ampel, kein Plan, keine Freigabe, 0 %
+Gewicht. NK94e prüft das hart: `dayMovePct` und Verwandte dürfen im Rechenteil
+von `analyseStock` nicht vorkommen, und die Kachel darf `stockLevel`,
+`buyReady` und `stockHeadline` nicht aufrufen. „Der Titel hat sich bewegt" und
+„der Titel ist kaufenswert" sind zwei Aussagen, und die zweite bleibt dem
+Regelwerk vorbehalten.
+
+**Ein Fehler, den der eigene Test gefangen hat:** der erste Entwurf schnitt den
+Vortagsschluss gegen 09:30 ET. Damit fielen die Vorbörsen-Bars des HEUTIGEN
+Tages in den „Vortag" — der Melder hätte den Gap gegen sich selbst gerechnet
+und rund null gemeldet, genau in der Lage, für die er gebaut ist. NK94b hat das
+im ersten Lauf gefällt. Die Trennlinie ist jetzt Mitternacht ET.
+
+## Alle Kugeln tragen einen Namen
+
+Bis 4.15.0 galt: „Wer keinen Platz hat, bekommt keinen Namen." In 4.9.0 gut
+gemeint — ein Name unter zwei anderen ist keine Information. In der Praxis
+blieb auf einem dichten Feld die Hälfte namenlos und nur per Mouseover
+auffindbar. Auf dem Telefon gibt es kein Mouseover.
+
+**Der Platz war da, er wurde nur an einer Stelle gesucht.** Bisher gab es genau
+einen Kandidaten je Punkt: mittig. Jetzt neun — mittig, dann die acht
+Richtungen ringsum —, die günstigste gewinnt, bei Versatz zieht eine
+Führungslinie zum Punkt. NK88e misst nach, dass die Ausweichlagen die
+Überdeckung SENKEN gegenüber „alle stumpf mittig": „alle beschriftet" darf
+nicht mit Unlesbarkeit erkauft sein.
+
+## Veraltete Punkte, ohne Regeländerung
+
+QGEN lag am 14.09. im Feld „MUSTER STARK · gut handelbar" mit Ausführbarkeit
+10,0/10, während die Detailkachel daneben korrekt „NICHT LIVE / VERALTET ·
+3 Tage alt" sagte. Die Karte kennt keine Frische; beide Achsen sind technisch.
+
+Neu: gestrichelter Ring, gedämpfte Füllung, Alter im Mouseover. **Nicht
+versteckt** — ein Titel, der seit Freitag ein sauberes Muster trägt, ist eine
+echte Beobachtung, er ist nur keine Handelsgelegenheit. **Nicht verschoben** —
+die Ausführbarkeit bei altem Kurs zu deckeln wäre fachlich vertretbar, ist aber
+eine Regeländerung mit Wirkung auf die Ampel und gehört nicht in eine
+Anzeigekorrektur.
+
+## Bandbreite: eine Messung statt einer Annahme
+
+Der Kommentar, mit dem in v4.12.x der Rückblick von 36 Stunden auf sechs Tage
+verlängert wurde, rechnete mit „`iex-chart` liegt bei 0,049 GB im Monat". Am
+14.09. gemessen: **1,831 GB, 93.852 Abrufe, 31 % der Bandbreite.** Faktor 37.
+Die Antwortgröße war richtig geschätzt (16 KB erwartet, 20,5 KB gemessen), die
+ANZAHL nicht.
+
+Ein Memo je `symbol|5-Minuten-Takt` schneidet die Mehrfachabrufe im selben Takt
+weg. Der Takt steht im Schlüssel, also kann der Memo keinen Balken
+zurückhalten, den der Feed schon hätte — NK95 weist das aus, statt es zu
+behaupten.
+
+**Die zweite Zahl ist die unangenehmere:** Tiingo meldete 14,2 GB verbraucht,
+die App 5,89 GB. Faktor 2,4. Die vier Pfade der Tabelle summieren sich exakt
+auf 5,888 GB, die Tabelle stimmt also in sich. Zwei Ursachen sind möglich und
+führen zu verschiedenen Schlüssen: ein Startversatz des Monatsbehälters (dann
+stimmt die Rate, Hochrechnung rund 17 GB) oder ein systematischer Zählfehler
+(dann rund 30 von 40 GB).
+
+**Es wird nichts korrigiert.** Ein geratener Faktor wäre genau die stille
+Annahme, die den Fehler getragen hat. Stattdessen ein Anker unter der Tabelle:
+der echte Tiingo-Wert wird eingetragen, die App merkt sich ihren eigenen Stand
+dazu. Der Vergleich der ZUWÄCHSE trennt die beiden Fälle. Und „Tempo x GB/Tag"
+heißt jetzt „mindestens x GB/Tag" — die Ableitung einer unteren Schranke ist
+selbst eine.
+
+## Geänderte Dateien
+
+| Datei | Was |
+|---|---|
+| `src/worker.js` | `sessionMove`; Bewegungsfelder an der Aktienzeile; Memo in `tiingoIexSeries` |
+| `public/app.js` | Bewegungsmelder-Kachel; Beschriftung aller Punkte; `stockStaleMark`; Nachweiszeile; Bandbreiten-Anker |
+| `public/index.html` | Container `#watchMoves` |
+| `public/style.css` | Führungslinien, Veraltet-Ring, Nachweiszeile, Ankerfeld |
+| `tests/watch-moves.mjs` | **neu**, NK94a–f und NK95, ausgeführt |
+| `tests/heatmap-filter.mjs` | NK88e auf die neue Zusage umgestellt |
+| `tests/safety-regression.mjs` | Schnittmarke `attachLiveQuotes` robust; Beschriftungsregel abgelöst |
+| `tests/display-honesty.mjs` | „Tempo" → „mindestens" |
+
+## Was beim nächsten Mal zu prüfen ist
+
+Drei Messungen, keine Meinungen:
+
+1. **Die Nachweisquote im Verlauf.** Läuft sie für neue Freigaben nicht gegen
+   100 %, greift der 4.15.0-Fix nicht.
+2. **`iex-chart` nach ein paar Handelstagen.** Sinkt die Abrufzahl je Tag nicht
+   spürbar, greift das Memo nicht — dann kommen die Abrufe aus einem anderen
+   Pfad als vermutet.
+3. **Der Bandbreiten-Anker.** Zwei Ablesungen im Abstand von Tagen, dann steht
+   fest, welche der beiden Erklärungen stimmt.
+
+Eine offene Entscheidung bleibt beim Nutzer: die Ausführbarkeit bei veralteten
+Daten zu deckeln, analog zu `Math.min(executability, 6.4)` bei unbekanntem
+Orderbuch.
+
 # FusionPulse 4.15.0 — der Aktienverlauf stand auf 0,0 %, weil nie gemessen wurde
 
 Nutzerbefund, 11.09.: im Panel „Verlauf der Kauf-Freigaben · Aktien" trug

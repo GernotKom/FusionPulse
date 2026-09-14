@@ -1,33 +1,50 @@
-FusionPulse v4.15.0 – Update (Nachmessung der Kauf-Freigaben + Zeit je Modell)
+FusionPulse v4.16.0 – Bewegungsmelder, Heatmap-Beschriftung, Bandbreite
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
 Keine neuen Secrets, keine neue Migration, kein neues Binding.
 
-VOR DEM HOCHLADEN – SECHS ALTSTAENDE LOESCHEN:
-Im Repository-Root liegen seit langem Dateien aus v2.5.1, die NICHT
-ausgeliefert werden (wrangler.jsonc: main=src/worker.js, assets=./public),
-aber wie aktueller Code aussehen. Dieses Paket enthaelt sie nicht mehr; ein
-Upload loescht sie deshalb NICHT von selbst. Von Hand entfernen:
-  app.js  worker.js  index.html  style.css  sw.js  sync-version.mjs
-(jeweils im ROOT – die gleichnamigen Dateien in public/, src/ und scripts/
-bleiben! Die sind der lebende Stand.)
+WAS NEU IST:
 
-WAS BEHOBEN IST:
-1. VERLAUF DER KAUF-FREIGABEN · AKTIEN stand durchgehend auf 0,0 %.
-   Die Nachmessung lag hinter der Schreibschwelle und lief bei Aktien
-   praktisch nie. Sie laeuft jetzt VOR der Schwelle ueber alle beobachteten
-   Symbole. Neue Freigaben tragen ab jetzt echte Werte – sichtbar nach rund
-   drei Stunden (Lernhorizont). Der Altbestand bleibt unmessbar.
-2. „NICHT GEMESSEN" ist ein eigener Zustand. Wo nie nachgesehen wurde, steht
-   das jetzt da – statt einer erfundenen 0,0 %.
-3. ZEIT IM ZUSTAND je Modell im Modellvergleich: „seit 22:36 · 1 h 12 min".
-   Beim ersten Sehen steht „beobachtet ab" statt „seit" – der Umschlag wurde
-   dann naemlich nicht beobachtet und wird deshalb nicht behauptet.
+1. BEWEGUNGSMELDER DER WATCHLIST — der CRWD-Befund vom 14.09.
+   CRWD stand mit +15,4 % im Tag, lag in deiner Liste, und die App meldete
+   nichts. Grund: der einzige Aktien-Melder haengt an KAUF-Qualitaet, und ein
+   Titel, der bereits 15 % gelaufen ist, faellt im Positionsmodus zu Recht
+   durch. Die Ablehnung war richtig, das Schweigen nicht.
+   Neue Kachel ueber den Top Picks: Titel deiner Liste ab 5 % Tagesbewegung,
+   mit Spitze und Uhrzeit des Hochs. Ton nur beim ERSTEN Reissen je Titel und
+   US-Handelstag. Ausdruecklich ohne Ampel, ohne Plan, ohne Freigabe.
+   Schwelle: Einstellungen (`moveAlertPct`, Vorgabe 5 %).
+   KOSTET KEINE BANDBREITE — gerechnet aus der Bar-Serie, die ohnehin kommt.
 
-WAS DU BEOBACHTEN SOLLTEST:
-Den D1-Schreibstand (Kopfzeile „DB x/1000k"). Die Messung erfasst jetzt mehr
-Zeilen; gerechnet etwa eine Verdopplung, gemessen ist das noch nicht.
-Stellschraube waere OUTCOME_MIN_STEP_PCT in src/worker.js – NICHT die
-Rueckkehr hinter die Schwelle.
+2. ALLE KUGELN IN DER HEATMAP SIND BESCHRIFTET.
+   Bisher gab es genau eine Lage je Punkt: mittig. War sie belegt, entfiel der
+   Name. Auf dem Telefon ohne Mouseover war der Titel damit nicht mehr
+   auffindbar. Jetzt werden neun Lagen geprueft; bei versetzter Aufschrift
+   zieht eine duenne Linie zum Punkt. Gilt fuer BEIDE Karten.
+
+3. VERALTETE PUNKTE SIND ERKENNBAR (QGEN-Befund).
+   Gestrichelter Ring, gedaempfte Fuellung, Alter im Mouseover. Die Position
+   selbst bleibt unveraendert — die Ausfuehrbarkeit wird NICHT gedeckelt, das
+   waere eine Regelaenderung und keine Anzeigekorrektur.
+
+4. NACHWEIS DER NACHMESSUNG.
+   Im Verlauf der Kauf-Freigaben steht jetzt „N von M Episoden nachgemessen"
+   mit Prozentwert. Das ist der laufende Beleg, dass der 4.15.0-Fix greift.
+   Fuer NEUE Freigaben sollte die Quote gegen 100 % laufen; Altbestand bleibt
+   dauerhaft ohne Messung.
+
+5. BANDBREITE.
+   `iex-chart` bekommt ein Memo je Symbol und 5-Minuten-Takt — zwei Abrufe im
+   selben Takt liefern zwingend dieselben Balken. Kein Aktualitaetsverlust,
+   der Takt steht im Schluessel.
+   Ausserdem: „Tempo x GB/Tag" heisst jetzt „mindestens x GB/Tag". Am 14.09.
+   lag die Eigenmessung gegen den Tiingo-Kontostand um Faktor 2,4 zu niedrig.
+
+WAS DU TUN SOLLTEST:
+Feed-Abzeichen anklicken, unter der Tabelle den echten Tiingo-Wert eintragen
+(Billing -> Usage, Allocation minus Requests Left). In ein paar Tagen nochmal.
+Der Vergleich der Zuwaechse sagt, ob die Eigenmessung einen Startversatz hat
+oder systematisch zu klein zaehlt — das ist der Unterschied zwischen rund 17
+und rund 30 GB Monatshochrechnung. Bis dahin wird NICHTS korrigiert.
 
 WICHTIG: Keine dieser Aenderungen veraendert Score, Ampel oder Kauf-Freigabe.

@@ -2022,6 +2022,92 @@ function sessionVwap(bars, opts = {}) {
   }
   return out;
 }
+
+/* ══ v4.16.0 · WAS IST HEUTE PASSIERT — DIE FRAGE, DIE NIEMAND BEANTWORTET HAT ══
+   BEFUND aus dem Betrieb (14.09.): CRWD stand mit +15,4 % im Tag und lag in der
+   Watchlist des Nutzers. Die App hat dazu NICHTS gemeldet — kein Ton, keine
+   Kachel, keine Zeile. Der Nutzer: „ist ja dann voellig umsonst."
+
+   Er hatte recht, und der Grund ist ein Entwurfsloch, kein Fehler. Der einzige
+   akustische Melder bei Aktien haengt an `stockLevel >= 2`, also an KAUF-
+   Qualitaet. Ein Titel, der bereits 15 % gelaufen ist, ist im Positionsmodus
+   per Regelwerk kein Kauf-Setup — der Abstand zur EMA21 wird bestraft, der
+   Stop laege weit unten, das CRV waere mies. Die Ablehnung ist richtig. Dass
+   daraus SCHWEIGEN wird, ist es nicht.
+
+   Die App beantwortete sauber „was soll ich jetzt kaufen" und nirgends „was
+   ist heute in meiner Liste passiert". Bei 37 selbst zusammengestellten Titeln
+   ist das eine faire Erwartung.
+
+   KOSTET NICHTS. Die Bar-Serie liegt bereits vor (`tiingoIexSeries`, sechs
+   Sitzungen im 5-Minuten-Raster). Der Vortagsschluss steht darin, das
+   Tageshoch auch. Kein zusaetzlicher Abruf, keine Bandbreite.
+
+   ABGRENZUNG, und sie ist der ganze Punkt: das hier ist eine BEOBACHTUNG, kein
+   Urteil. Keine Ampel, kein Plan, keine Freigabe, 0 % Gewicht in Score und
+   BUY. „Der Titel hat sich bewegt" und „der Titel ist kaufenswert" sind zwei
+   verschiedene Aussagen, und die zweite bleibt dem Regelwerk vorbehalten. */
+function sessionMove(bars, opts = {}) {
+  const now = opts.now instanceof Date ? opts.now : new Date(opts.now || Date.now());
+  const out = { dayMovePct:null, prevCloseUsd:null, dayHighPct:null, dayLowPct:null,
+    dayExtremeTs:null, dayBars:0, moveBasis:null, moveReason:null };
+
+  /* Nur der Tiingo-IEX-Pfad. Twelve Data mischt Premarket ein und liefert 40
+     Bars — der Vortagsschluss liegt dort ausserhalb des Fensters. Derselbe
+     Grund wie in `sessionVwap`, und dieselbe Konsequenz: lieber nichts melden
+     als etwas Halbes. */
+  const feed = String(opts.feed || '');
+  if (!/tiingo/i.test(feed)) { out.moveReason = feed ? `Datenquelle ${feed} traegt keine Vortagsbasis` : 'Datenquelle unbekannt'; return out; }
+
+  const gut = (bars || []).map((b) => ({ t: Date.parse(b?.dt || ''), c: Number(b?.c), h: Number(b?.h), l: Number(b?.l) }))
+    .filter((b) => Number.isFinite(b.t) && Number.isFinite(b.c) && b.c > 0);
+  if (gut.length < 2) { out.moveReason = 'zu wenige verwertbare Bars'; return out; }
+
+  /* Die BEZUGSSITZUNG ist die des juengsten Bars, nicht die der Uhr. Sonntag
+     abends ist die letzte Sitzung Freitag, und ein Tagesbalken, der auf die
+     laufende Kalenderuhr zeigt, waere dort leer — die Anzeige haette „keine
+     Bewegung" gesagt, wo „Freitag +15 %" richtig ist. */
+  const letzter = gut[gut.length - 1];
+  const win = regularSessionWindow(new Date(letzter.t));
+  const inSession = gut.filter((b) => b.t >= win.start && b.t < win.end);
+  /* Vor 09:30 ET gibt es noch keinen Sitzungsbalken. Dann zaehlt der
+     Vorboersenhandel gegen denselben Vortagsschluss — genau die Lage, in der
+     ein Gap entsteht und in der die Meldung am meisten wert ist. */
+  const basis = inSession.length ? 'reguläre Sitzung' : 'Vorbörse gegen Vortagsschluss';
+  /* Die Trennlinie ist MITTERNACHT ET, nicht 09:30. Gegen 09:30 zu schneiden
+     war der erste Entwurf, und NK94b hat ihn sofort gefaellt: vor der
+     Eroeffnung liegen die Vorboersen-Bars des HEUTIGEN Tages ebenfalls vor
+     `win.start` und wurden zum „Vortagsschluss" erklaert. Der Melder haette
+     im Gap also den Gap gegen sich selbst gerechnet und rund null gemeldet —
+     genau in der Lage, fuer die er gebaut ist. */
+  const tagStart = win.start - RTH_OPEN_MIN * 60_000;
+  const vorher = gut.filter((b) => b.t < tagStart);
+  if (!vorher.length) { out.moveReason = 'kein Vortagsschluss in der Serie'; return out; }
+
+  const prevClose = vorher[vorher.length - 1].c;
+  if (!(prevClose > 0)) { out.moveReason = 'Vortagsschluss unbrauchbar'; return out; }
+
+  const fenster = inSession.length ? inSession : gut.filter((b) => b.t >= tagStart);
+  let hi = -Infinity, lo = Infinity, hiT = null;
+  for (const b of fenster) {
+    const h = Number.isFinite(b.h) ? b.h : b.c, l = Number.isFinite(b.l) ? b.l : b.c;
+    if (h > hi) { hi = h; hiT = b.t; }
+    if (l < lo) lo = l;
+  }
+  out.prevCloseUsd = +prevClose.toFixed(4);
+  out.dayMovePct = +((letzter.c / prevClose - 1) * 100).toFixed(2);
+  out.dayBars = fenster.length;
+  out.moveBasis = basis;
+  if (Number.isFinite(hi)) out.dayHighPct = +((hi / prevClose - 1) * 100).toFixed(2);
+  if (Number.isFinite(lo)) out.dayLowPct = +((lo / prevClose - 1) * 100).toFixed(2);
+  /* Der Zeitstempel gehoert zum HOECHSTEN Bar, nicht zum Bar, in dem die
+     Schwelle gerissen wurde — den kennt die Serie nicht ohne Schwellenwert,
+     und ein hier hartkodierter waere eine zweite Wahrheit neben der
+     Einstellung in der Oberflaeche. Die Anzeige beschriftet ihn entsprechend
+     als „Hoch um", nicht als „Ausbruch um". */
+  out.dayExtremeTs = hiT == null ? null : new Date(hiT).toISOString();
+  return out;
+}
 function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3, opts = {}) {
   const on = comp instanceof Set ? comp : new Set(ALL_ON);
   const vals = src?.values;
@@ -2046,6 +2132,9 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3, opts = {
      stammen, sonst waere die Distanz eine Vermischung. Die Oberflaeche prueft
      zusaetzlich den Scope der angezeigten Quote. */
   const sv = sessionVwap(bars, { now: new Date(), feed: opts.feed || '', price: last.c });
+  // v4.16.0 · Tagesbewegung aus denselben Bars. Siehe `sessionMove`: reine
+  // Beobachtung, 0 % Gewicht in Score, Ampel und Freigabe.
+  const mv = sessionMove(bars, { now: new Date(), feed: opts.feed || '' });
 
   const ret5 = (last.c / prev.c - 1) * 100;
   const ret15 = (last.c / bars.at(-4).c - 1) * 100;
@@ -2462,6 +2551,10 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3, opts = {
     symbol, sector, name: src?.meta?.name || STOCK_NAMES[symbol] || symbol,
     exchange: src?.meta?.exchange || 'US', currency: src?.meta?.currency || 'USD',
     score:fusion.score, executability, light:fusion.light, verdict:fusion.verdict, setup, trend,
+    /* v4.16.0 · Bewegungsmelder der Watchlist. Reine Anzeige: 0 % Gewicht in
+       Score, Ampel und Freigabe. Siehe `sessionMove` fuer den Befund. */
+    dayMovePct: mv.dayMovePct, prevCloseUsd: mv.prevCloseUsd, dayHighPct: mv.dayHighPct,
+    dayLowPct: mv.dayLowPct, dayExtremeTs: mv.dayExtremeTs, moveBasis: mv.moveBasis, moveReason: mv.moveReason,
     priceUsd: last.c, priceEur: e(last.c),
     entryUsd: entry, entryEur: e(entry),
     stopUsd: stop, stopEur: e(stop),
@@ -9731,12 +9824,49 @@ function seriesLookbackDays(now = Date.now()) {
   }
   return SERIES_LOOKBACK_DAYS;
 }
+/* ══ v4.16.0 · DIESELBE SERIE WURDE IM SELBEN TAKT MEHRFACH GEHOLT ══════════
+   BEFUND aus dem Tiingo-Konto (14.09.): `iex-chart` stand bei 93.852 Abrufen
+   und 1,831 GB — 31 % der Bandbreite. Der Kommentar, mit dem in v4.12.x der
+   Rueckblick von 36 Stunden auf sechs Tage verlaengert wurde, rechnete mit
+   „0,049 GB im Monat". Das ist Faktor 37 daneben. Die Antwortgroesse war
+   richtig geschaetzt (16 KB erwartet, 20,5 KB gemessen); die ANZAHL der
+   Abrufe war es nicht.
+
+   Die Serie wird im 5-Minuten-Raster geliefert. Zwei Abrufe desselben Symbols
+   innerhalb desselben 5-Minuten-Takts liefern zwingend dieselben Balken — der
+   zweite ist reine Bandbreite ohne einen einzigen neuen Datenpunkt. Genau das
+   passierte, sobald ein Titel in derselben Runde ueber zwei Wege in den Deep
+   Scan kam (Favorit UND Radar, oder Nachpruefung UND Favorit).
+
+   KEIN VERLUST AN AKTUALITAET, und das ist nachpruefbar statt behauptet: der
+   Schluessel enthaelt den Takt. Mit dem naechsten 5-Minuten-Balken ist der
+   Eintrag ungueltig, und es wird neu geholt. Der Memo kann also nie einen
+   Balken zurueckhalten, den der Feed schon haette. */
+const iexSeriesMemo = new Map();
+function iexSeriesMemoPut(key, val) {
+  iexSeriesMemo.set(key, val);
+  /* Der Isolate lebt lange genug, dass ein unbegrenzter Memo waechst. Es
+     reichen die Symbole der laufenden und der vorigen Runde. */
+  if (iexSeriesMemo.size > 120) {
+    const alt = [...iexSeriesMemo.keys()].slice(0, iexSeriesMemo.size - 120);
+    for (const k of alt) iexSeriesMemo.delete(k);
+  }
+}
 async function tiingoIexSeries(env,symbol){
   const start=new Date(Date.now()-seriesLookbackDays()*86400_000).toISOString().slice(0,10);
+  const bucket5=Math.floor(Date.now()/300_000);
+  const memoKey=`${symbol}|${start}|${bucket5}`;
+  const hit=iexSeriesMemo.get(memoKey);
+  if(hit) return hit;
   const path=`/iex/${encodeURIComponent(symbol)}/prices?startDate=${start}&resampleFreq=5min&columns=open,high,low,close,volume`;
   const d=await tiingoFetch(env,path);
   const arr=Array.isArray(d)?d:[];
-  return {meta:{symbol,name:STOCK_NAMES[symbol]||STOCK_SEARCH_BY_SYMBOL.get(symbol)?.name||symbol,exchange:'US',currency:'USD'},values:arr.map(x=>({datetime:x.date,open:x.open,high:x.high,low:x.low,close:x.close,volume:x.volume})).reverse()};
+  const out={meta:{symbol,name:STOCK_NAMES[symbol]||STOCK_SEARCH_BY_SYMBOL.get(symbol)?.name||symbol,exchange:'US',currency:'USD'},values:arr.map(x=>({datetime:x.date,open:x.open,high:x.high,low:x.low,close:x.close,volume:x.volume})).reverse()};
+  /* Nur brauchbare Antworten werden gemerkt. Eine leere Serie wegen eines
+     Aussetzers fuer fuenf Minuten festzuhalten waere die teuerste Art zu
+     sparen — sie wuerde den Titel eine Runde lang unanalysierbar machen. */
+  if(out.values.length>=24) iexSeriesMemoPut(memoKey,out);
+  return out;
 }
 /* ══ v4.2.0 · RELATIVE STAERKE GEGEN EINEN BENCHMARK, NICHT GEGEN DIE BREADTH ══
    Der naheliegende Bezug waere `aladdinRegime.vwapBreadth` gewesen. Dagegen

@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.15.0 — Frontend
+   FusionPulse v4.16.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -125,6 +125,15 @@ const DEFAULTS = {
      Einstellungen werden aus dem Speicher flach ueber DEFAULTS gelegt, ein
      verschachtelter Zweig kaeme aus einem alten Stand unvollstaendig zurueck. */
   heatTrade: true, heatWatch: true, heatRest: true,
+  /* v4.16.0 · Bewegungsmelder der Watchlist. Ab welcher Tagesbewegung ein Titel
+     gemeldet wird, in Prozent. 5 ist bewusst hoch angesetzt: ein Melder, der
+     bei 1 % anschlaegt, meldet an einem normalen Tag die halbe Liste und wird
+     nach zwei Tagen ignoriert. `moveAlertSound` steuert nur den Ton, die
+     Kachel bleibt immer sichtbar. */
+  moveAlertPct: 5, moveAlertSound: true,
+  /* v4.16.0 · Anker fuer den Abgleich der Bandbreiten-Eigenmessung mit dem
+     echten Kontostand. Siehe `bwAnchorBox`. 0 heisst: kein Anker gesetzt. */
+  bwAnchorGb: 0, bwAnchorSelf: 0, bwAnchorAt: 0,
   /* v3.15.0 · Kachelfarben, Variante A: DEKORATION.
      Farbe traegt in dieser App Bedeutung — gruen/gelb/grau heisst handeln /
      zu teuer / kein Setup, und die Systemampel heisst stabil / eingeschraenkt /
@@ -2274,6 +2283,35 @@ function stockDisplayMeta(r){
    Beide Achsen sind technisch (Musterqualitaet hoch, Ausfuehrbarkeit rechts).
    Wirtschaftlichkeit steckt in KEINER der beiden — deshalb kommt sie hier
    ueber die Kopfbewertung in Farbe und Mouseover dazu. */
+/* ══ v4.16.0 · VERALTETE PUNKTE SIND IN DER KARTE NICHT ERKENNBAR GEWESEN ═══
+   BEFUND vom 14.09.: QGEN lag im Feld „MUSTER STARK · gut handelbar" mit
+   Ausfuehrbarkeit 10,0/10, waehrend die Detailkachel daneben korrekt
+   „NICHT LIVE / VERALTET · 3 Tage alt" sagte. Der Kurs stammte von Freitag
+   15:55 ET, 63 Stunden alt. Der Nutzer: „premarket laeuft — das verwirrt."
+
+   Die Karte kennt keine Frische. Beide Achsen sind technisch und werden aus
+   dem zuletzt gelieferten Datensatz gerechnet; ob der eine Minute oder drei
+   Tage alt ist, geht in keine von beiden ein. Eine veraltete Zeile wurde
+   deshalb exakt wie eine frische gezeichnet.
+
+   BEWUSST NUR EINE MARKIERUNG, KEINE VERSCHIEBUNG. Die Ausfuehrbarkeit bei
+   altem Kurs zu deckeln waere fachlich vertretbar — ein Spread von Freitag
+   sagt nichts ueber den Spread jetzt — aber das ist eine Regelaenderung mit
+   Wirkung auf die Ampel und gehoert nicht in eine Anzeigekorrektur. Hier wird
+   nur sichtbar gemacht, was die Detailkachel ohnehin schon weiss.
+
+   NICHT VERSTECKT: ein Titel, der seit Freitag ein sauberes Muster traegt, ist
+   eine echte Beobachtung. Er ist nur keine Handelsgelegenheit. */
+function stockStaleMark(r){
+  const f=stockFreshness(r);
+  if(f.ok) return {stale:false, note:''};
+  const alter = f.age==null ? 'Alter unbekannt'
+    : f.age<3600 ? `${Math.round(f.age/60)} Min. alt`
+    : f.age<86400 ? `${(f.age/3600).toFixed(1)} Std. alt`
+    : `${Math.round(f.age/86400)} Tage alt`;
+  return {stale:true, note:`\n⏻ ${f.label} · ${alter}. Beide Achsen sind auf diesem Kurs gerechnet — die Position sagt also, wie der Titel zuletzt DASTAND, nicht wie er jetzt handelbar ist.`};
+}
+
 function stockHeatmapMark(r){
   const hl=stockHeadline(r), sz=stockSizing(r), tr=stockTradeability(r);
   const weak=hl.kind==='economic';
@@ -2326,15 +2364,60 @@ function heatSeparate(pts, opt) {
     a.x -= ux * push * .5; a.y -= uy * push * .5; b.x += ux * push * .5; b.y += uy * push * .5;
   }
   pts.forEach((p) => { p.x = Math.max(10, Math.min(190, p.x)); p.y = Math.max(10, Math.min(190, p.y)); });
-  /* Wer keinen Platz hat, bekommt keinen Namen — behaelt aber Punkt, Farbe,
-     Klickflaeche und Mouseover. Ein Name unter zwei anderen ist keine
-     Information, er sieht nur wie eine aus. */
+  /* ══ v4.16.0 · JEDE KUGEL BEKOMMT EINEN NAMEN ═════════════════════════════
+     Bis 4.15.0 galt: „Wer keinen Platz hat, bekommt keinen Namen." Das war in
+     4.9.0 gut gemeint — ein Name unter zwei anderen ist keine Information.
+     In der Praxis führte es dazu, dass in einem dichten Feld die Hälfte der
+     Punkte namenlos blieb und nur per Mouseover identifizierbar war. Auf dem
+     Telefon gibt es kein Mouseover. Gemeldet am 14.09.: „in der heatmap
+     sollten auch alle Kugeln beschriftet sein."
+
+     DER PLATZ WAR DA, er wurde nur an der falschen Stelle gesucht. Bis jetzt
+     gab es genau EINEN Kandidaten je Punkt: mitten drauf. Jetzt werden neun
+     Lagen geprüft — mittig, dann die acht Richtungen ringsum — und die
+     günstigste genommen. Sitzt die Aufschrift daneben, zieht eine kurze Linie
+     zu ihrem Punkt, damit die Zuordnung eindeutig bleibt.
+
+     GARANTIE: jeder Punkt wird beschriftet. Bleibt keine Lage kollisionsfrei,
+     gewinnt die mit der geringsten Überdeckung — eine leicht überlappende
+     Aufschrift ist immer noch besser als gar keine, weil sie den Titel
+     benennt. Die Reihenfolge der Vergabe bleibt unverändert (ausgewählter
+     Titel, Favorit, Kauf-Freigabe, Musterqualität): wer zuerst kommt, bekommt
+     die beste Lage. */
   const placed = [];
+  const LAGEN = [[0,0],[0,-1],[0,1],[-1,0],[1,0],[-1,-1],[1,-1],[-1,1],[1,1]];
   [...pts].sort((a, b) => rankOf(a) - rankOf(b) || tieOf(b) - tieOf(a)).forEach((p) => {
-    const clash = placed.some((o) =>
-      (p.halfW + o.halfW) - Math.abs(o.x - p.x) > 0 && (p.halfH + o.halfH) - Math.abs(o.y - p.y) > 0);
-    p.label = !clash;
-    if (!clash) placed.push(p);
+    let best = null, bestKost = Infinity;
+    for (const [dx, dy] of LAGEN) {
+      const daneben = dx !== 0 || dy !== 0;
+      const lx = p.x + dx * (p.halfW + p.rad * 0.5);
+      const ly = p.y + dy * (p.halfH + p.rad * 0.5);
+      // Aufschriften bleiben im Feld — abgeschnittene Namen sind keine Namen.
+      if (lx - p.halfW < 1 || lx + p.halfW > 199 || ly - p.halfH < 1 || ly + p.halfH > 199) continue;
+      /* Mittig ist immer die beste Lage und bekommt deshalb Kosten 0; jede
+         Auslagerung startet mit einem kleinen Aufschlag, damit sie nur bei
+         echtem Gedränge gewinnt. Danach zählt die Überdeckungsfläche. */
+      let kost = daneben ? 0.8 : 0;
+      for (const o of placed) {
+        const ox = (p.halfW + o.halfW) - Math.abs(o.lx - lx);
+        const oy = (p.halfH + o.halfH) - Math.abs(o.ly - ly);
+        if (ox > 0 && oy > 0) kost += ox * oy;
+      }
+      // Eine Aufschrift auf einem FREMDEN Punkt verdeckt dessen Farbe.
+      for (const q of pts) {
+        if (q === p) continue;
+        if (Math.abs(q.x - lx) < p.halfW + q.rad && Math.abs(q.y - ly) < p.halfH + q.rad) kost += 3;
+      }
+      if (kost < bestKost) { bestKost = kost; best = { lx, ly, daneben }; }
+      if (kost === 0) break;
+    }
+    if (!best) best = { lx: p.x, ly: p.y, daneben: false };
+    p.label = true;                       // ab 4.16.0 immer
+    p.ldx = +(best.lx - p.x).toFixed(2);   // relativ zum Punkt, das <g> ist verschoben
+    p.ldy = +(best.ly - p.y).toFixed(2);
+    p.leader = best.daneben;
+    p.labelCrowded = bestKost > 0.8;       // fuer den Mouseover-Hinweis
+    placed.push({ lx: best.lx, ly: best.ly, halfW: p.halfW, halfH: p.halfH });
   });
   return pts;
 }
@@ -2588,16 +2671,14 @@ function stockHeatmap(shown) {
      und der Mouseover nennt das Netto-Potenzial. Vorher konnte ein Titel im
      Feld oben rechts gruen leuchten, waehrend sein Plan netto 20 EUR brachte —
      die Achsen messen naemlich BEIDE nur Technik, nie Ertrag. */
-  pts.map(({r,x,y,rad,label})=>{
+  pts.map(({r,x,y,rad,ldx,ldy,leader})=>{
     const hl=stockHeatmapMark(r);
-    /* v4.9.0: ohne freien Platz entfaellt die AUFSCHRIFT, nicht der Punkt.
-       Klickflaeche, Farbe und Mouseover bleiben vollstaendig — dieselbe Regel
-       wie in der Coin-Karte seit 4.2.4. */
-    const inner = label
-      ? `<text x="0" y="2.2">${esc(r.symbol.slice(0,5))}</text>`
-      : '<circle class="unnamed" cx="0" cy="0" r="1.5"/>';
-    const namensNote = label ? '' : '\nOhne Aufschrift, weil an dieser Stelle kein lesbarer Platz ist — anklicken oder mit ★ markieren, dann wird der Name gesetzt.';
-    return `<g class="dot light-${hl.light} ${stockLevel(r)===3?'buy-ready':''} ${hl.weak?'econ-weak':''}" data-openstock="${esc(r.symbol)}" transform="translate(${Math.max(10,Math.min(190,x)).toFixed(1)} ${Math.max(10,Math.min(190,y)).toFixed(1)})"><circle class="hit" r="${rad+7}"/><circle class="core" r="${rad}"/>${inner}<title>${esc(hl.tip+namensNote)}</title></g>`;
+    /* v4.16.0: JEDER Punkt traegt seinen Namen. Liegt die Aufschrift daneben,
+       fuehrt eine kurze Linie zu ihrem Punkt — siehe `heatSeparate`. */
+    const fuehrung = leader ? `<line class="leader" x1="0" y1="0" x2="${ldx}" y2="${(ldy*0.62).toFixed(2)}"/>` : '';
+    const inner = `${fuehrung}<text class="${leader?'off':''}" x="${ldx}" y="${(ldy+2.2).toFixed(2)}">${esc(r.symbol.slice(0,5))}</text>`;
+    const st = stockStaleMark(r);
+    return `<g class="dot light-${hl.light} ${stockLevel(r)===3?'buy-ready':''} ${hl.weak?'econ-weak':''}${st.stale?' data-stale':''}" data-openstock="${esc(r.symbol)}" transform="translate(${Math.max(10,Math.min(190,x)).toFixed(1)} ${Math.max(10,Math.min(190,y)).toFixed(1)})"><circle class="hit" r="${rad+7}"/><circle class="core" r="${rad}"/>${st.stale?`<circle class="stalering" r="${(rad+2.4).toFixed(1)}"/>`:''}${inner}<title>${esc(hl.tip+st.note)}</title></g>`;
   }).join('');
   svg.querySelectorAll('[data-openstock]').forEach(dot=>dot.addEventListener('click',async()=>{
     focusStock=dot.dataset.openstock||''; renderStocks();
@@ -2833,7 +2914,20 @@ function renderSignalHistory(domain) {
       <td>${esc(e.outcome)}${e.measured === false ? '<small>ohne Nachmessung</small>' : ''}</td>
     </tr>`;
   }).join('');
-  el.innerHTML = `${kopf}
+  /* v4.16.0 · Der NACHWEIS steht jetzt oben, nicht in der Fußnote. Die
+     Verwurfsquote ist von 39 % auf 36 % gefallen, seit die Nachmessung in
+     4.15.0 vor die Schreibschwelle gezogen wurde — das ist ein Indiz, kein
+     Beleg, denn sie schwankt auch aus anderen Gründen. Diese Zeile ist der
+     Beleg: sie zählt, für wie viele Episoden tatsächlich nachgemessen wurde.
+     Steigt der Anteil über die nächsten Tage nicht, greift der Fix nicht, und
+     dann soll das hier stehen und nicht in einer Vermutung von mir. */
+  const gemessen = eps.length - unmeasured;
+  const quote = eps.length ? Math.round((gemessen / eps.length) * 100) : 0;
+  const nachweis = eps.length
+    ? `<div class="sighist-proof ${quote >= 80 ? 'ok' : quote >= 40 ? 'warn' : 'bad'}" title="Nachgemessen heißt: nach der Freigabe wurde der Kursverlauf tatsächlich beobachtet und ein Ausschlag aufgezeichnet. Bis v4.14.0 lief diese Messung im Aktienpfad praktisch nie — jede Episode trug 0,0 %. Diese Quote ist der laufende Nachweis, dass die Behebung greift; sie sollte für neue Freigaben gegen 100 % laufen. Altbestand bleibt dauerhaft ohne Messung.">`
+      + `<b>${gemessen} von ${eps.length} Episoden nachgemessen</b><span>${quote} %</span></div>`
+    : '';
+  el.innerHTML = `${kopf}${nachweis}
     <table class="sighist"><thead><tr>
       <th>Titel</th><th>erste Freigabe</th><th class="ta">bester Ausschlag danach</th><th>Ausgang</th>
     </tr></thead><tbody>${zeilen}</tbody></table>
@@ -3273,7 +3367,62 @@ function renderBandwidthTable(){
         <td>${num(r.gb,3)} GB</td>
         <td>${Math.round((Number(r.bytes)||0)/total*100)} %</td></tr>`).join('')
     + `</tbody></table>
-      <small class="hint">${esc(bw.note||'')} Gemessen seit Beginn des laufenden Monatsbehälters (überdauert Deploys, wird am Monatswechsel zurückgesetzt); ${num(bw.exactSamples,0)} exakte und ${num(bw.approxSamples,0)} geschätzte Messungen.</small>`;
+      <small class="hint">${esc(bw.note||'')} Gemessen seit Beginn des laufenden Monatsbehälters (überdauert Deploys, wird am Monatswechsel zurückgesetzt); ${num(bw.exactSamples,0)} exakte und ${num(bw.approxSamples,0)} geschätzte Messungen.</small>`
+    + bwAnchorBox(bw);
+  const inp=$('#bwAnchorGb'), btn=$('#bwAnchorSave'), del=$('#bwAnchorClear');
+  if(btn) btn.onclick=()=>{
+    const v=Number(String(inp?.value||'').replace(',','.'));
+    if(!(v>0)){ inp?.focus(); return; }
+    S.bwAnchorGb=v; S.bwAnchorSelf=Number(bw.usedGb)||0; S.bwAnchorAt=Date.now();
+    saveSettings(); renderBandwidthTable();
+  };
+  if(del) del.onclick=()=>{ S.bwAnchorGb=0; S.bwAnchorSelf=0; S.bwAnchorAt=0; saveSettings(); renderBandwidthTable(); };
+}
+
+/* ══ v4.16.0 · DIE EIGENMESSUNG LAG UM FAKTOR 2,4 DANEBEN ═══════════════════
+   BEFUND vom 14.09., beide Zahlen im selben Moment abgelesen: Tiingo meldete
+   25,80 von 40,00 GB frei, also 14,2 GB verbraucht. Die App meldete
+   „mindestens 5,89 GB gemessen · Tempo 0,48 GB/Tag". Die vier Pfade der
+   Tabelle summieren sich exakt auf diese 5,888 GB — die Tabelle stimmt also in
+   sich, die Luecke liegt woanders.
+
+   ZWEI URSACHEN SIND MOEGLICH, und sie fuehren zu VERSCHIEDENEN Schluessen:
+     • KONSTANTER VERSATZ — der Monatsbehaelter begann nicht am Ersten,
+       sondern bei einem spaeteren Deploy. Dann fehlen Tage vorne, und das
+       gemessene Tempo stimmt. Hochrechnung: rund 17 GB im Monat.
+     • PROPORTIONALER FAKTOR — jede Antwort wird zu klein gezaehlt. Dann ist
+       auch das Tempo um 2,4 zu niedrig. Hochrechnung: rund 30 von 40 GB.
+   Der Unterschied entscheidet, ob Luft ist oder nicht. Raten hilft hier nicht.
+
+   DESHALB EIN ANKER STATT EINER SCHAETZUNG. Der Nutzer traegt den echten Wert
+   von der Tiingo-Seite ein; die App merkt sich dazu ihren EIGENEN Stand im
+   selben Moment. Beim zweiten Eintrag laesst sich der Zuwachs beider Zahlen
+   vergleichen — und genau dieser Vergleich trennt die beiden Faelle:
+   gleicher Zuwachs heisst Startversatz, proportionaler Zuwachs heisst
+   Zaehlfehler.
+
+   Bis dahin wird NICHTS korrigiert. Ein geratener Faktor waere genau die Art
+   stiller Annahme, die den Fehler ueberhaupt erst zugelassen hat. */
+function bwAnchorBox(bw){
+  const self=Number(bw?.usedGb);
+  const aGb=Number(S?.bwAnchorGb)||0, aSelf=Number(S?.bwAnchorSelf)||0, aAt=Number(S?.bwAnchorAt)||0;
+  const kopf=`<div class="bwanchor"><b title="Der echte Verbrauch steht auf tiingo.com unter Billing → Usage als „Bandwidth“. Die App kann ihn nicht abfragen — er gehört zum Konto, nicht zur Schnittstelle.">Abgleich mit dem Kontostand</b>`;
+  const form=`<span class="bwanchor-form"><input id="bwAnchorGb" type="text" inputmode="decimal" placeholder="${aGb?num(aGb,2):'z. B. 14,2'}" title="Verbrauchte GB laut Tiingo (Allocation minus Requests Left).">`
+    +`<button type="button" id="bwAnchorSave">merken</button>${aGb?'<button type="button" id="bwAnchorClear">löschen</button>':''}</span>`;
+  if(!aGb || !Number.isFinite(self)) return kopf+form
+    +`<small>Trag hier den Wert von tiingo.com ein. Die App merkt sich ihren eigenen Stand dazu. Beim zweiten Eintrag in ein paar Tagen sagt der Vergleich, ob die Eigenmessung einen Startversatz hat oder systematisch zu klein zählt — das ist der Unterschied zwischen rund 17 und rund 30 GB Monatshochrechnung.</small></div>`;
+
+  const dSelf=self-aSelf, tage=aAt?(Date.now()-aAt)/86400_000:0;
+  const faktor=aSelf>0?aGb/aSelf:null;
+  /* Der Faktor aus EINEM Anker ist noch nicht der gesuchte: er enthaelt
+     Startversatz und Zaehlfehler gemeinsam. Erst der ZUWACHS trennt sie —
+     deshalb wird er hier ausdruecklich als vorlaeufig bezeichnet und nicht
+     zur Korrektur verwendet. */
+  const zuwachs = dSelf>0.05
+    ? `Seit dem Anker (${num(tage,1)} Tage) hat die Eigenmessung ${num(dSelf,2)} GB dazugezählt. Trag jetzt den neuen Tiingo-Wert ein: ist sein Zuwachs ähnlich groß, war die alte Lücke ein Startversatz und das Tempo stimmt. Ist er deutlich größer, zählt die App systematisch zu klein.`
+    : `Noch zu wenig Zuwachs seit dem Anker (${num(dSelf,2)} GB in ${num(tage,1)} Tagen) — warte ein paar Tage, sonst misst du Rauschen.`;
+  return kopf+form
+    +`<small>Anker: <b>${num(aGb,2)} GB</b> laut Tiingo gegen <b>${num(aSelf,2)} GB</b> Eigenmessung${faktor?` — vorläufiges Verhältnis ${num(faktor,2)}×`:''}. Dieses Verhältnis wird <b>nicht</b> zur Korrektur verwendet: es vermischt einen möglichen Startversatz mit einem möglichen Zählfehler. ${esc(zuwachs)}</small></div>`;
 }
 
 /* ══ v4.1.7 · DIE ZAHL, DIE MAN MORGENS BRAUCHT, STAND NUR IM ROH-JSON ═══════
@@ -3619,11 +3768,16 @@ function bandwidthNote(meta) {
   const idleTxt = stale
     ? (idle >= 24 ? ` · seit ${num(idle/24, 1)} Tagen kein Abruf` : ` · seit ${num(idle, 0)} h kein Abruf`)
     : '';
-  const rate = perDay != null ? ` · Tempo ${num(perDay, 2)} GB/Tag${idleTxt}` : '';
+  /* v4.16.0 · „Tempo" las sich wie eine Schaetzung der Wirklichkeit. Es ist
+     aber die Ableitung einer UNTEREN SCHRANKE und damit selbst eine untere
+     Schranke — am 14.09. um Faktor 2,4 zu niedrig gegen den Kontostand. Das
+     Wort steht jetzt dran. Siehe `bwAnchorBox` fuer die Messung, die den Fall
+     aufloest. */
+  const rate = perDay != null ? ` · mindestens ${num(perDay, 2)} GB/Tag${idleTxt}` : '';
   return { measured: true, pct: null, usedGb: used, capGb: cap, perDayGb: perDay, perMonthGb: perMonth,
     label: `Bandbreite: mindestens ${num(used, 2)} GB gemessen${rate}`,
     detail: `Eigenmessung seit Beginn des laufenden Monatsbehälters — eine UNTERE SCHRANKE, kein Kontostand. Früherer Verbrauch im selben Monat und andere Clients fehlen darin. Der Anbieter deckelt bei ${num(cap, 0)} GB im Monat und antwortet danach mit HTTP 429; aus dieser Zahl lässt sich NICHT ablesen, wie viel davon noch frei ist.`
-      + (perMonth != null ? ` Hochgerechnet aus dem gemessenen Tempo: rund ${num(perMonth, 0)} GB im Monat${over != null && over > 1 ? ` — das ${num(over, 1)}-fache des Kontingents.` : '.'}` : ''),
+      + (perMonth != null ? ` Hochgerechnet aus dem gemessenen Tempo: MINDESTENS rund ${num(perMonth, 0)} GB im Monat${over != null && over > 1 ? ` — das ${num(over, 1)}-fache des Kontingents.` : '.'} Am 14.09. lag die Eigenmessung gegen den Kontostand bei Tiingo um Faktor 2,4 zu niedrig; der wahre Wert kann also deutlich darüber liegen. Zum Eingrenzen: Feed-Abzeichen anklicken und unter der Tabelle den echten Wert eintragen.` : ''),
     /* ══ DIE UNTERE SCHRANKE DARF ESKALIEREN, ABER NIE BERUHIGEN ═════════════
        `used/cap` ist als Bruch irrefuehrend, weil der Zaehler seit dem Deploy
        zaehlt und der Nenner den ganzen Monat meint. In EINER Richtung ist er
@@ -4877,6 +5031,7 @@ function renderStocks() {
     renderBandwidthTable();
   }
   stockHeatmap(shown);
+  renderWatchMoves();   // v4.16.0 · siehe dort: Beobachtung, keine Bewertung
   // v3.3.9 P0: Das Fokusfenster ist unabhängig vom aktuell sichtbaren/
   // gefilterten Listen-Slice. Ein aus Radar/Momentum angeklickter Titel darf
   // niemals auf shown[0] (z. B. PMI) zurückfallen, nur weil er außerhalb
@@ -5448,7 +5603,7 @@ function renderMap() {
     const points=raw.map((p)=>`${(p.x+ox).toFixed(1)},${(p.y+oy).toFixed(1)}`).join(' ');
     return `<polyline class="trail ${r.light}" points="${points}"/>`;
   }).join('');
-  const dots = pts.map(({r,x,y,rad,label}) => {
+  const dots = pts.map(({r,x,y,rad,ldx,ldy,leader}) => {
     const sel=r.pair===selected, ready=buyReady(r);
     /* v3.6.1: Punktfarbe folgt der Kopf-Bewertung, nicht mehr allein r.light.
        Sonst leuchtet ein Coin gruen im Feld "STARK", waehrend die Karte
@@ -5457,10 +5612,10 @@ function renderMap() {
     return `<g class="dot light-${hl.light} ${sel?'sel':''} ${ready?'buy-ready':''} ${hl.kind==='economic'?'econ-weak':''}" data-pair="${r.pair}" transform="translate(${x.toFixed(1)} ${y.toFixed(1)})">
       <circle class="hit" cx="0" cy="0" r="${rad+7}"/>
       <circle class="core" cx="0" cy="0" r="${sel?rad+1.5:rad}"/>
-      ${label?`<text x="0" y="2.2">${sym(r.pair).slice(0,5)}</text>`:'<circle class="unnamed" cx="0" cy="0" r="1.5"/>'}
+      ${leader?`<line class="leader" x1="0" y1="0" x2="${ldx}" y2="${(ldy*0.62).toFixed(2)}"/>`:''}<text class="${leader?'off':''}" x="${ldx}" y="${(ldy+2.2).toFixed(2)}">${sym(r.pair).slice(0,5)}</text>
       <title>${sym(r.pair)} · ${hl.icon} ${hl.text}
 Qualität ${r.quality}/10 · Handelbarkeit ${r.executability}/10 · CRV ${r.netCRV}:1${sz?` · Plan netto ${eur(sz.planNet,0)}`:''}
-Achtung: beide Achsen sind TECHNISCH. Ob sich der Trade lohnt, steht in der Farbe und im Text oben.${label?'':'\nOhne Aufschrift, weil an dieser Stelle kein lesbarer Platz ist — mit ★ markieren oder anklicken, dann wird der Name gesetzt.'}</title>
+Achtung: beide Achsen sind TECHNISCH. Ob sich der Trade lohnt, steht in der Farbe und im Text oben.</title>
     </g>`;
   }).join('');
 
@@ -5931,6 +6086,115 @@ const PICK_RANK_LABEL={
   unbelegt:'ohne Beleg — nur Live-Score',
   belegtNegativ:'Beleg spricht dagegen',
 };
+
+/* ══ v4.16.0 · BEWEGUNGSMELDER DER WATCHLIST ════════════════════════════════
+   BEFUND, gemeldet am 14.09.: CRWD stand mit +15,4 % im Tag, lag in der
+   Watchlist — und die App meldete nichts. Kein Ton, keine Kachel, keine Zeile.
+   Wörtlich: „ist ja dann völlig umsonst."
+
+   Der Befund war richtig, und die Ursache ist kein Fehler, sondern ein Loch im
+   Entwurf. Der einzige akustische Melder bei Aktien hängt an `stockLevel >= 2`,
+   also an KAUF-Qualität. Ein Titel, der bereits 15 % gelaufen ist, fällt im
+   Positionsmodus durch — Abstand zur EMA21, weiter Stop, mieses CRV. Diese
+   Ablehnung ist richtig. Dass daraus Schweigen wurde, war es nicht.
+
+   Die App beantwortete „was soll ich jetzt kaufen" und nirgends „was ist heute
+   in meiner Liste passiert". Beides sind legitime Fragen, und nur die erste
+   hatte eine Antwort.
+
+   DIE TRENNUNG IST DER GANZE PUNKT. Diese Kachel bewertet nichts. Keine Ampel,
+   kein Plan, kein Einstieg, keine Freigabe, 0 % Gewicht in Score und BUY. Sie
+   sagt ausschließlich: dieser Titel deiner Liste hat sich bewegt, um so viel,
+   und das Hoch lag um diese Uhrzeit. Was daraus folgt, entscheidest du.
+
+   Ein Melder, der zu oft anschlägt, wird ignoriert — deshalb 5 % Vorgabe und
+   ein Ton nur beim ERSTEN Reißen der Schwelle je Titel und Tag. */
+const MOVE_SEEN_KEY='fp.moveSeen.v1';
+let moveSeenStore=(()=>{ try{ return JSON.parse(localStorage.getItem(MOVE_SEEN_KEY)||'{}')||{}; }catch{ return {}; } })();
+const moveEtDay=()=>{ try{ return new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()); }catch{ return new Date().toISOString().slice(0,10); } };
+const moveThreshold=()=>{ const v=Number(S?.moveAlertPct); return Number.isFinite(v)&&v>0?v:DEFAULTS.moveAlertPct; };
+
+/** Die bewegten Titel der Watchlist, stärkste zuerst. Bewusst über den ABSOLUT
+ *  größten Ausschlag sortiert: ein Titel, der 12 % verliert, ist für einen
+ *  Beobachter genauso interessant wie einer, der 12 % gewinnt — und für wen er
+ *  es nicht ist, der liest das Vorzeichen. */
+function watchMoveRows(){
+  const s=moveThreshold();
+  return (stockRows||[])
+    .filter(r=>Number.isFinite(Number(r?.dayMovePct)))
+    .map(r=>({r, mv:Number(r.dayMovePct), hi:Number(r.dayHighPct), lo:Number(r.dayLowPct)}))
+    .filter(x=>Math.abs(x.mv)>=s || (Number.isFinite(x.hi)&&x.hi>=s) || (Number.isFinite(x.lo)&&x.lo<=-s))
+    .sort((a,b)=>Math.abs(b.mv)-Math.abs(a.mv));
+}
+
+/* Ton nur beim ersten Reißen je Titel und HANDELSTAG (New York, nicht Wien —
+   sonst springt der Merker mitten in der US-Sitzung um Mitternacht unserer
+   Zeit). Der Merker überlebt einen Neustart der App. */
+function trackWatchMoves(list){
+  const tag=moveEtDay(), s=moveThreshold();
+  if(moveSeenStore.day!==tag) moveSeenStore={day:tag, syms:{}};
+  let neu=0;
+  for(const x of list){
+    const sym=String(x.r?.symbol||'').toUpperCase(); if(!sym) continue;
+    if(moveSeenStore.syms[sym]) continue;
+    if(Math.abs(x.mv)<s) continue;          // Ton nur am tatsächlichen Stand, nicht am Tageshoch
+    moveSeenStore.syms[sym]=Math.round(x.mv*100)/100; neu++;
+  }
+  if(neu){
+    try{ localStorage.setItem(MOVE_SEEN_KEY,JSON.stringify(moveSeenStore)); }catch{ /* Speicher blockiert */ }
+    if(S.sound&&S.moveAlertSound!==false) beep('stockgreen');
+  }
+}
+
+function renderWatchMoves(){
+  const el=$('#watchMoves'); if(!el) return;
+  const s=moveThreshold();
+  const list=watchMoveRows();
+  trackWatchMoves(list);
+  const head=(extra='')=>`<div class="ophead"><b>📊 Bewegung in deiner Watchlist</b>`
+    +`<span title="Gemessen gegen den Schluss der vorherigen regulären US-Sitzung, aus derselben Bar-Serie, die auch die Analyse benutzt. Kein zusätzlicher Abruf.">ab ${num(s,1)} % Tagesbewegung · gegen Vortagsschluss</span>`
+    +`<small title="Diese Kachel bewertet NICHT. Sie sagt, dass sich etwas bewegt hat — nicht, dass du kaufen sollst. Ein Titel, der bereits weit gelaufen ist, ist nach dem Regelwerk dieser App typischerweise KEIN Kauf-Setup.">Beobachtung · keine Kauf-Freigabe · 0 % Gewicht</small>${extra}</div>`;
+
+  if(!list.length){
+    /* Auch das Nichts bekommt einen Grund. „Keine Bewegung" und „keine
+       Tagesbasis vorhanden" sind zwei verschiedene Zustände, und nur der
+       zweite ist ein Problem. */
+    const mitBasis=(stockRows||[]).filter(r=>Number.isFinite(Number(r?.dayMovePct))).length;
+    const gesamt=(stockRows||[]).length;
+    const grund=!gesamt ? 'Es sind noch keine Titel geladen.'
+      : mitBasis ? `Kein Titel deiner Liste hat heute ${num(s,1)} % erreicht. Geprüft: ${mitBasis} von ${gesamt}.`
+      : `Für keinen der ${gesamt} geladenen Titel liegt ein Vortagsschluss in der Bar-Serie — ohne Basis wird keine Bewegung behauptet.`;
+    paintPanel(el, head()+`<span class="hint">${esc(grund)}</span>`);
+    return;
+  }
+
+  const karten=list.map(({r,mv,hi,lo})=>{
+    const auf=mv>=0;
+    const spitze=Number.isFinite(hi)&&Number.isFinite(lo)?(Math.abs(hi)>=Math.abs(lo)?hi:lo):(Number.isFinite(hi)?hi:lo);
+    const uhr=r.dayExtremeTs?clock(Date.parse(r.dayExtremeTs)):null;
+    const fresh=stockFreshness(r);
+    const tip=[
+      `${r.symbol}${r.name?' · '+r.name:''}`,
+      `${auf?'+':''}${num(mv,2)} % gegen Vortagsschluss${r.prevCloseUsd?` ($ ${num(r.prevCloseUsd,2)})`:''}`,
+      Number.isFinite(spitze)?`Größter Ausschlag im Tag: ${spitze>=0?'+':''}${num(spitze,2)} %${uhr?` · Hoch um ${uhr}`:''}`:'',
+      r.moveBasis?`Basis: ${r.moveBasis}`:'',
+      fresh.ok?'':`ACHTUNG: ${fresh.label} — der zugrunde liegende Kurs ist nicht live.`,
+      'Diese Kachel ist eine Beobachtung. Sie sagt NICHT, dass hier ein Trade ist.',
+      'Klick: Aktie öffnen'
+    ].filter(Boolean).join('\n');
+    return `<button type="button" class="opcard ${auf?'move-up':'move-down'}${fresh.ok?'':' move-stale'}" data-openstock="${esc(r.symbol)}" title="${esc(tip)}">`
+      +`<b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b>`
+      +`<span class="trend-pct ${auf?'up':'down'}">${auf?'+':''}${num(mv,1)} % Tag</span>`
+      +`<span>${Number.isFinite(spitze)?`Spitze ${spitze>=0?'+':''}${num(spitze,1)} %`:'Spitze n.v.'}</span>`
+      +`<span>${uhr?`Hoch ${esc(uhr)}`:'Zeit n.v.'}</span>`
+      +`<em>${fresh.ok?'nur Beobachtung':'Beobachtung · Kurs nicht live'}</em></button>`;
+  }).join('');
+
+  const neu=paintPanel(el, head(categoryFreshness(stockMeta.ts))
+    +`<small class="stage-note" title="Bewusst ohne Ampel und ohne Plan. Ein Titel, der bereits weit gelaufen ist, hat einen weiten Stop und ein schlechtes Chance-Risiko-Verhältnis — das Regelwerk lehnt ihn zu Recht ab. Diese Kachel widerspricht dem nicht, sie macht die Bewegung nur sichtbar, statt sie zu verschweigen.">Was sich bewegt hat, nicht was zu kaufen ist — die Einordnung bleibt bei dir</small>`
+    +`<div class="opgrid">${karten}</div>`);
+  if(neu) el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
+}
 
 function renderTopPicks(asset='stock'){
   const a=asset==='coin'?'coin':'stock';

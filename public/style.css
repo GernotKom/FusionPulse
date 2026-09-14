@@ -764,7 +764,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"4.15.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"4.16.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1060,6 +1060,37 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 /* v3.6.1: Punkte, deren Muster gut ist, deren Trade sich aber wirtschaftlich
    nicht lohnt, werden hohl gezeichnet. Voll = auch wirtschaftlich tragfaehig. */
 .dot.econ-weak .core{fill:transparent;stroke:currentColor;stroke-width:1.6;stroke-dasharray:2.5 2}
+/* ── v4.16.0 · Aufschrift daneben, Fuehrungslinie zum Punkt ─────────────────
+   Ab dieser Version traegt JEDE Kugel ihren Namen (siehe `heatSeparate`). Wo
+   mittig kein Platz war, sitzt die Aufschrift versetzt — dann zieht eine
+   duenne Linie zu ihrem Punkt, damit die Zuordnung eindeutig bleibt. Die
+   versetzte Variante bekommt einen kraeftigeren Rahmen, weil sie ueber
+   Hintergrund statt ueber der eigenen Kugel liegt. */
+#map .dot .leader,.stockmapwrap .dot .leader{stroke:var(--dim2);stroke-width:.6;opacity:.5;pointer-events:none}
+#map .dot text.off,.stockmapwrap .dot text.off{stroke-width:1.9px;font-weight:800}
+/* ── v4.16.0 · Veralteter Kurs. Gestrichelter Ring um die Kugel: die Position
+   ist auf einem alten Kurs gerechnet. Der Punkt bleibt vollstaendig sichtbar —
+   verstecken waere die schlechtere Loesung, weil das Muster echt ist. */
+.stockmapwrap .dot .stalering,#map .dot .stalering{fill:none;stroke:var(--dim);stroke-width:1;stroke-dasharray:1.8 1.8;opacity:.85;pointer-events:none}
+.stockmapwrap .dot.data-stale .core,#map .dot.data-stale .core{opacity:.55}
+/* ── v4.16.0 · Bewegungsmelder: veraltete Basis wird gedaempft gezeichnet. */
+.opcard.move-stale{opacity:.72}
+.opcard.move-stale em{font-style:italic}
+/* v4.16.0 · Nachweiszeile im Verlauf der Kauf-Freigaben. */
+.sighist-proof{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:6px 0 8px;padding:6px 9px;border:1px solid var(--line);border-radius:9px;font-size:11px}
+.sighist-proof b{font-weight:800}
+.sighist-proof span{font-weight:850;font-variant-numeric:tabular-nums}
+.sighist-proof.ok{border-color:color-mix(in srgb,var(--green) 45%,var(--line))}.sighist-proof.ok span{color:var(--green)}
+.sighist-proof.warn{border-color:color-mix(in srgb,var(--yellow) 45%,var(--line))}.sighist-proof.warn span{color:var(--yellow)}
+.sighist-proof.bad span{color:var(--dim)}
+/* v4.16.0 · Abgleich der Bandbreiten-Eigenmessung mit dem Kontostand. */
+.bwanchor{margin-top:8px;padding:8px 9px;border:1px dashed var(--line2);border-radius:9px;display:flex;flex-direction:column;gap:6px}
+.bwanchor b{font-size:11px}
+.bwanchor small{font-size:10px;color:var(--dim);line-height:1.4}
+.bwanchor-form{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.bwanchor-form input{width:110px;padding:4px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--fg);font-size:11px}
+.bwanchor-form button{padding:4px 9px;border:1px solid var(--line);border-radius:7px;background:var(--panel2,var(--panel));color:var(--fg);font-size:11px;cursor:pointer}
+.bwanchor-form button:hover{border-color:var(--accent)}
 .dot.econ-weak text{opacity:.75}
 /* Hotfix v3.6.2: Die 3.6.1-Labels waren zu lang und randbuendig — sie sind
    ineinandergelaufen und haben die Punkte ueberlagert. Zurueck zur bewaehrten

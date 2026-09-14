@@ -99,8 +99,16 @@ const w   = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8'
 
   assert.equal(frisch.perDayGb, still.perDayGb,
     'Dasselbe aktive Fenster muss dasselbe Tempo ergeben, egal wie lange nichts mehr lief');
-  assert.ok(/Tempo 0,80 GB\/Tag/.test(frisch.label) || /Tempo 0\.80 GB\/Tag/.test(frisch.label),
-    `Das Tempo gehoert in die Kurzanzeige — bekam: ${frisch.label}`);
+  /* v4.16.0 · Das Wort „Tempo" ist durch „mindestens … GB/Tag" ersetzt. Grund:
+     der Wert wird aus einer UNTEREN SCHRANKE abgeleitet und ist damit selbst
+     eine. Am 14.09. lag er gegen den Kontostand bei Tiingo um Faktor 2,4 zu
+     niedrig — und „Tempo 0,48 GB/Tag" las sich wie eine Schaetzung der
+     Wirklichkeit. Die ZAHL gehoert weiterhin in die Kurzanzeige, geprueft
+     bleibt sie deshalb; nur die Behauptung darueber ist zurueckgenommen. */
+  assert.ok(/mindestens 0[,.]80 GB\/Tag/.test(frisch.label),
+    `Die Tagesrate gehoert in die Kurzanzeige — bekam: ${frisch.label}`);
+  assert.ok(!/\bTempo\b/.test(frisch.label),
+    `„Tempo" behauptet eine Messung, die es nicht ist — bekam: ${frisch.label}`);
   assert.ok(!/kein Abruf/.test(frisch.label),
     `Bei frischer Messung kein Stillstandshinweis — bekam: ${frisch.label}`);
   assert.ok(/seit 1,3 Tagen kein Abruf|seit 1\.3 Tagen kein Abruf/.test(still.label),

@@ -192,15 +192,39 @@ const ueberdeckungen = (pts) => {
   assert.ok(uNeu < uAlt,
     `NK88e: die gemeinsame Trennung muss weniger Beschriftungs-Ueberdeckungen erzeugen (alt ${uAlt}, neu ${uNeu})`);
 
-  /* Und die ganze Zusage leistet die Vergaberegel: unter den GESETZTEN
-     Aufschriften ueberdeckt sich keine einzige. */
+  /* ── v4.16.0 · DIE ZUSAGE HAT SICH GEAENDERT ──────────────────────────
+     Bis 4.15.0 stand hier: unter den gesetzten Aufschriften ueberdeckt sich
+     keine, und es bleiben nachweislich Punkte OHNE Aufschrift. Der zweite
+     Teil war das Problem — auf einem dichten Feld blieb die Haelfte namenlos
+     und nur per Mouseover identifizierbar. Auf dem Telefon gibt es kein
+     Mouseover. Gemeldet am 14.09.: „in der heatmap sollten auch alle Kugeln
+     beschriftet sein."
+
+     Neu: JEDER Punkt wird beschriftet, notfalls versetzt mit Fuehrungslinie.
+     Geprueft wird deshalb an den LABELPOSITIONEN (`x+ldx`), nicht mehr an den
+     Punktmitten — die Aufschrift liegt ab jetzt nicht mehr zwingend auf ihrem
+     Punkt. */
   const gesetzt = neu.filter((p) => p.label);
-  assert.equal(ueberdeckungen(gesetzt), 0,
-    'NK88e: unter den gesetzten Aufschriften darf sich keine ueberdecken');
-  assert.ok(gesetzt.length < neu.length,
-    'NK88e: … und es bleiben nachweislich Punkte ohne Aufschrift, sonst waere die Vergaberegel wirkungslos');
-  assert.ok(gesetzt.length >= 3,
-    `NK88e: bei 20 Punkten duerfen nicht fast alle Namen entfallen (gesetzt: ${gesetzt.length})`);
+  assert.equal(gesetzt.length, neu.length,
+    'NK88e: JEDE Kugel bekommt einen Namen — das ist die Zusage ab v4.16.0');
+  for (const p of neu) {
+    assert.ok(Number.isFinite(p.ldx) && Number.isFinite(p.ldy),
+      `NK88e: ${p.r.symbol} braucht eine Labelposition`);
+    assert.equal(p.leader, p.ldx !== 0 || p.ldy !== 0,
+      `NK88e: ${p.r.symbol} — eine versetzte Aufschrift MUSS eine Fuehrungslinie tragen, eine mittige darf keine haben`);
+  }
+  /* Gemessen statt behauptet: „alle beschriftet" darf nicht mit Unlesbarkeit
+     erkauft sein. Die Ueberdeckung an den Ausweichlagen muss unter der
+     liegen, die entstuende, wenn man stumpf alle mittig setzte. */
+  const anLage = neu.map((p) => ({ x: p.x + p.ldx, y: p.y + p.ldy, halfW: p.halfW, halfH: p.halfH }));
+  assert.ok(ueberdeckungen(anLage) < ueberdeckungen(neu),
+    `NK88e: die Ausweichlagen muessen weniger Ueberdeckung erzeugen als alle mittig (mittig ${ueberdeckungen(neu)}, ausgewichen ${ueberdeckungen(anLage)})`);
+  /* Und die Aufschrift darf das Feld nicht verlassen — ein abgeschnittener
+     Name ist kein Name. */
+  for (const l of anLage) {
+    assert.ok(l.x - l.halfW >= 0.5 && l.x + l.halfW <= 199.5 && l.y - l.halfH >= 0.5 && l.y + l.halfH <= 199.5,
+      `NK88e: eine Aufschrift liegt bei ${l.x.toFixed(1)}/${l.y.toFixed(1)} teilweise ausserhalb des Feldes`);
+  }
 }
 
 /* ═══ NK88f · Rang 0 bekommt seinen Namen IMMER ══════════════════════════

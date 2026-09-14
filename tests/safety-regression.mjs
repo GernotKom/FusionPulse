@@ -2210,8 +2210,17 @@ console.log('✓ FusionPulse v3.12.0 chrome-measure/nav/trail-direction regressi
 
   // -- attachLiveQuotes ist rein additiv: keine Quote heisst unveraenderte Zeile.
   {
-    const src = worker.slice(worker.indexOf('function attachLiveQuotes'),
-                             worker.indexOf('\n}', worker.indexOf('return hit;')) + 2);
+    /* v4.16.0 · Die Endmarke wurde ab dem DATEIANFANG gesucht. Sobald irgendwo
+       weiter oben ein `return hit;` stand, endete der Ausschnitt VOR seinem
+       Anfang und der Test scheiterte mit „attachLiveQuotes is not defined" —
+       einem Fehler, der nach einem kaputten Worker aussieht und keiner war.
+       Genau passiert, als `tiingoIexSeries` einen Memo bekam. Die Marke wird
+       jetzt ab dem Anfang des Ausschnitts gesucht; damit kann kein Code
+       ausserhalb der geprueften Funktion die Schnittmarke mehr verschieben. */
+    const von = worker.indexOf('function attachLiveQuotes');
+    const src = worker.slice(von, worker.indexOf('\n}', worker.indexOf('return hit;', von)) + 2);
+    assert.ok(/^function attachLiveQuotes/.test(src) && src.length > 200,
+      'Der Ausschnitt muss attachLiveQuotes enthalten — sonst prueft der Test nichts');
     const attach = new Function(src + '; return attachLiveQuotes;')();
     const rows = [{ symbol: 'AAPL', priceUsd: 190 }, { symbol: 'OHNE', priceUsd: 5 }];
     const q = new Map([['AAPL', { priceUsd: 191.5, ts: 1, updated: 'x', ageSec: 7, source: 'S', scope: 'C', live: true }]]);
@@ -6325,11 +6334,51 @@ console.log('✓ FusionPulse v4.2.3 Abdeckung sichtbar (ausgefuehrt): OK');
       if (!clash) placed.push(p);
     });
     assert.equal(collides(placed), 0,
-      'v4.2.3: Unter den GESETZTEN Beschriftungen darf sich keine einzige ueberdecken');
+      'v4.2.3: Unter den mittig gesetzten Beschriftungen darf sich keine einzige ueberdecken');
     assert.ok(placed.some(p => p.s === 'BTC'),
       'v4.2.3: Der ausgewaehlte bzw. mit ★ markierte Coin bekommt seinen Namen IMMER — das ist die Zusage an den Nutzer');
     assert.ok(placed.length < neu.length,
-      'v4.2.3: … und es bleiben nachweislich Punkte ohne Aufschrift. Waeren es keine, waere die Vergaberegel wirkungslos und der Test truege nichts bei.');
+      'v4.2.3: … und mittig allein bleiben nachweislich Punkte uebrig. Genau diese Luecke schliesst v4.16.0 mit den Ausweichlagen.');
+
+    /* ── v4.16.0 · DIE LUECKE DARUEBER WAR DAS PROBLEM ─────────────────────
+       Bis 4.15.0 endete der Test hier: es blieben Punkte ohne Namen, und das
+       galt als richtig („ein Name unter zwei anderen ist keine Information").
+       In der Praxis war auf einem dicht besetzten Feld die Haelfte der Punkte
+       namenlos und nur per Mouseover identifizierbar — auf dem Telefon gibt es
+       kein Mouseover. Gemeldet am 14.09.: „in der heatmap sollten auch alle
+       Kugeln beschriftet sein."
+
+       Der Platz war da, er wurde nur an EINER Stelle gesucht: mittig. Hier
+       wird nachgerechnet, dass neun Lagen genuegen, um jedem Punkt einen Namen
+       zu geben — und dass die Ueberdeckung dabei nicht explodiert. */
+    const LAGEN = [[0,0],[0,-1],[0,1],[-1,0],[1,0],[-1,-1],[1,-1],[-1,1],[1,1]];
+    const gesetzt = [];
+    [...neu].sort((a,b) => rank(a) - rank(b)).forEach((p) => {
+      let best = null, bestKost = Infinity;
+      for (const [dx,dy] of LAGEN) {
+        const lx = p.x + dx*(p.halfW + p.rad*0.5), ly = p.y + dy*(p.halfH + p.rad*0.5);
+        if (lx-p.halfW < 1 || lx+p.halfW > 199 || ly-p.halfH < 1 || ly+p.halfH > 199) continue;
+        let kost = (dx||dy) ? 0.8 : 0;
+        for (const o of gesetzt) {
+          const ox = (p.halfW+o.halfW)-Math.abs(o.x-lx), oy = (p.halfH+o.halfH)-Math.abs(o.y-ly);
+          if (ox > 0 && oy > 0) kost += ox*oy;
+        }
+        for (const q of neu) { if (q===p) continue;
+          if (Math.abs(q.x-lx) < p.halfW+q.rad && Math.abs(q.y-ly) < p.halfH+q.rad) kost += 3; }
+        if (kost < bestKost) { bestKost = kost; best = {x:lx, y:ly, halfW:p.halfW, halfH:p.halfH, s:p.s}; }
+        if (kost === 0) break;
+      }
+      assert.ok(best, `v4.16.0: Fuer ${p.s} muss eine Lage gefunden werden — die mittige liegt immer im Feld`);
+      gesetzt.push(best);
+    });
+    assert.equal(gesetzt.length, neu.length,
+      'v4.16.0: JEDE Kugel bekommt einen Namen. Das ist die neue Zusage und sie gilt ausnahmslos.');
+    /* Die Ausweichlagen duerfen das Bild nicht schlechter machen als vorher.
+       Gemessen statt behauptet: die Ueberdeckung unter allen gesetzten Namen
+       muss unter der liegen, die entstuende, wenn man stumpf alle mittig
+       setzte — sonst waere „alle beschriftet" mit Unlesbarkeit erkauft. */
+    assert.ok(collides(gesetzt) < collides(neu),
+      `v4.16.0: Die Ausweichlagen muessen weniger Ueberdeckung erzeugen als stumpf alle mittig (mittig ${collides(neu)}, ausgewichen ${collides(gesetzt)})`);
   }
 
   /* Und weil die Trennung allein nicht reicht: unlesbare Namen entfallen,
@@ -6348,8 +6397,14 @@ console.log('✓ FusionPulse v4.2.3 Abdeckung sichtbar (ausgefuehrt): OK');
      einseitig reparierte Ausgabepfad in 4.4.1. */
   const sepFn = app.slice(app.indexOf('function heatSeparate('), app.indexOf('const HEAT_BUCKETS'));
   assert.ok(sepFn.length > 200, 'v4.9.0: `heatSeparate` nicht gefunden');
-  assert.match(sepFn, /p\.label = !clash/, 'v4.2.3: Die Beschriftung muss nach Platz vergeben werden');
-  assert.match(sepFn, /rankOf\(a\) - rankOf\(b\)/, 'v4.2.3: … und nach Rang, nicht nach Zufall');
+  /* v4.16.0 · Hier stand `p.label = !clash`. Die Regel ist abgeloest, nicht
+     vergessen: nicht mehr „ohne Platz kein Text", sondern „Platz an neun
+     Stellen suchen und immer beschriften". Der RANG bleibt unveraendert
+     wirksam — wer zuerst kommt, bekommt die beste Lage. */
+  assert.match(sepFn, /p\.label = true/, 'v4.16.0: Jeder Punkt wird beschriftet — ausnahmslos');
+  assert.match(sepFn, /LAGEN|const LAGEN/, 'v4.16.0: … und dafuer muessen Ausweichlagen geprueft werden');
+  assert.match(sepFn, /p\.leader/, 'v4.16.0: Eine versetzte Aufschrift braucht eine Linie zu ihrem Punkt, sonst ist die Zuordnung geraten');
+  assert.match(sepFn, /rankOf\(a\) - rankOf\(b\)/, 'v4.2.3: … und die Reihenfolge bleibt der Rang, nicht der Zufall');
   const mapFn = app.slice(app.indexOf('function renderMap()'), app.indexOf('function visible()'));
   const stockFn = app.slice(app.indexOf('function stockHeatmap('), app.indexOf('function heatSeparate(') > app.indexOf('function stockHeatmap(')
     ? app.indexOf('function heatSeparate(') : app.indexOf('\nfunction ', app.indexOf('function stockHeatmap(') + 10));
@@ -6357,7 +6412,9 @@ console.log('✓ FusionPulse v4.2.3 Abdeckung sichtbar (ausgefuehrt): OK');
     assert.ok(fn.length > 200, `v4.9.0: Rumpf der ${name} nicht gefunden`);
     assert.match(fn, /heatSeparate\(pts, \{/, `v4.9.0: Die ${name} muss die GEMEINSAME Trennung benutzen — zwei Kopien derselben Geometrie laufen unweigerlich auseinander`);
     assert.match(fn, /rankOf:/, `v4.9.0: Die ${name} muss eine Rangfolge fuer die Beschriftung uebergeben`);
-    assert.match(fn, /label\s*\n?\s*\?\s*`<text|\$\{label\?`<text/, `v4.2.3: Ohne Platz kein Text (${name})`);
+    assert.match(fn, /<text class="\$\{leader\?'off':''\}"/, `v4.16.0: Jeder Punkt traegt seinen Namen, versetzt gekennzeichnet (${name})`);
+    assert.ok(!/\$\{label\?`<text/.test(fn) && !/class="unnamed"/.test(fn),
+      `v4.16.0: Es darf keinen namenlosen Punkt mehr geben (${name})`);
     assert.match(fn, /<circle class="hit"/, `v4.2.3: Klickflaeche bleibt IMMER — der Titel verschwindet nicht (${name})`);
     assert.match(fn, /<title>/, `v4.2.3: … und das Mouseover nennt ihn weiterhin beim Namen (${name})`);
   }
