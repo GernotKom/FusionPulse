@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.18.0 — Frontend
+   FusionPulse v4.19.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2965,12 +2965,12 @@ function renderSignalHistory(domain) {
     const wann = new Date(e.firstTs).toLocaleString('de-AT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     const ausschlag = e.measured === false
       ? `<i title="Für diese Freigabe wurde nach der Freigabe kein Kurs nachgemessen. Das ist eine fehlende Messung, keine Bewegung von null.">nicht gemessen</i>`
-      : `${pct(e.maxPct)}<small>tiefster ${pct(e.minPct)}</small>`;
+      : `<span title="Größte Bewegung NACH der Freigabe, gemessen am Kurs der Freigabe. Oben der beste Punkt, darunter der schlechteste. Beides sind Möglichkeiten gewesen, keine erzielten Ergebnisse — ohne Ausstieg bleibt vom besten Punkt nichts übrig, und der tiefste sagt, wie weit es zwischendurch gegen dich lief.">${pct(e.maxPct)}<small>tiefster ${pct(e.minPct)}</small></span>`;
     return `<tr data-tone="${ton}">
       <td><b>${esc(String(e.symbol).replace(/-EUR$/, ''))}</b><small>${esc(e.setup || e.situation || '–')}</small></td>
       <td>${esc(wann)}<small>${e.minutes} min · ${e.buckets}×</small></td>
       <td class="ta">${ausschlag}</td>
-      <td>${esc(e.outcome)}${e.measured === false ? '<small>ohne Nachmessung</small>' : ''}</td>
+      <td title="${esc(e.outcomeWhy || '')}"><u class="sig-out">${esc(e.outcome)}</u>${e.measured === false ? '<small>ohne Nachmessung</small>' : ''}</td>
     </tr>`;
   }).join('');
   /* v4.16.0 · Der NACHWEIS steht jetzt oben, nicht in der Fußnote. Die
@@ -4605,15 +4605,22 @@ async function loadCrowd(force=false){
     renderCrowdStatus(); renderStocks();}
   catch(e){crowdMeta={state:'error',error:String(e.message||e)};renderCrowdStatus();renderStocks();}
 }
-async function openStockFromDiscovery(symbol){
+async function openStockFromDiscovery(symbol, aktualisieren=false){
   const sym=String(symbol||'').trim().toUpperCase(); if(!sym)return;
   focusStock=sym;
   const focus=$('#stockFocus');
   const loaded=stockRows.find(r=>String(r.symbol||'').toUpperCase()===sym);
   if(loaded){
+    /* Vorhandene Werte SOFORT zeigen — auf eine Netzantwort zu warten, bevor
+       ueberhaupt etwas erscheint, fuehlt sich wie ein Fehler an. */
     renderStocks();
     requestAnimationFrame(()=>$('#stockFocus')?.scrollIntoView({behavior:'smooth',block:'start'}));
-    return;
+    /* v4.19.0 · … und danach nachladen, wenn der Klick aus einer Liste kam.
+       Ohne das zeigte das Skope-Fenster den Stand der letzten Rotationsrunde,
+       im Zweifel zehn Minuten alt. */
+    if(!aktualisieren) return;
+    const st0=$('#stockState');
+    if(st0){ st0.textContent=`${sym} wird aktualisiert…`; st0.className='badge'; }
   }
   // P0 v3.3.8: Fokusfenster sofort sichtbar machen. Der Nutzer darf nicht auf
   // Live-Quote/Alpaca/Deep-Scan warten muessen, um zu sehen, was angeklickt wurde.
@@ -5115,10 +5122,18 @@ function renderStocks() {
   else for(const r of shown){if(!groups.has(r.sector))groups.set(r.sector,[]);groups.get(r.sector).push(r);}
   box.innerHTML=[...groups.entries()].map(([sector,arr])=>`<section class="stock-sector${filter==='favorites'?' flat-favorites':''}">${filter==='favorites'?'':`<h3>${esc(sector)}</h3>`}${arr.map(r=>{const buy=stockLevel(r)===3,tone=stockStrength(r),tr=stockTradeability(r),sz=stockSizing(r),dm=stockDisplayMeta(r);const hl=stockHeadline(r);return `<div class="stockrow ${r.light} tone-${tone}${buy?' buy':''}${signalIsHot('stock',r.symbol)?' signal-hot':''}" draggable="true" data-sym="${esc(r.symbol)}"><div class="sr-head"><button class="draghandle" type="button" title="Aktienfenster ziehen und neu anordnen" aria-label="Aktienfenster neu anordnen">⋮⋮</button><b class="sr-tic" title="${esc(gloss('tickerSym'))}">${esc(r.symbol)}</b><button class="favbtn ${isFavStock(r.symbol)?'on':''}" data-favstock="${esc(r.symbol)}" title="${isFavStock(r.symbol)?'Aus Favoriten/Depot entfernen':'Zu Favoriten/Depot hinzufügen'}">${isFavStock(r.symbol)?'★':'☆'}</button><a class="gfinance mini" href="${googleFinanceUrl(r)}" target="_blank" rel="noopener" title="${esc(r.symbol)} in Google Finance öffnen">G↗</a><button class="rowmute" data-mutestock="${esc(r.symbol)}" title="${isStockMuted(r.symbol)?'Signalton für diesen Titel wieder einschalten':'Signalton nur für diesen Titel stummschalten. Die Analyse läuft unverändert weiter.'}">${isStockMuted(r.symbol)?'🔇':'🔊'}</button>${(()=>{const ft=flatexTradability(r);return `<span class="flatex-dot ft-${ft.tone}" title="${esc(ft.label+' — '+ft.detail)}">${ft.tone==='ok'?'🏦':ft.tone==='no'?'⛔':'❓'}</span>`;})()}</div><div class="sr-name"><b>${esc(dm.name)}</b><small>${esc(dm.theme)}</small></div><div class="sr-nums"><span title="Netto-CRV des 50/50-Tradeplans nach geschätzten Flatex/Tradegate-Kosten.">${num(sz?.planCrvAfterCosts ?? r.netCRV,1)} : 1</span><i>·</i><span title="${esc(gloss('score'))}">Score ${num(r.score,1)}</span>${(()=>{const mt=maturityTag(r,true);return mt?`<i>·</i><span title="${esc(mt.detail)}">${esc(mt.label)}</span>`:'';})()}${r.situationType?`<i>·</i><span title="${esc(glossForSituation(r.situationType)+' '+gloss('situationScore'))}">${esc(r.situationType)} ${Math.round(Number(r.situationScore)||0)}/100</span>`:''}<i>·</i><span title="Kursweg bis TP2">TP2 ${num(tr.tp2Pct,1)}%</span></div><div class="sr-verdict hl-${hl.light}" title="${esc(hl.title)}">${hl.icon} ${esc(hl.text)}</div><div class="sr-px">${stockPx(r.priceUsd,r.priceEur)}${sz?`<small> · ${buy?'Plan netto '+eur(sz.planNet,0):'keine Kauf-Freigabe'}</small>`:''}</div><div class="sr-hist" title="120-Minuten-Signalverlauf">${stockStatusBand(r)}</div>${crowdGauge(r.symbol,true)}${crowdConfirmGauge(r,true)}${(()=>{const ds=dataSession(r);return `<small class="stock-updated fresh-${stockFreshness(r).key} ds-${ds.tone}" title="${esc(ds.detail+' | '+stockUpdateLabel(r))}">${esc(ds.label)}</small>`;})()}${edgeStrip(r)}${stockPeek(r)}</div>`}).join('')}</section>`).join('');
   box.querySelectorAll('[data-mutestock]').forEach(b=>b.addEventListener('click',e=>toggleStockMute(b.dataset.mutestock,e)));
+  /* ══ v4.19.0 · AUS DER LISTE INS SKOPE-FENSTER, AKTUALISIERT ═══════════
+     Nutzer: „auch sollte man in den Listen Aktien/Coins den Ticker anklicken
+     koennen und dieser sollte dann aktualisiert im Skope Fenster geoeffnet
+     werden."
+     Der Klick fokussierte bisher nur — er zeigte also den Datensatz aus der
+     letzten Rotationsrunde, im Zweifel zehn Minuten alt. Genau der Titel, den
+     man gerade anklickt, ist aber der, fuer den man einen FRISCHEN Kurs will.
+     Deshalb laeuft der Klick jetzt ueber `openStockFromDiscovery(sym, true)`:
+     sofort sichtbar mit den vorhandenen Werten, im Hintergrund nachgeladen. */
   box.querySelectorAll('.stockrow[data-sym]').forEach(row=>row.addEventListener('click',e=>{
     if(e.target.closest('button,a') || row.classList.contains('dragging')) return;
-    focusStock=row.dataset.sym||''; renderStocks();
-    $('#stockFocus')?.scrollIntoView({behavior:'smooth',block:'start'});
+    openStockFromDiscovery(row.dataset.sym||'', true);
   }));
   box.querySelectorAll('[data-favstock]').forEach(b=>b.addEventListener('click',e=>toggleStockFavorite(b.dataset.favstock,e)));
   bindStockReorder(box);
@@ -7160,7 +7175,16 @@ function select(pair, byUser) {
   selected = pair;
   if (byUser) pinned = true;
   renderFocus(); renderMap(); renderList(); renderCoinFavStrip(); renderSignalHistory('coin');
-  rowNodes.get(pair)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  /* v4.19.0 · Bei einem Klick des Nutzers wandert der Blick ins SKOPE-Fenster,
+     nicht auf die angeklickte Zeile. Bisher wurde die Zeile in den sichtbaren
+     Bereich gerollt — die stand aber ohnehin schon dort, sonst haette man sie
+     nicht anklicken koennen. Das Fenster mit der Analyse liegt WEITER OBEN und
+     blieb dadurch unsichtbar.
+     Coins brauchen keine Neuabfrage: der Scan laeuft im Minutentakt ueber alle
+     Paare, der Datensatz ist also bereits der aktuelle. Bei Aktien ist das
+     anders — dort rotiert der Deep Scan, siehe `openStockFromDiscovery`. */
+  if (byUser) requestAnimationFrame(() => $('#focus')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  else rowNodes.get(pair)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 function step(dir) {

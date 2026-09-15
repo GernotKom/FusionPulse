@@ -764,7 +764,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"4.18.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"4.19.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1107,6 +1107,10 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .bilanz-vgl>b{font-size:11px}
 .bilanz-vgl>span{font-size:11.5px;line-height:1.45}
 .bilanz-vgl>small{font-size:10px;color:var(--dim)}
+/* v4.19.0 · Die Ausgangsworte tragen eine Erklaerung im Mouseover. Die
+   gepunktete Unterstreichung ist der uebliche Hinweis darauf — ohne sie sucht
+   niemand dort. */
+.sighist .sig-out{text-decoration:underline dotted;text-underline-offset:3px;cursor:help}
 .dot.econ-weak text{opacity:.75}
 /* Hotfix v3.6.2: Die 3.6.1-Labels waren zu lang und randbuendig — sie sind
    ineinandergelaufen und haben die Punkte ueberlagert. Zurueck zur bewaehrten

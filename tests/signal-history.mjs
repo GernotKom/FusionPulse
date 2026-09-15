@@ -14,7 +14,11 @@ const from = worker.indexOf('const SIGNAL_EPISODE_GAP_MS');
 const to = worker.indexOf('const STOCK_SNAPSHOT_LIVE_MS');
 assert.ok(from > 0 && to > from, 'signalHistory muss auffindbar sein');
 
-const src = 'const APP_VERSION="test";\nfunction dbNum(v){const n=Number(v);return Number.isFinite(n)?n:null;}\n'
+/* v4.19.0 · `PICK_REACH_PCT` kommt dazu: der Erklaertext zum Ausgang nennt die
+   wirtschaftliche Schwelle als VARIABLE, damit sie beim naechsten
+   Gebuehrenwechsel nicht still falsch wird. Der Stub setzt denselben Wert wie
+   der Worker (ECON_WIN_PCT), damit die Texte im Test lesbar bleiben. */
+const src = 'const APP_VERSION="test";\nconst PICK_REACH_PCT=1.5;\nfunction dbNum(v){const n=Number(v);return Number.isFinite(n)?n:null;}\n'
   + 'async function ensureD1Schema(){}\n'
   + worker.slice(from, to)
   + '\nreturn { signalHistory, SIGNAL_EPISODE_GAP_MS, signalHistoryMemo };';

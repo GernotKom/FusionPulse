@@ -1,3 +1,36 @@
+# FusionPulse 4.19.0 — drei der vier Ausgaenge sind gar keine Ergebnisse
+
+Nutzer am 15.09.: *„bitte auch beim Mouse Over beschreibung der Auswertung (was bedeutet Ziel erreicht, oder ausgewertet …) ist für mich nicht schlüssig"* und *„auch sollte man in den Listen Aktien/Coins den Ticker anklicken können und dieser sollte dann aktualisiert im Skope Fenster geöffnet werden"*.
+
+## Warum die vier Wörter nicht schlüssig waren
+
+Weil sie es nicht sind. Sie stehen in derselben Spalte, sehen gleichrangig aus und tragen völlig verschiedene Aussagen:
+
+- **Ziel erreicht** — ein Ergebnis. Der Kurs hat die wirtschaftliche Schwelle berührt.
+- **ausgewertet** — ein Ergebnis mit anderem Vorzeichen. Drei Stunden gemessen, Schwelle nie berührt.
+- **ohne Beleg** — *kein* Ergebnis. Es wurde zu selten nachgesehen; was der Kurs gemacht hat, ist nicht bekannt.
+- **offen** — *noch* kein Ergebnis. Die Messung läuft.
+
+Wer das nicht weiß, liest „ohne Beleg" als Misserfolg. Das ist genau die Verwechslung, gegen die dieses Projekt seit v4.15.0 kämpft — diesmal in der Anzeige statt in der Datenbank.
+
+Der Erklärtext entsteht im **Worker**, nicht in der Oberfläche: die wirtschaftliche Schwelle steht dort als `PICK_REACH_PCT`. Als feste Zahl in der Anzeige wäre sie beim nächsten Gebührenwechsel still falsch geworden.
+
+## Der Ticker-Klick
+
+Aktien rotieren im Deep Scan — acht von 37 Titeln je Zwei-Minuten-Takt. Der angeklickte Titel zeigte damit den Stand der letzten Runde, im Zweifel zehn Minuten alt. Gerade der angeklickte Titel ist aber der, für den man einen frischen Kurs will. Der Klick läuft jetzt über `openStockFromDiscovery(sym, true)`: vorhandene Werte sofort sichtbar, Neuabfrage im Hintergrund.
+
+Bei Coins war das Problem ein anderes und kleiner: `select()` rollte die **angeklickte Zeile** in den Blick. Die stand aber ohnehin schon dort, sonst hätte man sie nicht anklicken können. Das Analysefenster liegt weiter oben und blieb unsichtbar. Jetzt wandert der Blick dorthin — aber nur bei einem Klick des Nutzers, nicht bei automatischer Auswahl, sonst verspränge die Ansicht von selbst.
+
+## Zwei Zusagen mussten mit
+
+`safety-regression.mjs` prüfte die Signatur `openStockFromDiscovery(symbol)` wörtlich. Die Zusage dahinter — genau ein Weg, einen Discovery-Titel tief zu laden — ist unverändert; der neue Parameter ist voreingestellt aus.
+
+Und `signal-history.mjs` brauchte `PICK_REACH_PCT` im Stub, weil der Erklärtext die Schwelle als Variable einsetzt.
+
+## Nebenbefund aus dem Bildschirmfoto
+
+**„10 von 10 Episoden nachgemessen · 100 %"** — die Nachweiszeile aus v4.15.0 arbeitet. LSK am 14.09. mit +19,2 % und Ausgang „Ziel erreicht" ist die erste vollständig belegte Freigabe seit Beginn der Aufzeichnung. Im Krypto-Bereich; bei Aktien fehlt der Nachweis noch.
+
 # FusionPulse 4.18.0 — das Schweigen hatte einen Grund, und er war technisch
 
 Nutzer nach einem Monat: **„bekommen wir jetzt dann endlich empfehlungen? — bisher noch nie, obwohl wir schon seit 1 Monat herummachen!"** Und danach: *„vergiss nicht zu checken wie deine Empfehlungen gelaufen sind und dich dementsprechend weiterzuentwickeln — das war ja auch unsere Startidee."*

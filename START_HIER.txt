@@ -1,36 +1,33 @@
-FusionPulse v4.18.0 – jetzt kommen Empfehlungen, und sie werden gemessen
+FusionPulse v4.19.0 – Ausgaenge erklaert, Ticker anklickbar
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
 Keine Secrets, keine Migration, kein Binding.
 
-WAS DU AB JETZT SIEHST:
+WAS NEU IST:
 
-1. KAUF-FREIGABEN.
-   Die Freigabe verlangte bisher einen Kurs aus den letzten 90 SEKUNDEN. Diese
-   Regel stammte aus der Zeit, als dein Browser selbst gescannt hat. Seit
-   v4.0.0 rotiert der Server mit acht von 37 Titeln je Zwei-Minuten-Takt — ein
-   Titel war damit nur rund 15 % der Zeit ueberhaupt freigabefaehig, egal wie
-   gut das Setup war. Das war der Grund fuer das Schweigen.
-   NEU: Kurs aus der laufenden Handelssitzung, hoechstens 15 Minuten alt.
-   Der Schutz bleibt: kein Kurs von gestern, kein Kurs ohne Zeitstempel.
+1. DIE AUSGAENGE IM VERLAUF ERKLAEREN SICH SELBST.
+   Mouseover auf „Ziel erreicht", „ausgewertet", „ohne Beleg" oder „offen"
+   zeigt jetzt im Klartext, was das heisst. Die vier Woerter tragen sehr
+   verschiedene Aussagen — und DREI davon sind gar keine Ergebnisse:
+     • Ziel erreicht  = der Kurs hat die wirtschaftliche Schwelle beruehrt.
+                        ACHTUNG: beruehrt ist nicht verdient.
+     • ausgewertet    = drei Stunden gemessen, Schwelle nie beruehrt.
+     • ohne Beleg     = KEIN Fehlschlag. Es wurde zu selten nachgesehen,
+                        der Verlauf ist schlicht nicht bekannt.
+     • offen          = juenger als drei Stunden, Messung laeuft noch.
+   Auch die Spalte „bester Ausschlag" hat jetzt eine Erklaerung.
 
-2. BILANZ-KACHEL (Lab / Learning, ganz oben).
-   Drei Saetze in Klartext: wie viele Freigaben, was danach passiert ist, und
-   ob die Zahl schon etwas wert ist. Unter 30 Faellen wird die Quote GENANNT,
-   aber ausdruecklich nicht gedeutet.
-   Sie wird anfangs sagen, dass es noch nichts zu bilanzieren gibt. Das ist
-   richtig so — vorher gab es keine Freigaben zu messen.
+2. TICKER ANKLICKEN OEFFNET DAS SKOPE-FENSTER.
+   Aktien: Klick auf eine Zeile fokussiert den Titel UND fragt ihn neu ab.
+   Bisher zeigte das Fenster den Stand der letzten Rotationsrunde — bei 37
+   Titeln und acht je Zwei-Minuten-Takt also bis zu zehn Minuten alt.
+   Coins: der Blick wandert jetzt ins Skope-Fenster statt auf die angeklickte
+   Zeile (die stand ohnehin schon sichtbar). Keine Neuabfrage noetig, der
+   Coin-Scan laeuft ohnehin im Minutentakt ueber alle Paare.
 
-WAS DU TUN MUSST:
-Hochladen, sonst nichts. Dann heute Abend zwischen 15:30 und 22:00 draufschauen.
+UEBRIGENS, aus deinem Bildschirmfoto: „10 von 10 Episoden nachgemessen · 100 %".
+Die Nachmessung aus v4.15.0 arbeitet also sauber. LSK am 14.09. mit +19,2 %
+und Ausgang „Ziel erreicht" ist die erste vollstaendig belegte Freigabe seit
+Beginn der Aufzeichnung.
 
-WAS OFFEN BLEIBT:
-Ob die Empfehlungen GUT sind, weiss nach diesem Update noch niemand. Die
-Messung laeuft seit v4.15.0, also seit vier Tagen. Belastbar wird die Bilanz
-nach rund 30 Freigaben. Bis dahin zeigt die App, was sie findet — und schreibt
-mit, was daraus wird.
-
-WICHTIG: Der Massstab fuer die Qualitaet eines Setups ist UNVERAENDERT. Score,
-CRV, Erwartungswert und Ampel sind dieselben wie in v4.17.0. Geaendert wurde
-nur, wie alt ein Kurs sein darf, damit eine gefundene Gelegenheit auch
-angezeigt wird.
+WICHTIG: Keine dieser Aenderungen veraendert Score, Ampel oder Kauf-Freigabe.

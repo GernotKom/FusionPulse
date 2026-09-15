@@ -168,3 +168,61 @@ console.log('✓ FusionPulse v4.17.0 NK97 Schattentor und Kalibrierung: OK');
 }
 
 console.log('✓ FusionPulse v4.18.0 NK98 Frische-Fenster und Bilanz: OK');
+
+/* ═══ v4.19.0 · NK99 · AUSGANG ERKLAEREN, TICKER OEFFNEN ═══════════════════
+   Zwei Nutzerbefunde am 15.09.:
+     „bitte auch beim Mouse Over beschreibung der Auswertung (was bedeutet Ziel
+      erreicht, oder ausgewertet … ist fuer mich nicht schluessig)"
+     „auch sollte man in den Listen Aktien/Coins den Ticker anklicken koennen
+      und dieser sollte dann aktualisiert im Skope Fenster geoeffnet werden" */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  /* ── NK99a · Jeder der vier Ausgaenge traegt eine Erklaerung ───────────
+     Die vier Woerter tragen sehr verschiedene Aussagen, und drei davon sind
+     Nicht-Aussagen: „ohne Beleg" ist KEIN Ergebnis, „offen" ist noch keins.
+     Wer das nicht weiss, liest beide als Misserfolg. */
+  const von = worker.indexOf('outcomeWhy:');
+  assert.ok(von > 0, 'NK99a: der Erklaertext muss im Worker gebildet werden');
+  const block = worker.slice(von, von + 1800);
+  assert.match(block, /OHNE BEFUND — kein Fehlschlag/,
+    'NK99a: „ohne Beleg" MUSS als fehlende Messung erklaert werden, nicht als Misserfolg');
+  assert.match(block, /berührt heißt nicht verdient/,
+    'NK99a: „Ziel erreicht" darf nicht als Gewinn gelesen werden koennen');
+  assert.match(block, /NOCH LÄUFT DIE MESSUNG/,
+    'NK99a: „offen" muss als Zwischenstand kenntlich sein');
+  assert.match(block, /\$\{PICK_REACH_PCT\}/,
+    'NK99a: die Schwelle gehoert als VARIABLE in den Text — als feste Zahl waere sie beim naechsten Gebuehrenwechsel still falsch');
+
+  /* ── NK99b · … und die Erklaerung erreicht auch die Anzeige ───────────
+     Ein Text, den der Server bildet und die Oberflaeche wegwirft, ist keine
+     Erklaerung. Genau so ist in diesem Projekt schon einmal eine ganze
+     Messung verschwunden. */
+  assert.match(app, /title="\$\{esc\(e\.outcomeWhy \|\| ''\)\}"/,
+    'NK99b: der Ausgang muss den Erklaertext als Mouseover tragen');
+  assert.match(app, /class="sig-out"/,
+    'NK99b: … sichtbar gekennzeichnet, sonst sucht dort niemand');
+
+  /* ── NK99c · Ticker oeffnet das Skope-Fenster, aktualisiert ───────────
+     Aktien rotieren im Deep Scan: der angeklickte Titel zeigte den Stand der
+     letzten Runde, im Zweifel zehn Minuten alt. Gerade der angeklickte Titel
+     ist aber der, fuer den man einen frischen Kurs will. */
+  assert.match(app, /openStockFromDiscovery\(row\.dataset\.sym\|\|'', true\)/,
+    'NK99c: der Klick auf eine Aktienzeile muss mit Neuabfrage ins Skope-Fenster fuehren');
+  assert.match(app, /async function openStockFromDiscovery\(symbol, aktualisieren=false\)/,
+    'NK99c: … und die Funktion muss das Aktualisieren ueberhaupt kennen');
+  assert.match(app, /if\(!aktualisieren\) return;/,
+    'NK99c: ohne Anforderung bleibt es beim alten Verhalten — Discovery-Kacheln sollen nicht bei jedem Klick nachladen');
+
+  /* ── NK99d · Coins: Blick ins Fenster, nicht auf die Zeile ────────────
+     Die angeklickte Zeile stand ohnehin schon im sichtbaren Bereich, sonst
+     haette man sie nicht anklicken koennen. Das Analysefenster liegt weiter
+     oben und blieb dadurch unsichtbar. */
+  const sel = app.slice(app.indexOf('function select(pair, byUser) {'), app.indexOf('function step(dir) {'));
+  assert.match(sel, /if \(byUser\) requestAnimationFrame\(\(\) => \$\('#focus'\)/,
+    'NK99d: ein Klick des Nutzers muss das Skope-Fenster in den Blick holen');
+  assert.match(sel, /else rowNodes\.get\(pair\)/,
+    'NK99d: … automatische Auswahl darf die Ansicht NICHT verspringen lassen');
+}
+
+console.log('✓ FusionPulse v4.19.0 NK99 Ausgangs-Erklaerung und Ticker-Klick: OK');

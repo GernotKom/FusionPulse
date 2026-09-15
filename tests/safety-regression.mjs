@@ -198,7 +198,14 @@ assert.match(workerText,/MAX_DIST=3\.25/,'Historical Twin must use a fixed simil
 // v3.3.4 Radar-to-Deep-Scan / click-through guards
 assert.match(workerText,/verifiedDiscoveryNow=new Set/,'Currently verified Discovery titles must be eligible for safe carry between deep-scan cycles');
 assert.match(workerText,/radarPick\.length>=capRadar/,'Whole-Market Radar must have meaningful priority in the deep-scan queue (now scaled with the configurable deep limit)');
-assert.match(app,/async function openStockFromDiscovery\(symbol\)/,'Discovery cards need a dedicated deep-load/open path');
+/* v4.19.0 · Die Signatur hat einen zweiten Parameter bekommen (`aktualisieren`),
+   damit ein Klick AUS DER LISTE den Titel nicht nur fokussiert, sondern auch
+   neu abfragt — bei rotierendem Deep Scan war der angezeigte Stand sonst bis
+   zu zehn Minuten alt. Die Zusage selbst ist unveraendert: es gibt genau EINEN
+   Weg, einen Discovery-Titel tief zu laden und zu oeffnen. Der neue Parameter
+   ist voreingestellt aus, die Discovery-Kacheln verhalten sich also wie bisher.
+   Ausgefuehrt geprueft in NK99c. */
+assert.match(app,/async function openStockFromDiscovery\(symbol, aktualisieren=false\)/,'Discovery cards need a dedicated deep-load/open path');
 assert.match(app,/openStockFromDiscovery\(b\.dataset\.openstock\)/,'Whole-Market/Extended discovery cards must use the dedicated open path');
 // v3.2.7 ETF cache-leak regression guard
 assert.match(workerText,/function stripKnownNonCommon\(rows\)/,'Cached stock rows must have a hard non-common sanitizer');

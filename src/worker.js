@@ -1728,6 +1728,21 @@ async function signalHistory(env, assetType='coin', days=7, limit=25){
        verworfen, weil zu selten nachgesehen wurde — das ist KEIN Verlust,
        sondern eine fehlende Messung, und darf nicht als Misserfolg zaehlen. */
     outcome: e.dropped ? 'ohne Beleg' : e.reached ? 'Ziel erreicht' : e.resolved ? 'ausgewertet' : 'offen',
+    /* v4.19.0 · Nutzer: „was bedeutet Ziel erreicht, oder ausgewertet … ist
+       fuer mich nicht schluessig." Zu Recht — die vier Woerter tragen sehr
+       verschiedene Aussagen, und drei davon sind Nicht-Aussagen. „Ziel
+       erreicht" ist ein Ergebnis, „ausgewertet" ist ein Ergebnis mit anderem
+       Vorzeichen, „ohne Beleg" ist gar kein Ergebnis, und „offen" ist noch
+       keins. Der Erklaertext wird HIER gebildet, nicht in der Anzeige, weil
+       die Schwelle (ECON_WIN_PCT) hier steht und in der Anzeige nur als Zahl
+       ankaeme — dann waere sie beim naechsten Gebuehrenwechsel still falsch. */
+    outcomeWhy: e.dropped
+      ? `OHNE BEFUND — kein Fehlschlag. Nach der Freigabe wurde zu selten nachgesehen, um den Verlauf zu messen; die Aufzeichnung wurde deshalb verworfen statt geraten. Was der Kurs gemacht hat, ist schlicht nicht bekannt.`
+      : e.reached
+      ? `ERFOLG. Der Kurs hat nach der Freigabe die wirtschaftliche Schwelle von ${PICK_REACH_PCT} % berührt — den Punkt, ab dem ein Trade nach Gebühren und Steuer überhaupt etwas abwirft. ACHTUNG: berührt heißt nicht verdient. Ohne Ausstieg war es eine Möglichkeit, kein Gewinn.`
+      : e.resolved
+      ? `ABGESCHLOSSEN OHNE ERFOLG. Der Verlauf wurde über drei Stunden gemessen, die Schwelle von ${PICK_REACH_PCT} % wurde dabei nie berührt. Der beste Ausschlag daneben sagt, wie weit es gereicht hat — bei 0,0 % bewegte sich der Kurs praktisch nicht.`
+      : `NOCH LÄUFT DIE MESSUNG. Die Freigabe ist jünger als drei Stunden, der Ausgang steht noch nicht fest. Die Zahlen daneben sind ein Zwischenstand.`,
   }));
   out.state='ok';
   out.counted=eps.length;
