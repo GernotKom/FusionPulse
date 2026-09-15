@@ -1581,6 +1581,76 @@ const SIGNAL_HISTORY_MAX_ROWS = 1200;
    bisher NICHTS — jeder Aufruf ging voll auf die Datenbank. */
 const signalHistoryMemo = new Map();
 const SIGNAL_HISTORY_TTL_MS = 10*60_000;
+/* ══ v4.17.0 · DIE KALIBRIERSCHLEIFE, DIE NIE GESCHLOSSEN WURDE ════════════
+   Im Claude-Block steht seit v3.5.x woertlich: „Heuristische Startwerte; ueber
+   D1-Outcomes kalibrierbar." Kalibriert wurde nie. Sie KONNTEN es nicht: bis
+   v4.15.0 war die Nachmessung im Aktienpfad kaputt, jede Episode trug 0,0 %.
+   Die einzige Datenquelle, gegen die sich p1 haette pruefen lassen, sagte drei
+   Monate lang „nichts bewegt sich".
+
+   Der ganze Erwartungswert haengt an zwei geratenen Geraden, und an p1 haengt
+   das Tor `cExpectancyR >= 0,15`. Eine geratene Zahl entscheidet ueber jede
+   Kauf-Freigabe. Hier wird sie gemessen: `reach_ts` sagt, ob die
+   wirtschaftliche Schwelle beruehrt wurde — der beobachtbare Zwilling von p1.
+   Gruppiert nach Score-Buendel, damit die STEIGUNG pruefbar wird und nicht nur
+   der Mittelwert.
+
+   WAS DIESE ZAHLEN NICHT SIND: kein Backtest. Es fehlt die Ausfuehrung, es
+   fehlen Slippage und Teil-Exits, und der Horizont endet nach 180 Minuten.
+   `reach_ts` heisst „beruehrt", nicht „verdient". Die Zahl taugt, um eine
+   Gerade zu pruefen, nicht um eine Rendite zu behaupten — und sie steht mit
+   dieser Einschraenkung auch in der Anzeige. */
+async function calibrationReport(env, assetType='stock', days=30){
+  if(!env?.DB) return {configured:false};
+  const seit=Date.now()-Math.max(1,Math.min(120,Number(days)||30))*86400_000;
+  /* NUR nachgemessene Zeilen. Eine unberuehrte als „Ziel nicht erreicht" zu
+     zaehlen waere der Scheinverlierer-Fehler aus v4.15.0, eine Ebene hoeher. */
+  const rows=(await env.DB.prepare(
+    `SELECT score,light,shadow_light,shadow_ev,max_pct,min_pct,reach_ts
+       FROM market_snapshots
+      WHERE asset_type=? AND ts>=? AND (max_pct<>0 OR min_pct<>0 OR reach_ts IS NOT NULL)
+      ORDER BY ts DESC LIMIT 20000`).bind(String(assetType),seit).all()).results||[];
+
+  const grenzen=[[0,5.5],[5.5,6.5],[6.5,7],[7,7.5],[7.5,8.5],[8.5,11]];
+  const leer=()=>({n:0,reached:0,maxSum:0,minSum:0});
+  const nach=grenzen.map(([von,bis])=>({von,bis,...leer()}));
+  const proAmpel={green:leer(),yellow:leer(),red:leer()};
+  const proSchatten={green:leer(),yellow:leer(),red:leer()};
+  let beide=0, nurEcht=0, nurSchatten=0, mitSchatten=0;
+
+  for(const r of rows){
+    const sc=Number(r.score), mx=Number(r.max_pct)||0, mn=Number(r.min_pct)||0;
+    const traf=!!r.reach_ts;
+    const zaehl=(o)=>{ o.n++; if(traf) o.reached++; o.maxSum+=mx; o.minSum+=mn; };
+    if(Number.isFinite(sc)){ const b=nach.find(x=>sc>=x.von&&sc<x.bis); if(b) zaehl(b); }
+    if(proAmpel[r.light]) zaehl(proAmpel[r.light]);
+    if(r.shadow_light){
+      mitSchatten++;
+      if(proSchatten[r.shadow_light]) zaehl(proSchatten[r.shadow_light]);
+      const e=r.light==='green', sch=r.shadow_light==='green';
+      if(e&&sch) beide++; else if(e) nurEcht++; else if(sch) nurSchatten++;
+    }
+  }
+  const fertig=(o)=>({n:o.n, reachedPct:o.n?+(o.reached/o.n*100).toFixed(1):null,
+    avgMaxPct:o.n?+(o.maxSum/o.n).toFixed(2):null, avgMinPct:o.n?+(o.minSum/o.n).toFixed(2):null});
+  /* Die heuristische Gerade zum Vergleich, mit situ10=0 gerechnet — der
+     Situationsanteil steht in der Aufzeichnung nicht getrennt zur Verfuegung,
+     und eine geschaetzte Ergaenzung waere eine erfundene Zahl. */
+  const heuristik=(sc)=>+Math.max(0.38,Math.min(0.62,0.40+(sc-5)*0.04)).toFixed(3);
+
+  return {
+    configured:true, assetType, days:Math.round((Date.now()-seit)/86400_000),
+    sample:rows.length, withShadow:mitSchatten,
+    byScore:nach.map(b=>({band:`${b.von}–${b.bis}`, ...fertig(b),
+      heuristicP1:heuristik((b.von+Math.min(b.bis,10))/2)})),
+    byLight:{green:fertig(proAmpel.green),yellow:fertig(proAmpel.yellow),red:fertig(proAmpel.red)},
+    byShadow:{green:fertig(proSchatten.green),yellow:fertig(proSchatten.yellow),red:fertig(proSchatten.red)},
+    overlap:{beide,nurEcht,nurSchatten},
+    caveat:'Beruehrung der wirtschaftlichen Schwelle im 180-Minuten-Horizont. Keine Ausfuehrung, keine Slippage, keine Teil-Exits — taugt zur Pruefung der Geraden, nicht als Renditeaussage.',
+    version:APP_VERSION,
+  };
+}
+
 async function signalHistory(env, assetType='coin', days=7, limit=25){
   const out={configured:!!env?.DB, assetType, days, episodes:[], version:APP_VERSION};
   if(!env?.DB){ out.state='nodb'; out.reason='Ohne D1 gibt es keine Aufzeichnung.'; return out; }
@@ -2316,8 +2386,85 @@ function analyseStock(symbol, sector, src, usdPerEur, comp, minCrv = 3, opts = {
       && cNetCRV >= 1.8 && frictionOk && situationType !== 'WATCH' && !overextended
       && cExpectancyR >= 0.15;
     const cYellow = !cGreen && volumeKnown && cScore >= 5.8 && cNetCRV >= 1.2;
+    /* ══ v4.17.0 · DAS SCHATTENTOR ═══════════════════════════════════════
+       BEFUND, nach einem Monat ohne eine einzige Kauf-Freigabe: das Tor oben
+       ist eine ACHTFACHE UND-Kette. Bei je 60–70 % Durchlass bleiben zwei bis
+       vier Prozent uebrig, danach kommt clientseitig noch das Frische-Fenster
+       mit rund 15 %. Das Schweigen ist keine Marktaussage, es ist
+       Multiplikation.
+
+       Schlimmer: die Kette zaehlt dieselbe Evidenz mehrfach.
+         • `overextended` zieht 1,2 Punkte vom Score ab UND ist ein Veto.
+         • `relVol` speist `volScore` UND ist ein Veto bei 1,3.
+         • `cExpectancyR` ist eine FUNKTION von `cScore` — „Score ≥ 7" und
+           „EV ≥ 0,15R" sind nicht zwei Pruefungen, sondern eine, zweimal.
+       Mehrfach gezaehlte Evidenz sieht aus wie Strenge und ist Ueberfilterung.
+
+       DIE NAHELIEGENDE KORREKTUR WAERE FALSCH. Das Tor einfach zu lockern
+       hiesse, eine ungepruefte Schwelle gegen ein Bauchgefuehl zu tauschen.
+       Die bestehenden Schwellen wurden nie gegen Ergebnisse geprueft, weil die
+       Nachmessung bis v4.15.0 kaputt war — zwei ungepruefte Zahlen sind nicht
+       besser als eine.
+
+       STATTDESSEN LAEUFT DAS ALTERNATIVE TOR MIT UND WIRD GEMESSEN. Es
+       entscheidet NICHTS: kein Ton, keine Ampel, keine Freigabe, kein Plan.
+       Sein Urteil wird nur mitgeschrieben (`shadow_light`, `shadow_ev`), damit
+       es denselben Weg durch `d1ResolveDue` nimmt wie die echten Freigaben.
+       In ein paar Wochen steht dann eine Messung statt einer Meinung.
+
+       Der Unterschied ist ein PRINZIP, keine gelockerte Zahl: VETO nur, wo der
+       Erwartungswert UNBEKANNT ist (fehlende Volumenbasis, fehlendes RVOL,
+       kein Situationsmuster, Kosten nicht gedeckt). Alles, was ihn nur
+       VERSCHLECHTERT — Ueberdehnung, schwaches RVOL, magerer Score —, gehoert
+       in p1 und p2 und damit in den EV selbst. Damit faellt die Doppelzaehlung
+       von allein weg.
+
+       ZUR SPERRE: der Block hier ist seit v3.5.0 per Prueffsumme verriegelt,
+       weil parallel an derselben Datei gearbeitet wurde. Das Schattentor wird
+       mit ausdruecklicher Freigabe des Betreibers eingefuegt; die Pruefsumme
+       in NK-Safety wird im selben Zug neu gesetzt. Die Sperre bleibt also
+       scharf — sie meldet weiterhin JEDE unangekuendigte Aenderung. */
+    const schatten = (() => {
+      /* Dieselben Startwerte wie oben, aber die abwertenden Umstaende wirken
+         HIER statt als Veto. Die Abschlaege sind bewusst spuerbar: ein
+         ueberdehnter Titel mit duennem Volumen soll einen SCHLECHTEN EV
+         bekommen, keinen verbotenen. */
+      const rvAbschlag = relVol == null ? 0 : relVol >= 1.5 ? 0.02 : relVol >= 1.3 ? 0 : -0.05;
+      const dehnAbschlag = overextended ? -0.07 : 0;
+      const sp1 = Math.max(0.30, Math.min(0.66, p1 + rvAbschlag + dehnAbschlag));
+      const sp2 = Math.max(0.30, Math.min(0.58, p2 + (overextended ? -0.04 : 0)));
+      const sEV = +((sp1 * 0.5 * R1 + sp1 * sp2 * 0.5 * R2 - (1 - sp1) * 1 - costR)).toFixed(2);
+      /* Nur echte Unbekannte sperren. Jede dieser vier Lagen macht den EV nicht
+         schlechter, sondern unberechenbar — und ueber eine Zahl, die man nicht
+         bilden kann, darf man nicht abstimmen. */
+      const sBlock = [];
+      if (!volumeKnown) sBlock.push('Volumenbasis fehlt — EV nicht bildbar');
+      if (relVol == null) sBlock.push('RVOL nicht messbar — EV nicht bildbar');
+      if (situationType === 'WATCH') sBlock.push('kein aktives Situationsmuster — kein Anlass');
+      if (!frictionOk) sBlock.push(`Kursweg ${cTp2Pct.toFixed(2)} % deckt 3x Kosten nicht — EV unehrlich`);
+      const bildbar = !sBlock.length;
+      /* EIN Tor, und es ist der Erwartungswert. 0,15R ist bewusst DIESELBE
+         Schwelle wie oben — verglichen werden soll die STRUKTUR des Tores,
+         nicht eine zweite verstellte Zahl. Wer beides gleichzeitig aendert,
+         kann hinterher nicht sagen, was gewirkt hat. */
+      const sGreen = bildbar && sEV >= 0.15;
+      const sYellow = bildbar && !sGreen && sEV >= 0;
+      const sLight = sGreen ? 'green' : sYellow ? 'yellow' : 'red';
+      if (!bildbar) sBlock.push(`EV waere ${sEV}R gewesen`);
+      else if (!sGreen) sBlock.push(`Erwartungswert ${sEV}R < +0,15R`);
+      return {
+        light: sLight, expectancyR: sEV, p1: +sp1.toFixed(3), p2: +sp2.toFixed(3),
+        hitPct: Math.round(sp1 * 100),
+        agree: sLight === (cGreen ? 'green' : cYellow ? 'yellow' : 'red'),
+        blockers: sBlock.slice(0, 4),
+        note: 'Schattentor · misst mit, entscheidet nichts',
+      };
+    })();
+
     return {
       light: cGreen ? 'green' : cYellow ? 'yellow' : 'red',
+      shadow: schatten,
+      p1: +p1.toFixed(3), p2: +p2.toFixed(3),
       score: cScore, netCRV: cNetCRV,
       tp2Usd: cTp2, tp2Eur: e(cTp2), tp2Pct: +cTp2Pct.toFixed(2),
       tp2Source: structUp >= 2.0 * risk ? 'Struktur (Elliott/Fib 1,618)' : '2,5 R',
@@ -3418,6 +3565,15 @@ async function ensureD1Schema(env){
      sich nicht weit genug bewegt oder ob es sich bewegt und einen nur vorher
      herausschuettelt. Das sind zwei voellig verschiedene Probleme. */
   if(!cols.some(c=>String(c.name)==='mae_pre')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN mae_pre REAL').run();
+  /* ══ v4.17.0 · DAS SCHATTENTOR BRAUCHT EIGENE SPALTEN ═══════════════════
+     Damit sich in ein paar Wochen ausrechnen laesst, ob das alternative Tor
+     besser gewesen waere, muss sein Urteil ZUM ZEITPUNKT DER AUFZEICHNUNG
+     festgehalten werden. Nachtraeglich rekonstruieren geht nicht: Score,
+     RVOL und Situation von damals sind weg. Kostet KEINEN zusaetzlichen
+     Schreibvorgang — beide Spalten fahren im ohnehin geschriebenen INSERT
+     mit. Wie `reach_ts` in v3.20.0 fuellen sie sich erst ab jetzt. */
+  if(!cols.some(c=>String(c.name)==='shadow_light')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN shadow_light TEXT').run();
+  if(!cols.some(c=>String(c.name)==='shadow_ev')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN shadow_ev REAL').run();
   /* ══ v3.32.10 · R3 · WAS NICHT BEOBACHTET WURDE, IST KEIN ERGEBNIS ═════════
      Der Aufloeser lief bisher nur, wenn GENAU DIESES Symbol erneut gescannt
      wurde, und nur im Fenster Minute 180 bis 195. Wer es verpasste, blieb fuer
@@ -4528,9 +4684,11 @@ async function d1StoreRows(env, rows, opts={}){
     const crowdScore=dbNum(row.crowdScore) ?? crowdBySym.get(symbol) ?? null;
     const enriched={...row,crowdScore}, f=learningFeatures(enriched);
     inserts.push(env.DB.prepare(`INSERT OR IGNORE INTO market_snapshots
-      (ts,bucket5,source,asset_type,symbol,sector,phase,price,score,crv,rvol,ret15,ret60,atr_pct,liquidity_vacuum,sector_lag,crowd_score,structure_pct,executability,light,payload)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(now,bucket5,source,assetType,symbol,row.sector||null,row.marketPhase||row.phase||null,price,
+      (ts,bucket5,source,asset_type,symbol,sector,phase,price,score,crv,rvol,ret15,ret60,atr_pct,liquidity_vacuum,sector_lag,crowd_score,structure_pct,executability,light,shadow_light,shadow_ev,payload)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(now,bucket5,source,assetType,symbol,row.sector||null,row.marketPhase||row.phase||null,price,
         f.score,f.crv,f.rv,f.r15,f.r60,f.atr,f.vac,f.lag,crowdScore,f.structure,dbNum(row.executability),row.light||null,
+        // v4.17.0 · Urteil des Schattentors, festgehalten zum Zeitpunkt der Aufzeichnung.
+        row.claude?.shadow?.light||null, dbNum(row.claude?.shadow?.expectancyR),
         snapshotPayload(row)));
     const flags=serverLeadFlags(enriched);
     for(const k of LEARN_SIGNAL_LABELS){
@@ -10584,7 +10742,7 @@ async function tiingoStockLookup(env,raw,comp,minCrv=3,force=false){
   stockLookupMemo.set(info.symbol,{ts:Date.now(),row});const old=new Map(stockMemo.rows.map(r=>[r.symbol,r]));old.set(row.symbol,row);stockMemo.rows=[...old.values()].sort((a,b)=>b.score-a.score).slice(0,80);
   return {configured:true,state:'ok',cached:false,lookup:true,row,source:'Tiingo IEX',provider:'Tiingo',version:APP_VERSION};
 }
-export { analyse, analyseStock, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation, alpacaPrevClose, momentumFromAlpaca, maturityBreakdown, snapshotWriteDecision, classifyError, sessionVwap, attachRelativeVwap, regularSessionWindow, d1WriteCap,
+export { analyse, analyseStock, calibrationReport, aladdinIntelligence, aladdinRegime, aladdinSectors, marketRecommendation, alpacaPrevClose, momentumFromAlpaca, maturityBreakdown, snapshotWriteDecision, classifyError, sessionVwap, attachRelativeVwap, regularSessionWindow, d1WriteCap,
   /* v4.8.0 · Modul 0b. AUSGEFUEHRT geprueft, nicht per Muster gelesen — das ist
      die Lehre aus zehn Befunden dieser Reihe. `aucSeparation` steht hier nur
      mit, damit NK87 die schnelle Rangfassung gegen die paarweise Urfassung
@@ -10736,6 +10894,18 @@ export default {
       const limit = Number(url.searchParams.get('limit')) || 25;
       const d = await signalHistory(env, at, days, limit);
       return json(d, d.state === 'error' ? 502 : 200, { 'cache-control': 'no-store' });
+    }
+
+    /* v4.17.0 · Kalibrierung. Reiner Lesevorgang: kein Schreibvorgang, kein
+       Gate, keine Ampel haengt daran. Siehe `calibrationReport`. */
+    if (url.pathname === '/api/calibration') {
+      const at = url.searchParams.get('assetType') === 'coin' ? 'coin' : 'stock';
+      const days = Number(url.searchParams.get('days')) || 30;
+      try {
+        return json(await calibrationReport(env, at, days), 200, { 'cache-control': 'no-store' });
+      } catch (e) {
+        return json({ configured: true, state: 'error', error: classifyError(e).message }, 502, { 'cache-control': 'no-store' });
+      }
     }
 
     if (url.pathname === '/api/coinwatch') {

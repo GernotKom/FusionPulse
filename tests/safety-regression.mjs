@@ -335,7 +335,27 @@ console.log('✓ FusionPulse v3.5.1 deep-scan/quota regressions: OK');
   const sha=(x)=>crypto.createHash('sha256').update(x).digest('hex');
   const block=(text,marker)=>{const a=text.indexOf(marker);assert.ok(a>=0,`Marker fehlt: ${marker}`);const b=text.indexOf('  })();',a);assert.ok(b>a,`Blockende fehlt: ${marker}`);return text.slice(a,b+'  })();'.length);};
   assert.equal(sha(block(workerText,'// ---- v3.5.0 CLAUDE-MODUS (additiv)')),'1a6acdf20ff3de5eb6642c7d4a5e99c979deb3112570aa6918f642db92917bb5','Claude Coin-Methodik darf nicht veraendert werden');
-  assert.equal(sha(block(workerText,'// ---- v3.5.0 CLAUDE-MODUS (additiv, verändert Legacy-Werte NICHT)')),'52f69351e1ff3367ed8e14b5adabf6aeb106c6ac5826ab2ed7c615a863baca4c','Claude Aktien-Methodik darf nicht veraendert werden');
+  /* ══ v4.17.0 · DIE PRUEFSUMME WURDE BEWUSST NEU GESETZT ═══════════════════
+     Diese Sperre entstand, weil parallel an derselben Datei gearbeitet wurde
+     und die Claude-Methodik nicht unbemerkt verschoben werden sollte. Sie hat
+     genau das geleistet: beim Einbau des Schattentors hat sie sofort
+     angeschlagen.
+
+     Der Betreiber hat die Aenderung am 15.09. ausdruecklich freigegeben.
+     GEAENDERT wurde AUSSCHLIESSLICH ADDITIV:
+       • neuer Block `const schatten = (…)` — ein zweites, EV-getriebenes Tor,
+         das nichts entscheidet und nur mitgeschrieben wird,
+       • drei neue Felder in der Rueckgabe: `shadow`, `p1`, `p2`.
+     UNVERAENDERT geblieben sind alle Groessen, an denen eine Freigabe haengt:
+     `cScore`, `cNetCRV`, `cExpectancyR`, `cGreen`, `cYellow`, `light`,
+     `verdict`, `blockers` und die Gewichte in `weighted([…])`. Wer das
+     nachpruefen will, vergleicht die Zeilen mit `cGreen =` und `cScore =`
+     gegen v4.16.1 — sie sind Zeichen fuer Zeichen dieselben.
+
+     Die Sperre bleibt damit scharf: sie meldet weiterhin JEDE Aenderung, die
+     nicht vorher angekuendigt und hier begruendet wurde. Eine Pruefsumme, die
+     man kommentarlos nachzieht, ist keine Sperre, sondern eine Zeremonie. */
+  assert.equal(sha(block(workerText,'// ---- v3.5.0 CLAUDE-MODUS (additiv, verändert Legacy-Werte NICHT)')),'99143328f3bd4e30160f88e7c26aa90be77b1a799ad137fd7179781362169f05','Claude Aktien-Methodik darf nicht veraendert werden');
   const ca=app.slice(app.indexOf('/* ---- v3.5.0 Claude Modus'),app.indexOf('if (!Array.isArray(S.components)',app.indexOf('/* ---- v3.5.0 Claude Modus')));
   assert.equal(sha(ca),'de85b209bbed1636b683c509b3256fd701ce5c15261c507d5f4682622e579cb2','Claude Client-Konstanten duerfen nicht veraendert werden');
   const ov=app.slice(app.indexOf('/* ---- Claude-Modus-Overlay'),app.indexOf('function buyReady',app.indexOf('/* ---- Claude-Modus-Overlay')));

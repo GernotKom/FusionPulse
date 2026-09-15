@@ -1,29 +1,47 @@
-FusionPulse v4.16.1 – Nachbesserung zu 4.16.0
+FusionPulse v4.17.0 – Schattentor und Kalibrierung
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
-Keine neuen Secrets, keine neue Migration, kein neues Binding.
+Keine neuen Secrets, kein neues Binding. ZWEI NEUE SPALTEN in market_snapshots
+(shadow_light, shadow_ev) — werden beim Start automatisch angelegt, keine
+Migration noetig.
 
-WAS BEHOBEN IST (Befund: „nur gedaempfte Kugeln in der Heatmap"):
-Die in 4.16.0 eingefuehrte Veraltet-Markierung traf auf JEDEN Punkt zu. Sie
-benutzte die Schwelle der Fokuskachel — 120 Sekunden. Der Deep Scan rotiert
-aber mit acht Titeln je Zwei-Minuten-Takt, ein beliebiger Titel der Liste ist
-also im Normalbetrieb aelter als zwei Minuten. Eine Markierung, die auf alles
-zutrifft, sagt nichts; sie hat die Karte nur dunkler gemacht.
+WORUM ES GEHT:
+Nach einem Monat ohne eine einzige Kauf-Freigabe habe ich den Claude-/Aladdin-
+Strang durchgesehen. Drei Befunde:
 
-Gemeint war der QGEN-Fall: Kurs von Freitag, 63 Stunden alt, mitten im
-Premarket am Montag. Markiert wird ab jetzt genau das:
-  • Datenstand nicht vom heutigen US-Handelstag, ODER
-  • aelter als sechs Stunden, ODER
-  • gar kein lesbarer Zeitstempel.
-Sechs Stunden sind bewusst grob — eine volle Sitzung dauert 6,5.
-Dieselbe Schwelle gilt jetzt auch im Bewegungsmelder.
+1. Das Tor ist eine ACHTFACHE UND-Kette. Bei je 60–70 % Durchlass bleiben zwei
+   bis vier Prozent; danach kommt clientseitig noch das Frische-Fenster mit
+   rund 15 %. Das Schweigen ist Multiplikation, keine Marktaussage.
+2. Die Kette zaehlt dieselbe Evidenz mehrfach: „overextended" zieht Punkte ab
+   UND ist Veto; „relVol" speist den Score UND ist Veto; und der Erwartungswert
+   ist eine FUNKTION des Scores — „Score >= 7" und „EV >= 0,15R" sind nicht
+   zwei Pruefungen, sondern eine, zweimal.
+3. Der Erwartungswert haengt an zwei GERATENEN Geraden (p1, p2). Im Code steht
+   seit v3.5.x „ueber D1-Outcomes kalibrierbar". Kalibriert wurde nie — die
+   Nachmessung war bis v4.15.0 kaputt und sagte drei Monate lang „nichts
+   bewegt sich".
 
-Neu abgesichert: NK96 spannt beide Enden ein (4 Min. und 45 Min. duerfen NICHT
-markiert werden, 63 Std. MUSS). Der Fehler waere durch keine Mustersuche im
-Quelltext aufgefallen — nur durch Ausfuehren.
+WAS NEU IST — UND WAS NICHT:
+• SCHATTENTOR: ein zweites, rein EV-getriebenes Tor laeuft mit. Es entscheidet
+  NICHTS: kein Ton, keine Ampel, keine Freigabe, kein Plan. Sein Urteil wird
+  nur mitgeschrieben, damit es denselben Weg durch die Nachmessung nimmt.
+  In ein paar Wochen steht dann eine MESSUNG statt einer Meinung.
+• KALIBRIER-KACHEL im Lab: gemessenes p1 gegen geratenes p1, nach Score-Buendel
+  getrennt. Erst ab 40 nachgemessenen Faellen je Buendel wird geurteilt.
+• KEINE einzige bestehende Schwelle wurde veraendert. Score, CRV, EV-Schwelle,
+  Ampel und Freigabe sind Zeichen fuer Zeichen dieselben wie in v4.16.1.
 
-ALLES ANDERE AUS 4.16.0 BLEIBT: Bewegungsmelder der Watchlist, Beschriftung
-aller Kugeln, Nachweiszeile im Verlauf, Serien-Memo, Bandbreiten-Anker.
-Siehe UEBERGABE.md.
+ZUR AUFGEHOBENEN SPERRE:
+Der Claude-Block war seit v3.5.0 per Pruefsumme verriegelt. Sie hat beim Einbau
+sofort angeschlagen — genau ihr Zweck. Du hast die Aenderung freigegeben; die
+Pruefsumme ist im selben Zug neu gesetzt und der Grund steht ausfuehrlich in
+tests/safety-regression.mjs. Die Sperre bleibt scharf: sie meldet weiterhin
+JEDE unangekuendigte Aenderung. Neu abgesichert durch NK97: das Schattentor
+darf nachweislich nirgends in eine Entscheidung einfliessen.
+
+WAS DU BEOBACHTEN SOLLTEST:
+Lab / Learning -> Kachel „Kalibrierung". Sie ist anfangs LEER, und das ist
+richtig: das Schattentor hat noch keine aufgeloesten Faelle. Ein leerer
+Vergleich ist kein Gleichstand.
 
 WICHTIG: Keine dieser Aenderungen veraendert Score, Ampel oder Kauf-Freigabe.

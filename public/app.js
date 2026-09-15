@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.16.1 — Frontend
+   FusionPulse v4.17.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -6695,6 +6695,91 @@ function renderScoreAudit(){
     +`<small class="hint">${esc(d.note||'')}</small>`
     +`<small class="hint" title="Ein Term kann trennen, weil er dasselbe misst wie ein anderer. Diese Auswertung zeigt Trennschärfe, nicht Ursache — und sie ändert von sich aus nichts.">Trennschärfe ist keine Ursache. Diese Kachel ändert nichts von selbst; Änderungen an den Gewichten sind deine Entscheidung.</small>`);
 }
+/* ══ v4.17.0 · KALIBRIERUNG DES CLAUDE-/ALADDIN-STRANGS ═════════════════════
+   Nutzerfrage nach einem Monat ohne eine einzige Kauf-Freigabe: „was ist mit
+   deinem Algorithmus Aladdin Style? kannst du den nicht kreativ optimieren?"
+
+   Beim Nachsehen drei Befunde:
+     1. Das Tor ist eine ACHTFACHE UND-Kette. Bei je 60–70 % Durchlass bleiben
+        zwei bis vier Prozent übrig — davor noch das Frische-Fenster mit
+        rund 15 %. Das Schweigen ist Multiplikation, keine Marktaussage.
+     2. Die Kette zählt dieselbe Evidenz mehrfach: `overextended` zieht Punkte
+        ab UND ist Veto, `relVol` speist den Score UND ist Veto, und
+        `expectancyR` ist eine Funktion von `score` — zwei Tore, eine Evidenz.
+     3. Der ganze Erwartungswert hängt an zwei GERATENEN Geraden. Im Code steht
+        seit v3.5.x „über D1-Outcomes kalibrierbar". Kalibriert wurde nie —
+        weil die Nachmessung bis v4.15.0 kaputt war und drei Monate lang
+        „nichts bewegt sich" sagte.
+
+   Diese Kachel dreht an keiner Schwelle. Sie schließt die Schleife: gemessenes
+   p1 gegen geratenes p1, und daneben das Schattentor, das seit dieser Version
+   mitläuft und nichts entscheidet. In ein paar Wochen steht hier eine Messung
+   statt meiner Meinung. */
+let calibData=null;
+async function loadCalibration(){
+  try{
+    const q=new URLSearchParams({assetType:'stock',days:'30'}); if(S.token)q.set('t',S.token);
+    const r=await fetch('/api/calibration?'+q,{cache:'no-store'});
+    calibData=await r.json();
+  }catch(e){ calibData={configured:true,state:'error',error:String(e.message||e)}; }
+  renderCalibration();
+}
+
+function renderCalibration(){
+  const el=$('#calibrationReport'); if(!el) return;
+  const head=`<div class="ophead"><b>🎯 Kalibrierung · geraten gegen gemessen</b>`
+    +`<span title="Die Trefferwahrscheinlichkeit p1 entscheidet über den Erwartungswert und damit über jede Kauf-Freigabe. Sie war seit v3.5.x eine Heuristik mit dem Vermerk „über D1-Outcomes kalibrierbar“ — und wurde nie kalibriert.">Auswertung · 0 % BUY-Gewicht</span>`
+    +`<small>aus nachgemessenen Aufzeichnungen</small></div>`;
+  if(!calibData){ el.innerHTML=head+'<span class="hint">Auswertung wird geladen.</span>'; return; }
+  const d=calibData;
+  if(d.configured===false){ el.innerHTML=head+'<span class="hint">Keine D1-Verbindung — ohne Aufzeichnungen keine Kalibrierung.</span>'; return; }
+  if(d.state==='error'){ el.innerHTML=head+`<span class="hint">Auswertung fehlgeschlagen: ${esc(d.error||'unbekannt')}</span>`; return; }
+
+  /* Die Stichprobengrenze steht VOR den Zahlen, nicht darunter. Eine Quote aus
+     zwölf Fällen sieht genauso aus wie eine aus zwölfhundert, und genau diese
+     Verwechslung hat in diesem Projekt schon einmal drei Monate gekostet. */
+  const MIN=40;
+  const duenn=Number(d.sample||0)<MIN;
+  const kopfnote = duenn
+    ? `<b class="cal-thin">Noch kein Urteil möglich.</b> Nachgemessen vorliegen ${num(d.sample,0)} Aufzeichnungen, gebraucht werden mindestens ${MIN} je Bündel. Die Nachmessung läuft erst seit v4.15.0 — vorher trug jede Episode 0,0 %, und auf dieser Basis lässt sich nichts kalibrieren. Angezeigt wird der Zwischenstand.`
+    : `<b>${num(d.sample,0)} nachgemessene Aufzeichnungen</b> der letzten ${num(d.days,0)} Tage.`;
+
+  const zeilen=(d.byScore||[]).map(b=>{
+    const g=Number(b.heuristicP1)*100, m=Number(b.reachedPct);
+    const genug=Number(b.n)>=MIN;
+    const delta=(genug&&Number.isFinite(m))?m-g:null;
+    const ton=delta==null?'':Math.abs(delta)<=6?'ok':Math.abs(delta)<=15?'warn':'bad';
+    return `<tr data-tone="${ton}">
+      <td><b>${esc(b.band)}</b><small>${num(b.n,0)} Fälle</small></td>
+      <td class="ta">${num(g,0)} %<small>geraten</small></td>
+      <td class="ta">${genug&&Number.isFinite(m)?`${num(m,0)} %`:'–'}<small>${genug?'gemessen':'zu dünn'}</small></td>
+      <td class="ta">${delta==null?'–':`${delta>0?'+':''}${num(delta,0)}`}<small>${delta==null?'':'Punkte'}</small></td>
+      <td class="ta">${b.avgMaxPct==null?'–':`${num(b.avgMaxPct,1)} %`}<small>Ø bester</small></td>
+    </tr>`;
+  }).join('');
+
+  const o=d.overlap||{};
+  const sch=d.byShadow||{}, ech=d.byLight||{};
+  /* Der Vergleich ist erst dann etwas wert, wenn das Schattentor eigene
+     aufgelöste Fälle hat. Bis dahin steht hier ausdrücklich, dass er leer ist
+     — und nicht etwa, dass beide Tore gleich gut wären. */
+  const schattenBlock = !Number(d.withShadow)
+    ? `<small class="hint">Das Schattentor läuft seit v4.17.0 mit. Es hat noch keine nachgemessenen Fälle — seine Urteile werden ab jetzt aufgezeichnet und brauchen denselben 180-Minuten-Horizont wie alle anderen. <b>Ein leerer Vergleich ist kein Gleichstand.</b></small>`
+    : `<table class="sighist"><thead><tr><th>Tor</th><th class="ta">Freigaben</th><th class="ta">Ziel berührt</th><th class="ta">Ø bester Ausschlag</th></tr></thead><tbody>
+        <tr><td><b>Haupttor</b><small>acht UND-Bedingungen</small></td><td class="ta">${num(ech.green?.n,0)}</td><td class="ta">${ech.green?.reachedPct==null?'–':num(ech.green.reachedPct,0)+' %'}</td><td class="ta">${ech.green?.avgMaxPct==null?'–':num(ech.green.avgMaxPct,1)+' %'}</td></tr>
+        <tr><td><b>Schattentor</b><small>Erwartungswert als einziges Tor</small></td><td class="ta">${num(sch.green?.n,0)}</td><td class="ta">${sch.green?.reachedPct==null?'–':num(sch.green.reachedPct,0)+' %'}</td><td class="ta">${sch.green?.avgMaxPct==null?'–':num(sch.green.avgMaxPct,1)+' %'}</td></tr>
+       </tbody></table>
+       <small class="hint">Überschneidung: ${num(o.beide,0)} von beiden freigegeben, ${num(o.nurEcht,0)} nur vom Haupttor, ${num(o.nurSchatten,0)} nur vom Schattentor. Interessant ist die dritte Zahl: das sind die Fälle, die das Haupttor verworfen hat. Erreichen sie das Ziel häufiger als der Durchschnitt, war die UND-Kette zu streng.</small>`;
+
+  el.innerHTML=head
+    +`<span class="hint">${kopfnote}</span>`
+    +`<table class="sighist"><thead><tr><th>Score-Bündel</th><th class="ta">p1</th><th class="ta">p1</th><th class="ta">Δ</th><th class="ta">Bewegung</th></tr></thead><tbody>${zeilen||'<tr><td colspan="5">noch keine Bündel</td></tr>'}</tbody></table>`
+    +`<small class="hint" title="Die Gerade lautet p1 = 0,40 + (Score − 5) × 0,04, gedeckelt bei 0,38 und 0,62. Sie ist eine Annahme aus v3.5.x, kein Messwert.">Die geratene Gerade steigt mit 4 Punkten je Score-Stufe. Ob sie überhaupt steigt, sagt die Spalte Δ: wechselndes Vorzeichen über die Bündel heißt, dass der Score die Trefferquote nicht ordnet — dann ist nicht die Höhe falsch, sondern die Steigung.</small>`
+    +`<div class="cal-shadow"><b>🕶️ Schattentor</b>${schattenBlock}</div>`
+    +`<small class="hint">${esc(d.caveat||'')}</small>`
+    +`<small class="hint"><b>Diese Kachel ändert nichts.</b> Sie stellt die geratene Zahl neben die gemessene. Was daraus folgt, ist eine Entscheidung und keine Rechnung.</small>`;
+}
+
 async function loadPatterns(){
   try{
     const q=new URLSearchParams(); if(S.token)q.set('t',S.token);
@@ -6702,6 +6787,7 @@ async function loadPatterns(){
     patternData=await r.json();
   }catch(e){ patternData={configured:true,state:'error',error:String(e.message||e)}; }
   renderPatternLab();
+  loadCalibration();   // v4.17.0 · siehe dort: Auswertung, keine Schwelle
 }
 
 const PAT_TONE={up:'#5b8cff',down:'#a97bff',flat:'#6b7a94'};
