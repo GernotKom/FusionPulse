@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.19.0 — Frontend
+   FusionPulse v4.20.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2963,12 +2963,28 @@ function renderSignalHistory(domain) {
     const ton = e.measured === false ? 'warn'
       : e.outcome === 'Ziel erreicht' ? 'ok' : e.outcome === 'ohne Beleg' ? 'warn' : e.outcome === 'offen' ? 'idle' : 'neutral';
     const wann = new Date(e.firstTs).toLocaleString('de-AT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    /* ══ v4.20.0 · WANN WAR DER BESTE MOMENT? ═══════════════════════════
+       Nutzer: „Empfehlung Uhrzeit und wann der höchste Peak von der Zeit nach
+       Empfehlung zu messen war." Der beste Ausschlag stand ohne Zeitpunkt da —
+       „+19,2 %" ist aber eine völlig andere Aussage, je nachdem ob der Kurs
+       zehn Minuten nach der Freigabe dort war oder zweidreiviertel Stunden
+       später. Im ersten Fall hätte man kaum reagieren können, im zweiten sehr
+       wohl. Der Abstand ist die eigentliche Information, die Uhrzeit die
+       Kontrolle dazu. */
+    const spanne = (m) => m == null ? null : m < 60 ? `+${m} min` : `+${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}`;
+    const uhr = (ts) => ts ? new Date(ts).toLocaleTimeString('de-AT', { hour: '2-digit', minute: '2-digit' }) : null;
+    const peak = e.peakAfterMin != null && e.maxTs
+      ? `<small title="Der höchste Punkt nach der Freigabe lag um ${esc(uhr(e.maxTs))}, also ${esc(spanne(e.peakAfterMin))} nach der Freigabe. Je später der Peak, desto mehr Zeit hättest du gehabt, ihn mitzunehmen — ein Hoch nach fünf Minuten ist praktisch nicht handelbar.">Hoch ${esc(uhr(e.maxTs))} · ${esc(spanne(e.peakAfterMin))}</small>`
+      : `<small title="Für diese Episode wurde der Zeitpunkt des Höchststands nicht aufgezeichnet. Die Spalte gibt es erst seit v4.20.0; ältere Aufzeichnungen bleiben dauerhaft ohne Zeit.">Hoch · Zeit n.v.</small>`;
+    const ziel = e.reachAfterMin != null && e.reachTs
+      ? `<small title="Die wirtschaftliche Schwelle wurde um ${esc(uhr(e.reachTs))} zum ersten Mal berührt, ${esc(spanne(e.reachAfterMin))} nach der Freigabe.">Ziel ${esc(uhr(e.reachTs))} · ${esc(spanne(e.reachAfterMin))}</small>`
+      : '';
     const ausschlag = e.measured === false
       ? `<i title="Für diese Freigabe wurde nach der Freigabe kein Kurs nachgemessen. Das ist eine fehlende Messung, keine Bewegung von null.">nicht gemessen</i>`
-      : `<span title="Größte Bewegung NACH der Freigabe, gemessen am Kurs der Freigabe. Oben der beste Punkt, darunter der schlechteste. Beides sind Möglichkeiten gewesen, keine erzielten Ergebnisse — ohne Ausstieg bleibt vom besten Punkt nichts übrig, und der tiefste sagt, wie weit es zwischendurch gegen dich lief.">${pct(e.maxPct)}<small>tiefster ${pct(e.minPct)}</small></span>`;
+      : `<span title="Größte Bewegung NACH der Freigabe, gemessen am Kurs der Freigabe. Oben der beste Punkt, darunter der schlechteste. Beides sind Möglichkeiten gewesen, keine erzielten Ergebnisse — ohne Ausstieg bleibt vom besten Punkt nichts übrig, und der tiefste sagt, wie weit es zwischendurch gegen dich lief.">${pct(e.maxPct)}<small>tiefster ${pct(e.minPct)}</small></span>${peak}`;
     return `<tr data-tone="${ton}">
       <td><b>${esc(String(e.symbol).replace(/-EUR$/, ''))}</b><small>${esc(e.setup || e.situation || '–')}</small></td>
-      <td>${esc(wann)}<small>${e.minutes} min · ${e.buckets}×</small></td>
+      <td title="Zeitpunkt der ERSTEN grünen Freigabe dieser Episode. Aufeinanderfolgende grüne Takte zählen als EINE Gelegenheit.">${esc(wann)}<small>${e.minutes} min · ${e.buckets}×</small>${ziel}</td>
       <td class="ta">${ausschlag}</td>
       <td title="${esc(e.outcomeWhy || '')}"><u class="sig-out">${esc(e.outcome)}</u>${e.measured === false ? '<small>ohne Nachmessung</small>' : ''}</td>
     </tr>`;

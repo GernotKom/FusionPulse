@@ -1662,7 +1662,7 @@ async function signalHistory(env, assetType='coin', days=7, limit=25){
   try{
     await ensureD1Schema(env);
     rows=(await env.DB.prepare(
-      `SELECT ts,symbol,source,price,score,crv,max_pct,min_pct,mae_pre,success_ts,reach_ts,resolved_ts,dropped_ts,payload
+      `SELECT ts,symbol,source,price,score,crv,max_pct,min_pct,max_ts,mae_pre,success_ts,reach_ts,resolved_ts,dropped_ts,payload
        FROM market_snapshots
        WHERE light='green' AND asset_type=? AND ts>=?
        ORDER BY ts ASC LIMIT ?`).bind(assetType,since,SIGNAL_HISTORY_MAX_ROWS).all()).results||[];
@@ -1701,11 +1701,17 @@ async function signalHistory(env, assetType='coin', days=7, limit=25){
                  gibt es in der Praxis nicht; wo sie doch auftraete, ist
                  „nicht gemessen\" die vorsichtigere der beiden Aussagen. */
               touched: Number(r.max_pct)!==0 || Number(r.min_pct)!==0 || !!r.success_ts || !!r.reach_ts,
+              // v4.20.0 · Zeitpunkt des besten Ausschlags, siehe `max_ts`.
+              maxTs: Number(r.max_ts)||null, reachTs: Number(r.reach_ts)||null,
               reached:!!r.success_ts||!!r.reach_ts, resolved:!!r.resolved_ts, dropped:!!r.dropped_ts };
       }else{
         cur.lastTs=ts; cur.buckets++;
         const mx=dbNum(r.max_pct), mn=dbNum(r.min_pct);
         if(Number(r.max_pct)!==0 || Number(r.min_pct)!==0 || r.success_ts || r.reach_ts) cur.touched=true;
+        /* Der Zeitpunkt wandert mit dem HOECHSTEN Ausschlag der Episode mit,
+           nicht mit dem letzten Takt — sonst zeigte er das Ende der Messung. */
+        if(Number.isFinite(mx) && mx>(cur.maxPct??-Infinity)){ cur.maxPct=mx; cur.maxTs=Number(r.max_ts)||cur.maxTs; }
+        if(!cur.reachTs && r.reach_ts) cur.reachTs=Number(r.reach_ts)||null;
         if(Number.isFinite(mx)) cur.maxPct=Math.max(cur.maxPct??-Infinity,mx);
         if(Number.isFinite(mn)) cur.minPct=Math.min(cur.minPct??Infinity,mn);
         if(r.success_ts||r.reach_ts) cur.reached=true;
@@ -1723,6 +1729,13 @@ async function signalHistory(env, assetType='coin', days=7, limit=25){
        „outcome\" sagt, was dabei herauskam. Ohne die Trennung sieht eine
        fehlende Messung aus wie ein bewegungsloser Kurs. */
     measured: !!e.touched,
+    /* v4.20.0 · Zeitpunkt und Abstand des besten Ausschlags. `peakAfterMin`
+       ist die Zahl, auf die es ankommt: „+19,2 %" nach zehn Minuten ist eine
+       andere Aussage als dieselbe Zahl nach zweidreiviertel Stunden. */
+    maxTs: e.maxTs||null,
+    peakAfterMin: e.maxTs ? Math.max(0, Math.round((e.maxTs-e.firstTs)/60_000)) : null,
+    reachTs: e.reachTs||null,
+    reachAfterMin: e.reachTs ? Math.max(0, Math.round((e.reachTs-e.firstTs)/60_000)) : null,
     /* Der Ausgang wird BENANNT, nicht geraten. „offen" heisst: der Horizont
        ist noch nicht abgelaufen. „ohne Beleg" heisst: die Zeile wurde
        verworfen, weil zu selten nachgesehen wurde — das ist KEIN Verlust,
@@ -1739,9 +1752,9 @@ async function signalHistory(env, assetType='coin', days=7, limit=25){
     outcomeWhy: e.dropped
       ? `OHNE BEFUND — kein Fehlschlag. Nach der Freigabe wurde zu selten nachgesehen, um den Verlauf zu messen; die Aufzeichnung wurde deshalb verworfen statt geraten. Was der Kurs gemacht hat, ist schlicht nicht bekannt.`
       : e.reached
-      ? `ERFOLG. Der Kurs hat nach der Freigabe die wirtschaftliche Schwelle von ${PICK_REACH_PCT} % berührt — den Punkt, ab dem ein Trade nach Gebühren und Steuer überhaupt etwas abwirft. ACHTUNG: berührt heißt nicht verdient. Ohne Ausstieg war es eine Möglichkeit, kein Gewinn.`
+      ? `ERFOLG. Der Kurs hat nach der Freigabe ${PICK_REACH_PCT} % gewonnen — die Schwelle, ab der ein Trade nach Kosten und Steuer ${ECON_NET_EUR} € netto übrig lässt. ${ECON_WIN_EXPLAIN}\n\nACHTUNG: berührt heißt nicht verdient. Ohne Ausstieg an diesem Punkt war es eine Möglichkeit, kein Gewinn.`
       : e.resolved
-      ? `ABGESCHLOSSEN OHNE ERFOLG. Der Verlauf wurde über drei Stunden gemessen, die Schwelle von ${PICK_REACH_PCT} % wurde dabei nie berührt. Der beste Ausschlag daneben sagt, wie weit es gereicht hat — bei 0,0 % bewegte sich der Kurs praktisch nicht.`
+      ? `ABGESCHLOSSEN OHNE ERFOLG. Drei Stunden gemessen, die ${PICK_REACH_PCT} % wurden nie erreicht. ${ECON_WIN_EXPLAIN}\n\nDer beste Ausschlag daneben sagt, wie weit es gereicht hat — bei 0,0 % bewegte sich der Kurs praktisch nicht.`
       : `NOCH LÄUFT DIE MESSUNG. Die Freigabe ist jünger als drei Stunden, der Ausgang steht noch nicht fest. Die Zahlen daneben sind ein Zwischenstand.`,
   }));
   out.state='ok';
@@ -3515,6 +3528,28 @@ const ECON_STOP_PCT = -Math.round(ECON_WIN_PCT / ECON_MIN_REWARD_RISK * 100) / 1
 /** Zeitstempel-Referenz. Identisch mit der wirtschaftlichen Schwelle: eine
  *  zweite, abweichende Zahl waere genau der Fehler, der hier behoben wird. */
 const PICK_REACH_PCT = ECON_WIN_PCT;
+/* ══ v4.20.0 · DIE SCHWELLE MUSS SICH ERKLAEREN KOENNEN ═════════════════════
+   Nutzer: „die ziel grenze 2,02 % erscheint in der Beschreibung trotzdem nicht
+   logisch — was bedeutet das."
+   Zu Recht: die Zahl stand ohne Herleitung da und sah dadurch gegriffen aus.
+   Sie ist das Gegenteil — sie folgt zwingend aus den eigenen Handelskosten und
+   wandert mit, sobald sich eine Kostenkonstante aendert. Genau das war der
+   Sinn von v3.21.0. Nur hat es nie jemand LESEN koennen.
+
+   Die Rechnung, rueckwaerts vom Ziel:
+     ${ECON_NET_EUR} € sollen NETTO uebrig bleiben.
+     Bei ${PICK_COST.taxPct} % KESt muessen dafuer brutto mehr herauskommen.
+     Dazu kommen zwei Ordergebuehren und die Ausfuehrungsreserve.
+     Alles zusammen, geteilt durch den Einsatz, ergibt den noetigen Kursweg.
+   Der Text wird HIER gebildet und nicht in der Anzeige: aendert sich die
+   Gebuehr, aendert sich der Erklaertext mit. Eine abgetippte Zahl waere beim
+   naechsten Gebuehrenwechsel still falsch geworden. */
+const ECON_WIN_EXPLAIN = `So kommt die Zahl zustande: ${ECON_NET_EUR} € sollen netto übrig bleiben. `
+  + `Bei ${PICK_COST.taxPct} % KESt müssen dafür ${Math.round(ECON_NET_EUR/(1-PICK_COST.taxPct/100))} € brutto herauskommen. `
+  + `Dazu kommen 2 × ${PICK_COST.orderFeeEur} € Ordergebühr und ${PICK_COST.frictionPct} % Ausführungsreserve `
+  + `(${Math.round(PICK_COST.notionalEur*PICK_COST.frictionPct/100)} €), zusammen ${Math.round(ECON_FIX_EUR)} € Fixkosten. `
+  + `Macht ${Math.round(ECON_NET_EUR/(1-PICK_COST.taxPct/100)+ECON_FIX_EUR)} € auf ${PICK_COST.notionalEur.toLocaleString('de-AT')} € Einsatz — also ${ECON_WIN_PCT} %. `
+  + `Darunter arbeitet der Trade für die Bank, nicht für dich.`;
 /** Die alte Zahl bleibt NUR als Vergleichsgroesse in der Anzeige erhalten,
  *  damit der Unterschied sichtbar ist statt behauptet. Sie steuert nichts. */
 const LEGACY_WIN_PCT = 5;
@@ -3589,6 +3624,18 @@ async function ensureD1Schema(env){
      mit. Wie `reach_ts` in v3.20.0 fuellen sie sich erst ab jetzt. */
   if(!cols.some(c=>String(c.name)==='shadow_light')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN shadow_light TEXT').run();
   if(!cols.some(c=>String(c.name)==='shadow_ev')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN shadow_ev REAL').run();
+  /* ══ v4.20.0 · WANN WAR DER BESTE MOMENT? ═══════════════════════════════
+     Nutzer: „auch sollte in den Listen bezueglich Ziel erreicht auch stehen —
+     Empfehlung Uhrzeit und wann der hoechste Peak von der Zeit nach Empfehlung
+     zu messen war."
+     Der beste Ausschlag stand bisher OHNE Zeitpunkt da. „+19,2 %" ist aber
+     eine voellig andere Aussage, je nachdem ob der Kurs zehn Minuten nach der
+     Freigabe dort war oder zweidreiviertel Stunden spaeter. Im ersten Fall
+     haette man es kaum mitnehmen koennen, im zweiten sehr wohl.
+     Kostet keinen zusaetzlichen Schreibvorgang — die Spalte faehrt im ohnehin
+     geschriebenen UPDATE mit. Fuellt sich erst ab jetzt; Altbestand bleibt
+     leer und wird in der Anzeige als „Zeit n.v." gekennzeichnet. */
+  if(!cols.some(c=>String(c.name)==='max_ts')) await env.DB.prepare('ALTER TABLE market_snapshots ADD COLUMN max_ts INTEGER').run();
   /* ══ v3.32.10 · R3 · WAS NICHT BEOBACHTET WURDE, IST KEIN ERGEBNIS ═════════
      Der Aufloeser lief bisher nur, wenn GENAU DIESES Symbol erneut gescannt
      wurde, und nur im Fenster Minute 180 bis 195. Wer es verpasste, blieb fuer
@@ -4621,7 +4668,7 @@ async function d1StoreRows(env, rows, opts={}){
   const obsPlaceholders=obsSymbols.map(()=>'?').join(',');
 
   // Outcomes in EINER Abfrage laden und anschließend gebündelt aktualisieren.
-  const unresolved=(await env.DB.prepare(`SELECT id,symbol,ts,price,max_pct,min_pct,success_ts,reach_ts,mae_pre FROM market_snapshots
+  const unresolved=(await env.DB.prepare(`SELECT id,symbol,ts,price,max_pct,min_pct,max_ts,success_ts,reach_ts,mae_pre FROM market_snapshots
     WHERE symbol IN (${obsPlaceholders}) AND asset_type=? AND source=? AND resolved_ts IS NULL AND ts>=? ORDER BY ts ASC LIMIT 3000`)
     .bind(...obsSymbols,assetType,source,now-LEARN_HORIZON_MS-15*60_000).all()).results||[];
   const pxBySym=new Map(clean.map(x=>[x.symbol,x.price])), updates=[];
@@ -4671,8 +4718,15 @@ async function d1StoreRows(env, rows, opts={}){
       (!!resolved);                            // Horizont abgelaufen: einmalig
     if(!changed) continue;
 
-    updates.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,success_ts=COALESCE(success_ts,?),reach_ts=COALESCE(reach_ts,?),mae_pre=?,resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
-      .bind(mx,mn,successTs,reachTs,maePre,resolved,x.id));
+    /* v4.20.0 · Der Zeitpunkt des Hoechststands. Gesetzt wird er NUR, wenn der
+       Hoechststand in diesem Takt tatsaechlich neu ist — sonst truege er die
+       Uhrzeit der letzten beliebigen Aktualisierung und waere damit eine
+       erfundene Angabe, die wie eine gemessene aussieht. Kein COALESCE: der
+       Zeitpunkt wandert mit dem Hoechststand mit. */
+    const neuesHoch = mx > (Number(x.max_pct)||0) + 1e-9;
+    const maxTs = neuesHoch ? now : (Number(x.max_ts)||null);
+    updates.push(env.DB.prepare('UPDATE market_snapshots SET max_pct=?,min_pct=?,max_ts=?,success_ts=COALESCE(success_ts,?),reach_ts=COALESCE(reach_ts,?),mae_pre=?,resolved_ts=COALESCE(resolved_ts,?) WHERE id=?')
+      .bind(mx,mn,maxTs,successTs,reachTs,maePre,resolved,x.id));
   }
   if(updates.length) await d1BatchChunks(env,updates);
 

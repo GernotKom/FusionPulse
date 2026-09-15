@@ -189,8 +189,17 @@ const T0 = Date.UTC(2026, 8, 10, 14, 0, 0);
   await M.d1StoreRows({ DB: db }, [{ symbol: 'Y', price: 102.0, light: 'green' }], { source: 'Twelve Data', assetType: 'stock', now: T0 + 5 * 60_000, onlyChanged: true });
   assert.equal(log.updates.length, 1,
     'M5: das Beruehren der Zielschwelle muss den Schreibvorgang ausloesen, obwohl der Zuwachs unter der Schrittweite liegt');
+  /* v4.20.0 · Die Bindungsreihenfolge hat sich um eine Stelle verschoben:
+     `max_ts` ist als dritter Parameter dazugekommen (Zeitpunkt des
+     Hoechststands, siehe dort). `reach_ts` steht damit an Position 4.
+     Bewusst nicht per Index geraten, sondern gegen die Anweisung geprueft —
+     eine Position, die niemand nachliest, verschiebt sich beim naechsten Mal
+     wieder still. */
   const args = log.updates[0];
-  assert.ok(Number(args[3]) > 0, 'M5: … und `reach_ts` muss dabei gesetzt werden');
+  const spalten = 'max_pct,min_pct,max_ts,success_ts,reach_ts,mae_pre,resolved_ts'.split(',');
+  const reachIdx = spalten.indexOf('reach_ts');
+  assert.equal(reachIdx, 4, 'M5: die erwartete Position von reach_ts muss zur Anweisung passen');
+  assert.ok(Number(args[reachIdx]) > 0, 'M5: … und `reach_ts` muss dabei gesetzt werden');
 }
 
 /* ── M6 · BEOBACHTET WIRD WEITERHIN VOR ALLEM ANDEREN ───────────────────────

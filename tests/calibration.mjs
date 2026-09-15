@@ -226,3 +226,63 @@ console.log('✓ FusionPulse v4.18.0 NK98 Frische-Fenster und Bilanz: OK');
 }
 
 console.log('✓ FusionPulse v4.19.0 NK99 Ausgangs-Erklaerung und Ticker-Klick: OK');
+
+/* ═══ v4.20.0 · NK100 · DIE SCHWELLE ERKLAEREN, DEN PEAK DATIEREN ══════════
+   Zwei Nutzerbefunde am 15.09.:
+     „die ziel grenze 2,02 % erscheint in der Beschreibung trotzdem nicht
+      logisch — was bedeutet das."
+     „auch sollte in den Listen bezueglich Ziel erreicht auch stehen —
+      Empfehlung Uhrzeit und wann der hoechste Peak … zu messen war." */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  /* ── NK100a · Die Schwelle traegt ihre Herleitung mit ──────────────────
+     Sie folgt seit v3.21.0 zwingend aus den Handelskosten — nur konnte das
+     niemand LESEN, und eine hergeleitete Zahl ohne Herleitung sieht wie eine
+     gegriffene aus. Entscheidend: der Text wird aus den KONSTANTEN gebildet.
+     Abgetippt waere er beim naechsten Gebuehrenwechsel still falsch. */
+  assert.match(worker, /const ECON_WIN_EXPLAIN = /,
+    'NK100a: die Herleitung muss im Worker gebildet werden, nicht in der Anzeige');
+  const erkl = worker.slice(worker.indexOf('const ECON_WIN_EXPLAIN = '), worker.indexOf('const LEGACY_WIN_PCT'));
+  for (const teil of ['ECON_NET_EUR', 'PICK_COST.taxPct', 'PICK_COST.orderFeeEur', 'PICK_COST.frictionPct', 'ECON_WIN_PCT']) {
+    assert.ok(erkl.includes(teil),
+      `NK100a: „${teil}" muss als VARIABLE in die Herleitung eingehen — eine feste Zahl veraltet unbemerkt`);
+  }
+  assert.ok(!/2[,.]0[0-9] ?%/.test(erkl),
+    'NK100a: die Schwelle darf im Erklaertext nirgends abgetippt stehen');
+  /* Die Definition steht im Quelltext NACH `signalHistory` — das ist kein
+     Fehler: sie wird erst zur Laufzeit im Funktionskoerper gelesen, und bis
+     dahin ist das Modul vollstaendig ausgewertet. Geprueft wird deshalb, was
+     tatsaechlich zaehlt: sie muss auf Modulebene stehen (Spalte 0), nicht in
+     einer Funktion — sonst waere sie beim Aufruf nicht sichtbar. */
+  assert.match(worker, /\nconst ECON_WIN_EXPLAIN = /,
+    'NK100a: die Herleitung muss auf Modulebene stehen, sonst ist sie zur Laufzeit nicht sichtbar');
+  const oW = worker.slice(worker.indexOf('outcomeWhy:'), worker.indexOf('outcomeWhy:') + 1800);
+  assert.ok((oW.match(/ECON_WIN_EXPLAIN/g) || []).length >= 2,
+    'NK100a: die Herleitung gehoert an BEIDE gemessenen Ausgaenge, nicht nur an den Erfolg');
+
+  /* ── NK100b · Der Peak bekommt einen Zeitpunkt ─────────────────────────
+     „+19,2 %" nach zehn Minuten und „+19,2 %" nach zweidreiviertel Stunden
+     sind voellig verschiedene Aussagen. Der ABSTAND ist die Information. */
+  assert.match(worker, /ADD COLUMN max_ts INTEGER/, 'NK100b: die Spalte max_ts fehlt');
+  assert.match(worker, /const neuesHoch = mx > \(Number\(x\.max_pct\)\|\|0\) \+ 1e-9;/,
+    'NK100b: der Zeitpunkt darf NUR bei einem tatsaechlich neuen Hoechststand gesetzt werden');
+  assert.ok(!/max_ts=COALESCE/.test(worker),
+    'NK100b: kein COALESCE — der Zeitpunkt muss mit dem Hoechststand mitwandern');
+  assert.match(worker, /peakAfterMin: e\.maxTs \? Math\.max\(0, Math\.round\(\(e\.maxTs-e\.firstTs\)\/60_000\)\) : null/,
+    'NK100b: der Abstand zur Freigabe muss geliefert werden');
+
+  /* ── NK100c · Fehlende Zeit wird als fehlend ausgewiesen ───────────────
+     Altbestand hat keinen Zeitpunkt. Ihn leer zu lassen hiesse, dass der
+     Nutzer ihn fuer „sofort" haelt — dieselbe Verwechslung wie bei den
+     0,0 % in v4.15.0, nur eine Spalte weiter. */
+  const rend = app.slice(app.indexOf('const spanne = (m) =>'), app.indexOf('return `<tr data-tone='));
+  assert.match(rend, /Hoch · Zeit n\.v\./,
+    'NK100c: ohne aufgezeichneten Zeitpunkt muss „Zeit n.v." dastehen, nicht nichts');
+  assert.match(rend, /e\.peakAfterMin != null && e\.maxTs/,
+    'NK100c: … und beides muss vorliegen, bevor eine Zeit behauptet wird');
+  assert.match(rend, /Ziel \$\{esc\(uhr\(e\.reachTs\)\)\}/,
+    'NK100c: auch der Zeitpunkt des Zielkontakts gehoert in die Liste');
+}
+
+console.log('✓ FusionPulse v4.20.0 NK100 Schwellen-Herleitung und Peak-Zeitpunkt: OK');
