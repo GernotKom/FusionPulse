@@ -187,6 +187,10 @@ export function loadClient(overrides = {}) {
      genau deshalb niemandem aufgefallen ist, dass die Aktien-Karte sie nie
      bekommen hat. */
   heatSeparate, heatFilter, heatBucketOf, heatBucketOn, heatCountLabel, heatBucketLabel,
+  /* v4.16.1 · Die Veraltet-Markierung der Karte. Ausgefuehrt pruefbar, weil
+     die erste Fassung auf JEDEN Punkt zutraf und damit nichts mehr aussagte —
+     ein Fehler, den keine Mustersuche im Quelltext gefunden haette. */
+  stockStaleMark, dataSession,
   stockHeadline, COUNT_LABEL,
   HEAT_BUCKETS, coinLevel, syncHeatFilterUI, renderMap, stockHeatmap,
   /* v4.10.0: Modul 0c. Dieselbe Luecke wie oben, eine Ebene weiter: die

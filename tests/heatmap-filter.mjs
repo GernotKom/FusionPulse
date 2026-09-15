@@ -280,3 +280,32 @@ const ueberdeckungen = (pts) => {
 }
 
 console.log('✓ FusionPulse v4.9.0 NK88 Heatmap-Regler und Beschriftung (ausgefuehrt): OK');
+
+/* ═══ v4.16.1 · NK96 · DIE VERALTET-MARKIERUNG DARF NICHT AUF ALLES PASSEN ══
+   Erste Fassung von `stockStaleMark` nahm `stockFreshness` — die Frische des
+   LIVE-QUOTES in der Fokuskachel, Schwelle 120 Sekunden. Der Deep Scan rotiert
+   aber mit acht Titeln je Zwei-Minuten-Takt; ein beliebiger Titel der Liste
+   ist im Normalbetrieb aelter als zwei Minuten. Sofort gemeldet: „nur
+   gedaempfte Kugeln in der Heatmap". Eine Markierung, die auf jeden Punkt
+   zutrifft, traegt keine Information — sie macht die Karte nur dunkler.
+
+   Gemeint war der QGEN-Fall: Kurs von FREITAG, 63 Stunden alt, mitten im
+   Premarket am Montag. Der Test spannt beide Enden ein. */
+{
+  const mark = C.stockStaleMark;
+  assert.equal(typeof mark, 'function', 'NK96: stockStaleMark muss ausgeliefert sein');
+  const vorMin = (m) => new Date(Date.now() - m * 60_000).toISOString();
+
+  assert.equal(mark({ updated: vorMin(4) }).stale, false,
+    'NK96: vier Minuten Rotationsverzug sind der NORMALFALL und duerfen nicht markiert werden');
+  assert.equal(mark({ updated: vorMin(45) }).stale, false,
+    'NK96: auch 45 Minuten innerhalb desselben Handelstags sind kein Befund');
+  assert.equal(mark({ updated: vorMin(63 * 60) }).stale, true,
+    'NK96: 63 Stunden — der gemeldete QGEN-Fall — MUSS markiert werden');
+  assert.equal(mark({}).stale, true,
+    'NK96: ohne Zeitstempel wird markiert, nicht stillschweigend als frisch behandelt');
+  assert.match(mark({}).note, /Datenstand/,
+    'NK96: … und der Grund steht im Mouseover');
+}
+
+console.log('✓ FusionPulse v4.16.1 NK96 Veraltet-Markierung der Heatmap (ausgefuehrt): OK');

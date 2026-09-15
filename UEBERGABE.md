@@ -1,3 +1,71 @@
+# FusionPulse 4.16.1 — eine Markierung, die auf alles zutrifft, sagt nichts
+
+Nutzerbefund, keine zwei Stunden nach dem Deploy von 4.16.0: **„nur gedämpfte
+Kugeln in der Heatmap."**
+
+## Der Fehler war meiner, und er war vermeidbar
+
+Die Veraltet-Markierung aus 4.16.0 nahm `stockFreshness`. Das ist die Frische
+des LIVE-QUOTES in der Fokuskachel, und die Schwelle dort liegt bei 120
+Sekunden — richtig gewählt für eine Kachel, die einen einzelnen Titel zeigt,
+den man gerade handeln will.
+
+Der Deep Scan rotiert aber mit acht Titeln je Zwei-Minuten-Takt. Ein beliebiger
+Titel der Liste ist im Normalbetrieb **immer** älter als zwei Minuten. Die
+Markierung traf damit auf jeden Punkt zu, und eine Markierung, die auf alles
+zutrifft, trägt keine Information — sie hat die Karte nur dunkler gemacht.
+
+Im Bildschirmfoto vom 14.09. steht es wörtlich daneben: SPOT mit „NICHT LIVE /
+VERALTET · 124s alt", direkt darunter „Kurs aus: reguläre US-Sitzung · 13:20 ET
+· 5 Min. alt". Zwei Zeitmaße, zwei verschiedene Fragen, und ich habe das
+falsche genommen.
+
+## Was gemeint war
+
+Der gemeldete QGEN-Fall: Kurs von **Freitag**, 63 Stunden alt, mitten im
+Premarket am Montag. Ein Titel, für den es seit Tagen keinen Trade gab — nicht
+ein Titel, der zwei Minuten auf seine Runde wartet.
+
+Markiert wird ab 4.16.1 genau das, über `dataSession` statt `stockFreshness`:
+
+- der Datenstand gehört nicht zum heutigen US-Handelstag, **oder**
+- er ist älter als sechs Stunden, **oder**
+- es gibt gar keinen lesbaren Zeitstempel.
+
+Sechs Stunden sind bewusst grob gewählt: eine volle reguläre Sitzung dauert
+6,5. Jeder Wert darunter würde am späten Nachmittag wieder halbe Felder
+einfärben — derselbe Fehler in klein.
+
+Dieselbe Schwelle gilt jetzt auch im Bewegungsmelder, der `stockFreshness`
+ebenfalls benutzt hat und jede Zeile mit „Kurs nicht live" versehen hätte.
+
+## Warum kein Test das gefangen hat
+
+Weil keiner danach gefragt hat. NK88 prüft Beschriftung und Filter, nicht die
+Markierung. Ein Mustertest auf den Quelltext hätte „`stockStaleMark` existiert
+und wird aufgerufen" bestätigt — genau das war ja der Fall.
+
+**NK96 spannt jetzt beide Enden ein:** vier Minuten und 45 Minuten dürfen
+NICHT markiert werden, 63 Stunden MUSS. Ein Test, der nur das obere Ende
+prüfte, wäre mit der kaputten Fassung durchgelaufen.
+
+Dafür musste `stockStaleMark` in den Test-Harness aufgenommen werden. Dieselbe
+Lehre wie bei `heatSeparate` in 4.9.0: was nicht ausführbar ist, wird nicht
+geprüft, und was nicht geprüft wird, ist irgendwann falsch.
+
+## Geänderte Dateien
+
+| Datei | Was |
+|---|---|
+| `public/app.js` | `stockStaleMark` auf `dataSession`; Bewegungsmelder auf dieselbe Schwelle |
+| `tests/heatmap-filter.mjs` | **NK96**, ausgeführt, beide Enden |
+| `tests/client-harness.mjs` | `stockStaleMark` und `dataSession` ausgeliefert |
+
+## Unverändert aus 4.16.0
+
+Bewegungsmelder der Watchlist, Beschriftung aller Kugeln, Nachweiszeile im
+Verlauf, Serien-Memo für `iex-chart`, Bandbreiten-Anker.
+
 # FusionPulse 4.16.0 — was heute passiert ist, stand nirgends
 
 Nutzerbefund vom 14.09., wörtlich: **„Fusion Pulse meldet nichts – ist ja dann

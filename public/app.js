@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.16.0 — Frontend
+   FusionPulse v4.16.1 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -2303,13 +2303,29 @@ function stockDisplayMeta(r){
    NICHT VERSTECKT: ein Titel, der seit Freitag ein sauberes Muster traegt, ist
    eine echte Beobachtung. Er ist nur keine Handelsgelegenheit. */
 function stockStaleMark(r){
-  const f=stockFreshness(r);
-  if(f.ok) return {stale:false, note:''};
-  const alter = f.age==null ? 'Alter unbekannt'
-    : f.age<3600 ? `${Math.round(f.age/60)} Min. alt`
-    : f.age<86400 ? `${(f.age/3600).toFixed(1)} Std. alt`
-    : `${Math.round(f.age/86400)} Tage alt`;
-  return {stale:true, note:`\n⏻ ${f.label} · ${alter}. Beide Achsen sind auf diesem Kurs gerechnet — die Position sagt also, wie der Titel zuletzt DASTAND, nicht wie er jetzt handelbar ist.`};
+  /* ── v4.16.1 · DIE SCHWELLE WAR FALSCH GEWAEHLT, NICHT DIE IDEE ─────────
+     Erste Fassung nahm `stockFreshness`. Das ist die Frische des LIVE-QUOTES
+     in der Fokuskachel, und die Schwelle dort liegt bei 120 Sekunden. Der
+     Deep Scan rotiert aber mit acht Titeln je Zwei-Minuten-Takt — ein
+     beliebiger Titel der Liste ist im Normalbetrieb aelter als zwei Minuten.
+     Folge, sofort gemeldet: „nur gedaempfte Kugeln in der Heatmap". Jeder
+     Punkt trug den Ring, und eine Markierung, die auf alles zutrifft, sagt
+     nichts.
+
+     Der gemeldete Fall war ein anderer: QGEN mit einem Kurs von FREITAG,
+     63 Stunden alt, mitten im Premarket am Montag. Nicht zwei Minuten
+     Rotationsverzug, sondern ein Titel, fuer den es seit Tagen keinen Trade
+     gab. Genau das wird jetzt markiert, und nur das:
+       • der Datenstand gehoert nicht zum heutigen US-Handelstag, oder
+       • er ist aelter als sechs Stunden, oder
+       • es gibt gar keinen lesbaren Zeitstempel.
+     Sechs Stunden sind bewusst grob: eine volle Sitzung dauert 6,5. Ein Wert
+     darunter wuerde am spaeten Nachmittag wieder halbe Felder einfaerben. */
+  const ds=dataSession(r);
+  if(!ds.known) return {stale:true, note:`\n⏻ ${ds.label}. Ohne Datenstand ist nicht bekannt, worauf die Position gerechnet ist.`};
+  const alt = !ds.sameDay || Number(ds.ageMin) > 360;
+  if(!alt) return {stale:false, note:''};
+  return {stale:true, note:`\n⏻ ${ds.label}. Beide Achsen sind auf diesem Kurs gerechnet — die Position sagt also, wie der Titel zuletzt DASTAND, nicht wie er jetzt handelbar ist.`};
 }
 
 function stockHeatmapMark(r){
@@ -6172,13 +6188,17 @@ function renderWatchMoves(){
     const auf=mv>=0;
     const spitze=Number.isFinite(hi)&&Number.isFinite(lo)?(Math.abs(hi)>=Math.abs(lo)?hi:lo):(Number.isFinite(hi)?hi:lo);
     const uhr=r.dayExtremeTs?clock(Date.parse(r.dayExtremeTs)):null;
-    const fresh=stockFreshness(r);
+    /* v4.16.1 · Auch hier NICHT `stockFreshness`: dessen 120-Sekunden-Schwelle
+       haette im Normalbetrieb jede Zeile als „nicht live" ausgewiesen (siehe
+       `stockStaleMark`). Gemeint ist derselbe grobe Fall — Datenstand nicht
+       vom heutigen Handelstag. */
+    const st=stockStaleMark(r), fresh={ok:!st.stale};
     const tip=[
       `${r.symbol}${r.name?' · '+r.name:''}`,
       `${auf?'+':''}${num(mv,2)} % gegen Vortagsschluss${r.prevCloseUsd?` ($ ${num(r.prevCloseUsd,2)})`:''}`,
       Number.isFinite(spitze)?`Größter Ausschlag im Tag: ${spitze>=0?'+':''}${num(spitze,2)} %${uhr?` · Hoch um ${uhr}`:''}`:'',
       r.moveBasis?`Basis: ${r.moveBasis}`:'',
-      fresh.ok?'':`ACHTUNG: ${fresh.label} — der zugrunde liegende Kurs ist nicht live.`,
+      fresh.ok?'':`ACHTUNG: der zugrunde liegende Kurs stammt nicht vom heutigen US-Handelstag.${st.note}`,
       'Diese Kachel ist eine Beobachtung. Sie sagt NICHT, dass hier ein Trade ist.',
       'Klick: Aktie öffnen'
     ].filter(Boolean).join('\n');
@@ -6187,7 +6207,7 @@ function renderWatchMoves(){
       +`<span class="trend-pct ${auf?'up':'down'}">${auf?'+':''}${num(mv,1)} % Tag</span>`
       +`<span>${Number.isFinite(spitze)?`Spitze ${spitze>=0?'+':''}${num(spitze,1)} %`:'Spitze n.v.'}</span>`
       +`<span>${uhr?`Hoch ${esc(uhr)}`:'Zeit n.v.'}</span>`
-      +`<em>${fresh.ok?'nur Beobachtung':'Beobachtung · Kurs nicht live'}</em></button>`;
+      +`<em>${fresh.ok?'nur Beobachtung':'Beobachtung · Kurs nicht von heute'}</em></button>`;
   }).join('');
 
   const neu=paintPanel(el, head(categoryFreshness(stockMeta.ts))

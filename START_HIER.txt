@@ -1,50 +1,29 @@
-FusionPulse v4.16.0 – Bewegungsmelder, Heatmap-Beschriftung, Bandbreite
+FusionPulse v4.16.1 – Nachbesserung zu 4.16.0
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
 Keine neuen Secrets, keine neue Migration, kein neues Binding.
 
-WAS NEU IST:
+WAS BEHOBEN IST (Befund: „nur gedaempfte Kugeln in der Heatmap"):
+Die in 4.16.0 eingefuehrte Veraltet-Markierung traf auf JEDEN Punkt zu. Sie
+benutzte die Schwelle der Fokuskachel — 120 Sekunden. Der Deep Scan rotiert
+aber mit acht Titeln je Zwei-Minuten-Takt, ein beliebiger Titel der Liste ist
+also im Normalbetrieb aelter als zwei Minuten. Eine Markierung, die auf alles
+zutrifft, sagt nichts; sie hat die Karte nur dunkler gemacht.
 
-1. BEWEGUNGSMELDER DER WATCHLIST — der CRWD-Befund vom 14.09.
-   CRWD stand mit +15,4 % im Tag, lag in deiner Liste, und die App meldete
-   nichts. Grund: der einzige Aktien-Melder haengt an KAUF-Qualitaet, und ein
-   Titel, der bereits 15 % gelaufen ist, faellt im Positionsmodus zu Recht
-   durch. Die Ablehnung war richtig, das Schweigen nicht.
-   Neue Kachel ueber den Top Picks: Titel deiner Liste ab 5 % Tagesbewegung,
-   mit Spitze und Uhrzeit des Hochs. Ton nur beim ERSTEN Reissen je Titel und
-   US-Handelstag. Ausdruecklich ohne Ampel, ohne Plan, ohne Freigabe.
-   Schwelle: Einstellungen (`moveAlertPct`, Vorgabe 5 %).
-   KOSTET KEINE BANDBREITE — gerechnet aus der Bar-Serie, die ohnehin kommt.
+Gemeint war der QGEN-Fall: Kurs von Freitag, 63 Stunden alt, mitten im
+Premarket am Montag. Markiert wird ab jetzt genau das:
+  • Datenstand nicht vom heutigen US-Handelstag, ODER
+  • aelter als sechs Stunden, ODER
+  • gar kein lesbarer Zeitstempel.
+Sechs Stunden sind bewusst grob — eine volle Sitzung dauert 6,5.
+Dieselbe Schwelle gilt jetzt auch im Bewegungsmelder.
 
-2. ALLE KUGELN IN DER HEATMAP SIND BESCHRIFTET.
-   Bisher gab es genau eine Lage je Punkt: mittig. War sie belegt, entfiel der
-   Name. Auf dem Telefon ohne Mouseover war der Titel damit nicht mehr
-   auffindbar. Jetzt werden neun Lagen geprueft; bei versetzter Aufschrift
-   zieht eine duenne Linie zum Punkt. Gilt fuer BEIDE Karten.
+Neu abgesichert: NK96 spannt beide Enden ein (4 Min. und 45 Min. duerfen NICHT
+markiert werden, 63 Std. MUSS). Der Fehler waere durch keine Mustersuche im
+Quelltext aufgefallen — nur durch Ausfuehren.
 
-3. VERALTETE PUNKTE SIND ERKENNBAR (QGEN-Befund).
-   Gestrichelter Ring, gedaempfte Fuellung, Alter im Mouseover. Die Position
-   selbst bleibt unveraendert — die Ausfuehrbarkeit wird NICHT gedeckelt, das
-   waere eine Regelaenderung und keine Anzeigekorrektur.
-
-4. NACHWEIS DER NACHMESSUNG.
-   Im Verlauf der Kauf-Freigaben steht jetzt „N von M Episoden nachgemessen"
-   mit Prozentwert. Das ist der laufende Beleg, dass der 4.15.0-Fix greift.
-   Fuer NEUE Freigaben sollte die Quote gegen 100 % laufen; Altbestand bleibt
-   dauerhaft ohne Messung.
-
-5. BANDBREITE.
-   `iex-chart` bekommt ein Memo je Symbol und 5-Minuten-Takt — zwei Abrufe im
-   selben Takt liefern zwingend dieselben Balken. Kein Aktualitaetsverlust,
-   der Takt steht im Schluessel.
-   Ausserdem: „Tempo x GB/Tag" heisst jetzt „mindestens x GB/Tag". Am 14.09.
-   lag die Eigenmessung gegen den Tiingo-Kontostand um Faktor 2,4 zu niedrig.
-
-WAS DU TUN SOLLTEST:
-Feed-Abzeichen anklicken, unter der Tabelle den echten Tiingo-Wert eintragen
-(Billing -> Usage, Allocation minus Requests Left). In ein paar Tagen nochmal.
-Der Vergleich der Zuwaechse sagt, ob die Eigenmessung einen Startversatz hat
-oder systematisch zu klein zaehlt — das ist der Unterschied zwischen rund 17
-und rund 30 GB Monatshochrechnung. Bis dahin wird NICHTS korrigiert.
+ALLES ANDERE AUS 4.16.0 BLEIBT: Bewegungsmelder der Watchlist, Beschriftung
+aller Kugeln, Nachweiszeile im Verlauf, Serien-Memo, Bandbreiten-Anker.
+Siehe UEBERGABE.md.
 
 WICHTIG: Keine dieser Aenderungen veraendert Score, Ampel oder Kauf-Freigabe.
