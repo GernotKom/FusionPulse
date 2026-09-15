@@ -2947,7 +2947,15 @@ console.log('✓ FusionPulse v3.14.6 system-lamp-visibility regressions: OK');
      eine Plausibilitaetsgrenze fuer die Schnittmarken, keine Invariante; die
      Invarianten sind die verbotenen Muster darunter und die ausgefuehrten
      Faelle. Sie wird angehoben, wenn der Block waechst — nicht aufgehoben. */
-  assert.ok(mcSrc.length > 800 && mcSrc.length < 7500, 'Der Modellvergleich muss gefunden werden');
+  /* v4.22.0: 7.500 -> 9.000. Der Block traegt seit dieser Version die
+     LAIENERKLAERUNG zu jedem der drei Straenge im Mouseover — bis 4.21.0 stand
+     dort nur die Kurzformel („Erwartungswert in R, Strukturziele, EV-Gate"),
+     die genau den Leuten nichts sagt, die sie am noetigsten brauchen. Der Text
+     liegt bewusst HIER und nicht in einer fernen Konstante, damit der
+     ausgefuehrte Nachweis weiter unten ihn mitlaedt statt ihn zu stubben.
+     Die Schranke ist eine Plausibilitaetsgrenze fuer die Schnittmarken, keine
+     Invariante; sie wird angehoben, wenn der Block waechst — nicht aufgehoben. */
+  assert.ok(mcSrc.length > 800 && mcSrc.length < 9000, 'Der Modellvergleich muss gefunden werden');
   // Er darf LESEN, nicht RECHNEN. Keine Score-/Gate-Arithmetik in diesem Block.
   for (const forbidden of ['S.minCrvStock', 'S.minCrvCoin', 'buyReady', 'light=', 'score=']) {
     assert.ok(!mcSrc.includes(forbidden),
@@ -3566,7 +3574,18 @@ console.log('✓ FusionPulse v3.18.0 gate-funnel/calibration/sector-reserve regr
 {
   // 1) Die Plakette darf KEINE Uhrzeit im Markup tragen, sonst ist das Markup
   //    zeitabhaengig und das Memo in paintPanel greift nie.
-  const cf = app.slice(app.indexOf('function categoryFreshness('), app.indexOf('function ageFreshness('));
+  /* v4.22.0 · Der Ausschnitt endete bei `ageFreshness` und zog damit alles
+     mit, was dazwischen steht. Seit dem Aktualisieren-Knopf liegt dort ein
+     Klick-Handler mit `Date.now()` als Doppelklickschutz — voellig in Ordnung,
+     aber die Pruefung schlug an, weil sie GLAUBTE, die Uhr staende im Markup.
+     Geprueft wird jetzt genau die Funktion, um die es geht: bis zu ihrer
+     schliessenden Klammer. Die Aussage bleibt unveraendert — das MARKUP der
+     Plakette darf keine Uhrzeit tragen, sonst greift das Memo in `paintPanel`
+     nie und jeder Takt baut alles neu. */
+  const cfVon = app.indexOf('function categoryFreshness(');
+  const cf = app.slice(cfVon, app.indexOf('\n}', cfVon) + 2);
+  assert.ok(cf.includes('freshness-chip') && cf.length < 1500,
+    'Der Ausschnitt muss genau categoryFreshness umfassen');
   assert.ok(!/Date\.now\(\)/.test(cf),
     'categoryFreshness darf nicht von der Uhr abhaengen — sonst baut jeder Takt alles neu');
   assert.match(cf, /data-fresh-ts="\$\{t\}"/,

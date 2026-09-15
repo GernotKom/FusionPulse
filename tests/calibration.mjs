@@ -349,3 +349,93 @@ console.log('✓ FusionPulse v4.20.0 NK100 Schwellen-Herleitung und Peak-Zeitpun
 }
 
 console.log('✓ FusionPulse v4.21.0 NK101 Fussleiste und Lab-Abgrenzung: OK');
+
+/* ═══ v4.22.0 · NK102 · MODELLVERGLEICH BEI COINS, KLARTEXT, KNOPF ════════
+   Drei Nutzerbefunde am 15.09.:
+     „warum ist im Skopefenster der Coins nicht der Aladin, ChatGPT Strang
+      angefuehrt"
+     „Modul A sollte auch korrekt benannt werden und alle 3 brauchen eine gute
+      Laienerklaerung beim Mouseover"
+     „auch sollte man einen Update Button bei den Rubriken haben" */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+
+  /* ── NK102a · Der Vergleich steht in BEIDEN Fokusfenstern ─────────────
+     Dieselbe Luecke wie bei `heatSeparate` in v4.9.0: eine Verbesserung, die
+     nur eine von zwei Karten erreicht hat. `analyse()` rechnet fuer Coins
+     dieselben drei Straenge, sie lagen nur ungenutzt an der Zeile. */
+  const treffer = [...app.matchAll(/\$\{modelCompare\(/g)].length;
+  assert.ok(treffer >= 2,
+    `NK102a: der Modellvergleich muss in BEIDEN Fokusfenstern stehen, gefunden ${treffer}x`);
+  const coinFokus = app.slice(app.indexOf('function renderFocus() {'), app.indexOf("$('#fcopy').onclick"));
+  assert.match(coinFokus, /\$\{modelCompare\(r\)\}/,
+    'NK102a: … ausdruecklich auch im Coin-Fokusfenster');
+
+  /* ── NK102b · Jedes Modell erklaert sich in Alltagssprache ────────────
+     „EV-Gate", „Range-Projektion", „Overextended-Malus" sind Jargon fuer
+     Leute, die den Code kennen. Wer die drei Urteile nicht abwaegen kann,
+     nimmt am Ende einfach das erste. */
+  const lab = app.slice(app.indexOf('const MODEL_LABEL={'), app.indexOf('const MODEL_VERDICT='));
+  for (const k of ['claude', 'fusion', 'momentum']) {
+    const teil = lab.slice(lab.indexOf(`${k}:{`), lab.indexOf('},', lab.indexOf(`${k}:{`)));
+    assert.match(teil, /plain:/, `NK102b: „${k}" braucht eine Laienerklaerung`);
+    const pl = (teil.match(/plain:'([^']*)'/) || [])[1] || '';
+    assert.ok(pl.length > 150, `NK102b: die Erklaerung zu „${k}" ist zu duenn (${pl.length} Zeichen)`);
+    for (const jargon of ['EV-Gate', 'Range-Projektion', 'Malus']) {
+      assert.ok(!pl.includes(jargon),
+        `NK102b: „${jargon}" gehoert nicht in die LAIEN-Erklaerung von „${k}"`);
+    }
+  }
+  /* KORREKTUR innerhalb derselben Version. Hier stand zuerst: „Modus A" sei
+     eine interne Bezeichnung und gehoere nicht in die Oberflaeche. Das war
+     falsch, und zwar nachpruefbar: das Glossar fuehrt seit v3.14.0 einen
+     Eintrag `tradeModeA`, der dem Nutzer woertlich „Modus A · Momentum-
+     Tageshandel" erklaert, und die Fokuskachel schreibt „Regelwerk Modus A".
+     Der Begriff war also laengst sichtbar — nur der Modellvergleich benutzte
+     ihn NICHT und nannte denselben Strang „Momentum (Tageshandel)".
+     Zwei Namen fuer dieselbe Sache, und der Nutzer musste sie selbst
+     zusammenbringen. Genau darauf zielte seine Meldung: „Modul A sollte auch
+     korrekt benannt werden." Ein einheitlicher Name ist keine Offenlegung von
+     Interna, sondern die Abwesenheit einer zweiten Wahrheit. */
+  assert.match(lab, /name:'Modus A · Momentum'/,
+    'NK102b: der Strang muss ueberall denselben Namen tragen wie im Regelwerk');
+  assert.ok(/tradeModeA:/.test(app),
+    'NK102b: … und der Glossareintrag dazu muss weiterhin existieren, sonst steht der Name ohne Erklaerung da');
+  assert.match(app, /const tip=\[L\.name, '', L\.plain/,
+    'NK102b: im Mouseover steht die Laienerklaerung VOR der Technik');
+
+  /* ── NK102c · Der Knopf holt nichts Zusaetzliches ─────────────────────
+     Ein Aktualisieren-Knopf ohne Sperre waere bei 40 GB Monatskontingent ein
+     Bandbreitenloch. Er stoesst den NORMALEN Abruf an, nichts weiter. */
+  assert.match(app, /if\(Date\.now\(\)<refreshBusyUntil\) return;/,
+    'NK102c: ohne Doppelklickschutz wird der Knopf zum Bandbreitenloch');
+  assert.match(app, /scope==='coin' \? \(\) => scan\(true\)/,
+    'NK102c: jede Rubrik muss ihren eigenen Abruf anstossen');
+  assert.match(app, /document\.addEventListener\('click'/,
+    'NK102c: ein Handler auf dem Dokument — die Kacheln werden staendig neu gezeichnet');
+  assert.match(css, /\.fresh-refresh\{/, 'NK102c: der Knopf braucht seine Gestaltung');
+  assert.match(app, /keine Extradaten, keine umgangene Sperre/,
+    'NK102c: der Mouseover muss sagen, dass der Knopf keine Sperre umgeht');
+}
+
+console.log('✓ FusionPulse v4.22.0 NK102 Modellvergleich, Klartext und Aktualisieren: OK');
+
+/* ── NK102e · Was es bei Coins NICHT gibt, wird auch nicht behauptet ──────
+   Der Server liefert fuer Coins nur `claude` als Modellobjekt; `fusion` fehlt
+   dort ganz und `momentum` ist eine ZAHL, kein Modell. Die Zellen erscheinen
+   deshalb als „nicht berechnet". Das ist die ehrliche Anzeige — die Straenge
+   existieren fuer Coins nicht, sie sind nicht ausgefallen. Sie zu erfinden
+   waere eine Modellaenderung, keine Anzeigekorrektur. */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const mc = app.slice(app.indexOf('function modelCompare(r){'), app.indexOf('const TINTABLE_TILES='));
+  assert.match(mc, /if\(!m\|\|!m\.light\) return/,
+    'NK102e: ein fehlendes Modell MUSS abgefangen werden, sonst rechnet die Anzeige mit einer Zahl als waere sie eine Ampel');
+  assert.match(mc, /nicht berechnet/,
+    'NK102e: … und als „nicht berechnet" ausgewiesen werden, nicht als rot');
+  assert.match(app, /name:'Modus A · Momentum'/,
+    'NK102e: der Strang heisst im Regelwerk „Modus A" — der Modellvergleich muss denselben Namen tragen');
+}
+
+console.log('✓ FusionPulse v4.22.0 NK102e Coin-Modelle ehrlich ausgewiesen: OK');

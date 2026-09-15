@@ -1,3 +1,33 @@
+# FusionPulse 4.22.0 — zwei Namen für dieselbe Sache
+
+Nutzer am 15.09.: *„warum ist im Skopefenster der Coins nicht der Aladin, ChatGPT Strang angeführt, Modul A sollte auch korrekt benannt werden und alle 3 brauchen eine gute Laienerklärung beim Mouseover! und auch sollte man einen Update Button bei den Rubriken haben."*
+
+## Der Modellvergleich fehlte bei Coins
+
+Dieselbe Lücke wie bei `heatSeparate` in v4.9.0: eine Verbesserung, die nur eine von zwei Karten erreicht hat. Der Vergleich stand im Aktien-Fokus und nirgends sonst.
+
+**Was dabei herauskam, ist aber ehrlicher als erwartet.** Beim Einbauen habe ich zunächst geschrieben, alle drei Stränge lägen bei Coins genauso vor. Das war falsch und ließ sich nachprüfen: der Server liefert für Coins nur `claude` als Modellobjekt. `fusion` gibt es dort gar nicht, und `momentum` ist bei Coins eine **Zahl** — der Momentum-Faktor —, kein Modell mit eigener Ampel.
+
+Die beiden Zellen erscheinen deshalb als „nicht berechnet". Das ist die richtige Anzeige: die Stränge existieren für Coins nicht, sie sind nicht ausgefallen. Sie dort zu erfinden wäre eine Modelländerung und keine Anzeigekorrektur.
+
+## „Modus A" — eine Korrektur an mir selbst
+
+Beim ersten Anlauf hatte ich festgeschrieben, „Modus A" sei eine interne Bezeichnung und gehöre nicht in die Oberfläche. Das war nachprüfbar falsch: das Glossar führt seit v3.14.0 einen Eintrag, der dem Nutzer wörtlich „Modus A · Momentum-Tageshandel" erklärt, und die Fokuskachel schreibt „Regelwerk Modus A".
+
+Der Begriff war längst sichtbar — nur der Modellvergleich benutzte ihn nicht und nannte denselben Strang „Momentum (Tageshandel)". **Zwei Namen für dieselbe Sache, und der Nutzer musste sie selbst zusammenbringen.** Genau darauf zielte die Meldung. Ein einheitlicher Name ist keine Offenlegung von Interna, sondern die Abwesenheit einer zweiten Wahrheit.
+
+## Laienerklärung zuerst
+
+Im Mouseover stand bisher die Kurzformel: „Erwartungswert in R, Strukturziele, EV-Gate". Das ist eine korrekte Beschreibung für jemanden, der sie nicht braucht. Jetzt steht zuerst der Klartext, dann die Technik, dann der wichtigste Blocker. NK102b prüft, dass die Laienerklärung kein Jargon enthält und nicht unter 150 Zeichen fällt.
+
+## Aktualisieren-Knopf
+
+Die Frischeplakette sagte „5+ MIN" und ließ den Nutzer damit allein. Eine Anzeige, die ein Problem meldet, ohne einen Weg daneben zu legen, erzeugt nur Unbehagen. Der Knopf stößt den normalen Abruf vorzeitig an — er umgeht keine Sperre und holt keine Extradaten. Doppelklicks werden abgefangen, damit er nicht zum Bandbreitenloch wird.
+
+## Zwei Prüfungen mussten mit
+
+Die Größenschranke des Modellvergleichs (7.500 → 9.000 Zeichen), weil die Laienerklärungen dort liegen. Und eine Schnittmarke, die bei `categoryFreshness` bis zur nächsten Funktion reichte und dadurch den neuen Klick-Handler mitzog — sie meldete „die Uhr steht im Markup", wo nur ein Doppelklickschutz stand. Der Ausschnitt endet jetzt an der schließenden Klammer der Funktion.
+
 # FusionPulse 4.21.0 — eine richtige Zahl ohne ihren Zustand
 
 Nutzer am 15.09.: *„warum steht da überhaupt die UNI Empfehlung, ist eigentlich verwirrend — weil ja kein buy signal."*

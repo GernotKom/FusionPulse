@@ -764,7 +764,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"4.21.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"4.22.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1129,6 +1129,13 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .dreco-btn b{font-size:12px;font-weight:850;margin-left:4px;color:var(--dim)}
 .dreco-btn.on{border-color:var(--green);color:var(--fg)}
 .dreco-btn.on b{color:var(--green)}
+/* v4.22.0 · Aktualisieren-Knopf neben der Frischeplakette. Eine Anzeige, die
+   „5+ MIN" meldet, muss einen Weg daneben legen — sonst erzeugt sie nur
+   Unbehagen. */
+.fresh-refresh{margin-left:5px;padding:2px 7px;border:1px solid var(--line);border-radius:7px;background:transparent;color:var(--dim);font-size:11px;line-height:1.2;cursor:pointer;vertical-align:middle}
+.fresh-refresh:hover{border-color:var(--accent);color:var(--fg)}
+.fresh-refresh.spin{animation:fp-spin .8s linear infinite;pointer-events:none;opacity:.6}
+@keyframes fp-spin{to{transform:rotate(360deg)}}
 @media(max-width:620px){.dreco-btn{padding:4px 6px;font-size:9px}.dstate{font-size:8.5px;padding:2px 5px;margin-right:6px}}
 
 /* ══ v4.21.0 · LAB OPTISCH VOM HANDEL TRENNEN ══════════════════════════════

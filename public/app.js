@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.21.0 — Frontend
+   FusionPulse v4.22.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1213,10 +1213,40 @@ function positionMetrics(r,p){
    eine Information, die vorher nur im Rohdatensatz stand. Uebereinstimmung ist
    ausdruecklich KEINE Bestaetigung — die Modelle teilen sich dieselben
    Kursdaten, ihre Fehler sind also korreliert. Genau das sagt der Fusstext. */
+/* ══ v4.22.0 · DREI MODELLE, DREI VERSTAENDLICHE SAETZE ════════════════════
+   Nutzer: „alle 3 brauchen eine gute Laienerklaerung beim Mouseover" und
+   „Modul A sollte auch korrekt benannt werden".
+
+   Die Kurzbeschreibungen waren Fachjargon fuer Leute, die den Code kennen —
+   „EV-Gate", „Range-Projektion", „Overextended-Malus". Wer das liest und
+   nicht weiss, was gemeint ist, kann die drei Urteile nicht gegeneinander
+   abwaegen und nimmt am Ende einfach das erste.
+
+   „Modus A" war ausserdem eine INTERNE Bezeichnung aus v3.9.0 und sagt von
+   aussen gar nichts. Sie heisst jetzt beim Namen: Tageshandel.
+
+   `plain` ist die Laienerklaerung, `how` bleibt die technische Kurzform fuer
+   den Fachblick — beides steht im Mouseover, in dieser Reihenfolge. */
 const MODEL_LABEL={
-  claude:{name:'Claude / Aladdin',how:'Erwartungswert in R, Strukturziele, EV-Gate'},
-  fusion:{name:'ChatGPT-Strang',how:'Struktur-CRV, Elliott/Fibonacci, Range-Projektion'},
-  momentum:{name:'Momentum (Modus A)',how:'Kein Overextended-Malus, Ziel als Vielfaches der Tagesspanne'},
+  claude:{
+    name:'Claude / Aladdin',
+    how:'Erwartungswert in R, Strukturziele, EV-Gate',
+    plain:'RECHNET IN WAHRSCHEINLICHKEITEN. Dieses Modell fragt nicht „sieht gut aus?", sondern „lohnt sich die Wette?" — es schätzt, wie oft das Ziel erreicht wird, stellt Gewinn und Verlust gegenüber und lässt nur durch, was im Schnitt etwas einbringt. Am strengsten von den dreien. Ein Setup, das hier durchkommt, ist selten, aber durchgerechnet.',
+  },
+  fusion:{
+    name:'ChatGPT-Strang',
+    how:'Struktur-CRV, Elliott/Fibonacci, Range-Projektion',
+    plain:'LIEST DIE CHARTFORM. Dieses Modell sucht Marken im Kursbild — Wellen, Fibonacci-Abstände, die Breite der letzten Schwankung — und leitet daraus Ziel und Stop ab. Es fragt: wie weit trägt die Struktur? Näher an dem, was ein Charttechniker von Hand machen würde.',
+  },
+  momentum:{
+    /* v4.22.0 · Nutzer: „Modul A sollte auch korrekt benannt werden." Im
+       Glossar und im Regelwerk heisst dieser Strang seit v3.9.0 „Modus A";
+       im Modellvergleich stand nur „Momentum (Tageshandel)". Zwei Namen fuer
+       dieselbe Sache, und der Nutzer musste sie selbst zusammenbringen. */
+    name:'Modus A · Momentum',
+    how:'Tageshandel · ohne Überdehnungs-Malus, Ziel als Vielfaches der Tagesspanne',
+    plain:'FOLGT DER BEWEGUNG. Für kurze Trades innerhalb eines Tages. Dieses Modell bestraft einen Titel NICHT dafür, dass er schon weit gelaufen ist — genau das ist beim Momentum ja der Punkt. Das Ziel wird als Bruchteil der üblichen Tagesspanne gesetzt, nicht aus der Chartstruktur. Es ist am schnellsten und am fehleranfälligsten: was hier grün ist, kann in einer Stunde vorbei sein.',
+  },
 };
 const MODEL_VERDICT={green:'Kauf-Setup',yellow:'Beobachten',red:'Kein Trade'};
 /* v4.15.0 · Zeit im Zustand je Modell. Der Server historisiert `claude`,
@@ -1291,7 +1321,13 @@ function modelCompare(r){
     if(m.expectancyR!=null) parts.push('EV '+num(m.expectancyR,2)+'R');
     const block=Array.isArray(m.blockers)&&m.blockers.length?m.blockers[0]:'';
     const sc=modelSince(id,k,m.light);
-    return `<span class="mc-cell hl-${esc(m.light)}${k===active?' mc-active':''}" title="${esc(L.name+' · '+L.how+(block?' · Wichtigster Blocker: '+block:''))}">`
+    /* v4.22.0 · Laienerklaerung zuerst, Technik danach, Blocker zuletzt.
+       Wer den Mouseover braucht, braucht ihn genau in dieser Reihenfolge. */
+    const tip=[L.name, '', L.plain, '', `Technisch: ${L.how}`,
+      block?`Wichtigster Blocker: ${block}`:'',
+      k===active?'Dieses Modell ist AKTIV — nur sein Urteil bestimmt den Handelsvorschlag.':'Dieses Modell ist nicht aktiv — es steht zur Einordnung daneben.'
+    ].filter((x,i)=>x!==''||i<5).join('\n');
+    return `<span class="mc-cell hl-${esc(m.light)}${k===active?' mc-active':''}" title="${esc(tip)}">`
       +`<b>${esc(L.name)}${k===active?' · aktiv':''}</b>`
       +`<i>${esc(MODEL_VERDICT[m.light]||m.light)}</i>`
       +(sc?`<small class="mc-since${sc.known?'':' mc-since-unknown'}" title="${esc(sc.detail)}">🕒 ${esc(sc.label)}</small>`:'')
@@ -4692,11 +4728,43 @@ function paintPanel(el, html){
 }
 
 /* Plakette ohne Uhrzeit im Markup. `ageFreshness` fuellt Klasse, Text und Titel. */
-function categoryFreshness(ts){
+/* ══ v4.22.0 · NEBEN DIE FRISCHEPLAKETTE GEHOERT EIN KNOPF ═════════════════
+   Nutzer: „auch sollte man einen Update Button bei den Rubriken market over
+   etc haben (neben dem aktualisiert um … Feld)."
+   Die Plakette sagte „5+ MIN" und liess den Nutzer damit allein. Eine Anzeige,
+   die ein Problem meldet, ohne einen Weg daneben zu legen, erzeugt nur
+   Unbehagen. Der Knopf stoesst den normalen Abruf an — er umgeht KEINE
+   Sperre und holt keine Extradaten: laeuft der Hintergrundlauf ohnehin gerade,
+   passiert nichts Zusaetzliches. Doppelklicks werden abgefangen, damit der
+   Knopf nicht zum Bandbreitenloch wird. */
+function categoryFreshness(ts, scope='stock'){
   const t=Number(ts||0);
-  if(!t)return '<span class="freshness-chip red" title="Noch kein belastbarer Datenzeitpunkt vorhanden.">NICHT AKTUALISIERT</span>';
-  return `<span class="freshness-chip" data-fresh-ts="${t}"></span>`;
+  const knopf=`<button type="button" class="fresh-refresh" data-refresh-scope="${esc(scope)}" title="Diesen Bereich jetzt neu abfragen. Holt den normalen Abruf vorzeitig — keine Extradaten, keine umgangene Sperre. Bei geschlossener Börse liefert auch eine frische Abfrage den letzten Schlusskurs.">↻</button>`;
+  if(!t)return `<span class="freshness-chip red" title="Noch kein belastbarer Datenzeitpunkt vorhanden.">NICHT AKTUALISIERT</span>${knopf}`;
+  return `<span class="freshness-chip" data-fresh-ts="${t}"></span>${knopf}`;
 }
+
+/* Ein einziger Handler auf dem Dokument statt einer Bindung je Kachel: die
+   Kacheln werden staendig neu gezeichnet, und jede Neuzeichnung haette sonst
+   ihre Handler verloren oder verdoppelt. */
+let refreshBusyUntil=0;
+document.addEventListener('click',(e)=>{
+  const b=e.target.closest?.('.fresh-refresh'); if(!b) return;
+  e.preventDefault(); e.stopPropagation();
+  if(Date.now()<refreshBusyUntil) return;     // Doppelklickschutz
+  refreshBusyUntil=Date.now()+4000;
+  b.classList.add('spin');
+  const scope=b.dataset.refreshScope||'stock';
+  /* Jede Rubrik hat ihren eigenen Abruf. `true` heisst hier „jetzt", nicht
+     „mehr" — die Sperren im Worker gelten unveraendert weiter. */
+  const lauf = scope==='coin' ? () => scan(true)
+    : scope==='opening' ? () => scanOpeningMomentum(true)
+    : () => scanStocks(true);
+  Promise.resolve()
+    .then(lauf)
+    .catch(()=>{})
+    .finally(()=>{ setTimeout(()=>b.classList.remove('spin'),600); });
+});
 
 /* Alterung der Frischeplaketten. Schreibt nur, wenn sich der Text wirklich
    aendert — ein unveraenderter Text loest sonst unnoetige Layout-Arbeit aus. */
@@ -4720,7 +4788,7 @@ function ageFreshness(scope){
 function renderExtendedWatch(){
   const el=$('#extendedWatch');if(!el)return;const phase=String(openingMeta.phaseLabel||stockMeta.market?.label||'');
   const extended=/pre|after|overnight/i.test(phase);const cand=openingRows.slice(0,6);
-  const wrote=paintPanel(el,`<div class="ophead"><b>🌙 Nachbörse / Extended Hours</b><span>${esc(phase||'Sessionstatus wird geladen')}</span><small>Beobachtung · kein BUY allein</small>${categoryFreshness(openingMeta.ts)}</div>`+(cand.length?`<div class="opgrid">${cand.map(r=>{const sr=stockRows.find(x=>x.symbol===r.symbol);return `<button class="opcard ${Number(r.gapPct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="${esc(r.symbol)} außerhalb/nahe der Hauptsession beobachten. Warum sinnvoll? Vor- und Nachbörse können frühe Aufmerksamkeit zeigen; breitere Spreads und weniger Volumen machen die Bewegung aber unsicherer."><b>${esc(r.symbol)}</b><span class="trend-pct ${Number(r.gapPct)>=0?'up':'down'}">${r.gapPct>=0?'+':''}${num(r.gapPct,1)}%</span>${spark((sr?.intraday||[]).slice(-12),120,28)}<em>${extended?'Extended Hours':'Opening/Session'}</em></button>`}).join('')}</div>`:'<span class="hint">Noch keine Extended-Hours-Kandidaten.</span>'));
+  const wrote=paintPanel(el,`<div class="ophead"><b>🌙 Nachbörse / Extended Hours</b><span>${esc(phase||'Sessionstatus wird geladen')}</span><small>Beobachtung · kein BUY allein</small>${categoryFreshness(openingMeta.ts,'opening')}</div>`+(cand.length?`<div class="opgrid">${cand.map(r=>{const sr=stockRows.find(x=>x.symbol===r.symbol);return `<button class="opcard ${Number(r.gapPct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="${esc(r.symbol)} außerhalb/nahe der Hauptsession beobachten. Warum sinnvoll? Vor- und Nachbörse können frühe Aufmerksamkeit zeigen; breitere Spreads und weniger Volumen machen die Bewegung aber unsicherer."><b>${esc(r.symbol)}</b><span class="trend-pct ${Number(r.gapPct)>=0?'up':'down'}">${r.gapPct>=0?'+':''}${num(r.gapPct,1)}%</span>${spark((sr?.intraday||[]).slice(-12),120,28)}<em>${extended?'Extended Hours':'Opening/Session'}</em></button>`}).join('')}</div>`:'<span class="hint">Noch keine Extended-Hours-Kandidaten.</span>'));
   if(wrote) el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
 }
 function renderOpeningPanel() {
@@ -4728,7 +4796,7 @@ function renderOpeningPanel() {
   if(openingMeta.configured===false){paintPanel(el,'<b>🚀 Premarket / Opening</b><span>Alpaca noch nicht verbunden. Benötigt zwei Cloudflare-Secrets: <code>ALPACA_API_KEY_ID</code> und <code>ALPACA_API_SECRET_KEY</code>.</span>');return;}
   const phase=openingMeta.phaseLabel||'Status wird geladen';
   const top=openingRows.slice(0,5);
-  const wrote=paintPanel(el,`<div class="ophead"><b>🚀 Premarket / Opening</b><span title="${esc(openingMeta.phaseHelp||'')} ">${esc(phase)}</span><small title="${esc((openingMeta.limitations||'Alpaca Marktdatenfeed')+' — Diese Kachel zeigt Gaps VOR der Eröffnung. Bewegungen im laufenden Handel stehen in der Kachel „Momentum-Mover“ darüber.')}">Alpaca · ${esc(openingMeta.feed||'IEX')} · vor der Eröffnung · 60 s</small>${categoryFreshness(openingMeta.ts)}</div>`+
+  const wrote=paintPanel(el,`<div class="ophead"><b>🚀 Premarket / Opening</b><span title="${esc(openingMeta.phaseHelp||'')} ">${esc(phase)}</span><small title="${esc((openingMeta.limitations||'Alpaca Marktdatenfeed')+' — Diese Kachel zeigt Gaps VOR der Eröffnung. Bewegungen im laufenden Handel stehen in der Kachel „Momentum-Mover“ darüber.')}">Alpaca · ${esc(openingMeta.feed||'IEX')} · vor der Eröffnung · 60 s</small>${categoryFreshness(openingMeta.ts,'opening')}</div>`+
     (top.length?`<div class="opgrid">${top.map(r=>`<button type="button" class="opcard ${r.light} ${Number(r.ret5)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="${esc(r.symbol)} im Aktienradar öffnen. Momentum-Score kombiniert Gap, Volumenbeschleunigung, kurzfristige Kursdynamik und Premarket-/Opening-Level. Kein BUY allein."><b>${esc(r.symbol)}${r.origin==='favorite'?' ★':''}</b><span class="trend-pct ${Number(r.gapPct)>=0?'up':'down'}">${r.gapPct>=0?'+':''}${num(r.gapPct,1)}% Gap</span><span>Mom ${num(r.momentumScore,1)}</span><span class="trend-pct ${Number(r.ret5)>=0?'up':'down'}" title="Speed = kurzfristige Kursänderung der letzten verfügbaren 5-Minuten-Periode gegenüber der vorherigen Periode. Positiv = Beschleunigung nach oben, negativ = Abschwächung/Rückgang, 0 % = kaum Veränderung. Kontextwert, kein eigenständiges BUY-Signal.">Speed ${Number(r.ret5)>=0?'+':''}${num(r.ret5,2)}%</span><span>RV ${r.relVol==null?'n.v.':num(r.relVol,1)+'×'}</span>${r.priceSource==='daily'?'<span class="warn" title="Alpaca liefert hier keinen aktuellen Minute-/Trade-Quote; verwendet wird nur der Tages-Bar als Discovery-Fallback. Kein Live-Kurs und kein BUY-Signal.">⚠ Tages-Bar/Fallback</span>':''}<span title="Elliott/Fibonacci-Strukturprojektion: grober möglicher Bewegungsraum aus aktuellem Impuls und 1,618-Projektion; kein garantiertes Kursziel.">Struktur ${num(r.structurePct,1)}%</span><em>${esc(r.phaseAction)}</em></button>`).join('')}</div>`:`<span class="hint">Noch keine verwertbaren Live-Daten im aktuellen ${esc(openingMeta.feed||'Alpaca')}-Zeitfenster.</span>`));
   if(wrote) el.querySelectorAll('[data-openstock]').forEach(btn=>btn.addEventListener('click',()=>openStockFromDiscovery(btn.dataset.openstock)));
 }
@@ -5572,7 +5640,26 @@ function renderFocus() {
         <small>Analyse-Skope · dieselben Werte wie im Detailfenster · 0 % zusätzliches BUY-Gewicht</small>
       </div>
       ${coinScopeBlocks(r)}
-    </div>`;
+    </div>
+    ${/* ══ v4.22.0 · DER MODELLVERGLEICH FEHLTE BEI COINS ═══════════════════
+          Nutzer: „warum ist im Skopefenster der Coins nicht der Aladin,
+          ChatGPT Strang angefuehrt."
+          Kein Grund, nur ein Versaeumnis: `analyse()` rechnet fuer Coins
+          dieselben drei Straenge wie `analyseStock()` fuer Aktien — Claude,
+          Fusion, Momentum liegen an der Zeile bereit. Eingebaut wurde die
+          Kachel in v3.15.0 aber nur im Aktien-Fokusfenster, und danach hat
+          niemand die andere Haelfte nachgezogen. Dieselbe Luecke wie bei
+          `heatSeparate` in v4.9.0: eine Verbesserung, die nur eine von zwei
+          Karten erreicht hat.
+          NACHGEPRUEFT, statt behauptet: bei Coins liefert der Server NUR
+          `r.claude` als Modellobjekt. `r.fusion` gibt es dort gar nicht, und
+          `r.momentum` ist bei Coins eine ZAHL (der Momentum-Faktor), kein
+          Modell mit eigener Ampel. `modelCompare` faengt das ab — beide Zellen
+          erscheinen als „nicht berechnet", und das ist die ehrliche Anzeige:
+          die zwei Straenge existieren fuer Coins schlicht nicht, sie sind
+          nicht etwa ausgefallen. Sie hier zu erfinden waere eine Modell-
+          aenderung und keine Anzeigekorrektur. */''}
+    ${modelCompare(r)}`;
 
   $('#fcopy').onclick = (e) => copy(orderPlan(r), e.target);
   $('#fentry').onclick = (e) => copy(String(r.entry), e.target);

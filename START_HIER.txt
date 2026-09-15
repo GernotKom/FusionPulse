@@ -1,29 +1,30 @@
-FusionPulse v4.21.0 – Fussleiste sagt jetzt, WOFUER der Plan gilt
+FusionPulse v4.22.0 – Modellvergleich bei Coins, Klartext, Aktualisieren-Knopf
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
 Keine Secrets, keine Migration, kein Binding.
 
-1. DIE FUSSLEISTE WAR FALSCH BESCHRIFTET — behoben.
-   Sie zeigte „UNI Limit 5,805 · SL 5,737 · € 3.187" mit einem Knopf „Plan"
-   daneben und sah damit aus wie eine Empfehlung. Sie zeigt aber den
-   AUSGEWAEHLTEN Coin, nicht einen freigegebenen. Jetzt steht ganz vorn ein
-   Zustandswort in der Ampelfarbe:
-     KAUF-FREIGABE          nur bei echter Freigabe
-     GRUEN, ABER NICHT FREI Ampel gruen, eine Bedingung fehlt noch
-     BEOBACHTEN             Setup in Vorbereitung
-     KEIN KAUFSIGNAL        keine Freigabe
-   Ohne Freigabe treten die Planwerte optisch zurueck.
+1. MODELLVERGLEICH JETZT AUCH IM COIN-SKOPE.
+   Er stand nur im Aktien-Fokus — dieselbe Luecke wie bei der Heatmap in
+   v4.9.0: eine Verbesserung, die nur eine von zwei Karten erreicht hat.
+   WICHTIG UND EHRLICH: bei Coins rechnet der Server nur EINEN der drei
+   Straenge (Claude/Aladdin). „ChatGPT-Strang" und „Modus A" erscheinen
+   deshalb als „nicht berechnet" — sie existieren fuer Coins nicht, sie sind
+   nicht ausgefallen. Sie zu erfinden waere eine Modellaenderung, keine
+   Anzeigekorrektur.
 
-2. NEU RECHTS IN DER LEISTE: „Aktien 0 · Coins 0".
-   Die Zahl der Titel, die JETZT tatsaechlich freigegeben sind — in beiden
-   Bereichen, immer sichtbar, auch bei null. Klick springt in den Bereich.
-   Damit ist die Frage „warum sehe ich keine Empfehlung" beantwortet, bevor
-   sie entsteht.
+2. LAIENERKLAERUNG IM MOUSEOVER — alle drei Straenge.
+   Bisher stand dort nur die Kurzformel („Erwartungswert in R, Strukturziele,
+   EV-Gate"), also genau das, was demjenigen nichts sagt, der es am noetigsten
+   braucht. Jetzt zuerst der Klartext, dann die Technik, dann der Blocker.
 
-3. LAB OPTISCH ABGESETZT.
-   Hellerer Grund und eine Kopfzeile: „AUSWERTUNG · keine Handelssignale ·
-   0 % Gewicht in Score, Ampel und Freigabe." Der Handelsbereich bleibt
-   unveraendert. Im Lab steht Auswertung, im Handel steht Entscheidung —
-   gleiches Aussehen suggerierte gleiches Gewicht.
+3. „MODUS A" HEISST JETZT UEBERALL SO.
+   Der dritte Strang hiess im Regelwerk und im Glossar „Modus A", im
+   Modellvergleich aber „Momentum (Tageshandel)". Zwei Namen, eine Sache.
+   Jetzt: „Modus A · Momentum".
+
+4. AKTUALISIEREN-KNOPF neben der Frischeplakette in allen Rubriken.
+   Er stoesst den normalen Abruf vorzeitig an — keine Extradaten, keine
+   umgangene Sperre, Doppelklickschutz. Bei geschlossener Boerse liefert auch
+   eine frische Abfrage den letzten Schlusskurs.
 
 WICHTIG: Keine dieser Aenderungen veraendert Score, Ampel oder Kauf-Freigabe.
