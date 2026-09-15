@@ -1,3 +1,41 @@
+# FusionPulse 4.20.0 — eine hergeleitete Zahl ohne Herleitung sieht gegriffen aus
+
+Nutzer am 15.09.: *„die ziel grenze 2,02 % erscheint in der Beschreibung trotzdem nicht logisch — was bedeutet das."*
+
+## Der Einwand trifft, und zwar an einer unerwarteten Stelle
+
+Die Schwelle ist das Gegenteil von gegriffen. Seit v3.21.0 folgt sie zwingend aus den eigenen Handelskosten und wandert mit, sobald sich eine Kostenkonstante ändert — das war damals der ganze Punkt, weil vorher an vier Stellen eine nie hergeleitete `5` stand.
+
+Nur konnte das niemand **lesen**. Und eine hergeleitete Zahl ohne sichtbare Herleitung ist für den Betrachter nicht unterscheidbar von einer gegriffenen.
+
+Die Rechnung, rückwärts vom Ziel:
+
+| Schritt | Betrag |
+|---|---|
+| Netto gewünscht | 120 € |
+| Brutto bei 27,5 % KESt | 166 € |
+| 2 × Ordergebühr flatex | 23 € |
+| 0,15 % Ausführungsreserve | 15 € |
+| **Summe auf 10.000 € Einsatz** | **204 € → 2,04 %** |
+
+Der Text entsteht in `ECON_WIN_EXPLAIN` aus den Konstanten selbst. NK100a prüft, dass jeder Bestandteil als Variable eingeht und die Zahl nirgends abgetippt steht — sonst wäre der Erklärtext beim nächsten Gebührenwechsel still falsch, und zwar genau die Art von stiller Falschheit, gegen die v3.21.0 gebaut wurde.
+
+## Der Peak bekommt eine Uhrzeit
+
+Zweiter Befund: *„Empfehlung Uhrzeit und wann der höchste Peak von der Zeit nach Empfehlung zu messen war."*
+
+**„+19,2 %" ohne Zeitpunkt ist eine halbe Angabe.** Nach zehn Minuten ist es ein Wert, den man praktisch nicht mitnehmen konnte; nach zweidreiviertel Stunden ist es eine Gelegenheit, die offen dalag. Dieselbe Zahl, zwei verschiedene Aussagen — und bisher stand nur die Zahl da.
+
+Neue Spalte `max_ts`, gesetzt **nur bei einem tatsächlich neuen Höchststand**. Ohne diese Bedingung trüge sie die Uhrzeit der letzten beliebigen Aktualisierung und sähe dabei wie eine Messung aus. Kein `COALESCE`: der Zeitpunkt wandert mit dem Höchststand mit. Kostet keinen zusätzlichen Schreibvorgang, die Spalte fährt im ohnehin geschriebenen UPDATE mit.
+
+In der Liste steht jetzt „Hoch 09:40 · +2 h 35", bei „Ziel erreicht" zusätzlich der erste Zielkontakt.
+
+**Altbestand trägt „Hoch · Zeit n.v."** — dieselbe Regel wie bei den 0,0 % in v4.15.0: eine fehlende Angabe wird als fehlend ausgewiesen, nicht stillschweigend als „sofort" gelesen.
+
+## Zwei Tests mussten mit
+
+`signal-history.mjs` brauchte die neuen Konstanten im Stub. Und `outcome-measure.mjs` prüfte `reach_ts` über einen festen Index, der sich durch `max_ts` um eine Stelle verschob — der Index wird jetzt aus der Spaltenliste abgeleitet statt geraten, damit er sich beim nächsten Mal nicht wieder still verschiebt.
+
 # FusionPulse 4.19.0 — drei der vier Ausgaenge sind gar keine Ergebnisse
 
 Nutzer am 15.09.: *„bitte auch beim Mouse Over beschreibung der Auswertung (was bedeutet Ziel erreicht, oder ausgewertet …) ist für mich nicht schlüssig"* und *„auch sollte man in den Listen Aktien/Coins den Ticker anklicken können und dieser sollte dann aktualisiert im Skope Fenster geöffnet werden"*.

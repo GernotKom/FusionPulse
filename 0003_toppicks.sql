@@ -1,0 +1,14 @@
+-- v3.20.0 · Zeitpunkt, an dem eine Aufzeichnung erstmals die WIRTSCHAFTLICHE
+-- Schwelle (PICK_REACH_PCT = 2,0 %) erreicht hat.
+--
+-- Warum eine zweite Spalte neben success_ts: success_ts misst +5 %. Im
+-- 180-Minuten-Lernhorizont erreichen das die wenigsten Titel, deshalb war die
+-- Frage "wie lange muss ich halten, bis mein Ziel da ist" bisher unbeantwortbar.
+-- Die Schwelle ist bewusst FEST und NICHT an die Nutzereinstellung gekoppelt,
+-- damit die Zeitreihe ueber Monate vergleichbar bleibt.
+--
+-- Rueckwirkend laesst sich die Spalte NICHT fuellen: der Kursverlauf zwischen
+-- den Aufzeichnungen ist nicht gespeichert. Sie fuellt sich ab dem Deploy.
+-- Der Worker zieht sie ausserdem beim Start selbst nach (ensureD1Schema),
+-- diese Datei ist die dokumentierte Fassung derselben Aenderung.
+ALTER TABLE market_snapshots ADD COLUMN reach_ts INTEGER;

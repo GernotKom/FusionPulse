@@ -1,33 +1,28 @@
-FusionPulse v4.19.0 – Ausgaenge erklaert, Ticker anklickbar
+FusionPulse v4.20.0 – die 2,04 % erklaeren sich, der Peak bekommt eine Uhrzeit
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
-Keine Secrets, keine Migration, kein Binding.
+Keine Secrets, keine Migration noetig (eine Spalte legt sich selbst an).
 
-WAS NEU IST:
+1. WAS DIE ZIELGRENZE BEDEUTET — steht jetzt im Mouseover:
+   Sie ist NICHT gegriffen, sie folgt aus deinen eigenen Handelskosten:
+     120 EUR sollen netto uebrig bleiben.
+     Bei 27,5 % KESt muessen dafuer 166 EUR brutto herauskommen.
+     Dazu 2 x 11,50 EUR Ordergebuehr + 0,15 % Ausfuehrungsreserve (15 EUR)
+       = 38 EUR Fixkosten.
+     Macht 204 EUR auf 10.000 EUR Einsatz — also 2,04 %.
+   Darunter arbeitet der Trade fuer die Bank, nicht fuer dich.
+   Aenderst du eine Kostenkonstante, wandert die Schwelle UND der Erklaertext
+   automatisch mit. Nichts ist abgetippt.
 
-1. DIE AUSGAENGE IM VERLAUF ERKLAEREN SICH SELBST.
-   Mouseover auf „Ziel erreicht", „ausgewertet", „ohne Beleg" oder „offen"
-   zeigt jetzt im Klartext, was das heisst. Die vier Woerter tragen sehr
-   verschiedene Aussagen — und DREI davon sind gar keine Ergebnisse:
-     • Ziel erreicht  = der Kurs hat die wirtschaftliche Schwelle beruehrt.
-                        ACHTUNG: beruehrt ist nicht verdient.
-     • ausgewertet    = drei Stunden gemessen, Schwelle nie beruehrt.
-     • ohne Beleg     = KEIN Fehlschlag. Es wurde zu selten nachgesehen,
-                        der Verlauf ist schlicht nicht bekannt.
-     • offen          = juenger als drei Stunden, Messung laeuft noch.
-   Auch die Spalte „bester Ausschlag" hat jetzt eine Erklaerung.
-
-2. TICKER ANKLICKEN OEFFNET DAS SKOPE-FENSTER.
-   Aktien: Klick auf eine Zeile fokussiert den Titel UND fragt ihn neu ab.
-   Bisher zeigte das Fenster den Stand der letzten Rotationsrunde — bei 37
-   Titeln und acht je Zwei-Minuten-Takt also bis zu zehn Minuten alt.
-   Coins: der Blick wandert jetzt ins Skope-Fenster statt auf die angeklickte
-   Zeile (die stand ohnehin schon sichtbar). Keine Neuabfrage noetig, der
-   Coin-Scan laeuft ohnehin im Minutentakt ueber alle Paare.
-
-UEBRIGENS, aus deinem Bildschirmfoto: „10 von 10 Episoden nachgemessen · 100 %".
-Die Nachmessung aus v4.15.0 arbeitet also sauber. LSK am 14.09. mit +19,2 %
-und Ausgang „Ziel erreicht" ist die erste vollstaendig belegte Freigabe seit
-Beginn der Aufzeichnung.
+2. WANN WAR DER BESTE MOMENT — neu in der Verlaufsliste:
+   Unter dem besten Ausschlag steht jetzt „Hoch 09:40 · +2 h 35" — Uhrzeit des
+   Hoechststands und Abstand zur Freigabe. Bei „Ziel erreicht" steht zusaetzlich
+   in der Zeitspalte, wann die Schwelle zum ersten Mal beruehrt wurde.
+   WARUM DAS ZAEHLT: „+19,2 %" nach zehn Minuten und dieselben „+19,2 %" nach
+   zweidreiviertel Stunden sind voellig verschiedene Aussagen. Im ersten Fall
+   haettest du kaum reagieren koennen, im zweiten sehr wohl.
+   Aeltere Aufzeichnungen tragen „Hoch · Zeit n.v." — die Spalte gibt es erst
+   ab dieser Version, und eine fehlende Zeit wird als fehlend ausgewiesen statt
+   stillschweigend als „sofort" gelesen.
 
 WICHTIG: Keine dieser Aenderungen veraendert Score, Ampel oder Kauf-Freigabe.
