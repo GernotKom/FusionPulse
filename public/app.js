@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.17.0 — Frontend
+   FusionPulse v4.18.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -1042,6 +1042,47 @@ function modeAAgeTag(r){
    angezeigt (Stufe 2/1), damit du es beobachten kannst. Kein Score-Eingriff. */
 let mutedSetupSet = new Set();
 function setupOf(r){ return String(r?.situation || r?.situationType || r?.setup || '').trim(); }
+/* ══ v4.18.0 · DAS FRISCHE-FENSTER WAR EIN UEBERBLEIBSEL ═══════════════════
+   BEFUND, nach einem Monat ohne eine einzige sichtbare Kauf-Freigabe: Stufe 3
+   verlangte `stockFreshness(r).key === 'live'`. Das ist wahr, wenn das Symbol
+   in `stockMeta.refreshedSymbols` steht UND der Scan-Zeitstempel juenger als
+   90 Sekunden ist.
+
+   Diese Regel stammt aus der Zeit, in der der BROWSER selbst gescannt hat —
+   dort war „gerade eben gescannt" gleichbedeutend mit „dieser Titel". Seit
+   v4.0.0 scannt der Cron im Rotationsverfahren: acht von 37 Titeln je
+   Zwei-Minuten-Takt. Ein bestimmter Titel ist damit nur rund 15 % der Zeit
+   ueberhaupt freigabefaehig — unabhaengig davon, wie gut das Setup ist.
+
+   Das ist kein Qualitaetsmassstab, sondern ein Rest aus einer Architektur, die
+   es nicht mehr gibt. Das ECHTE Risiko, vor dem die Regel schuetzen sollte, ist
+   ein anderes: auf einem Freitagskurs kaufen. Davor schuetzt sie weiterhin,
+   nur ohne die 85 % Kollateralschaden:
+
+     • Der Kurs muss aus der LAUFENDEN Handelssitzung stammen (heutiger
+       US-Handelstag), und
+     • er darf hoechstens 15 Minuten alt sein.
+
+   15 Minuten sind bewusst gewaehlt: der Rotationszyklus dauert bei 37 Titeln
+   rund zehn Minuten. Ein knapperes Fenster wuerde dieselbe Sperre durch die
+   Hintertuer wieder einbauen, ein weiteres liesse Kurse durch, die in einer
+   schnellen Bewegung nicht mehr handelbar sind.
+
+   FAIL-CLOSED bleibt fail-closed: ohne lesbaren Zeitstempel gibt es keine
+   Freigabe. Eine unbekannte Frische ist keine gute Frische. */
+const BUY_MAX_AGE_MIN = 15;
+function freshEnoughForBuy(r){
+  // Ein frisch gescannter Titel bleibt selbstverstaendlich freigabefaehig.
+  if (stockFreshness(r).key === 'live') return { ok:true, why:'aktueller Scan' };
+  const ds = dataSession(r);
+  if (!ds.known) return { ok:false, why:ds.label };
+  if (!ds.sameDay) return { ok:false, why:'Kurs nicht vom heutigen Handelstag' };
+  const alter = Number(ds.ageMin);
+  if (!Number.isFinite(alter)) return { ok:false, why:'Alter des Kurses unbekannt' };
+  if (alter > BUY_MAX_AGE_MIN) return { ok:false, why:`Kurs ${alter} Min. alt (Grenze ${BUY_MAX_AGE_MIN})` };
+  return { ok:true, why:`Kurs ${alter} Min. alt, laufende Sitzung` };
+}
+
 const stockLevel = (r) => {
   /* v3.16.0 · Variante 2: In Modus A ist Stufe 3 unerreichbar. Der Deckel steht
      GANZ OBEN, damit keine spaetere Bedingung ihn versehentlich umgeht — und er
@@ -1055,7 +1096,9 @@ const stockLevel = (r) => {
   const overBudget = portfolioBlocksNewBuy(r);
   // Safety: missing/stale data, a muted setup OR an exhausted risk budget can
   // never promote a row to BUY. Alle drei koennen ausschliesslich abwerten.
-  return (r.light === 'green' && r.score >= minScore && t.ok && fresh.key === 'live' && !muted && !overBudget) ? 3
+  // v4.18.0 · siehe `freshEnoughForBuy`: laufende Sitzung statt 90-Sekunden-Fenster.
+  const frischGenug = freshEnoughForBuy(r).ok;
+  return (r.light === 'green' && r.score >= minScore && t.ok && frischGenug && !muted && !overBudget) ? 3
     : (muted || overBudget) && r.light === 'green' ? 1 // zurueckgestuft, nicht ausgeblendet
     : r.light === 'green' ? 2 : r.light === 'yellow' ? 1 : 0;
 };
@@ -5133,7 +5176,9 @@ function trackStocks() {
     // v3.1.1 Opportunity-Wächter: nur wirtschaftlich relevante, aktuelle Chancen melden.
     // BUY bleibt strikt; Opportunity darf Premarket vorbereiten, aber niemals BUY simulieren.
     const opportunityEligible=stockOpportunity(r).ready;
-    const soundEligible = fresh.key==='live' && tr.marketOk && tr.ok;
+    // v4.18.0 · derselbe Massstab wie fuer die Freigabe — ein Ton ohne Freigabe
+    // (oder eine Freigabe ohne Ton) waere ein Widerspruch auf dem Bildschirm.
+    const soundEligible = freshEnoughForBuy(r).ok && tr.marketOk && tr.ok;
     if (lvl > st.level && lvl >= 2 && st.level >= 0 && S.stockSound && (lvl===3?soundEligible:opportunityEligible)) {
       const sk=lvl === 3 ? 'stockbuy' : 'stockgreen';
       const sm=isStockMuted(r.symbol); if(S.sound&&!sm)beep(sk,sm); registerSignal('stock',r.symbol,sk);
@@ -6723,6 +6768,71 @@ async function loadCalibration(){
     calibData=await r.json();
   }catch(e){ calibData={configured:true,state:'error',error:String(e.message||e)}; }
   renderCalibration();
+  renderBilanz();   // v4.18.0 · dieselben Daten, in Klartext
+  renderBilanz();   // v4.18.0 · dieselben Daten, in Klartext
+}
+
+/* ══ v4.18.0 · DIE STARTIDEE: SIND DIE EMPFEHLUNGEN GUT GEWESEN? ═══════════
+   Nutzer, nach einem Monat: „vergiss nicht zu checken wie deine Empfehlungen
+   gelaufen sind und dich dementsprechend weiterzuentwickeln — das war ja auch
+   unsere Startidee."
+
+   Die Frage war bis v4.15.0 UNBEANTWORTBAR, nicht unbeantwortet: die
+   Nachmessung im Aktienpfad war kaputt, jede Episode trug 0,0 %. Seit dem Fix
+   laeuft die Messung; seit v4.17.0 laeuft das Schattentor daneben mit.
+
+   Diese Kachel ist die Antwort in Klartext — keine Score-Buendel, keine
+   Regressionsgeraden. Drei Saetze: wie oft Gruen, was danach passierte, und ob
+   die Zahl schon etwas wert ist.
+
+   DIE WICHTIGSTE ZEILE IST DIE UEBER DIE STICHPROBE. Eine Trefferquote aus
+   zwoelf Faellen sieht genauso aus wie eine aus zwoelfhundert, und genau diese
+   Verwechslung hat dieses Projekt schon einmal drei Monate gekostet. */
+function renderBilanz(){
+  const el=$('#bilanzReport'); if(!el) return;
+  const head=`<div class="ophead"><b>📋 Bilanz · was ist aus den Freigaben geworden?</b>`
+    +`<span title="Gemessen aus den Aufzeichnungen der letzten 30 Tage. Keine Schätzung, keine Simulation.">gemessen · letzte 30 Tage</span>`
+    +`<small>die Frage, um die es von Anfang an ging</small></div>`;
+  const d=calibData;
+  if(!d){ el.innerHTML=head+'<span class="hint">Auswertung wird geladen.</span>'; return; }
+  if(d.configured===false||d.state==='error'){
+    el.innerHTML=head+`<span class="hint">Noch keine Auswertung möglich: ${esc(d.error||'keine Verbindung zur Datenbank')}.</span>`; return;
+  }
+
+  const g=d.byLight?.green||{}, s=d.byShadow?.green||{}, o=d.overlap||{};
+  const n=Number(g.n)||0;
+  /* 30 ist die Grenze, ab der eine Trefferquote überhaupt eine Richtung zeigt.
+     Darunter wird die Zahl GENANNT, aber ausdrücklich nicht gedeutet — der
+     Unterschied zwischen „wir wissen es nicht" und „es ist schlecht" ist der
+     ganze Unterschied. */
+  const BELASTBAR=30;
+  const reif=n>=BELASTBAR;
+
+  const satz1 = n===0
+    ? `<b>Die App hat in den letzten ${num(d.days,0)} Tagen keine nachgemessene Kauf-Freigabe erzeugt.</b> Das ist selbst ein Befund — bis v4.18.0 verlangte die Freigabe einen Kurs aus den letzten 90 Sekunden, was im Rotationsbetrieb fast nie zutraf. Ab dieser Version gilt: laufende Sitzung, höchstens 15 Minuten alt.`
+    : `<b>${num(n,0)} Kauf-Freigaben</b> wurden in den letzten ${num(d.days,0)} Tagen erzeugt und nachgemessen.`;
+
+  const satz2 = !n ? '' : reif
+    ? `Davon haben <b>${num(g.reachedPct,0)} %</b> das wirtschaftliche Ziel innerhalb von drei Stunden berührt. Der durchschnittlich beste Ausschlag lag bei ${num(g.avgMaxPct,1)} %, der schlechteste Moment bei ${num(g.avgMinPct,1)} %.`
+    : `<b>Für ein Urteil ist das zu wenig.</b> Gebraucht werden rund ${BELASTBAR} Fälle; vorhanden sind ${num(n,0)}. Der Zwischenstand: ${num(g.reachedPct,0)} % haben das Ziel berührt — diese Zahl kann sich mit den nächsten zehn Fällen noch halbieren oder verdoppeln.`;
+
+  /* „Berührt" ist nicht „verdient". Diese Zeile darf nie fehlen, sonst liest
+     sich die Trefferquote wie eine Rendite — und das wäre die eine
+     Unehrlichkeit, die alles andere entwertet. */
+  const satz3 = !n ? '' : `<small class="hint" title="Gemessen wird die Kursbewegung nach der Freigabe, nicht ein ausgeführter Trade. Es fehlen Ausführung, Slippage und Teil-Exits, und nach drei Stunden endet die Messung.">„Ziel berührt" heißt: der Kurs war dort. Nicht, dass du es mitgenommen hättest — Ausführung, Slippage und Ausstieg sind darin nicht enthalten.</small>`;
+
+  const schatten = !Number(d.withShadow)
+    ? `<small class="hint">Das alternative Tor (seit v4.17.0) hat noch keine ausgewerteten Fälle. <b>Ein leerer Vergleich ist kein Gleichstand</b> — er ist leer.</small>`
+    : `<div class="bilanz-vgl"><b>Das alternative Tor im Vergleich</b>
+        <span>Es hätte ${num(s.n,0)} Freigaben erzeugt (${num(o.nurSchatten,0)} davon Fälle, die das aktuelle Tor verworfen hat).
+        Trefferquote ${s.reachedPct==null?'noch offen':num(s.reachedPct,0)+' %'} gegen ${g.reachedPct==null?'–':num(g.reachedPct,0)+' %'}.</span>
+        <small>Ist die erste Zahl dauerhaft besser, war das aktuelle Tor zu streng — dann liegt eine Messung vor und keine Meinung.</small></div>`;
+
+  el.innerHTML=head
+    +`<p class="bilanz-satz">${satz1} ${satz2}</p>`
+    +satz3
+    +schatten
+    +`<small class="hint">Diese Kachel ändert nichts von selbst. Sie sagt nur, was passiert ist.</small>`;
 }
 
 function renderCalibration(){

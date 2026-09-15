@@ -1,47 +1,36 @@
-FusionPulse v4.17.0 – Schattentor und Kalibrierung
+FusionPulse v4.18.0 – jetzt kommen Empfehlungen, und sie werden gemessen
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
-Keine neuen Secrets, kein neues Binding. ZWEI NEUE SPALTEN in market_snapshots
-(shadow_light, shadow_ev) — werden beim Start automatisch angelegt, keine
-Migration noetig.
+Keine Secrets, keine Migration, kein Binding.
 
-WORUM ES GEHT:
-Nach einem Monat ohne eine einzige Kauf-Freigabe habe ich den Claude-/Aladdin-
-Strang durchgesehen. Drei Befunde:
+WAS DU AB JETZT SIEHST:
 
-1. Das Tor ist eine ACHTFACHE UND-Kette. Bei je 60–70 % Durchlass bleiben zwei
-   bis vier Prozent; danach kommt clientseitig noch das Frische-Fenster mit
-   rund 15 %. Das Schweigen ist Multiplikation, keine Marktaussage.
-2. Die Kette zaehlt dieselbe Evidenz mehrfach: „overextended" zieht Punkte ab
-   UND ist Veto; „relVol" speist den Score UND ist Veto; und der Erwartungswert
-   ist eine FUNKTION des Scores — „Score >= 7" und „EV >= 0,15R" sind nicht
-   zwei Pruefungen, sondern eine, zweimal.
-3. Der Erwartungswert haengt an zwei GERATENEN Geraden (p1, p2). Im Code steht
-   seit v3.5.x „ueber D1-Outcomes kalibrierbar". Kalibriert wurde nie — die
-   Nachmessung war bis v4.15.0 kaputt und sagte drei Monate lang „nichts
-   bewegt sich".
+1. KAUF-FREIGABEN.
+   Die Freigabe verlangte bisher einen Kurs aus den letzten 90 SEKUNDEN. Diese
+   Regel stammte aus der Zeit, als dein Browser selbst gescannt hat. Seit
+   v4.0.0 rotiert der Server mit acht von 37 Titeln je Zwei-Minuten-Takt — ein
+   Titel war damit nur rund 15 % der Zeit ueberhaupt freigabefaehig, egal wie
+   gut das Setup war. Das war der Grund fuer das Schweigen.
+   NEU: Kurs aus der laufenden Handelssitzung, hoechstens 15 Minuten alt.
+   Der Schutz bleibt: kein Kurs von gestern, kein Kurs ohne Zeitstempel.
 
-WAS NEU IST — UND WAS NICHT:
-• SCHATTENTOR: ein zweites, rein EV-getriebenes Tor laeuft mit. Es entscheidet
-  NICHTS: kein Ton, keine Ampel, keine Freigabe, kein Plan. Sein Urteil wird
-  nur mitgeschrieben, damit es denselben Weg durch die Nachmessung nimmt.
-  In ein paar Wochen steht dann eine MESSUNG statt einer Meinung.
-• KALIBRIER-KACHEL im Lab: gemessenes p1 gegen geratenes p1, nach Score-Buendel
-  getrennt. Erst ab 40 nachgemessenen Faellen je Buendel wird geurteilt.
-• KEINE einzige bestehende Schwelle wurde veraendert. Score, CRV, EV-Schwelle,
-  Ampel und Freigabe sind Zeichen fuer Zeichen dieselben wie in v4.16.1.
+2. BILANZ-KACHEL (Lab / Learning, ganz oben).
+   Drei Saetze in Klartext: wie viele Freigaben, was danach passiert ist, und
+   ob die Zahl schon etwas wert ist. Unter 30 Faellen wird die Quote GENANNT,
+   aber ausdruecklich nicht gedeutet.
+   Sie wird anfangs sagen, dass es noch nichts zu bilanzieren gibt. Das ist
+   richtig so — vorher gab es keine Freigaben zu messen.
 
-ZUR AUFGEHOBENEN SPERRE:
-Der Claude-Block war seit v3.5.0 per Pruefsumme verriegelt. Sie hat beim Einbau
-sofort angeschlagen — genau ihr Zweck. Du hast die Aenderung freigegeben; die
-Pruefsumme ist im selben Zug neu gesetzt und der Grund steht ausfuehrlich in
-tests/safety-regression.mjs. Die Sperre bleibt scharf: sie meldet weiterhin
-JEDE unangekuendigte Aenderung. Neu abgesichert durch NK97: das Schattentor
-darf nachweislich nirgends in eine Entscheidung einfliessen.
+WAS DU TUN MUSST:
+Hochladen, sonst nichts. Dann heute Abend zwischen 15:30 und 22:00 draufschauen.
 
-WAS DU BEOBACHTEN SOLLTEST:
-Lab / Learning -> Kachel „Kalibrierung". Sie ist anfangs LEER, und das ist
-richtig: das Schattentor hat noch keine aufgeloesten Faelle. Ein leerer
-Vergleich ist kein Gleichstand.
+WAS OFFEN BLEIBT:
+Ob die Empfehlungen GUT sind, weiss nach diesem Update noch niemand. Die
+Messung laeuft seit v4.15.0, also seit vier Tagen. Belastbar wird die Bilanz
+nach rund 30 Freigaben. Bis dahin zeigt die App, was sie findet — und schreibt
+mit, was daraus wird.
 
-WICHTIG: Keine dieser Aenderungen veraendert Score, Ampel oder Kauf-Freigabe.
+WICHTIG: Der Massstab fuer die Qualitaet eines Setups ist UNVERAENDERT. Score,
+CRV, Erwartungswert und Ampel sind dieselben wie in v4.17.0. Geaendert wurde
+nur, wie alt ein Kurs sein darf, damit eine gefundene Gelegenheit auch
+angezeigt wird.

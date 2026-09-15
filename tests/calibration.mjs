@@ -105,3 +105,66 @@ const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'ut
 }
 
 console.log('✓ FusionPulse v4.17.0 NK97 Schattentor und Kalibrierung: OK');
+
+/* ═══ v4.18.0 · NK98 · DAS FRISCHE-FENSTER UND DIE BILANZ ══════════════════
+   Nutzer, nach einem Monat ohne sichtbare Empfehlung: „ich brauche nur
+   kreative/innovative App mit zuverlaessigen Empfehlungen." Und: „vergiss
+   nicht zu checken wie deine Empfehlungen gelaufen sind."
+
+   Beides haengt an derselben Stelle. Stufe 3 verlangte einen Scan aus den
+   letzten 90 SEKUNDEN — eine Regel aus der Zeit, als der Browser selbst
+   scannte. Seit v4.0.0 rotiert der Cron mit acht von 37 Titeln je
+   Zwei-Minuten-Takt; ein Titel war damit rund 15 % der Zeit freigabefaehig.
+   Kein Qualitaetsmassstab, ein Ueberbleibsel. */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  /* ── NK98a · Das alte Fenster darf nicht mehr entscheiden ─────────────── */
+  const lvl = app.slice(app.indexOf('const stockLevel = (r) => {'), app.indexOf('/** Intensität wächst'));
+  assert.ok(!/fresh\.key === 'live'/.test(lvl),
+    'NK98a: das 90-Sekunden-Fenster darf ueber die Freigabe nicht mehr bestimmen');
+  assert.match(lvl, /freshEnoughForBuy\(r\)/,
+    'NK98a: … die Freigabe muss die neue Pruefung benutzen');
+
+  /* ── NK98b · Aber der Schutz muss BLEIBEN ──────────────────────────────
+     Der ganze Zweck der alten Regel war: nicht auf einem Freitagskurs kaufen.
+     Ein Fenster zu weiten, das diesen Schutz mitnimmt, waere kein Fortschritt,
+     sondern der schlimmere Fehler. */
+  const fn = app.slice(app.indexOf('function freshEnoughForBuy(r){'), app.indexOf('const stockLevel = (r) => {'));
+  assert.ok(fn.length > 200, 'NK98b: freshEnoughForBuy muss gefunden werden');
+  assert.match(fn, /if \(!ds\.known\) return \{ ok:false/,
+    'NK98b: ohne lesbaren Zeitstempel KEINE Freigabe — fail-closed bleibt fail-closed');
+  assert.match(fn, /if \(!ds\.sameDay\) return \{ ok:false/,
+    'NK98b: ein Kurs von gestern darf niemals freigeben — genau davor schuetzte die alte Regel');
+  assert.match(fn, /alter > BUY_MAX_AGE_MIN/,
+    'NK98b: … und ein zu alter Kurs aus der laufenden Sitzung ebenso wenig');
+  const grenze = Number((app.match(/const BUY_MAX_AGE_MIN = (\d+)/) || [])[1]);
+  assert.ok(grenze >= 10 && grenze <= 30,
+    `NK98b: die Grenze muss zwischen 10 und 30 Minuten liegen (Rotationszyklus ~10 Min.), ist ${grenze}`);
+
+  /* ── NK98c · Ton und Freigabe duerfen nicht auseinanderlaufen ──────────
+     Ein Ton ohne Freigabe (oder eine Freigabe ohne Ton) ist ein Widerspruch
+     auf demselben Bildschirm — und der Nutzer glaubt dann keinem von beiden. */
+  assert.ok(!/soundEligible = fresh\.key==='live'/.test(app),
+    'NK98c: der Ton muss demselben Massstab folgen wie die Freigabe');
+  assert.match(app, /soundEligible = freshEnoughForBuy\(r\)\.ok/,
+    'NK98c: … naemlich freshEnoughForBuy');
+
+  /* ── NK98d · Die Bilanz darf keine Rendite behaupten ───────────────────
+     „Ziel beruehrt" ist nicht „verdient". Ohne diesen Satz liest sich die
+     Trefferquote wie ein Kontoauszug, und das waere die eine Unehrlichkeit,
+     die alles andere entwertet. */
+  const bil = app.slice(app.indexOf('function renderBilanz(){'), app.indexOf('\nfunction renderCalibration('));
+  assert.ok(bil.length > 500, 'NK98d: die Bilanz-Kachel muss gefunden werden');
+  assert.match(bil, /Ausführung, Slippage/,
+    'NK98d: die Einschraenkung zur Ausfuehrung MUSS in der Anzeige stehen');
+  assert.match(bil, /BELASTBAR/,
+    'NK98d: es muss eine Stichprobengrenze geben — eine Quote aus zwoelf Faellen ist kein Ergebnis');
+  assert.match(bil, /Ein leerer Vergleich ist kein Gleichstand/,
+    'NK98d: ein leerer Schattenvergleich darf nicht wie ein Unentschieden aussehen');
+  for (const verboten of ['stockLevel(', 'buyReady(']) {
+    assert.ok(!bil.includes(verboten), `NK98d: die Bilanz darf „${verboten}" nicht benutzen — sie wertet aus, sie entscheidet nicht`);
+  }
+}
+
+console.log('✓ FusionPulse v4.18.0 NK98 Frische-Fenster und Bilanz: OK');

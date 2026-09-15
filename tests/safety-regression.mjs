@@ -53,7 +53,17 @@ assert.equal(noVolStock.executability,null,'Executability ohne Volumenbasis muss
 
 // 3-5) Frontend-Sicherheitsregeln als Guard gegen spätere Regressionen.
 const app=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
-assert.match(app,/const soundEligible = fresh\.key==='live' && tr\.marketOk && tr\.ok/,'Aktien-Ton muss Live-Freshness und Marktphase prüfen');
+/* v4.18.0 · Hier stand `fresh.key==='live'`, also das 90-Sekunden-Fenster. Die
+   ZUSAGE bleibt unveraendert — ein Ton nur bei belastbarem Kurs und offenem
+   Markt —, nur der Massstab dafuer ist jetzt derselbe wie fuer die Freigabe:
+   laufende Sitzung, hoechstens 15 Minuten alt (`freshEnoughForBuy`). Grund:
+   das alte Fenster stammte aus der Zeit, als der Browser selbst scannte, und
+   machte einen Titel im Rotationsbetrieb nur rund 15 % der Zeit ton- und
+   freigabefaehig. Ton und Freigabe MUESSEN denselben Massstab haben, sonst
+   widersprechen sich zwei Anzeigen auf demselben Bildschirm. Ausgefuehrt
+   geprueft in NK98c. */
+assert.match(app,/const soundEligible = freshEnoughForBuy\(r\)\.ok && tr\.marketOk && tr\.ok/,'Aktien-Ton muss belastbare Frische und Marktphase prüfen');
+assert.match(app,/if \(!ds\.sameDay\) return \{ ok:false/,'… und „belastbar" schliesst einen Kurs von gestern weiterhin aus');
 assert.match(app,/v!=null && Number\.isFinite\(Number\(v\)\)/,'Detailfaktoren müssen null-sicher sein und null explizit als n.v. behandeln');
 /* v3.6.5: Die Regel bleibt (Crowd-Werte duerfen nicht ueber ihre Gueltigkeit
    hinaus stehenbleiben), die Umsetzung wurde STRENGER. Vorher wurden nur die
@@ -210,7 +220,17 @@ assert.match(app,/Speed = kurzfristige Kursänderung der letzten verfügbaren 5-
 
 // v3.4.0 audit regression guards
 assert.match(app,/const marketOk = !!currentPhase/,'Missing market phase must fail closed');
-assert.match(app,/fresh\.key === 'live'/,'Stock BUY level must require live freshness');
+/* v4.18.0 · Dieselbe Umstellung wie beim Ton, an der Stelle, die wirklich
+   zaehlt: der Kauf-Freigabe. Die Zusage ist unveraendert — KEINE Freigabe auf
+   einem Kurs, der nicht belastbar ist. Geaendert hat sich nur, was „belastbar"
+   heisst: statt „in den letzten 90 Sekunden gescannt" jetzt „aus der laufenden
+   Handelssitzung, hoechstens 15 Minuten alt". Die alte Fassung stammte aus der
+   Browser-Scan-Architektur und sperrte im heutigen Rotationsbetrieb rund 85 %
+   der Zeit grundlos. Was sie verhindern sollte — ein Kauf auf dem Kurs vom
+   Vortag — verhindert die neue Fassung unveraendert. NK98a/b pruefen beides
+   ausgefuehrt, inklusive fail-closed ohne Zeitstempel. */
+assert.match(app,/const frischGenug = freshEnoughForBuy\(r\)\.ok/,'Stock BUY level muss belastbare Frische verlangen');
+assert.match(app,/r\.light === 'green' && r\.score >= minScore && t\.ok && frischGenug/,'… und sie muss im Gate auch wirklich angewendet werden');
 assert.match(app,/const regimeExplanation =/,'Regime explanation must be defined');
 assert.match(app,/let stockLookupSeq = 0/,'Stock lookup needs a sequence guard');
 assert.match(app,/if\(req!==stockLookupSeq\)return/,'Late stock lookup responses must be ignored');

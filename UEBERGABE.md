@@ -1,3 +1,41 @@
+# FusionPulse 4.18.0 — das Schweigen hatte einen Grund, und er war technisch
+
+Nutzer nach einem Monat: **„bekommen wir jetzt dann endlich empfehlungen? — bisher noch nie, obwohl wir schon seit 1 Monat herummachen!"** Und danach: *„vergiss nicht zu checken wie deine Empfehlungen gelaufen sind und dich dementsprechend weiterzuentwickeln — das war ja auch unsere Startidee."*
+
+## Der Grund
+
+`stockLevel` verlangte für Stufe 3 unter anderem `stockFreshness(r).key === 'live'`. Das ist wahr, wenn das Symbol in `refreshedSymbols` steht **und** der Scan-Zeitstempel jünger als 90 Sekunden ist.
+
+Diese Regel stammt aus der Architektur vor v4.0.0, in der der Browser selbst scannte — dort hieß „gerade eben gescannt" zwangsläufig „genau dieser Titel". Seit v4.0.0 scannt der Cron im Rotationsverfahren: acht von 37 Titeln je Zwei-Minuten-Takt. Ein bestimmter Titel ist damit rund **15 % der Zeit** freigabefähig, unabhängig von der Qualität des Setups.
+
+Kein Qualitätsmaßstab. Ein Überbleibsel.
+
+## Die Korrektur, und was sie nicht antastet
+
+Neu gilt: Kurs aus der **laufenden Handelssitzung**, höchstens **15 Minuten** alt. 15 Minuten, weil der Rotationszyklus bei 37 Titeln rund zehn dauert — ein knapperes Fenster wäre dieselbe Sperre durch die Hintertür.
+
+Das echte Risiko, vor dem die alte Regel schützen sollte — ein Kauf auf dem Freitagskurs —, bleibt vollständig ausgeschlossen: kein anderer Handelstag, kein fehlender Zeitstempel. Fail-closed bleibt fail-closed.
+
+**Unverändert:** Score, CRV, Erwartungswert, Ampel, alle Schwellen. Geändert wurde nicht, was als gut gilt, sondern wie alt ein Kurs sein darf, damit ein gefundenes Setup überhaupt sichtbar wird.
+
+Zwei Zusagen in `safety-regression.mjs` mussten mit — beide waren auf den *Mechanismus* formuliert statt auf die *Absicht*. Sie lauten jetzt auf „belastbare Frische" und prüfen den Schutz einzeln nach.
+
+## Die Startidee, endlich beantwortbar
+
+Die Bilanz-Kachel sagt in drei Sätzen: wie viele Freigaben, was danach passierte, ob die Zahl etwas wert ist.
+
+Drei Dinge sind fest verdrahtet und von NK98d geprüft:
+
+- **Unter 30 Fällen kein Urteil.** Die Quote wird genannt, aber ausdrücklich nicht gedeutet. Der Unterschied zwischen „wir wissen es nicht" und „es ist schlecht" ist der ganze Unterschied.
+- **„Ziel berührt" ist nicht „verdient".** Ausführung, Slippage und Ausstieg sind nicht enthalten, und nach drei Stunden endet die Messung. Ohne diesen Satz läse sich die Trefferquote wie ein Kontoauszug.
+- **Ein leerer Schattenvergleich ist kein Gleichstand.**
+
+## Was ehrlich offen bleibt
+
+Ob die Empfehlungen gut sind, weiß nach diesem Update niemand. Die Messung läuft seit vier Tagen. Belastbar wird die Bilanz nach rund 30 Freigaben — bei einem Markt, der gerade erst wieder welche zulässt, sind das eher Wochen als Tage.
+
+Die App zeigt ab jetzt, was sie findet, und schreibt mit, was daraus wird. Das ist der Unterschied zu vorher, und es ist der einzige, den ich belegen kann.
+
 # FusionPulse 4.16.1 — eine Markierung, die auf alles zutrifft, sagt nichts
 
 Nutzerbefund, keine zwei Stunden nach dem Deploy von 4.16.0: **„nur gedämpfte
