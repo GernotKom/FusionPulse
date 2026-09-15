@@ -764,7 +764,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"4.22.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"4.23.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1129,6 +1129,22 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
 .dreco-btn b{font-size:12px;font-weight:850;margin-left:4px;color:var(--dim)}
 .dreco-btn.on{border-color:var(--green);color:var(--fg)}
 .dreco-btn.on b{color:var(--green)}
+/* ══ v4.23.0 · HOCHRISIKO SIEHT ANDERS AUS ALS ALLES ANDERE ════════════════
+   Eigene Farbe, eigener Rahmen, eigene Ueberschrift. Der Zweck ist nicht
+   Dekoration: diese Karten duerfen auf keinen Fall mit einer regulaeren
+   Freigabe verwechselt werden. Violett ist in dieser App sonst unbelegt —
+   gruen, gelb und rot sind die Ampel und bleiben ihr vorbehalten. */
+.hrpanel{border-color:color-mix(in srgb,#a06bff 45%,var(--line));background:color-mix(in srgb,#a06bff 6%,var(--panel))}
+.hrpanel .hr-head b{color:#c9a6ff}
+.hr-card{border-color:color-mix(in srgb,#a06bff 40%,var(--line))!important;background:color-mix(in srgb,#a06bff 8%,var(--panel))!important}
+.hr-card .hr-ev{color:#c9a6ff;font-weight:850}
+.hr-card .hr-loss{color:#ffb0b0;font-weight:800}
+.hr-card em{color:var(--dim);font-style:italic}
+/* v4.23.0 · Bewegung, die nicht aus der laufenden Sitzung stammt. Weder gruen
+   noch rot — sie ist keine Tagesbewegung, also bekommt sie auch keine
+   Richtungsfarbe. */
+.trend-pct.stale-move{color:var(--dim)!important;text-decoration:underline dotted;text-underline-offset:3px;cursor:help}
+.opcard .move-age{font-size:9px;font-weight:800;color:var(--yellow);letter-spacing:.3px;cursor:help}
 /* v4.22.0 · Aktualisieren-Knopf neben der Frischeplakette. Eine Anzeige, die
    „5+ MIN" meldet, muss einen Weg daneben legen — sonst erzeugt sie nur
    Unbehagen. */

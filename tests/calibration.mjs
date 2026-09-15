@@ -439,3 +439,112 @@ console.log('✓ FusionPulse v4.22.0 NK102 Modellvergleich, Klartext und Aktuali
 }
 
 console.log('✓ FusionPulse v4.22.0 NK102e Coin-Modelle ehrlich ausgewiesen: OK');
+
+/* ═══ v4.23.0 · NK103 · HOCHRISIKO MIT GETRENNTEM KAPITAL ══════════════════
+   Nutzer: „kreative Empfehlungen, die ein hohes Gewinn aber auch Verlustrisiko
+   haben und auch als solche gekennzeichnet sind (der moegliche finanzielle
+   Verlust ist mir bewusst und wird auch akzeptiert)." Und zur Groesse:
+   „Startrisiko durchaus 5-10 % moeglich (das ist ja das Spielkapital)."
+
+   Die Gefahr dieser Version ist nicht das Risiko — das ist ausdruecklich
+   gewollt. Die Gefahr ist, dass die Kategorie sich in die regulaeren
+   Freigaben mischt oder still am Hauptkapital zieht. */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+
+  /* ── NK103a · Zwei Felder, nicht eines ────────────────────────────────
+     „10 %" ist zweideutig: vom Hauptkapital waeren es 500 € je Trade, vom
+     Spielkapital 50 €. Faktor zehn. Der getrennte Topf loest das, OHNE dass
+     jemand meine Auslegung uebernehmen muss — wer 10 % vom Hauptkapital will,
+     traegt dort 5000 ein. */
+  assert.match(app, /hrEnabled: true, hrEquity: 500, hrRiskPct: 10/,
+    'NK103a: Spielkapital und Prozentsatz muessen getrennte, freie Felder sein');
+  const rf = app.slice(app.indexOf('function hrRiskEur(){'), app.indexOf('function hrSize(r){'));
+  assert.ok(!/S\.equity|S\.riskPct/.test(rf),
+    'NK103a: das Hochrisiko-Budget darf NIEMALS am Hauptkapital haengen — sonst zieht es still am Depot');
+
+  /* ── NK103b · Groesse folgt aus dem Stop, nicht umgekehrt ─────────────
+     Ein Setup mit 25 % Stopweite bei voller Kaufsumme ist kein Hochrisiko-
+     Trade, sondern ein Totalschaden mit Extraschritten. */
+  const sz = app.slice(app.indexOf('function hrSize(r){'), app.indexOf('function hrCandidates('));
+  assert.match(sz, /Math\.floor\(budget \/ risikoJeStueck\)/,
+    'NK103b: die Stueckzahl muss aus Risikobudget und Stopabstand folgen');
+  assert.match(sz, /tooSmall:true/,
+    'NK103b: passt nicht einmal ein Stueck, muss das gesagt werden statt aufgerundet');
+
+  /* ── NK103c · Niemals in derselben Liste wie eine Freigabe ────────────
+     Die eine Zusage, die diese Kategorie traegt. */
+  const hc = app.slice(app.indexOf('function hrCandidates(list){'), app.indexOf('function renderHighRisk(){'));
+  assert.match(hc, /if \(stockLevel\(r\) === 3\) return false;/,
+    'NK103c: ein regulaer freigegebener Titel darf hier NICHT zusaetzlich auftauchen');
+  assert.match(hc, /sh\.light !== 'green'\) return false/,
+    'NK103c: ohne positiven Erwartungswert des Schattentors kein Kandidat');
+  const rh = app.slice(app.indexOf('function renderHighRisk(){'), app.indexOf('\nfunction renderWatchMoves('));
+  assert.match(rh, /keine<\/b> Kauf-Freigaben/,
+    'NK103d: die Kachel muss ausdruecklich sagen, dass sie keine Freigaben zeigt');
+  assert.match(rh, /kann dann GRÖSSER als/,
+    'NK103d: die Gap-Mechanik gehoert genannt — der Stop haelt ueber Nacht nicht');
+  assert.match(rh, /nicht geprüft/,
+    'NK103d: … und dass die Kategorie noch unbelegt ist');
+
+  /* ── NK103e · Eigene Farbe, und zwar keine Ampelfarbe ─────────────────
+     Gruen, gelb und rot sind die Ampel. Eine Hochrisiko-Karte in Gruen waere
+     genau die Verwechslung, die diese Kategorie verbietet. */
+  assert.match(css, /\.hr-card\{/, 'NK103e: die Karten brauchen eigene Gestaltung');
+  const hrCss = css.slice(css.indexOf('.hrpanel{'), css.indexOf('.hr-card em{'));
+  assert.ok(!/var\(--green\)|var\(--yellow\)/.test(hrCss),
+    'NK103e: Hochrisiko darf KEINE Ampelfarbe tragen');
+}
+
+console.log('✓ FusionPulse v4.23.0 NK103 Hochrisiko-Kategorie: OK');
+
+/* ═══ v4.23.0 · NK104 · „+4,1 % TAG" WAR VON GESTERN ═══════════════════════
+   BEFUND vom 15.09., 09:07 ET (Vorboerse): der Radar zeigte NFLX mit
+   „+4,1 % Tag" unter der Ueberschrift „Bewegung WAEHREND der Handelszeit".
+   Google Finance sagte im selben Moment „Geschlossen: 14. Sept." und
+   Vorboerse −0,87 %. Nutzer: „was bringt mir die Info dieser alten Bewegung
+   ueberhaupt?"
+   Nichts. Sie ist nicht nur nutzlos, sondern irrefuehrend, weil die Plakette
+   „AKTUALISIERT · vor 1 Min." danebensteht — die gilt fuer den ABRUF. */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  /* ── NK104a · Drei Zustaende, nicht zwei ──────────────────────────────
+     „nicht entscheidbar" ist ein eigener Fall. Ihn als „alt" zu behandeln
+     waere genauso falsch wie ihn als „heute" durchzulassen. */
+  const ma = app.slice(app.indexOf('function moveAge(r){'), app.indexOf('function renderHighRisk(){'));
+  assert.ok(ma.length > 400, 'NK104a: moveAge muss gefunden werden');
+  assert.match(ma, /currentSession === true/, 'NK104a: der Frisch-Fall muss explizit geprueft werden');
+  assert.match(ma, /currentSession === false/, 'NK104a: … der Alt-Fall ebenso');
+  assert.match(ma, /Alter unbekannt/,
+    'NK104a: und der dritte Fall — nicht entscheidbar — darf weder als heute noch als alt ausgegeben werden');
+  assert.ok(!/currentSession\)/.test(ma.replace(/currentSession === (true|false)/g, '')),
+    'NK104a: keine Wahrheitspruefung auf currentSession — null wuerde sonst still zu „alt" werden');
+
+  /* ── NK104b · Die Zahl wird umbenannt, nicht versteckt ────────────────
+     Ein Titel, der gestern 4 % gemacht hat, ist eine echte Beobachtung. Er ist
+     nur keine Tagesbewegung. Verwerfen waere wieder eine stille Auslassung. */
+  assert.match(app, /\$\{ma\.alt\?'\(Vortag\)':'Tag'\}/,
+    'NK104b: eine alte Bewegung muss als Vortag beschriftet werden');
+  assert.match(ma, /misst die Bewegung des Vortags/,
+    'NK104b: … und im Mouseover erklaert sein');
+  assert.ok(!/filter\(.*currentSession/.test(app),
+    'NK104b: alte Bewegungen duerfen nicht herausgefiltert werden');
+
+  /* ── NK104c · Keine Richtungsfarbe fuer eine Nicht-Tagesbewegung ──────
+     Gruen/rot sagen „heute rauf/runter". Genau das ist die Aussage, die hier
+     nicht zutrifft. */
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  assert.match(css, /\.trend-pct\.stale-move\{color:var\(--dim\)/,
+    'NK104c: eine Bewegung von gestern darf nicht gruen oder rot erscheinen');
+
+  /* ── NK104d · Der Server muss das Alter ueberhaupt liefern ────────────── */
+  assert.match(worker, /const tradeTs=Date\.parse\(/, 'NK104d: der Zeitstempel des letzten Trades muss gelesen werden');
+  assert.match(worker, /tradeTs:Number\.isFinite\(tradeTs\)\?tradeTs:null, currentSession:ausSitzung/,
+    'NK104d: … und mit der Zeile ausgeliefert werden');
+  assert.match(worker, /: null;\s*\/\/ null = nicht entscheidbar/,
+    'NK104d: fehlt der Zeitstempel, ist das Ergebnis null — nicht false');
+}
+
+console.log('✓ FusionPulse v4.23.0 NK104 Vortagsbewegung im Radar: OK');

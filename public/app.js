@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.22.0 — Frontend
+   FusionPulse v4.23.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -116,6 +116,31 @@ function startConnectionWatchdog(){
 const ALL_COMPONENTS = ['vwap', 'ema21', 'rs', 'mtf', 'volume', 'book', 'squeeze', 'pullback', 'elliott'];
 const DEFAULTS = {
   equity: 5000, riskPct: 0.75, interval: 20000, deep: 20,
+  /* ══ v4.23.0 · SPIELKAPITAL FUER DIE HOCHRISIKO-KATEGORIE ════════════════
+     Nutzer: „Startrisiko durchaus 5-10 % moeglich (das ist ja bei hoeherem
+     Gewinn das Spielkapital)."
+
+     Zwei Lesarten, und der Unterschied ist Faktor zehn:
+       • 10 % vom HAUPTKAPITAL (5.000 €) = 500 € Risiko je Trade.
+       • 10 % von einem getrennten SPIELKAPITAL (500 €) = 50 € je Trade.
+     Aus dem Wort „Spielkapital" lese ich die zweite. Damit die Frage nicht
+     geraten werden muss, gibt es BEIDE Felder: ein eigener Topf und ein
+     eigener Prozentsatz, beide frei. Wer 10 % vom Hauptkapital will, traegt
+     bei `hrEquity` 5000 ein — dann sind beide Lesarten dieselbe Einstellung
+     und niemand muss meine Auslegung uebernehmen.
+
+     Der getrennte Topf ist auch sachlich das Richtige: er begrenzt, was diese
+     Kategorie im schlimmsten Fall insgesamt kosten kann, unabhaengig davon,
+     wie oft sie ausloest. Der Prozentsatz allein tut das nicht.
+
+     ZUR GROESSENORDNUNG, einmal nuechtern und ohne Belehrung: bei 10 % je
+     Trade sind sieben Fehlschlaege in Folge rund 52 % des Topfes. Das ist bei
+     einem Spielkapital, dessen Verlust eingeplant ist, eine bewusste
+     Entscheidung — bei einem Gap-Trade kommt allerdings hinzu, dass der Stop
+     ueber Nacht ueberspringen kann und der Verlust dann GROESSER ausfaellt als
+     der eingestellte Prozentsatz. Die App weist das je Trade in Euro aus,
+     statt davor zu warnen. */
+  hrEnabled: true, hrEquity: 500, hrRiskPct: 10,
   sound: true, token: '', watch: 'BTC-EUR,ETH-EUR,SOL-EUR', minQ: 0, onlyZone: false,
   theme: 'dark', taxPct: 27.5, analysisMode: 'composite', coinCount: 12, stockCount: 12,
   maxTradeEur: 10000, minCrvCoin: 2.0, minCrvStock: 3.0, minNetProfitStock: 30, minTp2PctStock: 2.0,
@@ -4819,7 +4844,7 @@ function renderMarketGainers(){
     }
     paintPanel(el,`<div class="ophead"><b>📡 Momentum-Mover · Situation Radar</b><small title="Bewegung während der laufenden US-Handelszeit (Tiingo). Die Premarket-Kachel ist eine andere.">Tiingo · laufender Handel · 0 % BUY-Gewicht</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div>${gateLine}<span class="hint">Noch keine verifizierten marktweiten Radar-Kandidaten. Favoriten sind davon getrennt.</span>`);return;
   }
-  const wrote=paintPanel(el,`<div class="ophead"><b>📡 Momentum-Mover · Situation Radar</b><span>${radar.length} verifizierte Kandidaten · Bewegung WÄHREND der Handelszeit</span><small title="Nicht mit „Premarket/Opening Momentum“ verwechseln: diese Kachel zeigt Titel, die sich JETZT im laufenden Handel bewegen (Tiingo). Die Premarket-Kachel darunter zeigt Gaps VOR der Eröffnung (Alpaca).">Tiingo · laufender Handel</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div>${gateLine}<small class="stage-note" title="Diese Liste ist bewusst KEINE Kaufempfehlung und will auch keine sein. Sie beantwortet die Frage „wo lohnt der Blick jetzt“ — die Einordnung, ob eine Nachricht den Titel wirklich trägt, kann nur ein Mensch mit Kontext leisten. Eine fehlende BUY-Ampel bedeutet daher NICHT, dass hier nichts ist.">Kandidatenliste, keine Kaufempfehlung — die Einordnung der Nachrichtenlage bleibt bei dir</small><div class="opgrid">${radar.map(r=>`<button type="button" class="opcard ${Number(r.movePct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="Situation-Radar: priorisiert frische Beschleunigung, Breakout-Druck, Opening-Drive, Reclaim, Volumenpuls und Spread-Qualität. Erst Deep-Analyse/Elliott/CRV kann BUY freigeben."><b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b><span class="situation-tag">${esc(r.lifecycle&&r.lifecycle!=='WATCH'?r.lifecycle+' · ':'')}${esc(r.situation||'WATCH')}</span><span class="trend-pct ${Number(r.movePct)>=0?'up':'down'}">${Number(r.movePct)>=0?'+':''}${num(r.movePct,1)}% Tag</span><span class="${r.speedPct!=null?'trend-pct '+(Number(r.speedPct)>=0?'up':'down'):''}">${r.speedPct!=null?'Speed '+(Number(r.speedPct)>=0?'+':'')+num(r.speedPct,2)+'%':'Situation '+num(r.situationScore??r.score,0)}</span><span>${r.spreadPct!=null?'Spread '+num(r.spreadPct,2)+'%':'Spread n.v.'}</span><em>${gainers.some(x=>x.symbol===r.symbol)?'Gainer · Deep Check':'Situation · Deep Check'}</em>${momentumContext(r.symbol)}</button>`).join('')}</div>`);
+  const wrote=paintPanel(el,`<div class="ophead"><b>📡 Momentum-Mover · Situation Radar</b><span>${radar.length} verifizierte Kandidaten · Bewegung WÄHREND der Handelszeit</span><small title="Nicht mit „Premarket/Opening Momentum“ verwechseln: diese Kachel zeigt Titel, die sich JETZT im laufenden Handel bewegen (Tiingo). Die Premarket-Kachel darunter zeigt Gaps VOR der Eröffnung (Alpaca).">Tiingo · laufender Handel</small>${categoryFreshness(stockMeta.discovery?.radar?.ts||stockMeta.ts)}</div>${gateLine}<small class="stage-note" title="Diese Liste ist bewusst KEINE Kaufempfehlung und will auch keine sein. Sie beantwortet die Frage „wo lohnt der Blick jetzt“ — die Einordnung, ob eine Nachricht den Titel wirklich trägt, kann nur ein Mensch mit Kontext leisten. Eine fehlende BUY-Ampel bedeutet daher NICHT, dass hier nichts ist.">Kandidatenliste, keine Kaufempfehlung — die Einordnung der Nachrichtenlage bleibt bei dir</small><div class="opgrid">${radar.map(r=>`<button type="button" class="opcard ${Number(r.movePct)>=0?'move-up':'move-down'}" data-openstock="${esc(r.symbol)}" title="Situation-Radar: priorisiert frische Beschleunigung, Breakout-Druck, Opening-Drive, Reclaim, Volumenpuls und Spread-Qualität. Erst Deep-Analyse/Elliott/CRV kann BUY freigeben."><b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b><span class="situation-tag">${esc(r.lifecycle&&r.lifecycle!=='WATCH'?r.lifecycle+' · ':'')}${esc(r.situation||'WATCH')}</span>${(()=>{const ma=moveAge(r);return `<span class="trend-pct ${ma.alt?'stale-move':(Number(r.movePct)>=0?'up':'down')}"${ma.tip?` title="${esc(ma.tip)}"`:''}>${Number(r.movePct)>=0?'+':''}${num(r.movePct,1)}% ${ma.alt?'(Vortag)':'Tag'}</span>${ma.label?`<span class="move-age" title="${esc(ma.tip)}">${esc(ma.label)}</span>`:''}`;})()}<span class="${r.speedPct!=null?'trend-pct '+(Number(r.speedPct)>=0?'up':'down'):''}">${r.speedPct!=null?'Speed '+(Number(r.speedPct)>=0?'+':'')+num(r.speedPct,2)+'%':'Situation '+num(r.situationScore??r.score,0)}</span><span>${r.spreadPct!=null?'Spread '+num(r.spreadPct,2)+'%':'Spread n.v.'}</span><em>${gainers.some(x=>x.symbol===r.symbol)?'Gainer · Deep Check':'Situation · Deep Check'}</em>${momentumContext(r.symbol)}</button>`).join('')}</div>`);
   if(wrote) el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
 }
 
@@ -5182,6 +5207,7 @@ function renderStocks() {
   }
   stockHeatmap(shown);
   renderWatchMoves();   // v4.16.0 · siehe dort: Beobachtung, keine Bewertung
+  renderHighRisk();     // v4.23.0 · getrenntes Spielkapital, getrennte Bilanz
   // v3.3.9 P0: Das Fokusfenster ist unabhängig vom aktuell sichtbaren/
   // gefilterten Listen-Slice. Ein aus Radar/Momentum angeklickter Titel darf
   // niemals auf shown[0] (z. B. PMI) zurückfallen, nur weil er außerhalb
@@ -6380,6 +6406,120 @@ function trackWatchMoves(list){
     try{ localStorage.setItem(MOVE_SEEN_KEY,JSON.stringify(moveSeenStore)); }catch{ /* Speicher blockiert */ }
     if(S.sound&&S.moveAlertSound!==false) beep('stockgreen');
   }
+}
+
+/* ══ v4.23.0 · HOCHRISIKO-KATEGORIE ════════════════════════════════════════
+   Nutzer: „ersuche ich dich um Anpassung des Algorithmus mit Einbindung von
+   kreativen Empfehlungen, die ein hohes Gewinn aber auch Verlustrisiko haben
+   und auch als solche gekennzeichnet sind (der mögliche finanzielle Verlust
+   ist mir bewußt und wird auch akzeptiert)."
+
+   KEIN NEUES MODELL, KEINE GELOCKERTE SCHWELLE. Die Kategorie ist exakt die
+   Menge, die das Schattentor aus v4.17.0 freigibt und das Haupttor nicht —
+   also die Fälle `nurSchatten`. Der Unterschied zwischen beiden Toren ist
+   genau der, um den es hier geht:
+     • Das Haupttor verwirft acht Bedingungen als UND-Kette. Überdehnung und
+       schwaches RVOL sind dort VETOS.
+     • Das Schattentor lässt dieselben Umstände in p1 und p2 einfließen — sie
+       verschlechtern den Erwartungswert, verbieten ihn aber nicht.
+   Was hier landet, ist also: positiver Erwartungswert bei Eigenschaften, die
+   das Positionsregelwerk zu Recht ablehnt. Hohe Chance, hohe Streuung.
+
+   DAS IST NOCH NICHT BELEGT. Das Schattentor läuft seit v4.17.0, also seit
+   Stunden. Ob diese Menge tatsächlich trägt, weiß niemand — genau deshalb hat
+   sie einen getrennten Topf, eine getrennte Größenrechnung und eine getrennte
+   Bilanz. Wenn sie nicht trägt, kostet sie den Topf und nicht das Depot. */
+const HR_KEYS = ['hrEquity', 'hrRiskPct'];
+function hrRiskEur(){
+  const topf = Math.max(0, Number(S?.hrEquity ?? DEFAULTS.hrEquity) || 0);
+  const pct  = Math.max(0, Number(S?.hrRiskPct ?? DEFAULTS.hrRiskPct) || 0);
+  return +(topf * pct / 100).toFixed(2);
+}
+
+/** Größe aus Spielkapital und Prozentsatz — dieselbe Rückwärtsrechnung wie im
+ *  Hauptpfad, nur mit dem eigenen Risikobudget. Die Kaufsumme folgt aus dem
+ *  Stop; wer den Stop weit setzt, bekommt automatisch weniger Stück. */
+function hrSize(r){
+  const entry = Number(r?.entryUsd ?? r?.entry), stop = Number(r?.stopUsd ?? r?.stop);
+  if (!(entry > 0) || !(stop > 0) || stop >= entry) return null;
+  const risikoJeStueck = entry - stop;
+  const budget = hrRiskEur();
+  if (!(budget > 0)) return null;
+  const qty = Math.floor(budget / risikoJeStueck);
+  if (qty < 1) return { qty:0, notional:0, risk:budget, tooSmall:true };
+  return { qty, notional:+(qty*entry).toFixed(2), risk:+(qty*risikoJeStueck).toFixed(2),
+           stopPct:+(risikoJeStueck/entry*100).toFixed(2), tooSmall:false };
+}
+
+/** Die Kandidaten: Schattentor grün, Haupttor nicht. */
+function hrCandidates(list){
+  if (S?.hrEnabled === false) return [];
+  return (list || []).filter(r => {
+    const sh = r?.claude?.shadow;
+    if (!sh || sh.light !== 'green') return false;     // ohne positiven EV nichts
+    if (stockLevel(r) === 3) return false;             // reguläre Freigabe gehört nicht hierher
+    return true;
+  }).sort((a,b) => Number(b?.claude?.shadow?.expectancyR||0) - Number(a?.claude?.shadow?.expectancyR||0));
+}
+
+/* ══ v4.23.0 · IST DIESE BEWEGUNG VON HEUTE? ═══════════════════════════════
+   Der Radar rechnet `movePct` aus dem letzten TRADE gegen den Vortagsschluss.
+   Gibt es in der Vorbörse keinen Trade, ist der letzte Trade noch der Schluss
+   des Vortags — und die „Tagesbewegung" ist die von GESTERN. Genau so kam am
+   15.09. um 09:07 ET „NFLX +4,1 % Tag" zustande, während die Aktie in der
+   Vorbörse tatsächlich −0,87 % stand.
+   Der Server liefert jetzt `currentSession`. Drei Zustände, und der dritte ist
+   wichtig: true = aus der laufenden Sitzung, false = älter, null = nicht
+   entscheidbar. Bei null wird NICHTS behauptet — weder „heute" noch „alt". */
+function moveAge(r){
+  if (r?.currentSession === true) return { alt:false, label:'', tip:'' };
+  const wann = Number(r?.tradeTs);
+  if (r?.currentSession === false) {
+    const uhr = Number.isFinite(wann) ? new Date(wann).toLocaleString('de-AT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : null;
+    return { alt:true, label:'nicht von heute',
+      tip:`ACHTUNG: Diese Bewegung stammt NICHT aus der laufenden Sitzung.${uhr?` Letzter Trade: ${uhr}.`:''} Für diesen Titel gab es heute noch keinen Umsatz — der „letzte Kurs" ist deshalb noch der Schluss vom Vortag, und die Prozentzahl misst die Bewegung des Vortags. Sie sagt nichts darüber, was der Titel heute tut.` };
+  }
+  return { alt:false, label:'Alter unbekannt',
+    tip:'Ob diese Bewegung aus der laufenden Sitzung stammt, lässt sich aus den gelieferten Daten nicht feststellen. Es wird deshalb weder „heute" noch „alt" behauptet.' };
+}
+
+function renderHighRisk(){
+  const el = $('#highRisk'); if (!el) return;
+  const list = hrCandidates(stockRows);
+  const budget = hrRiskEur();
+  const kopf = `<div class="ophead hr-head"><b>🎲 Hochrisiko · Spielkapital</b>`
+    + `<span title="Setups mit positivem Erwartungswert, die das reguläre Regelwerk wegen Überdehnung oder dünnem Volumen ablehnt. Hohe Chance, hohe Streuung. Getrennter Topf, getrennte Bilanz.">${eur(Number(S?.hrEquity ?? DEFAULTS.hrEquity),0)} Topf · ${num(Number(S?.hrRiskPct ?? DEFAULTS.hrRiskPct),1)} % = ${eur(budget,0)} Risiko je Signal</span>`
+    + `<small title="Diese Kategorie ist NICHT geprüft. Das Schattentor, aus dem sie entsteht, läuft erst seit v4.17.0. Ob sie trägt, steht in ihrer eigenen Bilanz — nicht in dieser Überschrift.">eigener Topf · eigene Bilanz · noch unbelegt</small></div>`;
+
+  if (S?.hrEnabled === false) { paintPanel(el, kopf + '<span class="hint">Abgeschaltet. In den Einstellungen wieder aktivierbar.</span>'); return; }
+  if (!list.length) {
+    paintPanel(el, kopf + `<span class="hint">Gerade kein Kandidat. Hier landet, was einen positiven Erwartungswert hat und trotzdem durch das reguläre Regelwerk fällt — meist wegen Überdehnung oder dünnem Volumen. Keine Kandidaten heißt: das kommt derzeit nicht vor, nicht dass etwas fehlt.</span>`);
+    return;
+  }
+
+  const karten = list.map(r => {
+    const sh = r.claude.shadow, sz = hrSize(r);
+    const verlust = sz && !sz.tooSmall ? sz.risk : budget;
+    const tip = [
+      `${r.symbol} · Hochrisiko-Kandidat`,
+      `Erwartungswert ${num(sh.expectancyR,2)}R bei geschätzt ${sh.hitPct} % Trefferwahrscheinlichkeit.`,
+      `WARUM HIER UND NICHT IN DEN FREIGABEN: ${(r.claude?.blockers||[]).slice(0,2).join(' · ')||'das reguläre Regelwerk hat andere Bedingungen'}.`,
+      sz && !sz.tooSmall ? `Stopweite ${num(sz.stopPct,1)} % → ${sz.qty} Stück, ${eur(sz.notional,0)} Einsatz, ${eur(sz.risk,0)} Risiko am Stop.` : 'Stop zu weit für den Topf — es käme weniger als ein Stück heraus.',
+      `ACHTUNG, Mechanik statt Warnung: bei einem Gap über Nacht greift der Stop nicht zum eingestellten Kurs. Der tatsächliche Verlust kann dann GRÖSSER als ${eur(verlust,0)} sein.`,
+      'Diese Kategorie ist nicht geprüft. Sie ist ein Versuch mit getrenntem Kapital.',
+    ].join('\n');
+    return `<button type="button" class="opcard hr-card" data-openstock="${esc(r.symbol)}" title="${esc(tip)}">`
+      + `<b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b>`
+      + `<span class="hr-ev">EV ${num(sh.expectancyR,2)}R</span>`
+      + `<span>${sz&&!sz.tooSmall?`${sz.qty} Stk · ${eur(sz.notional,0)}`:'zu klein für den Topf'}</span>`
+      + `<span class="hr-loss">Risiko ${eur(verlust,0)}</span>`
+      + `<em>${esc((r.claude?.blockers||[])[0]||'außerhalb des Regelwerks')}</em></button>`;
+  }).join('');
+
+  const neu = paintPanel(el, kopf
+    + `<small class="stage-note">Diese Karten sind <b>keine</b> Kauf-Freigaben. Sie stehen bewusst getrennt, tragen eigenes Kapital und werden eigenständig bilanziert.</small>`
+    + `<div class="opgrid">${karten}</div>`);
+  if (neu) el.querySelectorAll('[data-openstock]').forEach(b => b.addEventListener('click', () => openStockFromDiscovery(b.dataset.openstock, true)));
 }
 
 function renderWatchMoves(){

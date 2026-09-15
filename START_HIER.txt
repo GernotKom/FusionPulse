@@ -1,30 +1,40 @@
-FusionPulse v4.22.0 – Modellvergleich bei Coins, Klartext, Aktualisieren-Knopf
+FusionPulse v4.23.0 – Hochrisiko-Kategorie + „+4,1 % Tag" war von gestern
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
 Keine Secrets, keine Migration, kein Binding.
 
-1. MODELLVERGLEICH JETZT AUCH IM COIN-SKOPE.
-   Er stand nur im Aktien-Fokus — dieselbe Luecke wie bei der Heatmap in
-   v4.9.0: eine Verbesserung, die nur eine von zwei Karten erreicht hat.
-   WICHTIG UND EHRLICH: bei Coins rechnet der Server nur EINEN der drei
-   Straenge (Claude/Aladdin). „ChatGPT-Strang" und „Modus A" erscheinen
-   deshalb als „nicht berechnet" — sie existieren fuer Coins nicht, sie sind
-   nicht ausgefallen. Sie zu erfinden waere eine Modellaenderung, keine
-   Anzeigekorrektur.
+1. HOCHRISIKO · SPIELKAPITAL (neue Kachel im Aktienbereich, violett)
+   Was dort landet: Setups mit POSITIVEM Erwartungswert, die das regulaere
+   Regelwerk ablehnt — meist wegen Ueberdehnung oder duennem Volumen. Es ist
+   kein neues Modell und keine gelockerte Schwelle, sondern genau die Menge,
+   die das Schattentor aus v4.17.0 freigibt und das Haupttor nicht.
+   ZWEI FREIE FELDER in den Einstellungen:
+     hrEquity   Spielkapital, Vorgabe 500 EUR
+     hrRiskPct  Risiko je Signal, Vorgabe 10 %  -> 50 EUR je Trade
+   Willst du 10 % vom HAUPTKAPITAL, trage bei hrEquity 5000 ein. Dann sind
+   beide Lesarten dieselbe Einstellung und du musst meine Auslegung nicht
+   uebernehmen.
+   Die Stueckzahl folgt aus dem Stop: weiter Stop = weniger Stueck, gleiches
+   Risiko in Euro. Jede Karte nennt den Verlust am Stop in Euro.
+   NICHT VERGESSEN: bei einem Gap ueber Nacht greift der Stop nicht zum
+   eingestellten Kurs — der tatsaechliche Verlust kann groesser sein als die
+   angezeigte Zahl. Das steht auch in jedem Mouseover.
+   Eigene Farbe (violett, keine Ampelfarbe), eigene Kachel, NIEMALS in
+   derselben Liste wie eine regulaere Freigabe.
 
-2. LAIENERKLAERUNG IM MOUSEOVER — alle drei Straenge.
-   Bisher stand dort nur die Kurzformel („Erwartungswert in R, Strukturziele,
-   EV-Gate"), also genau das, was demjenigen nichts sagt, der es am noetigsten
-   braucht. Jetzt zuerst der Klartext, dann die Technik, dann der Blocker.
+2. „+4,1 % TAG" IM RADAR WAR DIE BEWEGUNG VON GESTERN — behoben.
+   Der Radar rechnet aus dem letzten TRADE gegen den Vortagsschluss. Gibt es
+   in der Vorboerse keinen Trade, ist der letzte Trade noch der Schluss vom
+   Vortag. So kam NFLX am 15.09. um 09:07 ET auf „+4,1 % Tag", waehrend die
+   Aktie tatsaechlich −0,87 % vorboerslich stand.
+   Jetzt: solche Karten sind als „(Vortag)" beschriftet, grau statt gruen/rot,
+   mit Erklaerung im Mouseover. Verworfen wird nichts — ein Titel, der gestern
+   4 % gemacht hat, ist eine echte Beobachtung, nur keine Tagesbewegung.
 
-3. „MODUS A" HEISST JETZT UEBERALL SO.
-   Der dritte Strang hiess im Regelwerk und im Glossar „Modus A", im
-   Modellvergleich aber „Momentum (Tageshandel)". Zwei Namen, eine Sache.
-   Jetzt: „Modus A · Momentum".
+WICHTIG: Die regulaere Kauf-Freigabe ist UNVERAENDERT. Score, CRV, Ampel und
+alle Schwellen sind dieselben wie in v4.22.0. Die Hochrisiko-Kategorie steht
+daneben und zieht ausschliesslich am getrennten Topf.
 
-4. AKTUALISIEREN-KNOPF neben der Frischeplakette in allen Rubriken.
-   Er stoesst den normalen Abruf vorzeitig an — keine Extradaten, keine
-   umgangene Sperre, Doppelklickschutz. Bei geschlossener Boerse liefert auch
-   eine frische Abfrage den letzten Schlusskurs.
-
-WICHTIG: Keine dieser Aenderungen veraendert Score, Ampel oder Kauf-Freigabe.
+NOCH OFFEN: warum SDGR (+11 % am 15.09.) nicht gemeldet wurde. Dafuer brauche
+ich einen Screenshot des AKTIEN-Tabs mit der Kachel „Bewegung in deiner
+Watchlist" waehrend der US-Sitzung.

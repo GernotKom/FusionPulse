@@ -5618,6 +5618,8 @@ async function topPicks(env, opts = {}) {
       situation: key, lifecycle: r.lifecycle || 'WATCH',
       liveScore: Number(r.situationScore ?? r.score ?? 0),
       movePct: r.movePct ?? null, speedPct: r.speedPct ?? null, spreadPct: r.spreadPct ?? null,
+      // v4.23.0 · Alter der Bewegung, siehe `boatsDiscoveryScore`.
+      tradeTs: r.tradeTs ?? null, currentSession: r.currentSession ?? null,
       reasons: Array.isArray(r.reasons) ? r.reasons.slice(0, 3) : [],
       tier, evEur,
       n: ev?.n ?? 0, pHit: ev?.pHit ?? null, pStop: ev?.pStop ?? null,
@@ -9187,6 +9189,31 @@ function boatsDiscoveryScore(r){
   const prev=Number(r?.prevClose), bid=Number(r?.bidPrice), ask=Number(r?.askPrice), vol=Number(r?.volume);
   if(!(last>0) || !(prev>0) || last<2) return null;
   const movePct=(last/prev-1)*100;
+  /* ══ v4.23.0 · DIE BEWEGUNG WAR VON GESTERN ══════════════════════════════
+     BEFUND vom 15.09., 15:07 Wiener Zeit (09:07 ET, Vorboerse): der Radar
+     zeigte NFLX mit „+4,1 % Tag" unter der Ueberschrift „Bewegung WAEHREND
+     der Handelszeit". Google Finance sagte im selben Moment „Geschlossen:
+     14. Sept." und Vorboerse −0,87 %.
+
+     Der Grund steht eine Zeile darueber: `last` ist der letzte TRADE. Gibt es
+     fuer einen Titel in der Vorboerse keinen Trade auf dem IEX-Freitarif, ist
+     `last` noch der Schluss des VORTAGS — und `movePct` misst dann die
+     Bewegung von vorgestern auf gestern. Eine korrekte Zahl, die die falsche
+     Frage beantwortet.
+
+     Verschaerft durch die Plakette „AKTUALISIERT · vor 1 Min." daneben: die
+     gilt fuer den ABRUF, nicht fuer die Daten. Derselbe Fehlertyp wie bei
+     QGEN in der Heatmap und bei der UNI-Fussleiste — eine richtige Zahl ohne
+     ihren Zeitpunkt.
+
+     Das Alter wird deshalb mitgeliefert. VERWORFEN wird nichts: ein Titel,
+     der gestern 4 % gemacht hat, ist eine echte Beobachtung. Er ist nur keine
+     Tagesbewegung, und die Anzeige darf ihn nicht als solche ausgeben. */
+  const tradeTs=Date.parse(r?.timestamp||r?.lastSaleTimestamp||r?.quoteTimestamp||'');
+  const sitzung=Number.isFinite(tradeTs)?regularSessionWindow(new Date()):null;
+  const ausSitzung=sitzung&&Number.isFinite(tradeTs)
+    ? tradeTs>=sitzung.start-4*3600_000   // Vorboerse ab 05:30 ET zaehlt mit
+    : null;                                // null = nicht entscheidbar, nicht „alt"
   const mid=bid>0&&ask>0?(bid+ask)/2:last;
   const spreadPct=bid>0&&ask>0&&mid>0?((ask-bid)/mid)*100:null;
   // Discovery only: unusual overnight move + real activity + acceptable quote.
@@ -9195,7 +9222,8 @@ function boatsDiscoveryScore(r){
   if(Number.isFinite(vol) && vol<100) return null;
   const activity=Number.isFinite(vol)&&vol>0?Math.log10(vol+1):0;
   const score=Math.abs(movePct)*2.4 + Math.min(8,activity) - (spreadPct==null?1.5:Math.min(6,spreadPct*2));
-  return {score,movePct,spreadPct,volume:Number.isFinite(vol)?vol:null,last,prev};
+  return {score,movePct,spreadPct,volume:Number.isFinite(vol)?vol:null,last,prev,
+    tradeTs:Number.isFinite(tradeTs)?tradeTs:null, currentSession:ausSitzung};
 }
 /* v3.32.6 · BOATS war der blinde Fleck. In v3.32.0 habe ich ihn ausdruecklich
    ausgenommen („laeuft genau dann, wenn der IEX-Radar schweigt") — das war

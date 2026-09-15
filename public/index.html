@@ -8,9 +8,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/style.css?v=4.22.0">
+<link rel="stylesheet" href="/style.css?v=4.23.0">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
-<script src="/version.js?v=4.22.0"></script>
+<script src="/version.js?v=4.23.0"></script>
 <!-- ══════════════════════════════════════════════ v3.24.0 · BOOT-WÄCHTER ═══
      ANLASS: Am 29.08. stand die Oberfläche still — Statusampeln grau, Version
      "v–", Taktuhr "--:--". Alles stand auf den STATISCHEN Startwerten aus
@@ -66,13 +66,13 @@
   });
 })();
 </script>
-<title>FusionPulse 4.22.0</title>
+<title>FusionPulse 4.23.0</title>
 <!-- v3.14.1: Versionsstempel der SHELL (index.html). Wird von sync-version.mjs
      gesetzt und beim Start gegen FP_VERSION aus version.js verglichen. Weichen
      die beiden ab, ist eine halb aktualisierte Auslieferung im Umlauf: neues
      app.js/style.css auf altem index.html. Das erzeugt Fehler, die wie
      Layout-Probleme aussehen, aber keine sind — und kostet beim Suchen Stunden. -->
-<meta name="fp-shell-version" content="4.22.0">
+<meta name="fp-shell-version" content="4.23.0">
 </head>
 <body>
 <!-- v3.24.0 · Wird nur sichtbar, wenn app.js nicht startet. -->
@@ -407,6 +407,10 @@
     <!-- v4.16.0 · Bewegungsmelder. Steht VOR den Top Picks, weil er die Frage
          beantwortet, die beim Aufschlagen zuerst kommt: was ist heute in
          meiner Liste passiert. Ausdruecklich keine Bewertung. -->
+    <!-- v4.23.0 · Hochrisiko. Steht bewusst NACH dem Bewegungsmelder und weit
+         vor den Top Picks nirgends dazwischen — diese Karten duerfen nie in
+         derselben Liste stehen wie eine regulaere Freigabe. -->
+    <div id="highRisk" data-tile="highRisk" class="openingpanel hrpanel" data-domain="stock" title="Setups mit positivem Erwartungswert, die das reguläre Regelwerk ablehnt — meist wegen Überdehnung oder dünnem Volumen. Hohe Chance, hohe Streuung. Eigener Kapitaltopf, eigene Bilanz, KEINE Kauf-Freigabe."></div>
     <div id="watchMoves" data-tile="watchMoves" class="openingpanel" data-domain="stock" title="Titel deiner Watchlist, die sich heute deutlich bewegt haben. Reine Beobachtung: keine Ampel, kein Plan, keine Kauf-Freigabe, 0 % Gewicht in Score und Freigabe. Die Schwelle steht in den Einstellungen."></div>
     <div id="topPicks" data-tile="topPicks" class="openingpanel toppicks" data-domain="stock" title="Top Picks: Rangfolge nach erwartetem Netto-Euro aus aufgezeichneten, aufgeloesten Episoden — nicht nach Score. 0 % Gewicht in Score, Ampel und Freigabe."></div>
     <div id="eveningList" data-tile="evening" class="openingpanel" data-domain="stock" title="Vorabend-Liste: Kandidaten fuer den naechsten Handelstag aus Tagesbalken — Kompression und Rueckkehr, jeweils mit Trigger, strukturellem Stop und Restweg. Der Stop kommt aus dem Chartbild und wird nie enger gerechnet. 0 % Gewicht in Score, Ampel und Freigabe."></div>
@@ -649,6 +653,6 @@
      Muss das LETZTE Element im Fluss bleiben. Hoehe kommt aus derselben
      Messung wie alles andere (--fp-foot-h). -->
 <div class="foot-spacer" aria-hidden="true"></div>
-<script src="/app.js?v=4.22.0"></script>
+<script src="/app.js?v=4.23.0"></script>
 </body>
 </html>
