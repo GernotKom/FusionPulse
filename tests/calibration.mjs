@@ -286,3 +286,66 @@ console.log('✓ FusionPulse v4.19.0 NK99 Ausgangs-Erklaerung und Ticker-Klick: 
 }
 
 console.log('✓ FusionPulse v4.20.0 NK100 Schwellen-Herleitung und Peak-Zeitpunkt: OK');
+
+/* ═══ v4.21.0 · NK101 · ZUSTAND VOR ZAHLEN IN DER FUSSLEISTE ═══════════════
+   Nutzer: „warum steht da ueberhaupt die UNI Empfehlung, ist eigentlich
+   verwirrend — weil ja kein buy signal."
+
+   Die Leiste zeigte vollstaendige Planwerte, fett, mit einem Knopf „Plan"
+   daneben — und nirgends stand, dass die Ampel rot war. Das ist der teuerste
+   Fehlertyp dieser App: keine falsche Zahl, sondern eine richtige Zahl ohne
+   ihren Zustand. */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+
+  /* ── NK101a · „KAUF-FREIGABE" nur bei echter Freigabe ─────────────────
+     Der gefaehrlichste Weg zurueck in den alten Zustand waere ein
+     Zustandswort, das schon bei gruener Ampel „Freigabe" sagt. Gruen ist
+     NICHT freigegeben — dazwischen liegen Qualitaet, CRV, Ausfuehrbarkeit
+     und Datenfrische. */
+  const dv = app.slice(app.indexOf('function dockVerdict(r){'), app.indexOf('function renderDock('));
+  assert.ok(dv.length > 200, 'NK101a: dockVerdict muss gefunden werden');
+  assert.match(dv, /if \(buyReady\(r\)\) return \{ key:'buy'/,
+    'NK101a: „KAUF-FREIGABE" darf ausschliesslich an buyReady haengen');
+  const buyZeile = dv.slice(0, dv.indexOf('\n', dv.indexOf("key:'buy'")));
+  assert.ok(!/light === 'green'/.test(buyZeile),
+    'NK101a: eine gruene Ampel allein darf nicht als Freigabe ausgewiesen werden');
+  assert.match(dv, /key:'near', text:'GRÜN, ABER NICHT FREI'/,
+    'NK101a: … der Zwischenzustand braucht ein eigenes, unmissverstaendliches Wort');
+  for (const zustand of ['KEIN KAUFSIGNAL', 'BEOBACHTEN']) {
+    assert.ok(dv.includes(zustand), `NK101a: der Zustand „${zustand}" fehlt`);
+  }
+
+  /* ── NK101b · Die Null wird genannt, nicht verschwiegen ───────────────
+     „0 Aktien · 0 Coins" beantwortet die Frage „warum sehe ich keine
+     Empfehlung", bevor sie entsteht. Den Zaehler bei null auszublenden waere
+     genau die Auslassung, die den Nutzer einen Monat lang raten liess. */
+  const rd = app.slice(app.indexOf('function renderDock(r, s){'), app.indexOf('function historyBand('));
+  assert.match(rd, /stockLevel\(x\) === 3/, 'NK101b: der Aktien-Zaehler muss die echte Freigabestufe zaehlen');
+  assert.match(rd, /buyReady\(x\)/, 'NK101b: … und der Coin-Zaehler die echte Freigabe');
+  assert.ok(!/if\s*\(\s*n[AC]\s*\)\s*reco\.innerHTML/.test(rd),
+    'NK101b: der Zaehler darf bei null nicht ausgeblendet werden — die Null ist die Antwort');
+  assert.match(rd, /KEINE Aktie mit Kauf-Freigabe\. Das ist ein Ergebnis, kein Fehler/,
+    'NK101b: … und die Null muss als Ergebnis erklaert sein');
+
+  /* ── NK101c · Planwerte ohne Freigabe werden gedaempft ────────────────
+     Fett gesetzte Zahlen neben einem Knopf „Plan" lesen sich als Aufforderung,
+     egal was danebensteht. */
+  assert.match(css, /\.dock:not\(\.dock-buy\) #dplan\{opacity:/,
+    'NK101c: ohne Freigabe muessen die Planwerte optisch zuruecktreten');
+  assert.match(html, /id="dstate"/, 'NK101c: das Zustandswort braucht seinen Platz im HTML');
+  assert.ok(html.indexOf('id="dstate"') < html.indexOf('id="dsym"'),
+    'NK101c: der Zustand steht VOR dem Titel — er ist die Bedingung, nicht die Fussnote');
+
+  /* ── NK101d · Das Lab traegt seine Rolle sichtbar ─────────────────────
+     Im Lab steht Auswertung, im Handelsbereich Entscheidung. Gleiches
+     Aussehen suggeriert gleiches Gewicht. */
+  assert.match(css, /\.labzone::before\{content:"AUSWERTUNG/,
+    'NK101d: die Lab-Zone muss sich selbst als Auswertung ausweisen');
+  assert.match(css, /0 % Gewicht in Score, Ampel und Freigabe/,
+    'NK101d: … einschliesslich der Zusage, dass dort nichts entschieden wird');
+}
+
+console.log('✓ FusionPulse v4.21.0 NK101 Fussleiste und Lab-Abgrenzung: OK');

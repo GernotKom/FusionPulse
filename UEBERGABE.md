@@ -1,3 +1,29 @@
+# FusionPulse 4.21.0 — eine richtige Zahl ohne ihren Zustand
+
+Nutzer am 15.09.: *„warum steht da überhaupt die UNI Empfehlung, ist eigentlich verwirrend — weil ja kein buy signal."*
+
+## Der Befund
+
+Die Fußleiste zeigte „UNI · Limit 5,805 · SL 5,737 · € 3.187", fett gesetzt, mit einem Knopf „⧉ Plan" daneben. Jedes einzelne Element sagt *hier ist ein Trade*. Nur stand nirgends, dass die Ampel rot war.
+
+Sie zeigt den **ausgewählten** Coin — den zuletzt angeklickten oder, mangels Auswahl, den aussichtsreichsten. Die Planwerte sind korrekt: sie sagen, was man täte, *wenn* man handelte. Sie sagen nicht, dass man soll.
+
+Das ist der teuerste Fehlertyp dieser App, und er ist in diesem Projekt schon dreimal aufgetreten: keine falsche Zahl, sondern eine richtige Zahl ohne ihren Zustand. Dieselbe Familie wie „0,0 %" ohne „nie gemessen" (v4.15.0) und „MUSTER STARK" ohne „Kurs von Freitag" (v4.16.0).
+
+## Behoben, ohne eine neue Rechnung
+
+**Zustandswort ganz vorn**, in der Ampelfarbe. Vier Zustände, und die Grenze zwischen den ersten beiden ist der Punkt: „KAUF-FREIGABE" hängt ausschließlich an `buyReady`. Eine grüne Ampel allein bekommt **„GRÜN, ABER NICHT FREI"** — dazwischen liegen Qualität, CRV, Ausführbarkeit und Datenfrische. NK101a prüft, dass die Freigabe-Zeile `light === 'green'` nicht enthält; genau dort wäre der Rückfall passiert.
+
+**Planwerte gedämpft**, solange keine Freigabe vorliegt. Fette Zahlen neben einem Knopf „Plan" lesen sich als Aufforderung, egal was danebensteht.
+
+**Zähler rechts: „Aktien 0 · Coins 0".** Immer sichtbar, auch und gerade bei null. Die Null bei Ausblenden zu verstecken wäre genau die Auslassung, die den Nutzer einen Monat lang hat raten lassen. NK101b prüft, dass der Zähler nicht hinter einer Bedingung verschwindet.
+
+## Lab und Handel sehen jetzt verschieden aus
+
+Zweiter Befund: *„überhaupt sollte man die rein analytischen LAB Sachen evtl etwas heller setzen und die aktuellen Trading Dinge so belassen."*
+
+Der Grund dahinter ist mehr als Geschmack. Im Lab steht **Auswertung**, im Handelsbereich steht **Entscheidung**. Beides sah gleich aus, und gleiches Aussehen suggeriert gleiches Gewicht. Die Lab-Zone bekommt einen helleren Grund und eine Kopfzeile, die ihre Rolle benennt — sichtbar anders, ohne eine zweite Farbsprache zu erfinden.
+
 # FusionPulse 4.20.0 — eine hergeleitete Zahl ohne Herleitung sieht gegriffen aus
 
 Nutzer am 15.09.: *„die ziel grenze 2,02 % erscheint in der Beschreibung trotzdem nicht logisch — was bedeutet das."*

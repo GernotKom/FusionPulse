@@ -764,7 +764,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"4.20.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"4.21.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1111,6 +1111,38 @@ abbr.gl:hover{text-decoration-color:var(--fg)}
    gepunktete Unterstreichung ist der uebliche Hinweis darauf — ohne sie sucht
    niemand dort. */
 .sighist .sig-out{text-decoration:underline dotted;text-underline-offset:3px;cursor:help}
+/* ══ v4.21.0 · FUSSLEISTE: ZUSTAND VOR ZAHLEN ══════════════════════════════
+   Die Leiste zeigte fette Planwerte und einen Plan-Knopf, ohne zu sagen, ob
+   der Titel ueberhaupt freigegeben ist. Das Zustandswort steht deshalb ganz
+   vorn und traegt die Ampelfarbe; die Planwerte werden gedaempft, solange
+   keine Freigabe vorliegt. */
+.dstate{display:inline-block;font-size:9.5px;font-weight:850;letter-spacing:.6px;padding:3px 7px;border-radius:6px;margin-right:9px;vertical-align:2px;cursor:help;border:1px solid transparent}
+.dstate.d-buy{color:#04140a;background:var(--green);border-color:var(--green)}
+.dstate.d-near{color:var(--green);border-color:color-mix(in srgb,var(--green) 55%,transparent)}
+.dstate.d-watch{color:var(--yellow);border-color:color-mix(in srgb,var(--yellow) 55%,transparent)}
+.dstate.d-none{color:var(--dim);border-color:var(--line2)}
+.dock:not(.dock-buy) .dockinfo b{opacity:.75}
+.dock:not(.dock-buy) #dplan{opacity:.55}
+.dock:not(.dock-buy) #dcopy{opacity:.7}
+.dreco{display:flex;gap:6px;flex:0 0 auto}
+.dreco-btn{padding:5px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--dim);font-size:10px;font-weight:700;cursor:pointer;white-space:nowrap}
+.dreco-btn b{font-size:12px;font-weight:850;margin-left:4px;color:var(--dim)}
+.dreco-btn.on{border-color:var(--green);color:var(--fg)}
+.dreco-btn.on b{color:var(--green)}
+@media(max-width:620px){.dreco-btn{padding:4px 6px;font-size:9px}.dstate{font-size:8.5px;padding:2px 5px;margin-right:6px}}
+
+/* ══ v4.21.0 · LAB OPTISCH VOM HANDEL TRENNEN ══════════════════════════════
+   Nutzer: „ueberhaupt sollte man die rein analytischen LAB Sachen evtl etwas
+   heller setzen und die aktuellen Trading Dinge so belassen."
+   Der Grund dahinter ist mehr als Geschmack: im Lab steht AUSWERTUNG, im
+   Handelsbereich steht ENTSCHEIDUNG. Beides sah bisher gleich aus, und
+   gleiches Aussehen suggeriert gleiches Gewicht. Die Lab-Flaechen bekommen
+   deshalb einen helleren Grund und einen ruhigeren Rahmen — sichtbar anders,
+   ohne eine zweite Farbsprache zu erfinden. */
+.labzone{--lab-bg:color-mix(in srgb,var(--fg) 5%,var(--panel))}
+.labzone .learning-report,.labzone .openingpanel,.labzone section{background:var(--lab-bg)}
+.labzone .learning-report{border-color:color-mix(in srgb,var(--fg) 14%,var(--line))}
+.labzone::before{content:"AUSWERTUNG · keine Handelssignale · 0 % Gewicht in Score, Ampel und Freigabe";display:block;font-size:10px;font-weight:800;letter-spacing:.4px;color:var(--dim);padding:7px 10px;margin-bottom:8px;border:1px dashed var(--line2);border-radius:8px;background:var(--lab-bg)}
 .dot.econ-weak text{opacity:.75}
 /* Hotfix v3.6.2: Die 3.6.1-Labels waren zu lang und randbuendig — sie sind
    ineinandergelaufen und haben die Punkte ueberlagert. Zurueck zur bewaehrten

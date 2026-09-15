@@ -1,28 +1,29 @@
-FusionPulse v4.20.0 – die 2,04 % erklaeren sich, der Peak bekommt eine Uhrzeit
+FusionPulse v4.21.0 – Fussleiste sagt jetzt, WOFUER der Plan gilt
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
-Keine Secrets, keine Migration noetig (eine Spalte legt sich selbst an).
+Keine Secrets, keine Migration, kein Binding.
 
-1. WAS DIE ZIELGRENZE BEDEUTET — steht jetzt im Mouseover:
-   Sie ist NICHT gegriffen, sie folgt aus deinen eigenen Handelskosten:
-     120 EUR sollen netto uebrig bleiben.
-     Bei 27,5 % KESt muessen dafuer 166 EUR brutto herauskommen.
-     Dazu 2 x 11,50 EUR Ordergebuehr + 0,15 % Ausfuehrungsreserve (15 EUR)
-       = 38 EUR Fixkosten.
-     Macht 204 EUR auf 10.000 EUR Einsatz — also 2,04 %.
-   Darunter arbeitet der Trade fuer die Bank, nicht fuer dich.
-   Aenderst du eine Kostenkonstante, wandert die Schwelle UND der Erklaertext
-   automatisch mit. Nichts ist abgetippt.
+1. DIE FUSSLEISTE WAR FALSCH BESCHRIFTET — behoben.
+   Sie zeigte „UNI Limit 5,805 · SL 5,737 · € 3.187" mit einem Knopf „Plan"
+   daneben und sah damit aus wie eine Empfehlung. Sie zeigt aber den
+   AUSGEWAEHLTEN Coin, nicht einen freigegebenen. Jetzt steht ganz vorn ein
+   Zustandswort in der Ampelfarbe:
+     KAUF-FREIGABE          nur bei echter Freigabe
+     GRUEN, ABER NICHT FREI Ampel gruen, eine Bedingung fehlt noch
+     BEOBACHTEN             Setup in Vorbereitung
+     KEIN KAUFSIGNAL        keine Freigabe
+   Ohne Freigabe treten die Planwerte optisch zurueck.
 
-2. WANN WAR DER BESTE MOMENT — neu in der Verlaufsliste:
-   Unter dem besten Ausschlag steht jetzt „Hoch 09:40 · +2 h 35" — Uhrzeit des
-   Hoechststands und Abstand zur Freigabe. Bei „Ziel erreicht" steht zusaetzlich
-   in der Zeitspalte, wann die Schwelle zum ersten Mal beruehrt wurde.
-   WARUM DAS ZAEHLT: „+19,2 %" nach zehn Minuten und dieselben „+19,2 %" nach
-   zweidreiviertel Stunden sind voellig verschiedene Aussagen. Im ersten Fall
-   haettest du kaum reagieren koennen, im zweiten sehr wohl.
-   Aeltere Aufzeichnungen tragen „Hoch · Zeit n.v." — die Spalte gibt es erst
-   ab dieser Version, und eine fehlende Zeit wird als fehlend ausgewiesen statt
-   stillschweigend als „sofort" gelesen.
+2. NEU RECHTS IN DER LEISTE: „Aktien 0 · Coins 0".
+   Die Zahl der Titel, die JETZT tatsaechlich freigegeben sind — in beiden
+   Bereichen, immer sichtbar, auch bei null. Klick springt in den Bereich.
+   Damit ist die Frage „warum sehe ich keine Empfehlung" beantwortet, bevor
+   sie entsteht.
+
+3. LAB OPTISCH ABGESETZT.
+   Hellerer Grund und eine Kopfzeile: „AUSWERTUNG · keine Handelssignale ·
+   0 % Gewicht in Score, Ampel und Freigabe." Der Handelsbereich bleibt
+   unveraendert. Im Lab steht Auswertung, im Handel steht Entscheidung —
+   gleiches Aussehen suggerierte gleiches Gewicht.
 
 WICHTIG: Keine dieser Aenderungen veraendert Score, Ampel oder Kauf-Freigabe.

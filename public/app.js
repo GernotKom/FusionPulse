@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.20.0 — Frontend
+   FusionPulse v4.21.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -5584,10 +5584,67 @@ function renderFocus() {
      in der Listenzeile — eine Wirkung, zwei Stellen, keine zweite Wahrheit. */
   $('#focus [data-favpair]')?.addEventListener('click', (e) => togglePairFavorite(r.pair, e));
 
+  renderDock(r, s);
+}
+
+/* ══ v4.21.0 · DIE FUSSLEISTE SAH AUS WIE EINE EMPFEHLUNG ══════════════════
+   Nutzer: „warum steht da überhaupt die UNI Empfehlung, ist eigentlich
+   verwirrend — weil ja kein buy signal."
+
+   Er hat recht, und die Leiste war schlicht falsch beschriftet. Sie zeigt den
+   AUSGEWÄHLTEN Coin — also den, den man zuletzt angeklickt hat oder den die
+   App mangels Auswahl als aussichtsreichsten vorschlägt. Was dort stand, war
+   „Limit 5,805 · SL 5,737 · € 3.187": vollständige Planwerte, fett gesetzt,
+   mit einem Knopf „⧉ Plan" daneben. Jedes einzelne Element sagt „hier ist ein
+   Trade". Nur stand nirgends, dass die Ampel rot oder gelb ist.
+
+   Das ist der teuerste Fehlertyp dieser App: nicht eine falsche Zahl, sondern
+   eine richtige Zahl ohne ihren Zustand. Die Planwerte SIND korrekt — sie
+   sagen, was man täte, WENN man handelte. Sie sagen nicht, dass man soll.
+
+   Behoben mit drei Dingen, und keins davon ist eine neue Rechnung:
+     1. Zustandswort ganz vorn, in der Ampelfarbe. „KAUF-FREIGABE" nur bei
+        tatsächlicher Freigabe, sonst „KEIN KAUFSIGNAL" bzw. „BEOBACHTEN".
+     2. Die Planwerte werden gedämpft, solange keine Freigabe vorliegt.
+     3. Rechts ein Zähler, wie viele Titel in BEIDEN Bereichen gerade wirklich
+        freigegeben sind. Steht dort „0 Aktien · 0 Coins", ist die Frage
+        beantwortet, bevor sie entsteht. */
+function dockVerdict(r){
+  if (buyReady(r)) return { key:'buy',   text:'KAUF-FREIGABE',  why:'Alle Bedingungen erfüllt: Ampel grün, Qualität, CRV und Ausführbarkeit. Die Planwerte daneben sind der vorgeschlagene Trade.' };
+  if (r?.light === 'green') return { key:'near', text:'GRÜN, ABER NICHT FREI', why:'Die Ampel steht auf grün, aber mindestens eine Bedingung für die Freigabe fehlt (Qualität, CRV, Ausführbarkeit oder Datenfrische). Die Planwerte zeigen, wie der Trade AUSSÄHE — sie sind keine Empfehlung.' };
+  if (r?.light === 'yellow') return { key:'watch', text:'BEOBACHTEN', why:'Setup in Vorbereitung, noch keine Freigabe. Die Planwerte daneben sind rechnerisch, nicht empfohlen.' };
+  return { key:'none', text:'KEIN KAUFSIGNAL', why:'Für diesen Titel gibt es keine Freigabe. Die Planwerte daneben sagen nur, WIE ein Trade aussähe — nicht, dass er sinnvoll ist.' };
+}
+
+function renderDock(r, s){
+  const dock = $('#dock'); if (!dock || !r) return;
+  const v = dockVerdict(r);
+  const st = $('#dstate');
+  if (st) { st.textContent = v.text; st.className = `dstate d-${v.key}`; st.title = v.why; }
   $('#dsym').textContent = sym(r.pair);
-  $('#dplan').textContent = `${r.orderType === 'stop' ? 'Stop' : 'Limit'} ${num(r.entry)} · SL ${num(r.stop)} · ${s ? eur(s.notional, 0) : '–'}`;
-  $('#dock').classList.remove('hidden');
-  $('#dock').className = `dock ${r.light}`;
+  const plan = $('#dplan');
+  if (plan) {
+    plan.textContent = `${r.orderType === 'stop' ? 'Stop' : 'Limit'} ${num(r.entry)} · SL ${num(r.stop)} · ${s ? eur(s.notional, 0) : '–'}`;
+    plan.title = v.key === 'buy'
+      ? 'Vorgeschlagener Einstieg, Stop-Loss und Einsatz für diesen freigegebenen Trade.'
+      : 'Rechnerische Planwerte des AUSGEWÄHLTEN Titels — er ist NICHT freigegeben. So sähe der Trade aus, wenn man ihn machte.';
+  }
+  /* Der Zähler nennt beide Bereiche IMMER, auch bei null. Eine Null ist hier
+     die wichtigste Zahl: sie beantwortet „warum sehe ich keine Empfehlung"
+     ohne dass man danach suchen muss. */
+  const reco = $('#dreco');
+  if (reco) {
+    const nA = (stockRows || []).filter(x => stockLevel(x) === 3).length;
+    const nC = (rows || []).filter(x => buyReady(x)).length;
+    reco.innerHTML = `<button type="button" data-goto="stocks" class="dreco-btn ${nA ? 'on' : ''}" title="${nA ? nA + ' Aktie(n) mit Kauf-Freigabe. Klick springt in den Aktienbereich.' : 'Derzeit KEINE Aktie mit Kauf-Freigabe. Das ist ein Ergebnis, kein Fehler.'}">Aktien <b>${nA}</b></button>`
+      + `<button type="button" data-goto="coins" class="dreco-btn ${nC ? 'on' : ''}" title="${nC ? nC + ' Coin(s) mit Kauf-Freigabe. Klick springt in den Coin-Bereich.' : 'Derzeit KEIN Coin mit Kauf-Freigabe.'}">Coins <b>${nC}</b></button>`;
+    reco.querySelectorAll('[data-goto]').forEach(b => b.addEventListener('click', () => {
+      const ziel = b.dataset.goto === 'stocks' ? '#stocks' : '#focus';
+      document.querySelector(ziel)?.scrollIntoView({ behavior:'smooth', block:'start' });
+    }));
+  }
+  dock.classList.remove('hidden');
+  dock.className = `dock ${r.light} dock-${v.key}`;
 }
 
 
