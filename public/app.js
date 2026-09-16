@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v4.23.0 — Frontend
+   FusionPulse v4.23.1 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -6430,6 +6430,23 @@ function trackWatchMoves(list){
    sie einen getrennten Topf, eine getrennte Größenrechnung und eine getrennte
    Bilanz. Wenn sie nicht trägt, kostet sie den Topf und nicht das Depot. */
 const HR_KEYS = ['hrEquity', 'hrRiskPct'];
+/* Die Konsequenz der Eingabe steht sofort darunter, nicht erst nach dem
+   Speichern — also genau dann, wenn man sie zum Abwaegen braucht. Dieselbe
+   Regel wie beim Positionsgroessen-Hinweis. */
+function renderHrHint(){
+  const el = $('#sHrHint'); if (!el) return;
+  const topf = Math.max(0, Number($('#sHrEquity')?.value ?? S.hrEquity ?? DEFAULTS.hrEquity) || 0);
+  const pct = Math.max(0, Number($('#sHrRisk')?.value ?? S.hrRiskPct ?? DEFAULTS.hrRiskPct) || 0);
+  const jeTrade = topf * pct / 100;
+  if (!(topf > 0) || !(pct > 0)) { el.innerHTML = 'Topf oder Prozentsatz stehen auf 0 — es entstehen keine Karten.'; return; }
+  /* Sieben Fehlschlaege in Folge sind die Zahl, die man kennen sollte: nicht
+     als Drohung, sondern weil sie aus den beiden Eingaben zwingend folgt. */
+  const nach7 = topf * Math.pow(1 - pct/100, 7);
+  el.innerHTML = `<b>${eur(jeTrade,2)} Risiko je Signal.</b> Sieben Fehlschläge in Folge lassen vom Topf ${eur(nach7,0)} übrig (${num(100-nach7/topf*100,0)} % weg).`
+    + ` Dein Konto-Equity bleibt davon unberührt.`
+    + (pct > 25 ? ` <b>Bei ${num(pct,0)} % je Signal ist der Topf nach wenigen Fehlschlägen praktisch leer</b> — das kann gewollt sein, sollte aber bewusst sein.` : '');
+}
+
 function hrRiskEur(){
   const topf = Math.max(0, Number(S?.hrEquity ?? DEFAULTS.hrEquity) || 0);
   const pct  = Math.max(0, Number(S?.hrRiskPct ?? DEFAULTS.hrRiskPct) || 0);
@@ -7636,6 +7653,16 @@ function openSettings() {
   $('#sTax').value = S.taxPct; $('#sMode').value = S.analysisMode;
   $('#sStockSound').checked = !!S.stockSound;
   if ($('#sClaudeMode')) $('#sClaudeMode').checked = !!S.claudeMode;
+  /* v4.23.1 · Hochrisiko-Regler. Siehe den Kommentar im Dialog: in 4.23.0
+     zeigte die Kachel Werte an, die sich nicht aendern liessen. */
+  if ($('#sHrOn')) $('#sHrOn').checked = S.hrEnabled !== false;
+  if ($('#sHrEquity')) $('#sHrEquity').value = S.hrEquity ?? DEFAULTS.hrEquity;
+  if ($('#sHrRisk')) $('#sHrRisk').value = S.hrRiskPct ?? DEFAULTS.hrRiskPct;
+  renderHrHint();
+  for (const id of ['#sHrEquity', '#sHrRisk']) {
+    const f = $(id);
+    if (f && !f.dataset.hrBound) { f.dataset.hrBound = '1'; f.addEventListener('input', renderHrHint); }
+  }
   if ($('#sPortfolioRisk')) $('#sPortfolioRisk').value = S.portfolioRiskPct ?? DEFAULTS.portfolioRiskPct;
   if ($('#sPortfolioGuard')) $('#sPortfolioGuard').checked = !!S.portfolioGuard;
   if ($('#sCrowdLimit')) $('#sCrowdLimit').value = S.crowdSymbolLimit ?? DEFAULTS.crowdSymbolLimit;
@@ -7704,6 +7731,16 @@ function renderAnalysisMethods(){
 function applySettings() {
   applyTileTints();   // v3.15.0: Toene werden sofort beim Umschalten gesetzt, hier nur nachgezogen
   const prevAnalysis = S.analysisMode + '|' + S.components.join(',') + '|' + S.minCrvStock;
+  /* v4.23.1 · `|| DEFAULTS` waere hier falsch: eine bewusst eingetragene 0
+     („Kategorie soll nichts riskieren") wuerde still auf die Vorgabe
+     zurueckspringen. Deshalb wird nur ersetzt, was gar keine Zahl ist. */
+  if ($('#sHrOn')) S.hrEnabled = !!$('#sHrOn').checked;
+  {
+    const te = Number($('#sHrEquity')?.value);
+    const tr = Number($('#sHrRisk')?.value);
+    S.hrEquity = Number.isFinite(te) && te >= 0 ? te : DEFAULTS.hrEquity;
+    S.hrRiskPct = Number.isFinite(tr) && tr >= 0 ? Math.min(100, tr) : DEFAULTS.hrRiskPct;
+  }
   S.equity = +$('#sEquity').value || DEFAULTS.equity;
   S.riskPct = +$('#sRisk').value || DEFAULTS.riskPct;
   S.maxTradeEur = Math.max(100, +$('#sMaxTrade').value || DEFAULTS.maxTradeEur);

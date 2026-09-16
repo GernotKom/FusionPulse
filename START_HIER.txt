@@ -1,40 +1,38 @@
-FusionPulse v4.23.0 – Hochrisiko-Kategorie + „+4,1 % Tag" war von gestern
+FusionPulse v4.23.1 – die Regler zur Hochrisiko-Kachel (Nachtrag zu 4.23.0)
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
 Keine Secrets, keine Migration, kein Binding.
 
-1. HOCHRISIKO · SPIELKAPITAL (neue Kachel im Aktienbereich, violett)
-   Was dort landet: Setups mit POSITIVEM Erwartungswert, die das regulaere
-   Regelwerk ablehnt — meist wegen Ueberdehnung oder duennem Volumen. Es ist
-   kein neues Modell und keine gelockerte Schwelle, sondern genau die Menge,
-   die das Schattentor aus v4.17.0 freigibt und das Haupttor nicht.
-   ZWEI FREIE FELDER in den Einstellungen:
-     hrEquity   Spielkapital, Vorgabe 500 EUR
-     hrRiskPct  Risiko je Signal, Vorgabe 10 %  -> 50 EUR je Trade
-   Willst du 10 % vom HAUPTKAPITAL, trage bei hrEquity 5000 ein. Dann sind
-   beide Lesarten dieselbe Einstellung und du musst meine Auslegung nicht
-   uebernehmen.
-   Die Stueckzahl folgt aus dem Stop: weiter Stop = weniger Stueck, gleiches
-   Risiko in Euro. Jede Karte nennt den Verlust am Stop in Euro.
-   NICHT VERGESSEN: bei einem Gap ueber Nacht greift der Stop nicht zum
-   eingestellten Kurs — der tatsaechliche Verlust kann groesser sein als die
-   angezeigte Zahl. Das steht auch in jedem Mouseover.
-   Eigene Farbe (violett, keine Ampelfarbe), eigene Kachel, NIEMALS in
-   derselben Liste wie eine regulaere Freigabe.
+1. HOCHRISIKO-REGLER — in 4.23.0 vergessen, jetzt da.
+   Einstellungen -> neuer Abschnitt „Hochrisiko · Spielkapital":
+     Kategorie anzeigen       ein/aus
+     Spielkapital (EUR)       Vorgabe 500
+     Risiko je Signal (%)     Vorgabe 10  -> 50 EUR je Trade
+   Darunter rechnet ein Hinweis LIVE mit, waehrend du tippst: wie viel Euro je
+   Signal, und was sieben Fehlschlaege in Folge vom Topf uebrig lassen.
 
-2. „+4,1 % TAG" IM RADAR WAR DIE BEWEGUNG VON GESTERN — behoben.
-   Der Radar rechnet aus dem letzten TRADE gegen den Vortagsschluss. Gibt es
-   in der Vorboerse keinen Trade, ist der letzte Trade noch der Schluss vom
-   Vortag. So kam NFLX am 15.09. um 09:07 ET auf „+4,1 % Tag", waehrend die
-   Aktie tatsaechlich −0,87 % vorboerslich stand.
-   Jetzt: solche Karten sind als „(Vortag)" beschriftet, grau statt gruen/rot,
-   mit Erklaerung im Mouseover. Verworfen wird nichts — ein Titel, der gestern
-   4 % gemacht hat, ist eine echte Beobachtung, nur keine Tagesbewegung.
+   WAS DIE 500 EUR SIND: ein getrennter Topf, nicht dein Konto und nicht die
+   Kaufsumme. 10 % davon = 50 EUR Verlust, wenn der Stop greift. Die Kaufsumme
+   ergibt sich rueckwaerts aus der Stopweite — enger Stop = groessere Position.
+   Der Topf begrenzt, was die Kategorie INSGESAMT kosten kann. Dein Konto-
+   Equity bleibt unberuehrt.
+   Willst du lieber mit einem Prozentsatz deines Hauptkapitals arbeiten, trag
+   beim Spielkapital einfach dein Konto-Equity ein.
 
-WICHTIG: Die regulaere Kauf-Freigabe ist UNVERAENDERT. Score, CRV, Ampel und
-alle Schwellen sind dieselben wie in v4.22.0. Die Hochrisiko-Kategorie steht
-daneben und zieht ausschliesslich am getrennten Topf.
+   Eine eingetragene 0 bleibt jetzt auch 0 — sie springt nicht mehr still auf
+   die Vorgabe zurueck.
 
-NOCH OFFEN: warum SDGR (+11 % am 15.09.) nicht gemeldet wurde. Dafuer brauche
-ich einen Screenshot des AKTIEN-Tabs mit der Kachel „Bewegung in deiner
-Watchlist" waehrend der US-Sitzung.
+2. WARUM DIE KACHEL „GERADE KEIN KANDIDAT" ZEIGT
+   Das ist kein Fehler. Dort landet nur, was das Schattentor freigibt UND das
+   Hauptregelwerk nicht. Das Schattentor laeuft erst seit v4.17.0. Steht dort
+   nach ein paar Handelstagen dauerhaft nichts, ist die Menge schlicht klein —
+   dann reden wir ueber die Schwelle, nicht ueber die Struktur.
+
+3. NEBENBEFUND: ein Test von mir war zeitabhaengig.
+   NK96 pruefte mit festen 45 Minuten Abstand und der stillen Annahme,
+   die laegen im selben US-Handelstag. Um 00:04 ET stimmt das nicht. Der Test
+   hat monatelang bestanden, weil er nie zu dieser Stunde lief. Jetzt leitet er
+   den Abstand aus dem tatsaechlichen ET-Tag ab.
+
+SCHROEDINGER: wurde erkannt. SDGR stand am 15.09. mit +10,2 % ganz vorn in
+„Bewegung in deiner Watchlist" (Aktien-Tab). Es war nur der falsche Tab.

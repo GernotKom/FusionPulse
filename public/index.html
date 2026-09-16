@@ -8,9 +8,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/style.css?v=4.23.0">
+<link rel="stylesheet" href="/style.css?v=4.23.1">
 <!-- Einzige Versionsquelle im Frontend. Wird von scripts/sync-version.mjs erzeugt. -->
-<script src="/version.js?v=4.23.0"></script>
+<script src="/version.js?v=4.23.1"></script>
 <!-- ══════════════════════════════════════════════ v3.24.0 · BOOT-WÄCHTER ═══
      ANLASS: Am 29.08. stand die Oberfläche still — Statusampeln grau, Version
      "v–", Taktuhr "--:--". Alles stand auf den STATISCHEN Startwerten aus
@@ -66,13 +66,13 @@
   });
 })();
 </script>
-<title>FusionPulse 4.23.0</title>
+<title>FusionPulse 4.23.1</title>
 <!-- v3.14.1: Versionsstempel der SHELL (index.html). Wird von sync-version.mjs
      gesetzt und beim Start gegen FP_VERSION aus version.js verglichen. Weichen
      die beiden ab, ist eine halb aktualisierte Auslieferung im Umlauf: neues
      app.js/style.css auf altem index.html. Das erzeugt Fehler, die wie
      Layout-Probleme aussehen, aber keine sind — und kostet beim Suchen Stunden. -->
-<meta name="fp-shell-version" content="4.23.0">
+<meta name="fp-shell-version" content="4.23.1">
 </head>
 <body>
 <!-- v3.24.0 · Wird nur sichtbar, wenn app.js nicht startet. -->
@@ -539,6 +539,18 @@
   <label title="Nur im Modell 'Fester Einsatz'. Dieser Betrag wird bei JEDEM Trade eingesetzt, unabhängig davon, wie weit der Stop entfernt liegt. Der mögliche Verlust wird daraus berechnet und auf jeder Karte ausgewiesen. Frei änderbar — trag hier ein, was du tatsächlich einsetzen willst.">Einsatz je Trade (€)<input id="sFixedTrade" type="number" min="100" step="100"></label>
   <label title="Nur im Modell 'Fester Einsatz'. Obergrenze für den Verlust am Stop inklusive aller Ausführungskosten. Setups, deren Stop so weit entfernt liegt, dass dieser Betrag überschritten würde, bekommen keine Kauf-Freigabe. 0 schaltet die Grenze ab. Diese Sperre kann ausschließlich abwerten und niemals ein BUY erzeugen.">Maximaler Verlust am Stop (€) · 0 = aus<input id="sMaxLoss" type="number" min="0" step="25"></label>
 
+  <!-- ══ v4.23.1 · DIE REGLER, DIE IN 4.23.0 GEFEHLT HABEN ══════════════════
+       Nutzer: „wo ist da ein Regler". Zu Recht — die Kachel zeigte „€ 500 Topf
+       · 10,0 %", aber es gab keine Eingabefelder dazu. Ich hatte die Werte als
+       Voreinstellung gesetzt und den Dialog vergessen. Eine Zahl anzuzeigen,
+       die der Nutzer nicht aendern kann, ist schlechter als keine Zahl. -->
+  <h3>Hochrisiko · Spielkapital</h3>
+  <p class="hint">Ein <b>getrennter Topf</b> für Setups mit positivem Erwartungswert, die das reguläre Regelwerk ablehnt — meist wegen Überdehnung oder dünnem Volumen. Er begrenzt, was diese Kategorie <b>insgesamt</b> kosten kann, unabhängig davon, wie oft sie auslöst. Dein Konto-Equity weiter unten bleibt unberührt.</p>
+  <label title="Setups aus dieser Kategorie erscheinen in einer eigenen violetten Kachel im Aktienbereich — niemals in derselben Liste wie eine reguläre Kauf-Freigabe. Abschalten blendet die Kachel aus; die reguläre Freigabe ändert sich dadurch nicht.">Kategorie anzeigen<input id="sHrOn" type="checkbox"></label>
+  <label title="Der Topf, aus dem diese Kategorie bezahlt wird. NICHT dein Konto. Er ist die Obergrenze für den Gesamtverlust dieser Kategorie. Willst du stattdessen mit einem Prozentsatz deines Hauptkapitals arbeiten, trag hier einfach dein Konto-Equity ein — dann rechnet der Prozentsatz darunter gegen das ganze Konto.">Spielkapital (€)<input id="sHrEquity" type="number" min="0" step="50"></label>
+  <label title="Risiko je Signal, als Prozentsatz des Spielkapitals. 10 % von 500 € sind 50 € — das ist der Verlust, wenn der Stop greift. Die Kaufsumme ergibt sich daraus rückwärts: enger Stop = größere Position, weiter Stop = kleinere. ACHTUNG, Mechanik: bei einem Gap über Nacht greift der Stop nicht zum eingestellten Kurs, der tatsächliche Verlust kann dann größer sein.">Risiko je Signal (% vom Topf)<input id="sHrRisk" type="number" min="0" max="100" step="0.5"></label>
+  <p class="hint" id="sHrHint">–</p>
+
   <h3>Konto und Risiko</h3>
   <p class="hint" id="sRiskModeHint">–</p>
   <label title="Dein tatsächliches Kapital. Wird im Modell 'Fester Einsatz' NICHT mehr für die Positionsgröße verwendet, bleibt aber die Bezugsgröße für das Gesamt-Risikobudget über alle offenen Positionen weiter unten.">Konto-Equity (€)<input id="sEquity" type="number" min="100" step="100"></label>
@@ -653,6 +665,6 @@
      Muss das LETZTE Element im Fluss bleiben. Hoehe kommt aus derselben
      Messung wie alles andere (--fp-foot-h). -->
 <div class="foot-spacer" aria-hidden="true"></div>
-<script src="/app.js?v=4.23.0"></script>
+<script src="/app.js?v=4.23.1"></script>
 </body>
 </html>

@@ -296,10 +296,34 @@ console.log('✓ FusionPulse v4.9.0 NK88 Heatmap-Regler und Beschriftung (ausgef
   assert.equal(typeof mark, 'function', 'NK96: stockStaleMark muss ausgeliefert sein');
   const vorMin = (m) => new Date(Date.now() - m * 60_000).toISOString();
 
-  assert.equal(mark({ updated: vorMin(4) }).stale, false,
-    'NK96: vier Minuten Rotationsverzug sind der NORMALFALL und duerfen nicht markiert werden');
-  assert.equal(mark({ updated: vorMin(45) }).stale, false,
-    'NK96: auch 45 Minuten innerhalb desselben Handelstags sind kein Befund');
+  /* ── v4.23.1 · DIESER TEST WAR ZEITABHAENGIG UND DAMIT UNZUVERLAESSIG ───
+     Geschrieben wurde er mit festen Abstaenden (4 und 45 Minuten) und der
+     stillen Annahme, beide lägen im selben ET-Handelstag. Um 00:04 ET liegen
+     45 Minuten davor aber im VORTAG — `sameDay` ist dann false, die Zeile gilt
+     zu Recht als alt, und der Test schlug fehl. Er hat monatelang bestanden,
+     weil er nie zu dieser Stunde lief.
+     Ein Test, der von der Wanduhr abhaengt, prueft nicht die Software, sondern
+     den Zeitpunkt des Laufs. Der Abstand wird deshalb aus dem tatsaechlichen
+     ET-Tag abgeleitet: hoechstens 45 Minuten, aber nie ueber Mitternacht ET
+     hinaus. Geprueft wird damit weiterhin GENAU die Eigenschaft, um die es
+     geht — derselbe Handelstag, deutlich mehr als Rotationsverzug. */
+  const etMin = (() => {
+    const p = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+      .formatToParts(new Date());
+    const h = Number(p.find((x) => x.type === 'hour')?.value);
+    const m = Number(p.find((x) => x.type === 'minute')?.value);
+    return h * 60 + m;
+  })();
+  const gleicherTag = Math.max(1, Math.min(45, etMin - 2));
+
+  assert.equal(mark({ updated: vorMin(Math.min(4, gleicherTag)) }).stale, false,
+    'NK96: wenige Minuten Rotationsverzug sind der NORMALFALL und duerfen nicht markiert werden');
+  assert.equal(mark({ updated: vorMin(gleicherTag) }).stale, false,
+    `NK96: auch ${gleicherTag} Minuten innerhalb desselben Handelstags sind kein Befund`);
+  /* Und die Gegenprobe, die der alte Test versehentlich manchmal mitgemacht
+     hat: ueber die ET-Tagesgrenze hinweg MUSS markiert werden. */
+  assert.equal(mark({ updated: vorMin(etMin + 90) }).stale, true,
+    'NK96: ueber die ET-Tagesgrenze hinweg ist der Kurs nicht von heute');
   assert.equal(mark({ updated: vorMin(63 * 60) }).stale, true,
     'NK96: 63 Stunden — der gemeldete QGEN-Fall — MUSS markiert werden');
   assert.equal(mark({}).stale, true,

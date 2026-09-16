@@ -548,3 +548,46 @@ console.log('✓ FusionPulse v4.23.0 NK103 Hochrisiko-Kategorie: OK');
 }
 
 console.log('✓ FusionPulse v4.23.0 NK104 Vortagsbewegung im Radar: OK');
+
+/* ═══ v4.23.1 · NK105 · EINE ZAHL, DIE MAN NICHT AENDERN KANN ══════════════
+   Nutzer nach dem Deploy von 4.23.0: „wo ist da ein Regler". Zu Recht: die
+   Kachel zeigte „€ 500 Topf · 10,0 %", aber es gab keine Eingabefelder dazu.
+   Ich hatte die Werte als Voreinstellung gesetzt und den Dialog vergessen.
+   Eine angezeigte Zahl ohne Bedienelement ist schlechter als gar keine — sie
+   sieht aus wie eine Entscheidung des Nutzers und ist keine. */
+{
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+
+  /* ── NK105a · Jeder angezeigte Wert hat ein Feld ──────────────────────── */
+  for (const id of ['sHrOn', 'sHrEquity', 'sHrRisk']) {
+    assert.ok(html.includes(`id="${id}"`), `NK105a: das Feld ${id} fehlt im Einstellungsdialog`);
+    assert.ok(app.includes(`$('#${id}')`), `NK105a: ${id} wird nirgends gelesen`);
+  }
+
+  /* ── NK105b · Eine bewusste 0 darf nicht zurueckspringen ──────────────
+     `+wert || DEFAULT` ist der uebliche Kurzschluss — und er macht aus „ich
+     will hier nichts riskieren" still wieder die Vorgabe. Der Nutzer traegt 0
+     ein, speichert, und die App rechnet weiter mit 10 %. */
+  const save = app.slice(app.indexOf("if ($('#sHrOn')) S.hrEnabled"), app.indexOf("S.equity = +$('#sEquity').value"));
+  assert.match(save, /Number\.isFinite\(te\) && te >= 0 \? te : DEFAULTS\.hrEquity/,
+    'NK105b: eine eingetragene 0 beim Topf muss erhalten bleiben');
+  assert.match(save, /Number\.isFinite\(tr\) && tr >= 0 \? Math\.min\(100, tr\)/,
+    'NK105b: … und beim Prozentsatz ebenso, mit Deckel bei 100');
+  assert.ok(!/S\.hrEquity = \+\$\('#sHrEquity'\)\.value \|\| /.test(app),
+    'NK105b: kein `|| DEFAULT`-Kurzschluss auf diesen Feldern');
+
+  /* ── NK105c · Die Folge der Eingabe steht sofort darunter ─────────────
+     Sonst sieht der Nutzer die Konsequenz erst nach dem Speichern — also
+     genau dann nicht, wenn er sie zum Abwaegen braucht. */
+  const hint = app.slice(app.indexOf('function renderHrHint(){'), app.indexOf('function hrRiskEur(){'));
+  assert.match(hint, /Risiko je Signal/, 'NK105c: der Hinweis muss den Eurobetrag je Signal nennen');
+  assert.match(hint, /Sieben Fehlschläge in Folge/,
+    'NK105c: … und die Folge mehrerer Fehlschlaege, weil sie aus den Eingaben zwingend folgt');
+  assert.match(hint, /Konto-Equity bleibt davon unberührt/,
+    'NK105c: … und dass der Topf das Hauptkapital nicht beruehrt');
+  assert.match(app, /f\.addEventListener\('input', renderHrHint\)/,
+    'NK105c: der Hinweis muss live mitrechnen, nicht erst beim Speichern');
+}
+
+console.log('✓ FusionPulse v4.23.1 NK105 Hochrisiko-Regler: OK');
