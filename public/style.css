@@ -764,7 +764,7 @@ body{padding-bottom:calc(var(--fp-foot-h) + 14px)}.signal-idle{display:flex;alig
    nur noch Startwerte fuer den ersten Bildaufbau vor der ersten Messung. */
 /* v3.14.3: Stempel IM Stylesheet. Bis v3.14.2 konnte ein veraltetes style.css
    nicht erkannt werden — es gab keinen Wert, den man haette vergleichen koennen. */
-:root{--fp-css-version:"5.0.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
+:root{--fp-css-version:"5.1.0";--fp-head-h:62px;--fp-nav-h:44px;--fp-chrome-h:106px;--fp-banner-h:52px;--fp-foot-h:118px}
 body{padding-top:var(--fp-chrome-h)}
 body>header{position:fixed!important;top:0;left:0;right:0;z-index:220}
 /* v3.14.0: Die Leiste war `position:sticky` und blieb trotzdem nicht stehen.
@@ -1933,3 +1933,10 @@ table.sighist tr[data-tone="idle"] td:last-child{color:var(--dim)}
 .pf-when{opacity:.55;font-size:9px}
 .pf-close{background:none;border:1px solid var(--line,#2a3446);color:var(--dim);border-radius:5px;padding:1px 7px;font-size:9px;cursor:pointer}
 .pf-close:hover{border-color:var(--red,#ff6b6b);color:var(--red,#ff6b6b)}
+
+/* v5.1.0 · Potenzial > 2 %. Eigene, neutrale Farbe — keine Ampelfarbe, damit
+   die Suchliste nie mit einer Kauf-Freigabe verwechselt wird. */
+.potpanel:empty{display:none}
+.pot-card{border-color:#4a7dff55}
+.pot-card .pot-up{color:#6f9bff;font-weight:700}
+.pot-card em{opacity:.8}

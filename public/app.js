@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v5.0.0 — Frontend
+   FusionPulse v5.1.0 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -5206,6 +5206,7 @@ function renderStocks() {
     renderBandwidthTable();
   }
   stockHeatmap(shown);
+  renderPotential();    // v5.1.0 · Potenzial > 2 %, ohne Chance-Risiko-Sperre
   renderWatchMoves();   // v4.16.0 · siehe dort: Beobachtung, keine Bewertung
   renderHighRisk();     // v4.23.0 · getrenntes Spielkapital, getrennte Bilanz
   // v3.3.9 P0: Das Fokusfenster ist unabhängig vom aktuell sichtbaren/
@@ -6591,6 +6592,86 @@ function renderWatchMoves(){
     +`<small class="stage-note" title="Bewusst ohne Ampel und ohne Plan. Ein Titel, der bereits weit gelaufen ist, hat einen weiten Stop und ein schlechtes Chance-Risiko-Verhältnis — das Regelwerk lehnt ihn zu Recht ab. Diese Kachel widerspricht dem nicht, sie macht die Bewegung nur sichtbar, statt sie zu verschweigen.">Was sich bewegt hat, nicht was zu kaufen ist — die Einordnung bleibt bei dir</small>`
     +`<div class="opgrid">${karten}</div>`);
   if(neu) el.querySelectorAll('[data-openstock]').forEach(b=>b.addEventListener('click',()=>openStockFromDiscovery(b.dataset.openstock)));
+}
+
+/* ══ v5.1.0 · POTENZIAL ÜBER 2 % — OHNE CHANCE-RISIKO-SPERRE ═══════════════
+   Nutzerwunsch 17.09.: „es geht um > 2 %, Verluste kann man derzeit auch
+   weglassen, das Risiko trage ich selbst."
+   Das Regelwerk verlangt zusaetzlich Ziel >= 2x Stop (MIN_REWARD_RISK_FIXED)
+   und Struktur-CRV >= 3. Genau diese Bedingungen sortieren fast alles aus.
+   Diese Kachel ist ADDITIV: sie aendert kein Tor, keinen Score, keine Ampel
+   und liest nur, was stockTradeability/stockSizing ohnehin liefern.
+   Kriterium EINZIG: Kursweg bis zum Ziel bringt bei fixer Kaufsumme nach
+   Gebuehren, Reibung und KESt mindestens POT_MIN_NET_EUR. Stop und Verlust
+   werden ANGEZEIGT, entscheiden aber nichts.
+   Fail-closed bleibt: veraltete Zeilen (stale, n. v.) und gemerkte Zeilen
+   erscheinen nicht — ein altes Kursziel ist kein Potenzial. */
+const POT_MIN_NET_EUR = 120;
+const POT_COST = { orderFeeEur: 11.5, frictionPct: 0.15, taxPct: 27.5 };
+function potNotional(){
+  const n = Number(S?.maxTradeEur);
+  return Number.isFinite(n) && n > 0 ? n : 10000;
+}
+/** Netto-Euro bei Erreichen des Ziels: Brutto minus 2 Orders und Reibung, dann KESt. */
+function potNetEur(pct, notional = potNotional()){
+  const p = Number(pct);
+  if (!Number.isFinite(p) || p <= 0) return NaN;
+  const vorSteuer = notional * p / 100 - 2 * POT_COST.orderFeeEur - notional * POT_COST.frictionPct / 100;
+  return vorSteuer > 0 ? vorSteuer * (1 - POT_COST.taxPct / 100) : vorSteuer;
+}
+/** Verlust am Stop inkl. beider Orders und Reibung (Verluste tragen keine KESt). */
+function potLossEur(stopPct, notional = potNotional()){
+  const p = Math.abs(Number(stopPct));
+  if (!Number.isFinite(p) || p <= 0) return NaN;
+  return notional * p / 100 + 2 * POT_COST.orderFeeEur + notional * POT_COST.frictionPct / 100;
+}
+function potCandidates(list){
+  return (list || []).filter(r => {
+    if (!r || r._remembered) return false;
+    const fk = stockFreshness(r).key;
+    if (fk === 'stale' || fk === 'na') return false;
+    if (r.currentSession === false) return false;
+    const entry = Number(r.entryUsd), tp2 = Number(r.tp2Usd);
+    if (!(entry > 0) || !(tp2 > entry)) return false;
+    const net = potNetEur((tp2 / entry - 1) * 100);
+    return Number.isFinite(net) && net >= POT_MIN_NET_EUR;
+  }).map(r => {
+    const entry = Number(r.entryUsd), tp2 = Number(r.tp2Usd), stop = Number(r.stopUsd);
+    const zielPct = (tp2 / entry - 1) * 100;
+    const stopPct = stop > 0 && stop < entry ? (1 - stop / entry) * 100 : NaN;
+    return { r, zielPct, net: potNetEur(zielPct), stopPct, loss: potLossEur(stopPct) };
+  }).sort((a, b) => b.net - a.net);
+}
+function renderPotential(){
+  const el = $('#potentialList'); if (!el) return;
+  const notional = potNotional();
+  const list = potCandidates(stockRows);
+  const kopf = `<div class="ophead pot-head"><b>🎯 Potenzial über 2 %</b>`
+    + `<span title="Einziges Kriterium: das Kursziel der Analyse bringt bei ${eur(notional,0)} Einsatz nach 2 Orders, Reibung und KESt mindestens ${eur(POT_MIN_NET_EUR,0)} netto. Chance-Risiko-Verhältnis und Stopweite sind KEINE Bedingung.">ab ${eur(POT_MIN_NET_EUR,0)} netto je ${eur(notional,0)} · ohne Chance-Risiko-Sperre</span>`
+    + `<small title="Das Kursziel ist eine Projektion aus dem Chartbild, keine gemessene Wahrscheinlichkeit. Ob es erreicht wird, sagt diese Kachel nicht.">Suchliste · keine Kauf-Freigabe · Risiko trägst du</small></div>`;
+  if (!list.length) {
+    const gesamt = (stockRows || []).length;
+    paintPanel(el, kopf + `<span class="hint">${gesamt ? `Keiner der ${gesamt} geladenen Titel hat derzeit ein frisches Kursziel, das ${eur(POT_MIN_NET_EUR,0)} netto bringt.` : 'Es sind noch keine Titel geladen. Die App holt Kurse, sobald sie geöffnet ist und die US-Börse handelt.'}</span>`);
+    return;
+  }
+  const karten = list.slice(0, 12).map(({ r, zielPct, net, stopPct, loss }) => {
+    const tip = [
+      `${r.symbol} · Potenzial ${num(zielPct,1)} % bis zum Kursziel`,
+      `Netto bei Erreichen: ${eur(net,0)} (nach 2 × ${eur(POT_COST.orderFeeEur,2)}, ${num(POT_COST.frictionPct,2)} % Reibung, ${num(POT_COST.taxPct,1)} % KESt).`,
+      Number.isFinite(stopPct) ? `Zur Information: Stop der Analyse ${num(stopPct,1)} % entfernt → Verlust am Stop etwa ${eur(loss,0)}.` : 'Kein Stop aus der Analyse verfügbar.',
+      'Das Chance-Risiko-Verhältnis ist hier bewusst KEINE Bedingung.',
+      'Das Kursziel ist eine Projektion, keine Wahrscheinlichkeit. Vor jeder Order Kurs bei flatex prüfen.',
+    ].join('\n');
+    return `<button type="button" class="opcard pot-card" data-openstock="${esc(r.symbol)}" title="${esc(tip)}">`
+      + `<b>${esc(r.symbol)}${isFavStock(r.symbol)?' ★':''}</b>`
+      + `<span class="pot-up">+${num(zielPct,1)} %</span>`
+      + `<span>${eur(net,0)} netto</span>`
+      + `<em>${Number.isFinite(stopPct) ? `Stop ${num(stopPct,1)} % · −${eur(loss,0)}` : 'Stop n. v.'}</em></button>`;
+  }).join('');
+  const neu = paintPanel(el, kopf
+    + `<small class="stage-note">Sortiert nach Netto-Euro. <b>Keine</b> Kauf-Freigabe: Chance-Risiko und Stopweite sind hier nur Information.</small>`
+    + `<div class="opgrid">${karten}</div>`);
+  if (neu) el.querySelectorAll('[data-openstock]').forEach(b => b.addEventListener('click', () => openStockFromDiscovery(b.dataset.openstock)));
 }
 
 function renderTopPicks(asset='stock'){

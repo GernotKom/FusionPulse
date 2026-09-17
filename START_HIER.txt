@@ -1,3 +1,17 @@
+FusionPulse v5.1.0 – Potenzial-Kachel und Rueckwaertstest
+
+NEU IN 5.1.0
+  • Kachel "Potenzial ueber 2 %" (Aktien, ganz oben): alle frischen Titel,
+    deren Kursziel bei 10.000 EUR nach Gebuehren und KESt >= 120 EUR netto
+    bringt. Chance-Risiko und Stop sind nur Anzeige, keine Sperre.
+    Additiv: kein Tor, Score oder SHA-Block veraendert. Pruefsuite NK106
+    mit zwei Negativkontrollen (Frische-Filter, Netto-Schwelle).
+  • tools/fp_backtest.py: Rueckwaertstest mit Tiingo-Tagesdaten, laeuft auf
+    Windows und Mac ohne Zusatzpakete. Probelauf: py fp_backtest.py --demo
+    Negativkontrolle: eingebauter Vorteil wird erkannt (BESTANDEN),
+    Zufallsdaten nicht.
+
+--- unveraendert aus 5.0.0 ---
 FusionPulse v5.0.0 – Sparbetrieb auf Workers Free
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
