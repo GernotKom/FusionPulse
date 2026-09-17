@@ -1,5 +1,5 @@
 /* ============================================================================
-   FusionPulse v5.1.0 — Frontend
+   FusionPulse v5.1.1 — Frontend
    Leitgedanke: das Auge soll nicht 20 gleichwertige Kacheln absuchen müssen.
    Drei Ebenen: EIN Fokus-Setup (groß) → 2D-Karte (Position = Bedeutung) →
    dichte Liste (ausgerichtete Spalten). Handeln ohne Modal.
@@ -8018,7 +8018,7 @@ function paintWatchlist(){
   if(!n)return;
   n.classList.toggle('hidden', !on);
   if(on) n.innerHTML = `<b>Watchlist-Modus:</b> Der Server untersucht ausschließlich `
-    + `${watchlistState.symbols.map(esc).join(', ')} — jede Minute, ohne Whole-Market-Entdeckung. `
+    + `${watchlistState.symbols.map(esc).join(', ')} — automatisch zweimal je Werktag und alle 5 Minuten, solange die App geöffnet ist, ohne Whole-Market-Entdeckung. `
     + `<b>Du screenst selbst.</b> Ein Titel, der nicht in dieser Liste steht, wird nicht gefunden — `
     + `eine leere Trefferliste bedeutet hier also nicht „keine Gelegenheit am Markt", sondern nur „keine in deiner Auswahl".`;
 }

@@ -1,4 +1,9 @@
-FusionPulse v5.1.0 – Potenzial-Kachel und Rueckwaertstest
+FusionPulse v5.1.1 – Potenzial-Kachel und Rueckwaertstest
+
+NEU IN 5.1.1: Watchlist-Hinweis sagt nicht mehr „jede Minute" (seit 5.0
+  Parkmodus: zweimal je Werktag automatisch, sonst bei geoeffneter App).
+  Python-Skript laeuft jetzt auch unter Python 3.14 (Prozentzeichen in
+  Hilfetexten maskiert).
 
 NEU IN 5.1.0
   • Kachel "Potenzial ueber 2 %" (Aktien, ganz oben): alle frischen Titel,
