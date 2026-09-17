@@ -1,38 +1,26 @@
-FusionPulse v4.23.1 – die Regler zur Hochrisiko-Kachel (Nachtrag zu 4.23.0)
+FusionPulse v5.0.0 – Sparbetrieb auf Workers Free
 
 GH: Dateien/Ordner direkt ins Repository-Root. CF: Build-Stammverzeichnis /.
-Keine Secrets, keine Migration, kein Binding.
+Keine Secrets, keine Migration, kein Binding. Code-Logik unveraendert.
 
-1. HOCHRISIKO-REGLER — in 4.23.0 vergessen, jetzt da.
-   Einstellungen -> neuer Abschnitt „Hochrisiko · Spielkapital":
-     Kategorie anzeigen       ein/aus
-     Spielkapital (EUR)       Vorgabe 500
-     Risiko je Signal (%)     Vorgabe 10  -> 50 EUR je Trade
-   Darunter rechnet ein Hinweis LIVE mit, waehrend du tippst: wie viel Euro je
-   Signal, und was sieben Fehlschlaege in Folge vom Topf uebrig lassen.
+REIHENFOLGE: erst im Cloudflare-Dashboard auf Workers Free zurueckstufen,
+dann deployen.
 
-   WAS DIE 500 EUR SIND: ein getrennter Topf, nicht dein Konto und nicht die
-   Kaufsumme. 10 % davon = 50 EUR Verlust, wenn der Stop greift. Die Kaufsumme
-   ergibt sich rueckwaerts aus der Stopweite — enger Stop = groessere Position.
-   Der Topf begrenzt, was die Kategorie INSGESAMT kosten kann. Dein Konto-
-   Equity bleibt unberuehrt.
-   Willst du lieber mit einem Prozentsatz deines Hauptkapitals arbeiten, trag
-   beim Spielkapital einfach dein Konto-Equity ein.
+1. wrangler.jsonc
+   - Block "limits" entfernt (Free lehnt ihn ab, Fehler 100328)
+   - CF_PLAN "free", D1_WRITE_BUDGET "90000"
+   - Cron statt jeder Minute: "3 18,19 * * 1-5" (werktags 18:03/19:03 UTC).
+     Einer der beiden Laeufe trifft ganzjaehrig 20:03 Wien = Tageslauf.
 
-   Eine eingetragene 0 bleibt jetzt auch 0 — sie springt nicht mehr still auf
-   die Vorgabe zurueck.
+2. FOLGE
+   - Tagesempfehlung um 20:00 Wien bleibt.
+   - Krypto-Zyklus und laufende Watchlist-Scans ruhen.
+   - Die Lernschicht sammelt praktisch nicht mehr (LEARN_MIN_OBS = 6
+     Beobachtungen je Fenster werden bei 2 Laeufen/Tag nicht erreicht).
+   - Daten werden sonst nur geholt, wenn die App geoeffnet ist.
 
-2. WARUM DIE KACHEL „GERADE KEIN KANDIDAT" ZEIGT
-   Das ist kein Fehler. Dort landet nur, was das Schattentor freigibt UND das
-   Hauptregelwerk nicht. Das Schattentor laeuft erst seit v4.17.0. Steht dort
-   nach ein paar Handelstagen dauerhaft nichts, ist die Menge schlicht klein —
-   dann reden wir ueber die Schwelle, nicht ueber die Struktur.
+3. ZURUECK ZUM DAUERBETRIEB (Paid)
+   "limits": { "cpu_ms": 5000, "subrequests": 1000 }, CF_PLAN "paid",
+   D1_WRITE_BUDGET "1000000", Cron ["* * * * *"].
 
-3. NEBENBEFUND: ein Test von mir war zeitabhaengig.
-   NK96 pruefte mit festen 45 Minuten Abstand und der stillen Annahme,
-   die laegen im selben US-Handelstag. Um 00:04 ET stimmt das nicht. Der Test
-   hat monatelang bestanden, weil er nie zu dieser Stunde lief. Jetzt leitet er
-   den Abstand aus dem tatsaechlichen ET-Tag ab.
-
-SCHROEDINGER: wurde erkannt. SDGR stand am 15.09. mit +10,2 % ganz vorn in
-„Bewegung in deiner Watchlist" (Aktien-Tab). Es war nur der falsche Tab.
+Nach dem ersten Tageslauf im Log pruefen, ob er unter 10 ms CPU (Free) bleibt.
